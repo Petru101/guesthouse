@@ -44,6 +44,18 @@ name = "guesthouse-messages"
 version = "0.1.0"
 
 [[package]]
+name = "guesthouse-replay"
+version = "0.1.0"
+dependencies = [
+ "guesthouse-backend",
+ "guesthouse-backend-standin",
+ "guesthouse-core",
+ "guesthouse-daemon",
+ "guesthouse-messages",
+ "guesthouse-transport",
+]
+
+[[package]]
 name = "guesthouse-transport"
 version = "0.1.0"
 

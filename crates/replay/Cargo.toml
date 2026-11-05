@@ -1,0 +1,22 @@
+[package]
+name = "guesthouse-replay"
+description = "Replays a recorded session into the daemon and compares every reply, byte for byte."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "guesthouse-replay"
+path = "src/main.rs"
+
+[dependencies]
+guesthouse-backend.workspace = true
+guesthouse-backend-standin.workspace = true
+guesthouse-core.workspace = true
+guesthouse-daemon.workspace = true
+guesthouse-messages.workspace = true
+guesthouse-transport.workspace = true
+
+[lints]
+workspace = true
