@@ -1,0 +1,771 @@
+From 65ab7380804588f7c67aa737cb2ce303e143f3c8 Mon Sep 17 00:00:00 2001
+From: xnixy <x@ruxn.com>
+Date: Tue, 3 Nov 2026 18:56:28 -0800
+Subject: [PATCH 1/4] hw/hyperv: add GPU-PV transport for Windows guests
+
+Add the three things a Hyper-V GPU-PV partition sees: the global and per-vGPU
+DXGK VMBus channels, and the 1414:008E virtual render PCI function whose config
+space names the vGPU channel. Guest packets go to a backend over a chardev.
+
+Give vmbus-bridge an MMIO window, exposed through an ACPI0004 module device, for
+channels that offer IO space.
+---
+ hw/hyperv/Kconfig                |   5 +
+ hw/hyperv/gpupv.c                | 425 +++++++++++++++++++++++++++++++
+ hw/hyperv/meson.build            |   1 +
+ hw/hyperv/vmbus.c                |   2 +
+ hw/i386/acpi-build.c             |  18 ++
+ include/hw/hyperv/vmbus-bridge.h |   3 +
+ 6 files changed, 454 insertions(+)
+ create mode 100644 hw/hyperv/gpupv.c
+
+diff --git a/hw/hyperv/Kconfig b/hw/hyperv/Kconfig
+index 41dd827..02f9ff5 100644
+--- a/hw/hyperv/Kconfig
++++ b/hw/hyperv/Kconfig
+@@ -12,6 +12,11 @@ config VMBUS
+     default y
+     depends on HYPERV
+ 
++config GPUPV
++    bool
++    default y
++    depends on VMBUS && PCI
++
+ config SYNDBG
+     bool
+     default y
+diff --git a/hw/hyperv/gpupv.c b/hw/hyperv/gpupv.c
+new file mode 100644
+index 0000000..9a8aed5
+--- /dev/null
++++ b/hw/hyperv/gpupv.c
+@@ -0,0 +1,425 @@
++/*
++ * GPU paravirtualization (GPU-PV) transport for a Windows guest on KVM.
++ *
++ * A Hyper-V GPU-PV partition sees three things, and this file provides them:
++ *
++ *   gpupv-global   the global DXGK VMBus channel
++ *   gpupv-vgpu     the per-vGPU DXGK VMBus channel
++ *   gpupv-render   the "virtual render device" PCI function (1414:008E), whose
++ *                  config space names the vGPU channel
++ *
++ * This code only moves bytes. Every guest packet goes to a backend over a
++ * chardev, and the backend decides what to answer, so protocol work does not
++ * need a QEMU rebuild.
++ *
++ * Frame format, in both directions: GpupvFrame followed by .len payload bytes.
++ * For a GPA-direct packet the payload starts with a uint32 range count and
++ * that many {uint64 base, uint64 len} pairs, then the message.
++ *
++ * This work is licensed under the terms of the GNU GPL, version 2 or later.
++ * See the COPYING file in the top-level directory.
++ */
++
++#include "qemu/osdep.h"
++#include "qemu/error-report.h"
++#include "qemu/module.h"
++#include "qemu/uuid.h"
++#include "qapi/error.h"
++#include "chardev/char-fe.h"
++#include "hw/core/qdev-properties.h"
++#include "hw/core/qdev-properties-system.h"
++#include "hw/hyperv/vmbus.h"
++#include "hw/pci/pci_device.h"
++#include "qom/object.h"
++
++#define GPUPV_GLOBAL_GUID   "dde9cbc0-5060-4436-9448-ea1254a5d177"
++#define GPUPV_VGPU_GUID     "6e382d18-3336-4f4b-acc4-2b7703d4df4a"
++
++/* IO space the global channel offers. Microsoft asks for at least 8 GiB. */
++#define GPUPV_IOSPACE_MB    8192
++
++#define GPUPV_FRAME_NEED_COMP   0x1
++#define GPUPV_FRAME_HAS_RANGES  0x2
++
++/* Frame types above the VMBus packet range, for channel lifecycle events. */
++#define GPUPV_EVT_OPEN      0xf001
++#define GPUPV_EVT_CLOSE     0xf002
++#define GPUPV_EVT_RESET     0xf003
++
++#define GPUPV_MAX_FRAME     (4 * 1024 * 1024)
++
++typedef struct QEMU_PACKED GpupvFrame {
++    uint32_t len;
++    uint16_t type;
++    uint16_t flags;
++    uint64_t tid;
++} GpupvFrame;
++
++typedef struct GpupvOut {
++    uint16_t type;
++    bool need_comp;
++    uint64_t tid;
++    uint32_t len;
++    uint8_t data[];
++} GpupvOut;
++
++#define TYPE_GPUPV_CHANNEL "gpupv-channel"
++OBJECT_DECLARE_SIMPLE_TYPE(GpupvChannel, GPUPV_CHANNEL)
++
++struct GpupvChannel {
++    VMBusDevice parent;
++    CharFrontend chr;
++    GByteArray *rx;
++    GQueue out;
++};
++
++static void gpupv_send_frame(GpupvChannel *s, uint16_t type, uint16_t flags,
++                             uint64_t tid, const void *a, uint32_t alen,
++                             const void *b, uint32_t blen)
++{
++    GpupvFrame f = {
++        .len = cpu_to_le32(alen + blen),
++        .type = cpu_to_le16(type),
++        .flags = cpu_to_le16(flags),
++        .tid = cpu_to_le64(tid),
++    };
++
++    if (!qemu_chr_fe_backend_connected(&s->chr)) {
++        return;
++    }
++    qemu_chr_fe_write_all(&s->chr, (uint8_t *)&f, sizeof(f));
++    if (alen) {
++        qemu_chr_fe_write_all(&s->chr, a, alen);
++    }
++    if (blen) {
++        qemu_chr_fe_write_all(&s->chr, b, blen);
++    }
++}
++
++/* Send queued backend frames to the guest, for as long as the ring has room. */
++static void gpupv_flush(GpupvChannel *s)
++{
++    VMBusChannel *chan = vmbus_device_channel(VMBUS_DEVICE(s), 0);
++    GpupvOut *o;
++
++    if (!chan || !vmbus_channel_is_open(chan)) {
++        return;
++    }
++
++    while ((o = g_queue_peek_head(&s->out))) {
++        /* On failure VMBus calls chan_notify_cb once the guest frees space. */
++        if (vmbus_channel_reserve(chan, 0, o->len)) {
++            return;
++        }
++        if (vmbus_channel_send(chan, o->type, NULL, 0, o->data, o->len,
++                               o->need_comp, o->tid) < 0) {
++            error_report("gpupv: send to guest failed");
++        }
++        g_queue_pop_head(&s->out);
++        g_free(o);
++    }
++}
++
++static void gpupv_forward(GpupvChannel *s, VMBusChanReq *req)
++{
++    uint16_t flags = req->need_comp ? GPUPV_FRAME_NEED_COMP : 0;
++    g_autofree uint8_t *ranges = NULL;
++    uint32_t rlen = 0;
++
++    if (req->pkt_type == VMBUS_PACKET_DATA_USING_GPA_DIRECT) {
++        uint32_t n = req->sgl.nsg;
++        uint64_t *r;
++
++        rlen = sizeof(uint32_t) + n * 2 * sizeof(uint64_t);
++        ranges = g_malloc(rlen);
++        stl_le_p(ranges, n);
++        r = (uint64_t *)(ranges + sizeof(uint32_t));
++        for (uint32_t i = 0; i < n; i++) {
++            stq_le_p(&r[i * 2], req->sgl.sg[i].base);
++            stq_le_p(&r[i * 2 + 1], req->sgl.sg[i].len);
++        }
++        flags |= GPUPV_FRAME_HAS_RANGES;
++    }
++
++    gpupv_send_frame(s, req->pkt_type, flags, req->transaction_id,
++                     ranges, rlen, req->msg, req->msglen);
++}
++
++static void gpupv_chan_notify(VMBusChannel *chan)
++{
++    GpupvChannel *s = GPUPV_CHANNEL(vmbus_channel_device(chan));
++    VMBusChanReq *req;
++
++    gpupv_flush(s);
++
++    if (vmbus_channel_recv_start(chan)) {
++        return;
++    }
++    while ((req = vmbus_channel_recv_peek(chan, sizeof(*req)))) {
++        gpupv_forward(s, req);
++        vmbus_free_req(req);
++        vmbus_channel_recv_pop(chan);
++    }
++    vmbus_channel_recv_done(chan);
++}
++
++static int gpupv_chr_can_read(void *opaque)
++{
++    return 64 * 1024;
++}
++
++static void gpupv_chr_read(void *opaque, const uint8_t *buf, int size)
++{
++    GpupvChannel *s = opaque;
++
++    g_byte_array_append(s->rx, buf, size);
++
++    while (s->rx->len >= sizeof(GpupvFrame)) {
++        GpupvFrame f;
++        uint32_t len;
++        GpupvOut *o;
++
++        memcpy(&f, s->rx->data, sizeof(f));
++        len = le32_to_cpu(f.len);
++        if (len > GPUPV_MAX_FRAME) {
++            error_report("gpupv: backend frame too large: %u", len);
++            g_byte_array_set_size(s->rx, 0);
++            return;
++        }
++        if (s->rx->len < sizeof(f) + len) {
++            break;
++        }
++
++        o = g_malloc(sizeof(*o) + len);
++        o->type = le16_to_cpu(f.type);
++        o->need_comp = le16_to_cpu(f.flags) & GPUPV_FRAME_NEED_COMP;
++        o->tid = le64_to_cpu(f.tid);
++        o->len = len;
++        memcpy(o->data, s->rx->data + sizeof(f), len);
++        g_queue_push_tail(&s->out, o);
++
++        g_byte_array_remove_range(s->rx, 0, sizeof(f) + len);
++    }
++
++    gpupv_flush(s);
++}
++
++static void gpupv_drop_pending(GpupvChannel *s)
++{
++    GpupvOut *o;
++
++    while ((o = g_queue_pop_head(&s->out))) {
++        g_free(o);
++    }
++}
++
++static int gpupv_open_channel(VMBusChannel *chan)
++{
++    GpupvChannel *s = GPUPV_CHANNEL(vmbus_channel_device(chan));
++
++    gpupv_send_frame(s, GPUPV_EVT_OPEN, 0, 0, NULL, 0, NULL, 0);
++    return 0;
++}
++
++static void gpupv_close_channel(VMBusChannel *chan)
++{
++    GpupvChannel *s = GPUPV_CHANNEL(vmbus_channel_device(chan));
++
++    gpupv_drop_pending(s);
++    gpupv_send_frame(s, GPUPV_EVT_CLOSE, 0, 0, NULL, 0, NULL, 0);
++}
++
++static void gpupv_vmdev_realize(VMBusDevice *vdev, Error **errp)
++{
++    GpupvChannel *s = GPUPV_CHANNEL(vdev);
++
++    if (!qemu_chr_fe_backend_connected(&s->chr)) {
++        error_setg(errp, "gpupv: 'chardev' is required");
++        return;
++    }
++    s->rx = g_byte_array_new();
++    g_queue_init(&s->out);
++    qemu_chr_fe_set_handlers(&s->chr, gpupv_chr_can_read, gpupv_chr_read,
++                             NULL, NULL, s, NULL, true);
++}
++
++static void gpupv_vmdev_unrealize(VMBusDevice *vdev)
++{
++    GpupvChannel *s = GPUPV_CHANNEL(vdev);
++
++    gpupv_drop_pending(s);
++    g_byte_array_free(s->rx, true);
++    qemu_chr_fe_deinit(&s->chr, false);
++}
++
++static void gpupv_vmdev_reset(VMBusDevice *vdev)
++{
++    GpupvChannel *s = GPUPV_CHANNEL(vdev);
++
++    gpupv_drop_pending(s);
++    gpupv_send_frame(s, GPUPV_EVT_RESET, 0, 0, NULL, 0, NULL, 0);
++}
++
++static const Property gpupv_channel_props[] = {
++    DEFINE_PROP_CHR("chardev", GpupvChannel, chr),
++};
++
++static void gpupv_channel_class_init(ObjectClass *klass, const void *data)
++{
++    DeviceClass *dc = DEVICE_CLASS(klass);
++    VMBusDeviceClass *vdc = VMBUS_DEVICE_CLASS(klass);
++
++    device_class_set_props(dc, gpupv_channel_props);
++    set_bit(DEVICE_CATEGORY_DISPLAY, dc->categories);
++
++    /*
++     * dxgkrnl attaches with VmbClientChannelInitSetTargetPnp, which looks for a
++     * device interface. Without this flag Windows expects a driver for the channel.
++     */
++    vdc->channel_flags = VMBUS_CHANNEL_ENUMERATE_DEVICE_INTERFACE;
++    vdc->vmdev_realize = gpupv_vmdev_realize;
++    vdc->vmdev_unrealize = gpupv_vmdev_unrealize;
++    vdc->vmdev_reset = gpupv_vmdev_reset;
++    vdc->open_channel = gpupv_open_channel;
++    vdc->close_channel = gpupv_close_channel;
++    vdc->chan_notify_cb = gpupv_chan_notify;
++}
++
++static void gpupv_global_class_init(ObjectClass *klass, const void *data)
++{
++    VMBusDeviceClass *vdc = VMBUS_DEVICE_CLASS(klass);
++
++    qemu_uuid_parse(GPUPV_GLOBAL_GUID, &vdc->classid);
++    vdc->mmio_size_mb = GPUPV_IOSPACE_MB;
++}
++
++static void gpupv_vgpu_class_init(ObjectClass *klass, const void *data)
++{
++    VMBusDeviceClass *vdc = VMBUS_DEVICE_CLASS(klass);
++
++    qemu_uuid_parse(GPUPV_VGPU_GUID, &vdc->classid);
++}
++
++/*
++ * The virtual render device. Config space, from the WSL dxgkrnl driver:
++ *
++ *   192  vGPU channel instance GUID
++ *   208  VMBus interface version (read: host's, write: guest's choice)
++ *   212  read: host LUID (8 bytes); write: guest capabilities
++ *   220  host capabilities
++ */
++#define GPUPV_CFG_CHANNEL   192
++#define GPUPV_CFG_VERSION   208
++#define GPUPV_CFG_LUID      212
++#define GPUPV_CFG_HOSTCAPS  220
++#define GPUPV_CFG_END       224
++
++#define TYPE_GPUPV_RENDER "gpupv-render"
++OBJECT_DECLARE_SIMPLE_TYPE(GpupvRender, GPUPV_RENDER)
++
++struct GpupvRender {
++    PCIDevice parent;
++    QemuUUID channel;
++    uint64_t luid;
++    uint32_t version;
++    uint32_t hostcaps;
++};
++
++static uint32_t gpupv_render_read(PCIDevice *dev, uint32_t addr, int len)
++{
++    uint32_t val = pci_default_read_config(dev, addr, len);
++
++    if (addr >= PCI_CONFIG_HEADER_SIZE) {
++        info_report("gpupv-render: config read  0x%02x/%d = 0x%x",
++                    addr, len, val);
++    }
++    return val;
++}
++
++static void gpupv_render_write(PCIDevice *dev, uint32_t addr, uint32_t val,
++                               int len)
++{
++    if (addr >= PCI_CONFIG_HEADER_SIZE) {
++        info_report("gpupv-render: config write 0x%02x/%d = 0x%x",
++                    addr, len, val);
++    }
++    if (addr == GPUPV_CFG_VERSION) {
++        stl_le_p(dev->config + GPUPV_CFG_VERSION, val);
++        return;
++    }
++    if (addr >= GPUPV_CFG_CHANNEL && addr < GPUPV_CFG_END) {
++        return;
++    }
++    pci_default_write_config(dev, addr, val, len);
++}
++
++static void gpupv_render_realize(PCIDevice *dev, Error **errp)
++{
++    GpupvRender *s = GPUPV_RENDER(dev);
++    QemuUUID guid = qemu_uuid_bswap(s->channel);
++
++    if (qemu_uuid_is_null(&s->channel)) {
++        error_setg(errp, "gpupv-render: 'channel' is required");
++        return;
++    }
++
++    memcpy(dev->config + GPUPV_CFG_CHANNEL, &guid, sizeof(guid));
++    stl_le_p(dev->config + GPUPV_CFG_VERSION, s->version);
++    stq_le_p(dev->config + GPUPV_CFG_LUID, s->luid);
++    stl_le_p(dev->config + GPUPV_CFG_HOSTCAPS, s->hostcaps);
++}
++
++static const Property gpupv_render_props[] = {
++    DEFINE_PROP_UUID_NODEFAULT("channel", GpupvRender, channel),
++    DEFINE_PROP_UINT64("luid", GpupvRender, luid, 0x0000000100000abcULL),
++    DEFINE_PROP_UINT32("version", GpupvRender, version, 40),
++    DEFINE_PROP_UINT32("hostcaps", GpupvRender, hostcaps, 0),
++};
++
++static void gpupv_render_class_init(ObjectClass *klass, const void *data)
++{
++    DeviceClass *dc = DEVICE_CLASS(klass);
++    PCIDeviceClass *k = PCI_DEVICE_CLASS(klass);
++
++    k->realize = gpupv_render_realize;
++    k->config_read = gpupv_render_read;
++    k->config_write = gpupv_render_write;
++    k->vendor_id = 0x1414;
++    k->device_id = 0x008e;
++    k->class_id = PCI_CLASS_DISPLAY_3D;
++    dc->desc = "GPU-PV virtual render device";
++    device_class_set_props(dc, gpupv_render_props);
++    set_bit(DEVICE_CATEGORY_DISPLAY, dc->categories);
++}
++
++static const TypeInfo gpupv_types[] = {
++    {
++        .name          = TYPE_GPUPV_CHANNEL,
++        .parent        = TYPE_VMBUS_DEVICE,
++        .instance_size = sizeof(GpupvChannel),
++        .abstract      = true,
++        .class_init    = gpupv_channel_class_init,
++    },
++    {
++        .name       = "gpupv-global",
++        .parent     = TYPE_GPUPV_CHANNEL,
++        .class_init = gpupv_global_class_init,
++    },
++    {
++        .name       = "gpupv-vgpu",
++        .parent     = TYPE_GPUPV_CHANNEL,
++        .class_init = gpupv_vgpu_class_init,
++    },
++    {
++        .name          = TYPE_GPUPV_RENDER,
++        .parent        = TYPE_PCI_DEVICE,
++        .instance_size = sizeof(GpupvRender),
++        .class_init    = gpupv_render_class_init,
++        .interfaces    = (const InterfaceInfo[]) {
++            { INTERFACE_CONVENTIONAL_PCI_DEVICE },
++            { },
++        },
++    },
++};
++
++DEFINE_TYPES(gpupv_types)
+diff --git a/hw/hyperv/meson.build b/hw/hyperv/meson.build
+index d1cf781..5a5e325 100644
+--- a/hw/hyperv/meson.build
++++ b/hw/hyperv/meson.build
+@@ -1,6 +1,7 @@
+ system_ss.add(when: 'CONFIG_HYPERV', if_true: files('hyperv.c'))
+ system_ss.add(when: 'CONFIG_HYPERV_TESTDEV', if_true: files('hyperv_testdev.c'))
+ system_ss.add(when: 'CONFIG_VMBUS', if_true: files('vmbus.c'))
++system_ss.add(when: 'CONFIG_GPUPV', if_true: files('gpupv.c'))
+ system_ss.add(when: 'CONFIG_SYNDBG', if_true: files('syndbg.c'))
+ system_ss.add(when: 'CONFIG_HV_BALLOON', if_true: files('hv-balloon.c', 'hv-balloon-page_range_tree.c', 'hv-balloon-our_range_memslots.c'))
+ system_ss.add(when: 'CONFIG_HV_BALLOON', if_false: files('hv-balloon-stub.c'))
+diff --git a/hw/hyperv/vmbus.c b/hw/hyperv/vmbus.c
+index ab99f08..b36b39f 100644
+--- a/hw/hyperv/vmbus.c
++++ b/hw/hyperv/vmbus.c
+@@ -2686,6 +2686,8 @@ static const VMStateDescription vmstate_vmbus_bridge = {
+ 
+ static const Property vmbus_bridge_props[] = {
+     DEFINE_PROP_UINT8("irq", VMBusBridge, irq, 7),
++    DEFINE_PROP_UINT64("mmio-base", VMBusBridge, mmio_base, 0),
++    DEFINE_PROP_UINT64("mmio-size", VMBusBridge, mmio_size, 0),
+ };
+ 
+ static void vmbus_bridge_class_init(ObjectClass *klass, const void *data)
+diff --git a/hw/i386/acpi-build.c b/hw/i386/acpi-build.c
+index 8837b69..2f417a6 100644
+--- a/hw/i386/acpi-build.c
++++ b/hw/i386/acpi-build.c
+@@ -472,6 +472,24 @@ static Aml *build_vmbus_device_aml(VMBusBridge *vmbus_bridge)
+     aml_append(crs, aml_irq_no_flags(vmbus_bridge->irq));
+     aml_append(dev, aml_name_decl("_CRS", crs));
+ 
++    if (vmbus_bridge->mmio_size) {
++        Aml *vmod = aml_device("VMOD");
++
++        aml_append(vmod, aml_name_decl("_HID", aml_string("ACPI0004")));
++        aml_append(vmod, aml_name_decl("_UID", aml_int(0x0)));
++        crs = aml_resource_template();
++        aml_append(crs, aml_qword_memory(AML_POS_DECODE, AML_MIN_FIXED,
++                                         AML_MAX_FIXED, AML_NON_CACHEABLE,
++                                         AML_READ_WRITE, 0,
++                                         vmbus_bridge->mmio_base,
++                                         vmbus_bridge->mmio_base +
++                                         vmbus_bridge->mmio_size - 1,
++                                         0, vmbus_bridge->mmio_size));
++        aml_append(vmod, aml_name_decl("_CRS", crs));
++        aml_append(vmod, dev);
++        return vmod;
++    }
++
+     return dev;
+ }
+ 
+diff --git a/include/hw/hyperv/vmbus-bridge.h b/include/hw/hyperv/vmbus-bridge.h
+index 2cf7307..d0a6722 100644
+--- a/include/hw/hyperv/vmbus-bridge.h
++++ b/include/hw/hyperv/vmbus-bridge.h
+@@ -20,6 +20,9 @@ struct VMBusBridge {
+     SysBusDevice parent_obj;
+ 
+     uint8_t irq;
++    /* Guest-physical window for channels that offer MMIO. Zero if none. */
++    uint64_t mmio_base;
++    uint64_t mmio_size;
+ 
+     VMBus *bus;
+ };
+-- 
+2.56.0
+
+
+From 3011d38e424521b58e7585d26eb989536ff8a7e7 Mon Sep 17 00:00:00 2001
+From: xnixy <x@ruxn.com>
+Date: Wed, 4 Nov 2026 10:50:40 -0800
+Subject: [PATCH 2/4] hw/hyperv: map shared memory for GPU-PV fences
+
+Let gpupv-global map a memory backend over the VMBus MMIO window, so the guest can map
+fence storage that the backend can also reach.
+---
+ hw/hyperv/gpupv.c | 14 ++++++++++++++
+ 1 file changed, 14 insertions(+)
+
+diff --git a/hw/hyperv/gpupv.c b/hw/hyperv/gpupv.c
+index 9a8aed5..f5531b8 100644
+--- a/hw/hyperv/gpupv.c
++++ b/hw/hyperv/gpupv.c
+@@ -30,6 +30,8 @@
+ #include "hw/core/qdev-properties-system.h"
+ #include "hw/hyperv/vmbus.h"
+ #include "hw/pci/pci_device.h"
++#include "system/address-spaces.h"
++#include "system/hostmem.h"
+ #include "qom/object.h"
+ 
+ #define GPUPV_GLOBAL_GUID   "dde9cbc0-5060-4436-9448-ea1254a5d177"
+@@ -71,6 +73,10 @@ struct GpupvChannel {
+     CharFrontend chr;
+     GByteArray *rx;
+     GQueue out;
++
++    /* Memory shared with the backend, for fences. Only the global channel has it. */
++    HostMemoryBackend *iomem;
++    uint64_t iomem_base;
+ };
+ 
+ static void gpupv_send_frame(GpupvChannel *s, uint16_t type, uint16_t flags,
+@@ -241,6 +247,12 @@ static void gpupv_vmdev_realize(VMBusDevice *vdev, Error **errp)
+     g_queue_init(&s->out);
+     qemu_chr_fe_set_handlers(&s->chr, gpupv_chr_can_read, gpupv_chr_read,
+                              NULL, NULL, s, NULL, true);
++    if (s->iomem) {
++        MemoryRegion *mr = host_memory_backend_get_memory(s->iomem);
++
++        host_memory_backend_set_mapped(s->iomem, true);
++        memory_region_add_subregion_overlap(get_system_memory(), s->iomem_base, mr, 1);
++    }
+ }
+ 
+ static void gpupv_vmdev_unrealize(VMBusDevice *vdev)
+@@ -262,6 +274,8 @@ static void gpupv_vmdev_reset(VMBusDevice *vdev)
+ 
+ static const Property gpupv_channel_props[] = {
+     DEFINE_PROP_CHR("chardev", GpupvChannel, chr),
++    DEFINE_PROP_LINK("iomem", GpupvChannel, iomem, TYPE_MEMORY_BACKEND, HostMemoryBackend *),
++    DEFINE_PROP_UINT64("iomem-base", GpupvChannel, iomem_base, 0),
+ };
+ 
+ static void gpupv_channel_class_init(ObjectClass *klass, const void *data)
+-- 
+2.56.0
+
+
+From d79190ce8dbfcb9fb59ef2ef8e3814fd97d6b27b Mon Sep 17 00:00:00 2001
+From: xnixy <x@ruxn.com>
+Date: Thu, 5 Nov 2026 02:30:11 -0800
+Subject: [PATCH 3/4] hw/usb: poll the high-speed usb-mouse every millisecond
+
+At 8 ms a guest's game sees mouse movement arrive in steps. The tablet already polls at 1 ms.
+---
+ hw/usb/dev-hid.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/hw/usb/dev-hid.c b/hw/usb/dev-hid.c
+index ae19d60..9576925 100644
+--- a/hw/usb/dev-hid.c
++++ b/hw/usb/dev-hid.c
+@@ -133,7 +133,7 @@ static const USBDescIface desc_iface_mouse2 = {
+             .bEndpointAddress      = USB_DIR_IN | 0x01,
+             .bmAttributes          = USB_ENDPOINT_XFER_INT,
+             .wMaxPacketSize        = 4,
+-            .bInterval             = 7, /* 2 ^ (8-1) * 125 usecs = 8 ms */
++            .bInterval             = 4, /* 2 ^ (4-1) * 125 usecs = 1 ms */
+         },
+     },
+ };
+-- 
+2.56.0
+
+
+From 592e306d07c9d975970e5459f32abe14c6f3e278 Mon Sep 17 00:00:00 2001
+From: xnixy <x@ruxn.com>
+Date: Thu, 5 Nov 2026 08:37:32 -0800
+Subject: [PATCH 4/4] hw/hyperv: let the GPU-PV backend hand over memory by
+ file descriptor
+
+A backend can send GPUPV_EVT_ARENA with a base, a size and a file. QEMU maps
+the file and shows it to the guest over the shared window, as a RAM device
+region like a VFIO BAR, so video memory reached through BAR1 can be guest memory.
+---
+ hw/hyperv/gpupv.c | 66 +++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 66 insertions(+)
+
+diff --git a/hw/hyperv/gpupv.c b/hw/hyperv/gpupv.c
+index f5531b8..f0b0f3a 100644
+--- a/hw/hyperv/gpupv.c
++++ b/hw/hyperv/gpupv.c
+@@ -16,6 +16,13 @@
+  * For a GPA-direct packet the payload starts with a uint32 range count and
+  * that many {uint64 base, uint64 len} pairs, then the message.
+  *
++ * GPUPV_EVT_ARENA, from the backend only, carries {uint64 base, uint64 size} and
++ * a file descriptor. Mapping that file gives memory the guest then sees at base,
++ * over the shared window. Video memory through BAR1 comes this way, as only
++ * the file the backend set up can be mapped. It is a RAM device region, like a
++ * VFIO BAR: KVM maps it straight to the guest, and QEMU's own accesses are exact.
++ * A memory type does not come with it on AMD, where the guest's PAT decides.
++ *
+  * This work is licensed under the terms of the GNU GPL, version 2 or later.
+  * See the COPYING file in the top-level directory.
+  */
+@@ -47,6 +54,7 @@
+ #define GPUPV_EVT_OPEN      0xf001
+ #define GPUPV_EVT_CLOSE     0xf002
+ #define GPUPV_EVT_RESET     0xf003
++#define GPUPV_EVT_ARENA     0xf010
+ 
+ #define GPUPV_MAX_FRAME     (4 * 1024 * 1024)
+ 
+@@ -77,6 +85,12 @@ struct GpupvChannel {
+     /* Memory shared with the backend, for fences. Only the global channel has it. */
+     HostMemoryBackend *iomem;
+     uint64_t iomem_base;
++
++    /* Memory the backend hands over later, see GPUPV_EVT_ARENA. */
++    MemoryRegion arena;
++    void *arena_ptr;
++    uint64_t arena_size;
++    int arena_fd;
+ };
+ 
+ static void gpupv_send_frame(GpupvChannel *s, uint16_t type, uint16_t flags,
+@@ -169,6 +183,42 @@ static void gpupv_chan_notify(VMBusChannel *chan)
+     vmbus_channel_recv_done(chan);
+ }
+ 
++static void gpupv_drop_arena(GpupvChannel *s)
++{
++    if (s->arena_ptr) {
++        memory_region_del_subregion(get_system_memory(), &s->arena);
++        object_unparent(OBJECT(&s->arena));
++        munmap(s->arena_ptr, s->arena_size);
++        s->arena_ptr = NULL;
++    }
++}
++
++static void gpupv_map_arena(GpupvChannel *s, const uint8_t *data, uint32_t len)
++{
++    uint64_t base, size;
++    void *ptr;
++
++    if (s->arena_fd < 0 || len != 16) {
++        error_report("gpupv: arena frame with no file or the wrong size");
++        return;
++    }
++    base = ldq_le_p(data);
++    size = ldq_le_p(data + 8);
++    gpupv_drop_arena(s);
++    ptr = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, s->arena_fd, 0);
++    close(s->arena_fd);
++    s->arena_fd = -1;
++    if (ptr == MAP_FAILED) {
++        error_report("gpupv: arena of 0x%" PRIx64 " bytes: %s", size, strerror(errno));
++        return;
++    }
++    s->arena_ptr = ptr;
++    s->arena_size = size;
++    memory_region_init_ram_device_ptr(&s->arena, OBJECT(s), "gpupv-arena", size, ptr);
++    memory_region_add_subregion_overlap(get_system_memory(), base, &s->arena, 2);
++    info_report("gpupv: arena of 0x%" PRIx64 " bytes at 0x%" PRIx64, size, base);
++}
++
+ static int gpupv_chr_can_read(void *opaque)
+ {
+     return 64 * 1024;
+@@ -177,7 +227,15 @@ static int gpupv_chr_can_read(void *opaque)
+ static void gpupv_chr_read(void *opaque, const uint8_t *buf, int size)
+ {
+     GpupvChannel *s = opaque;
++    int fd = qemu_chr_fe_get_msgfd(&s->chr);
+ 
++    /* The socket keeps a passed file only until its next read, so take it now. */
++    if (fd >= 0) {
++        if (s->arena_fd >= 0) {
++            close(s->arena_fd);
++        }
++        s->arena_fd = fd;
++    }
+     g_byte_array_append(s->rx, buf, size);
+ 
+     while (s->rx->len >= sizeof(GpupvFrame)) {
+@@ -196,6 +254,12 @@ static void gpupv_chr_read(void *opaque, const uint8_t *buf, int size)
+             break;
+         }
+ 
++        if (le16_to_cpu(f.type) == GPUPV_EVT_ARENA) {
++            gpupv_map_arena(s, s->rx->data + sizeof(f), len);
++            g_byte_array_remove_range(s->rx, 0, sizeof(f) + len);
++            continue;
++        }
++
+         o = g_malloc(sizeof(*o) + len);
+         o->type = le16_to_cpu(f.type);
+         o->need_comp = le16_to_cpu(f.flags) & GPUPV_FRAME_NEED_COMP;
+@@ -244,6 +308,7 @@ static void gpupv_vmdev_realize(VMBusDevice *vdev, Error **errp)
+         return;
+     }
+     s->rx = g_byte_array_new();
++    s->arena_fd = -1;
+     g_queue_init(&s->out);
+     qemu_chr_fe_set_handlers(&s->chr, gpupv_chr_can_read, gpupv_chr_read,
+                              NULL, NULL, s, NULL, true);
+@@ -260,6 +325,7 @@ static void gpupv_vmdev_unrealize(VMBusDevice *vdev)
+     GpupvChannel *s = GPUPV_CHANNEL(vdev);
+ 
+     gpupv_drop_pending(s);
++    gpupv_drop_arena(s);
+     g_byte_array_free(s->rx, true);
+     qemu_chr_fe_deinit(&s->chr, false);
+ }
+-- 
+2.56.0
+
