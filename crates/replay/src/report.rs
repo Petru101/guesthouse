@@ -32,7 +32,8 @@ pub struct Report {
     /// Messages wanting a reply that the recording has none for.
     pub no_recorded_reply: usize,
     pub first_difference: Option<Difference>,
-    /// How many of each message the host sent by itself, as (recorded, replayed) where they differ.
+    /// Messages the host sends by itself, compared as a set: in the recording only, in the replay
+    /// only, and in both.
     pub notices_missing: usize,
     pub notices_extra: usize,
     pub notices_matched: usize,

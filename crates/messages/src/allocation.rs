@@ -74,7 +74,7 @@ impl<'a> CreateAllocation<'a> {
     }
 }
 
-/// The answer's fixed fields and table, ready for private data to be added after them.
+/// The answer: fixed fields, a table with an entry per allocation, then the private data.
 pub struct CreateAllocationAnswer;
 
 impl CreateAllocationAnswer {
@@ -121,7 +121,7 @@ impl CreateAllocationAnswer {
         pad_to(out, out.len().next_multiple_of(Self::PADDING_ALIGN));
     }
 
-    /// Where an entry's private data sits, for readers of a finished answer.
+    /// The size of an entry in a finished answer.
     pub fn size_of_entry(answer: &[u8], index: usize) -> Result<u64, Malformed> {
         crate::wire::u64_at(answer, Self::HEADER + index * Self::ENTRY_SIZE + Self::ENTRY_SIZE_BYTES)
     }

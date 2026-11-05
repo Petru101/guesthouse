@@ -59,7 +59,7 @@ pub fn first_handle(message: &[u8]) -> Result<u32, Malformed> {
     u32_at(message, crate::HEADER_SIZE)
 }
 
-/// The fence signal from the host's own side of a guest driver: a handle and a value.
+/// A fence to raise now, with no queue to wait for.
 #[derive(Debug, Clone, Copy)]
 pub struct SignalFence {
     pub handle: u32,

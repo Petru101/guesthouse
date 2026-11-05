@@ -60,7 +60,7 @@ impl<'a> U32List<'a> {
     }
 
     pub fn iter(&self) -> impl Iterator<Item = u32> + Clone + 'a {
-        self.0.chunks_exact(4).map(|word| u32::from_le_bytes(word.try_into().expect("four bytes")))
+        self.0.as_chunks::<4>().0.iter().map(|word| u32::from_le_bytes(*word))
     }
 }
 
@@ -82,7 +82,7 @@ impl<'a> U64List<'a> {
     }
 
     pub fn iter(&self) -> impl Iterator<Item = u64> + Clone + 'a {
-        self.0.chunks_exact(8).map(|word| u64::from_le_bytes(word.try_into().expect("eight bytes")))
+        self.0.as_chunks::<8>().0.iter().map(|word| u64::from_le_bytes(*word))
     }
 }
 

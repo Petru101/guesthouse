@@ -214,7 +214,7 @@ impl<'a> AdapterQuery<'a> {
 /// The driver model as adapter queries spell it.
 pub const DRIVER_MODEL_NUMBER: u32 = 3000;
 
-/// What the guest is told about the card's identity by query.
+/// The card's PCI identity. The subsystem fields repeat the card's own numbers.
 pub fn physical_adapter_ids(vendor: u16, device: u16, revision: u8, out: &mut Vec<u8>) {
     let (vendor, device) = (u32::from(vendor), u32::from(device));
     for field in [0, vendor, device, vendor, device, u32::from(revision), 0] {
@@ -228,7 +228,7 @@ pub fn segment_sizes(dedicated: u64, shared: u64, out: &mut Vec<u8>) {
     put_u64(out, shared);
 }
 
-/// The size answers are held to in the guest's own text form: UTF-16 padded to the buffer.
+/// The adapter's name, as UTF-16 padded to the size of the guest's buffer.
 pub fn description_answer(description: &str, size: usize, out: &mut Vec<u8>) {
     let start = out.len();
     for unit in description.encode_utf16() {
