@@ -21,9 +21,9 @@ These matter more than anything else here, because text inside code is something
 - Nothing copied from a GPU vendor's or Microsoft's files: no data, tables or text.
 - A protocol field the code needs goes in as a named constant or type, described in plain words, saying what it does.
 - Microsoft's public Linux driver for this protocol is GPL-2. You may read it to understand the protocol. Don't copy its code, comments or structure text, and name things in your own words.
-- The QEMU patch lives elsewhere and stays GPL-2.
+- The QEMU patch in `qemu/` keeps QEMU's licence, GPL-2.0-or-later.
 - No secrets, and no paths from your own machine.
-- There's no licence yet, so please don't add one.
+- Everything here is GPL-2.0-or-later, and that includes what you add.
 
 ## Recordings
 
