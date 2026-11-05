@@ -3,5 +3,9 @@
 version = 4
 
 [[package]]
+name = "guesthouse-messages"
+version = "0.1.0"
+
+[[package]]
 name = "guesthouse-transport"
 version = "0.1.0"
