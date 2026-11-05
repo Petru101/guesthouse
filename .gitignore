@@ -1,0 +1,38 @@
+# Personal notes.
+/notes/
+/findings/
+/research/
+/scratch/
+findings*.md
+notes*.md
+*.notes.md
+
+# Local test output, and files you supply yourself.
+/captures/
+/capture-results/
+/run/
+*.exe
+*.dll
+*.sys
+*.cat
+*.cer
+*.pfx
+*.bin
+*.reg
+*.pdb
+*.iso
+*.qcow2
+*.fd
+*.ppm
+*.raw
+*.log
+
+# Build output.
+/target/
+/build/
+__pycache__/
+
+# Secrets.
+.env
+.token
+token.txt
