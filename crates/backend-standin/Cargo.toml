@@ -1,0 +1,13 @@
+[package]
+name = "guesthouse-backend-standin"
+description = "A pretend GPU, for tests only. It has no hardware behind it and never runs a guest."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+guesthouse-backend.workspace = true
+
+[lints]
+workspace = true
