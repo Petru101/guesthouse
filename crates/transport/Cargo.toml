@@ -1,0 +1,10 @@
+[package]
+name = "guesthouse-transport"
+description = "The byte stream between QEMU and the daemon: frames, packet kinds and page ranges."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

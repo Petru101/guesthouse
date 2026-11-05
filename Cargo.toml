@@ -1,0 +1,26 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+publish = false
+
+[workspace.dependencies]
+guesthouse-transport = { path = "crates/transport" }
+guesthouse-messages = { path = "crates/messages" }
+guesthouse-backend = { path = "crates/backend" }
+guesthouse-backend-standin = { path = "crates/backend-standin" }
+guesthouse-core = { path = "crates/core" }
+guesthouse-daemon = { path = "crates/daemon" }
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+
+[profile.release]
+debug = "line-tables-only"
