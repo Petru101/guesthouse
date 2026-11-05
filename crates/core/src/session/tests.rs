@@ -1,0 +1,1241 @@
+//! Whole messages through a session with the stand-in backend.
+
+use super::*;
+use crate::{FENCE_AREA, MemoryLimits};
+use guesthouse_backend_standin::{REGISTRY_NAME, SparseMemory, StandIn, VENDOR_ANSWER, VENDOR_ONLY_QUERY};
+use guesthouse_messages::adapter::AdapterQuery;
+use guesthouse_messages::notice::Notice;
+use guesthouse_messages::wire::{put_utf16_terminated, set_u32, set_u64, u32_at, u64_at};
+use guesthouse_messages::{HEADER_SIZE, standard};
+use std::time::{Duration, Instant};
+
+const IO_SPACE: u64 = 1 << 40;
+const WINDOW_END: u64 = IO_SPACE + (1 << 30);
+const PROCESS: u32 = 0x4000_2000;
+const SUCCESS: u32 = Status::SUCCESS.0;
+
+type TestSession = Session<StandIn, SparseMemory>;
+
+/// A message with room for `size` bytes, and its command and process filled in.
+fn message(command: Command, size: usize) -> Vec<u8> {
+    let mut bytes = vec![0; size.max(HEADER_SIZE)];
+    set_u32(&mut bytes, 8, PROCESS);
+    set_u32(&mut bytes, 16, command.to_wire());
+    bytes
+}
+
+fn session_with(cap: Option<u64>) -> TestSession {
+    let backend = StandIn::new();
+    let limits = MemoryLimits::new(backend.facts(), cap, 16 << 30);
+    let mut config = Config::new(limits);
+    config.frame_wait = Duration::ZERO;
+    let mut session = Session::new(backend, SparseMemory::new(WINDOW_END), config);
+    let mut request = message(Command::SetIoSpace, HEADER_SIZE + 16);
+    set_u64(&mut request, HEADER_SIZE, IO_SPACE);
+    set_u64(&mut request, HEADER_SIZE + 8, 8 << 30);
+    assert_eq!(send(&mut session, &request), SUCCESS.to_le_bytes());
+    session
+}
+
+fn session() -> TestSession {
+    session_with(None)
+}
+
+fn send(session: &mut TestSession, message: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    session.handle_message(message, &mut out);
+    out
+}
+
+fn status_of(reply: &[u8]) -> u32 {
+    u32_at(reply, 0).unwrap()
+}
+
+/// Stand-in private data asking for `size` bytes.
+fn private(size: u64) -> Vec<u8> {
+    let mut data = size.to_le_bytes().to_vec();
+    data.resize(17, 0);
+    data
+}
+
+fn surface_private(width: u32, height: u32) -> Vec<u8> {
+    let mut data = private(0x10000);
+    set_u32(&mut data, 8, width);
+    set_u32(&mut data, 12, height);
+    data
+}
+
+fn create_message(flags: u32, blocks: &[Vec<u8>]) -> Vec<u8> {
+    let mut request = message(Command::CreateAllocation, 0x40);
+    set_u32(&mut request, 0x28, blocks.len() as u32);
+    set_u32(&mut request, 0x2C, flags);
+    for block in blocks {
+        request.extend_from_slice(&[0; 4]);
+        request.extend_from_slice(&(block.len() as u32).to_le_bytes());
+        request.extend_from_slice(&[0; 4]);
+    }
+    blocks.iter().for_each(|block| request.extend_from_slice(block));
+    request
+}
+
+/// Makes one allocation in a resource of its own. Returns (resource, allocation).
+fn allocate(session: &mut TestSession, block: Vec<u8>) -> (u32, u32) {
+    let reply = send(session, &create_message(0, &[block]));
+    assert_eq!(status_of(&reply), SUCCESS);
+    (u32_at(&reply, 4).unwrap(), u32_at(&reply, 0x10).unwrap())
+}
+
+fn map(session: &mut TestSession, allocation: u32, address: u64, first_page: u64, pages: u64) -> (u64, u32) {
+    let mut request = message(Command::MapGpuAddresses, 0x50);
+    set_u64(&mut request, 0x20, address);
+    set_u32(&mut request, 0x38, allocation);
+    set_u64(&mut request, 0x40, first_page);
+    set_u64(&mut request, 0x48, pages);
+    let reply = send(session, &request);
+    (u64_at(&reply, 0).unwrap(), u32_at(&reply, 16).unwrap())
+}
+
+fn lock(session: &mut TestSession, allocation: u32) -> (u32, u64) {
+    let mut request = message(Command::LockForCpu, 0x20);
+    set_u32(&mut request, 0x1C, allocation);
+    let reply = send(session, &request);
+    (status_of(&reply), u64_at(&reply, 8).unwrap())
+}
+
+fn destroy(session: &mut TestSession, resource: u32, handles: &[u32]) {
+    let mut request = message(Command::DestroyAllocation, 0x28);
+    set_u32(&mut request, 0x1C, resource);
+    set_u32(&mut request, 0x20, handles.len() as u32);
+    handles.iter().for_each(|handle| request.extend_from_slice(&handle.to_le_bytes()));
+    assert_eq!(status_of(&send(session, &request)), SUCCESS);
+}
+
+/// Returns (handle, GPU address, fence).
+fn create_fence(session: &mut TestSession, initial: u64) -> (u32, u64, u64) {
+    let mut request = message(Command::CreateSyncObject, 0x30);
+    set_u32(&mut request, 0x20, 5);
+    set_u64(&mut request, 0x28, initial);
+    let reply = send(session, &request);
+    assert_eq!(u32_at(&reply, 0), u32_at(&reply, 4));
+    (u32_at(&reply, 0).unwrap(), u64_at(&reply, 8).unwrap(), u64_at(&reply, 16).unwrap())
+}
+
+fn destroy_sync(session: &mut TestSession, handle: u32) {
+    let mut request = message(Command::DestroySyncObject, 0x20);
+    set_u32(&mut request, 0x18, handle);
+    send(session, &request);
+}
+
+fn create_context(session: &mut TestSession, node: u32) -> u32 {
+    let mut request = message(Command::CreateContext, 0x34);
+    set_u32(&mut request, 0x20, node);
+    u32_at(&send(session, &request), 0x18).unwrap()
+}
+
+/// Returns (queue, progress sync object, fence).
+fn create_queue(session: &mut TestSession, context: u32) -> (u32, u32, u64) {
+    let mut request = message(Command::CreateHardwareQueue, 0x48);
+    set_u32(&mut request, 0x38, context);
+    set_u32(&mut request, 0x40, 4);
+    let reply = send(session, &request);
+    assert_eq!(u32_at(&reply, 0x18), Ok(SUCCESS));
+    (u32_at(&reply, 0x1C).unwrap(), u32_at(&reply, 0x20).unwrap(), u64_at(&reply, 0x28).unwrap())
+}
+
+fn submit(session: &mut TestSession, queue: u32, value: u64) {
+    let mut request = message(Command::SubmitToHardwareQueue, 0x50);
+    set_u32(&mut request, 0x18, queue);
+    set_u64(&mut request, 0x20, value);
+    assert_eq!(send(session, &request), SUCCESS.to_le_bytes());
+}
+
+fn signal_message(objects: &[u32], contexts: &[u32], values: &[u64]) -> Vec<u8> {
+    let mut request = message(Command::SignalSyncObject, 0x38);
+    set_u32(&mut request, 0x18, objects.len() as u32);
+    set_u32(&mut request, 0x20, contexts.len() as u32);
+    objects.iter().chain(contexts).for_each(|word| request.extend_from_slice(&word.to_le_bytes()));
+    values.iter().for_each(|value| request.extend_from_slice(&value.to_le_bytes()));
+    request
+}
+
+mod dispatch {
+    use super::*;
+
+    #[test]
+    fn unknown_commands_are_not_supported() {
+        let reply = send(&mut session(), &message(Command::Unknown(68), HEADER_SIZE));
+        assert_eq!(status_of(&reply), Status::NOT_SUPPORTED.0);
+    }
+
+    #[test]
+    fn something_too_short_to_read_is_not_supported() {
+        assert_eq!(status_of(&send(&mut session(), &[0; 8])), Status::NOT_SUPPORTED.0);
+    }
+
+    #[test]
+    fn a_message_cut_short_fails_plainly() {
+        let reply = send(&mut session(), &message(Command::CreateSyncObject, HEADER_SIZE));
+        assert_eq!(reply, Status::UNSUCCESSFUL.0.to_le_bytes());
+    }
+
+    #[test]
+    fn plain_commands_answer_success() {
+        for command in [Command::FlushDevice, Command::UnlockForCpu, Command::IsSyncObjectSignaled] {
+            assert_eq!(send(&mut session(), &message(command, HEADER_SIZE)), SUCCESS.to_le_bytes());
+        }
+    }
+
+    #[test]
+    fn residency_answers_have_two_values_and_a_status() {
+        let reply = send(&mut session(), &message(Command::MakeResident, HEADER_SIZE));
+        assert_eq!(reply, [0; 24]);
+    }
+
+    #[test]
+    fn registry_keys_answer_is_a_count_then_a_status() {
+        assert_eq!(send(&mut session(), &message(Command::GetRegistryKeys, HEADER_SIZE)), [0; 8]);
+    }
+
+    #[test]
+    fn each_object_gets_its_own_handle() {
+        let mut session = session();
+        let first = send(&mut session, &message(Command::CreateDevice, HEADER_SIZE));
+        let second = send(&mut session, &message(Command::CreateDevice, HEADER_SIZE));
+        assert_eq!(status_of(&second) - status_of(&first), 0x40);
+    }
+
+    #[test]
+    fn a_32_bit_process_is_remembered_for_the_vendor() {
+        let mut session = session();
+        let mut request = message(Command::CreateProcess, 0x233);
+        request[0x232] = 4;
+        let process = status_of(&send(&mut session, &request));
+        assert!(session.processes_32_bit.contains(&process));
+        let mut request = message(Command::DestroyProcess, HEADER_SIZE);
+        set_u32(&mut request, 8, process);
+        send(&mut session, &request);
+        assert!(!session.processes_32_bit.contains(&process));
+    }
+}
+
+mod adapter {
+    use super::*;
+
+    fn query(session: &mut TestSession, kind: u32, size: u32, data: &[u8]) -> Vec<u8> {
+        let mut request = message(Command::QueryAdapter, HEADER_SIZE + 8);
+        set_u32(&mut request, HEADER_SIZE, kind);
+        set_u32(&mut request, HEADER_SIZE + 4, size);
+        request.extend_from_slice(data);
+        send(session, &request)
+    }
+
+    #[test]
+    fn the_vendor_is_asked_first() {
+        let reply = query(&mut session(), VENDOR_ONLY_QUERY, 4, &[0; 4]);
+        assert_eq!(&reply[4..], VENDOR_ANSWER);
+    }
+
+    #[test]
+    fn neutral_queries_need_no_vendor() {
+        let mut session = session();
+        assert_eq!(u32_at(&query(&mut session, AdapterQuery::PHYSICAL_ADAPTER_COUNT, 4, &[]), 4), Ok(1));
+        assert_eq!(u32_at(&query(&mut session, AdapterQuery::DRIVER_MODEL, 4, &[]), 4), Ok(3000));
+        assert_eq!(query(&mut session, AdapterQuery::DIRECT_FLIP, 12, &[]), [0; 16]);
+    }
+
+    #[test]
+    fn the_guest_driver_version_comes_from_the_facts() {
+        let mut session = session();
+        session.backend_mut();
+        let facts = guesthouse_backend::AdapterFacts {
+            guest_driver_version: 0x1234,
+            ..session.backend().facts().clone()
+        };
+        session.backend = StandIn::with_facts(facts);
+        for kind in [AdapterQuery::DRIVER_VERSION, AdapterQuery::USER_DRIVER_VERSION] {
+            assert_eq!(u64_at(&query(&mut session, kind, 8, &[]), 4), Ok(0x1234));
+        }
+    }
+
+    #[test]
+    fn unknown_queries_are_a_bare_status() {
+        assert_eq!(query(&mut session(), 9999, 4, &[0; 4]), Status::NOT_SUPPORTED.0.to_le_bytes());
+    }
+
+    #[test]
+    fn segment_sizes_follow_the_cap() {
+        let reply = query(&mut session_with(Some(4 << 30)), AdapterQuery::SEGMENT_SIZES, 24, &[]);
+        assert_eq!(u64_at(&reply, 4), Ok(4 << 30));
+        assert_eq!(u64_at(&reply, 20), Ok(16 << 30));
+    }
+
+    fn registry_buffer(name: &str, value_type: u32) -> Vec<u8> {
+        let mut buffer = vec![0; 544 + 64];
+        let mut text = Vec::new();
+        put_utf16_terminated(&mut text, name);
+        buffer[8..8 + text.len()].copy_from_slice(&text);
+        set_u32(&mut buffer, 528, value_type);
+        buffer
+    }
+
+    #[test]
+    fn registry_names_ignore_case() {
+        let buffer = registry_buffer(&REGISTRY_NAME.to_uppercase(), 1);
+        let reply = query(&mut session(), AdapterQuery::REGISTRY, buffer.len() as u32, &buffer);
+        assert_eq!(status_of(&reply), SUCCESS);
+        assert_eq!(u32_at(&reply, 4 + 536), Ok(10));
+    }
+
+    #[test]
+    fn the_wrong_type_fails_so_a_loader_tries_the_other() {
+        let buffer = registry_buffer(REGISTRY_NAME, 7);
+        let reply = query(&mut session(), AdapterQuery::REGISTRY, buffer.len() as u32, &buffer);
+        assert_eq!(status_of(&reply), Status::INVALID_PARAMETER.0);
+        assert_eq!(&reply[4..], &buffer);
+    }
+
+    #[test]
+    fn an_unknown_value_comes_back_unchanged() {
+        let buffer = registry_buffer("nothing", 1);
+        let reply = query(&mut session(), AdapterQuery::REGISTRY, buffer.len() as u32, &buffer);
+        assert_eq!(status_of(&reply), SUCCESS);
+        assert_eq!(&reply[4..], &buffer);
+    }
+
+    #[test]
+    fn identity_says_whether_messages_may_be_async() {
+        let mut session = session();
+        session.config.async_messages = true;
+        let reply = send(&mut session, &message(Command::GetAdapterIdentity, HEADER_SIZE));
+        assert_eq!(u32_at(&reply, 12), Ok(0x40));
+    }
+
+    #[test]
+    fn node_count_reaches_the_physical_adapter_caps() {
+        let mut request = message(Command::QueryDriverCaps, HEADER_SIZE + 12);
+        set_u32(&mut request, HEADER_SIZE, 15);
+        set_u32(&mut request, HEADER_SIZE + 8, 8);
+        assert_eq!(u32_at(&send(&mut session(), &request), 0), Ok(8));
+    }
+
+    #[test]
+    fn escapes_go_to_the_vendor_and_pad_to_eight_bytes() {
+        let mut request = message(Command::DriverEscape, HEADER_SIZE + 24);
+        set_u32(&mut request, HEADER_SIZE + 16, 3);
+        request.extend_from_slice(&[1, 2, 3]);
+        assert_eq!(send(&mut session(), &request), [0xFE, 0xFD, 0xFC, 0, 0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn video_memory_usage_counts_allocations() {
+        let mut session = session();
+        allocate(&mut session, private(0x20000));
+        let reply = send(&mut session, &message(Command::QueryVideoMemory, 0x20));
+        assert_eq!(u64_at(&reply, 0), Ok(6 << 30));
+        assert_eq!(u64_at(&reply, 8), Ok(0x20000));
+        assert_eq!(u64_at(&reply, 24), Ok(3 << 30));
+    }
+
+    #[test]
+    fn the_system_group_reports_guest_ram() {
+        let mut request = message(Command::QueryVideoMemory, 0x20);
+        set_u32(&mut request, 0x1C, 1);
+        let reply = send(&mut session(), &request);
+        assert_eq!(u64_at(&reply, 0), Ok(16 << 30));
+        assert_eq!(u64_at(&reply, 8), Ok(0));
+    }
+}
+
+mod allocations {
+    use super::*;
+
+    #[test]
+    fn a_resource_holds_its_allocations() {
+        let mut session = session();
+        let reply = send(&mut session, &create_message(0, &[private(0x1000), private(0x2000)]));
+        assert_eq!(reply.len(), 0x10 + 2 * 0x48 + 2 * 17 + 6);
+        let (first, second) = (u32_at(&reply, 0x10).unwrap(), u32_at(&reply, 0x58).unwrap());
+        assert_eq!(session.resources[&u32_at(&reply, 4).unwrap()], [first, second]);
+        assert_eq!(u64_at(&reply, 0x20), Ok(0x1000));
+        assert_eq!(u64_at(&reply, 0x68), Ok(0x2000));
+    }
+
+    #[test]
+    fn the_vendor_writes_back_into_the_private_data() {
+        let reply = send(&mut session(), &create_message(0, &[private(0x1000)]));
+        assert_eq!(reply[0x58], 0xFF);
+    }
+
+    #[test]
+    fn every_allocation_is_cached_for_the_cpu_and_primaries_say_so() {
+        let mut request = create_message(0, &[private(0x1000)]);
+        set_u32(&mut request, 0x40, 1);
+        let reply = send(&mut session(), &request);
+        assert_eq!(u32_at(&reply, 0x18), Ok(1 | 0x80000));
+    }
+
+    #[test]
+    fn a_surface_shape_reaches_the_answer() {
+        let reply = send(&mut session(), &create_message(0, &[surface_private(640, 480)]));
+        assert_eq!(u32_at(&reply, 0x30), Ok(640));
+        assert_eq!(u32_at(&reply, 0x34), Ok(480));
+        assert_eq!(u32_at(&reply, 0x3C), Ok(1));
+        assert_eq!(u32_at(&reply, 0x44), Ok(60));
+    }
+
+    #[test]
+    fn a_standard_record_is_ours_and_not_the_vendors() {
+        let mut session = session();
+        let mut describe = message(Command::DescribeStandardAllocation, 0x40);
+        set_u32(&mut describe, 0x18, 1);
+        set_u32(&mut describe, 0x1C, 32);
+        set_u32(&mut describe, 0x28, 100);
+        set_u32(&mut describe, 0x2C, 10);
+        let answer = send(&mut session, &describe);
+        let record = answer[36..68].to_vec();
+        let reply = send(&mut session, &create_message(0, std::slice::from_ref(&record)));
+        assert_eq!(u64_at(&reply, 0x20), Ok(0x10000));
+        assert_eq!(&reply[0x58..0x58 + 32], record);
+        assert_eq!(standard::StandardRecord::parse(&record).unwrap().pitch, 512);
+    }
+
+    #[test]
+    fn the_video_cap_refuses_all_or_nothing() {
+        let mut session = session_with(Some(0x3000));
+        let reply = send(&mut session, &create_message(0, &[private(0x2000), private(0x2000)]));
+        assert_eq!(status_of(&reply), Status::NO_VIDEO_MEMORY.0);
+        assert_eq!(reply.len(), 0x10 + 2 * 0x48);
+        assert!(session.allocations.is_empty());
+        assert_eq!(session.backend().live_memory_blocks(), 0);
+    }
+
+    #[test]
+    fn locked_memory_stops_counting_against_the_cap() {
+        let mut session = session_with(Some(0x3000));
+        let (_, handle) = allocate(&mut session, private(0x2000));
+        lock(&mut session, handle);
+        let reply = send(&mut session, &create_message(0, &[private(0x2000)]));
+        assert_eq!(status_of(&reply), SUCCESS);
+    }
+
+    #[test]
+    fn a_failed_allocation_answers_with_a_bare_failure() {
+        let mut session = session();
+        session.backend_mut().fail_next_allocation = true;
+        let reply = send(&mut session, &create_message(0, &[private(0x1000)]));
+        assert_eq!(reply, Status::UNSUCCESSFUL.0.to_le_bytes());
+    }
+
+    #[test]
+    fn destroying_a_resource_frees_its_memory() {
+        let mut session = session();
+        let (resource, _) = allocate(&mut session, private(0x1000));
+        destroy(&mut session, resource, &[]);
+        assert_eq!(session.backend().live_memory_blocks(), 0);
+        assert!(session.allocations.is_empty());
+    }
+
+    #[test]
+    fn naming_an_allocation_of_a_live_resource_frees_nothing() {
+        let mut session = session();
+        let (_, handle) = allocate(&mut session, private(0x1000));
+        destroy(&mut session, 0, &[handle]);
+        assert!(session.allocations.contains_key(&handle));
+    }
+
+    fn open(session: &mut TestSession, shared: u32, count: u32) -> Vec<u8> {
+        let mut request = message(Command::OpenResource, 0x28);
+        set_u32(&mut request, 0x20, shared);
+        set_u32(&mut request, 0x24, count);
+        send(session, &request)
+    }
+
+    #[test]
+    fn a_shared_resource_lasts_until_its_last_user() {
+        let mut session = session();
+        let (resource, handle) = allocate(&mut session, private(0x1000));
+        assert_eq!(u32_at(&open(&mut session, resource, 1), 8), Ok(handle));
+        destroy(&mut session, resource, &[]);
+        assert!(session.allocations.contains_key(&handle));
+        destroy(&mut session, resource, &[]);
+        assert!(session.allocations.is_empty());
+    }
+
+    #[test]
+    fn opening_works_through_a_shared_handle() {
+        let mut session = session();
+        let (resource, handle) = allocate(&mut session, private(0x1000));
+        let mut request = message(Command::CreateSharedObject, 0x20);
+        set_u32(&mut request, 0x18, resource);
+        let shared = status_of(&send(&mut session, &request));
+        assert_eq!(u32_at(&open(&mut session, shared, 1), 8), Ok(handle));
+    }
+
+    #[test]
+    fn opening_more_than_a_resource_holds_is_refused() {
+        let mut session = session();
+        let (resource, _) = allocate(&mut session, private(0x1000));
+        let reply = open(&mut session, resource, 2);
+        assert_eq!(u32_at(&reply, 4), Ok(Status::INVALID_PARAMETER.0));
+        assert!(session.resource_users.is_empty());
+    }
+
+    #[test]
+    fn guest_backed_allocations_wait_for_their_pages() {
+        let mut session = session();
+        let block = private(0x2000);
+        let reply = send(&mut session, &create_message(0x20, &[block]));
+        let handle = u32_at(&reply, 0x10).unwrap();
+        assert_eq!(session.backend().live_memory_blocks(), 0);
+        assert_eq!(lock(&mut session, handle).0, Status::INVALID_PARAMETER.0);
+
+        let pages = |first: u32, list: &[u64]| {
+            let mut request = message(Command::SetGuestPages, 0x28);
+            set_u32(&mut request, 0x1C, handle);
+            set_u32(&mut request, 0x20, list.len() as u32);
+            set_u32(&mut request, 0x24, first);
+            list.iter().for_each(|page| request.extend_from_slice(&page.to_le_bytes()));
+            request
+        };
+        assert_eq!(status_of(&send(&mut session, &pages(0, &[7]))), SUCCESS);
+        assert!(session.memory().views.is_empty());
+        assert_eq!(status_of(&send(&mut session, &pages(1, &[9]))), SUCCESS);
+        assert_eq!(session.memory().views.len(), 1);
+        assert_eq!(session.backend().live_memory_blocks(), 1);
+
+        let resource = u32_at(&reply, 4).unwrap();
+        destroy(&mut session, resource, &[]);
+        assert!(session.memory().views.is_empty());
+    }
+
+    #[test]
+    fn pages_for_an_unknown_allocation_are_refused() {
+        let mut request = message(Command::SetGuestPages, 0x28);
+        set_u32(&mut request, 0x1C, 0x999);
+        assert_eq!(status_of(&send(&mut session(), &request)), Status::INVALID_PARAMETER.0);
+    }
+
+    #[test]
+    fn locking_moves_memory_to_shared_pages_at_the_same_address() {
+        let mut session = session();
+        let (_, handle) = allocate(&mut session, private(0x10000));
+        let (mapped, _) = map(&mut session, handle, 0, 0, 0);
+        let before = session.backend().mapping_count();
+        let (status, address) = lock(&mut session, handle);
+        assert_eq!(status, SUCCESS);
+        assert_eq!(address, IO_SPACE + FENCE_AREA);
+        assert_eq!(session.allocations[&handle].mappings[0].address, mapped);
+        assert_eq!(session.backend().mapping_count(), before + 1, "only the daemon's space is new");
+        assert_eq!(session.backend().live_memory_blocks(), 2, "the shared pages and the fence block");
+    }
+
+    #[test]
+    fn a_second_lock_answers_the_same_address() {
+        let mut session = session();
+        let (_, handle) = allocate(&mut session, private(0x1000));
+        assert_eq!(lock(&mut session, handle), lock(&mut session, handle));
+    }
+
+    #[test]
+    fn locking_an_unknown_allocation_is_refused() {
+        assert_eq!(lock(&mut session(), 0x999).0, Status::INVALID_PARAMETER.0);
+    }
+
+    #[test]
+    fn locking_past_the_window_runs_out_of_memory() {
+        let mut session = session();
+        let (_, handle) = allocate(&mut session, private(2 << 30));
+        assert_eq!(lock(&mut session, handle), (Status::NO_MEMORY.0, 0));
+    }
+
+    #[test]
+    fn freed_shared_memory_is_used_again_and_cleared() {
+        let mut session = session();
+        let (resource, handle) = allocate(&mut session, private(0x1000));
+        let (_, first) = lock(&mut session, handle);
+        session.memory_mut().write_u64(first, 0xDEAD);
+        destroy(&mut session, resource, &[]);
+        let (_, handle) = allocate(&mut session, private(0x1000));
+        let (_, second) = lock(&mut session, handle);
+        assert_eq!(second, first);
+        assert_eq!(session.memory().read_u64(second), 0);
+    }
+
+    #[test]
+    fn contents_move_only_once_work_has_run() {
+        let mut session = session();
+        session.backend_mut().run_work = true;
+        let (_, unmapped) = allocate(&mut session, private(0x1000));
+        let (_, mapped) = allocate(&mut session, private(0x1000));
+        map(&mut session, mapped, 0, 0, 0);
+        let context = create_context(&mut session, 0);
+        let (queue, _, _) = create_queue(&mut session, context);
+        lock(&mut session, mapped);
+        assert!(session.backend().preserved.is_empty());
+        let (_, again) = allocate(&mut session, private(0x1000));
+        map(&mut session, again, 0, 0, 0);
+        submit(&mut session, queue, 1);
+        lock(&mut session, unmapped);
+        assert!(session.backend().preserved.is_empty(), "nothing was mapped, so nothing was written");
+        lock(&mut session, again);
+        assert_eq!(session.backend().preserved.len(), 1);
+    }
+}
+
+mod mappings {
+    use super::*;
+
+    #[test]
+    fn a_range_with_no_allocation_echoes_its_address() {
+        assert_eq!(map(&mut session(), 0, 0x5000_0000, 0, 0), (0x5000_0000, SUCCESS));
+    }
+
+    #[test]
+    fn an_unknown_allocation_is_refused() {
+        assert_eq!(map(&mut session(), 0x999, 0, 0, 0), (0, Status::INVALID_PARAMETER.0));
+    }
+
+    #[test]
+    fn the_host_picks_an_address_after_the_fence_block() {
+        let mut session = session();
+        let (_, handle) = allocate(&mut session, private(0x1000));
+        let (address, status) = map(&mut session, handle, 0, 0, 0);
+        assert_eq!(status, SUCCESS);
+        assert_eq!(address, crate::GPU_RANGES[0].start + FENCE_AREA);
+    }
+
+    #[test]
+    fn big_allocations_get_a_large_alignment() {
+        let mut session = session();
+        let (_, small) = allocate(&mut session, private(0x1000));
+        map(&mut session, small, 0, 0, 0);
+        let (_, big) = allocate(&mut session, private(2 << 20));
+        let (address, _) = map(&mut session, big, 0, 0, 0);
+        assert_eq!(address % (2 << 20), 0);
+    }
+
+    #[test]
+    fn later_maps_of_an_allocation_land_inside_the_first() {
+        let mut session = session();
+        let (_, handle) = allocate(&mut session, private(0x10000));
+        let (base, _) = map(&mut session, handle, 0, 0, 1);
+        assert_eq!(map(&mut session, handle, 0, 3, 1), (base + 0x3000, SUCCESS));
+        assert_eq!(session.allocations[&handle].mappings.len(), 1);
+    }
+
+    #[test]
+    fn an_allocation_too_small_for_the_map_grows_while_it_is_empty() {
+        let mut session = session();
+        let (_, handle) = allocate(&mut session, private(0x1000));
+        map(&mut session, handle, 0, 0, 4);
+        assert_eq!(session.allocations[&handle].size, 0x4000);
+        assert_eq!(session.backend().live_memory_blocks(), 2, "the grown block and the fence block");
+    }
+
+    #[test]
+    fn a_chosen_address_maps_only_what_was_asked() {
+        let mut session = session();
+        let (_, handle) = allocate(&mut session, private(0x10000));
+        assert_eq!(map(&mut session, handle, 0x5000_0000, 2, 1), (0x5000_0000, SUCCESS));
+        let mapping = session.allocations[&handle].mappings[0];
+        assert_eq!((mapping.first, mapping.length), (0x2000, 0x1000));
+    }
+
+    #[test]
+    fn a_chosen_address_outside_every_range_fails() {
+        let mut session = session();
+        let (_, handle) = allocate(&mut session, private(0x1000));
+        assert_eq!(map(&mut session, handle, 0x1_0000_0000, 0, 1), (0, Status::UNSUCCESSFUL.0));
+    }
+
+    #[test]
+    fn a_taken_chosen_address_is_cleared_first() {
+        let mut session = session();
+        let (_, first) = allocate(&mut session, private(0x4000));
+        map(&mut session, first, 0x5000_0000, 0, 4);
+        let (_, second) = allocate(&mut session, private(0x1000));
+        assert_eq!(map(&mut session, second, 0x5000_1000, 0, 1), (0x5000_1000, SUCCESS));
+        let mut pieces: Vec<_> =
+            session.allocations[&first].mappings.iter().map(|m| (m.first, m.length)).collect();
+        pieces.sort();
+        assert_eq!(pieces, [(0, 0x1000), (0x2000, 0x2000)], "the old mapping keeps both sides");
+    }
+
+    #[test]
+    fn reserving_rounds_and_advances() {
+        let mut session = session();
+        let mut request = message(Command::ReserveGpuAddresses, 0x40);
+        set_u64(&mut request, 0x38, 1);
+        let first = u64_at(&send(&mut session, &request), 0).unwrap();
+        let second = u64_at(&send(&mut session, &request), 0).unwrap();
+        assert_eq!(second - first, crate::ALLOCATION_ALIGN);
+    }
+
+    fn operation(kind: u32, address: u64, size: u64, third: u64, offset: u64) -> Vec<u8> {
+        let mut bytes = vec![0; 64];
+        set_u32(&mut bytes, 0, kind);
+        set_u64(&mut bytes, 8, address);
+        set_u64(&mut bytes, 16, size);
+        set_u64(&mut bytes, 24, third);
+        set_u64(&mut bytes, 32, offset);
+        bytes
+    }
+
+    fn update(session: &mut TestSession, fence: u32, value: u64, operations: &[Vec<u8>]) -> Vec<u8> {
+        let mut request = message(Command::UpdateGpuAddresses, 0x38);
+        set_u64(&mut request, 0x18, value);
+        set_u32(&mut request, 0x28, fence);
+        set_u32(&mut request, 0x2C, operations.len() as u32);
+        operations.iter().for_each(|operation| request.extend_from_slice(operation));
+        send(session, &request)
+    }
+
+    #[test]
+    fn an_update_maps_and_raises_the_fence() {
+        let mut session = session();
+        let (_, handle) = allocate(&mut session, private(0x4000));
+        let (sync, _, fence) = create_fence(&mut session, 5);
+        let operations = [operation(0, 0x5000_0000, 0x2000, u64::from(handle), 0x1000)];
+        assert_eq!(status_of(&update(&mut session, sync, 5, &operations)), SUCCESS);
+        assert_eq!(session.memory().read_u64(fence), 6);
+        let mapping = session.allocations[&handle].mappings[0];
+        assert_eq!((mapping.address, mapping.first, mapping.length), (0x5000_0000, 0x1000, 0x2000));
+    }
+
+    #[test]
+    fn mapping_what_is_already_there_changes_nothing() {
+        let mut session = session();
+        let (_, handle) = allocate(&mut session, private(0x4000));
+        let (sync, _, _) = create_fence(&mut session, 0);
+        let whole = operation(0, 0x5000_0000, 0x4000, u64::from(handle), 0);
+        update(&mut session, sync, 0, &[whole]);
+        let inner = operation(3, 0x5000_1000, 0x1000, u64::from(handle), 0x1000);
+        update(&mut session, sync, 1, &[inner]);
+        assert_eq!(session.allocations[&handle].mappings.len(), 1);
+    }
+
+    #[test]
+    fn an_update_unmaps_the_middle_of_a_mapping() {
+        let mut session = session();
+        let (_, handle) = allocate(&mut session, private(0x3000));
+        let (sync, _, _) = create_fence(&mut session, 0);
+        update(&mut session, sync, 0, &[operation(0, 0x5000_0000, 0x3000, u64::from(handle), 0)]);
+        update(&mut session, sync, 1, &[operation(1, 0x5000_1000, 0x1000, 0, 0)]);
+        let mut pieces: Vec<_> =
+            session.allocations[&handle].mappings.iter().map(|m| (m.address, m.first)).collect();
+        pieces.sort();
+        assert_eq!(pieces, [(0x5000_0000, 0), (0x5000_2000, 0x2000)]);
+    }
+
+    #[test]
+    fn an_update_copies_mappings_and_skips_holes() {
+        let mut session = session();
+        let (_, handle) = allocate(&mut session, private(0x2000));
+        let (sync, _, _) = create_fence(&mut session, 0);
+        update(&mut session, sync, 0, &[operation(0, 0x5000_1000, 0x1000, u64::from(handle), 0x1000)]);
+        update(&mut session, sync, 1, &[operation(2, 0x5000_0000, 0x2000, 0x6000_0000, 0)]);
+        let copied = session.allocations[&handle].mappings.iter().find(|m| m.address == 0x6000_1000);
+        assert_eq!(copied.map(|m| (m.first, m.length)), Some((0x1000, 0x1000)));
+    }
+
+    #[test]
+    fn an_update_of_an_unknown_allocation_fails_without_raising_the_fence() {
+        let mut session = session();
+        let (sync, _, fence) = create_fence(&mut session, 0);
+        let reply = update(&mut session, sync, 0, &[operation(0, 0x5000_0000, 0x1000, 0x999, 0)]);
+        assert_eq!(reply, Status::UNSUCCESSFUL.0.to_le_bytes());
+        assert_eq!(session.memory().read_u64(fence), 0);
+    }
+
+    #[test]
+    fn an_update_waits_for_its_fence() {
+        let mut session = session();
+        let (_, handle) = allocate(&mut session, private(0x1000));
+        let (sync, _, fence) = create_fence(&mut session, 1);
+        let operations = [operation(0, 0x5000_0000, 0x1000, u64::from(handle), 0)];
+        assert_eq!(status_of(&update(&mut session, sync, 3, &operations)), SUCCESS);
+        assert!(session.poll(Instant::now()));
+        assert!(session.allocations[&handle].mappings.is_empty());
+        session.memory_mut().write_u64(fence, 3);
+        assert!(!session.poll(Instant::now()));
+        assert_eq!(session.allocations[&handle].mappings.len(), 1);
+        assert_eq!(session.memory().read_u64(fence), 4);
+    }
+
+    #[test]
+    fn clearing_addresses_finishes_a_free_that_was_waiting_on_them() {
+        let mut session = session();
+        session.backend_mut().run_work = true;
+        let context = create_context(&mut session, 0);
+        let (queue, _, _) = create_queue(&mut session, context);
+        let (resource, old) = allocate(&mut session, private(0x1000));
+        map(&mut session, old, 0x5000_0000, 0, 1);
+        submit(&mut session, queue, 1);
+        destroy(&mut session, resource, &[]);
+        assert_eq!(session.deferred.len(), 1);
+        let (_, new) = allocate(&mut session, private(0x1000));
+        assert_eq!(map(&mut session, new, 0x5000_0000, 0, 1), (0x5000_0000, SUCCESS));
+    }
+}
+
+mod fences {
+    use super::*;
+
+    #[test]
+    fn monitored_fences_start_at_the_value_asked() {
+        let mut session = session();
+        let (_, gpu_address, fence) = create_fence(&mut session, 7);
+        assert_eq!(fence, IO_SPACE);
+        assert_eq!(gpu_address, crate::GPU_RANGES[0].start);
+        assert_eq!(session.memory().read_u64(fence), 7);
+    }
+
+    #[test]
+    fn each_fence_gets_its_own_page_in_the_block() {
+        let mut session = session();
+        let (_, first_gpu, first) = create_fence(&mut session, 0);
+        let (_, second_gpu, second) = create_fence(&mut session, 0);
+        assert_eq!(second - first, crate::FENCE_PAGE);
+        assert_eq!(second_gpu - first_gpu, crate::FENCE_PAGE);
+    }
+
+    #[test]
+    fn a_freed_fence_comes_back_zeroed() {
+        let mut session = session();
+        let (handle, _, fence) = create_fence(&mut session, 9);
+        destroy_sync(&mut session, handle);
+        let (_, _, again) = create_fence(&mut session, 0);
+        assert_eq!(again, fence);
+        assert_eq!(session.memory().read_u64(again), 0);
+    }
+
+    #[test]
+    fn a_fence_stays_until_its_last_handle() {
+        let mut session = session();
+        let (handle, _, fence) = create_fence(&mut session, 0);
+        let mut open = message(Command::OpenSyncObject, 0x20);
+        set_u32(&mut open, 0x1C, handle);
+        let reply = send(&mut session, &open);
+        assert_eq!(u32_at(&reply, 4), Ok(SUCCESS));
+        assert_eq!(u64_at(&reply, 16), Ok(fence));
+        destroy_sync(&mut session, handle);
+        assert_ne!(create_fence(&mut session, 0).2, fence);
+        destroy_sync(&mut session, u32_at(&reply, 0).unwrap());
+        assert_eq!(create_fence(&mut session, 0).2, fence);
+    }
+
+    #[test]
+    fn opening_an_unknown_sync_object_is_refused() {
+        let mut open = message(Command::OpenSyncObject, 0x20);
+        set_u32(&mut open, 0x1C, 0x999);
+        assert_eq!(u32_at(&send(&mut session(), &open), 4), Ok(Status::INVALID_PARAMETER.0));
+    }
+
+    #[test]
+    fn fences_only_go_up() {
+        let mut session = session();
+        let (handle, _, fence) = create_fence(&mut session, 0);
+        send(&mut session, &signal_message(&[handle], &[], &[5]));
+        assert_eq!(session.memory().read_u64(fence), 5);
+        send(&mut session, &signal_message(&[handle], &[], &[3]));
+        assert_eq!(session.memory().read_u64(fence), 5);
+    }
+
+    #[test]
+    fn a_signal_reaches_a_fence_through_a_shared_handle() {
+        let mut session = session();
+        let (handle, _, fence) = create_fence(&mut session, 0);
+        let mut request = message(Command::CreateSharedObject, 0x20);
+        set_u32(&mut request, 0x18, handle);
+        let shared = status_of(&send(&mut session, &request));
+        let mut signal = message(Command::SignalFence, 0x28);
+        set_u32(&mut signal, 0x18, shared);
+        set_u64(&mut signal, 0x20, 8);
+        send(&mut session, &signal);
+        assert_eq!(session.memory().read_u64(fence), 8);
+    }
+
+    fn notification(session: &mut TestSession, event: u64) -> u32 {
+        let mut request = message(Command::CreateSyncObject, 0x30);
+        set_u32(&mut request, 0x20, 4);
+        set_u64(&mut request, 0x28, event);
+        status_of(&send(session, &request))
+    }
+
+    #[test]
+    fn a_notification_wakes_its_event_even_with_no_values() {
+        let mut session = session();
+        let handle = notification(&mut session, 0xE1);
+        send(&mut session, &signal_message(&[handle], &[], &[]));
+        let notices: Vec<_> = session.take_notices().collect();
+        assert_eq!(notices, [Notice::WakeEvent { event: 0xE1, release: 0 }]);
+    }
+
+    fn wait_message(objects: &[u32], values: &[u64], any: bool, event: u64) -> Vec<u8> {
+        let mut request = message(Command::WaitOnCpu, 0x38);
+        set_u32(&mut request, 0x1C, objects.len() as u32);
+        set_u32(&mut request, 0x20, u32::from(any));
+        set_u64(&mut request, 0x28, event);
+        request[0x30] = 1;
+        objects.iter().for_each(|object| request.extend_from_slice(&object.to_le_bytes()));
+        values.iter().for_each(|value| request.extend_from_slice(&value.to_le_bytes()));
+        request
+    }
+
+    #[test]
+    fn a_wait_already_satisfied_wakes_at_once() {
+        let mut session = session();
+        let (handle, _, _) = create_fence(&mut session, 5);
+        send(&mut session, &wait_message(&[handle], &[5], false, 0xE));
+        let notices: Vec<_> = session.take_notices().collect();
+        assert_eq!(notices, [Notice::WakeEvent { event: 0xE, release: 1 }]);
+    }
+
+    #[test]
+    fn a_wait_on_all_needs_every_fence() {
+        let mut session = session();
+        let (first, _, first_fence) = create_fence(&mut session, 0);
+        let (second, _, second_fence) = create_fence(&mut session, 0);
+        send(&mut session, &wait_message(&[first, second], &[1, 1], false, 0xE));
+        session.memory_mut().write_u64(first_fence, 1);
+        assert!(session.poll(Instant::now()));
+        assert_eq!(session.take_notices().count(), 0);
+        session.memory_mut().write_u64(second_fence, 1);
+        assert!(!session.poll(Instant::now()));
+        assert_eq!(session.take_notices().count(), 1);
+    }
+
+    #[test]
+    fn a_wait_on_any_needs_one_fence() {
+        let mut session = session();
+        let (first, _, fence) = create_fence(&mut session, 0);
+        let (second, _, _) = create_fence(&mut session, 0);
+        send(&mut session, &wait_message(&[first, second], &[1, 1], true, 0xE));
+        assert_eq!(session.take_notices().count(), 0);
+        session.memory_mut().write_u64(fence, 1);
+        session.poll(Instant::now());
+        assert_eq!(session.take_notices().count(), 1);
+    }
+
+    #[test]
+    fn an_unknown_object_counts_as_reached() {
+        let mut session = session();
+        send(&mut session, &wait_message(&[0x999], &[100], false, 0xE));
+        assert_eq!(session.take_notices().count(), 1);
+    }
+
+    #[test]
+    fn a_queues_progress_object_can_be_waited_on() {
+        let mut session = session();
+        session.backend_mut().run_work = true;
+        let context = create_context(&mut session, 0);
+        let (queue, progress, fence) = create_queue(&mut session, context);
+        submit(&mut session, queue, 2);
+        send(&mut session, &wait_message(&[progress], &[2], false, 0xE));
+        assert_eq!(session.take_notices().count(), 0);
+        session.memory_mut().write_u64(fence, 2);
+        session.poll(Instant::now());
+        assert_eq!(session.take_notices().count(), 1);
+    }
+
+    #[test]
+    fn paging_queues_reuse_their_fences_apart_from_the_others() {
+        let mut session = session();
+        let reply = send(&mut session, &message(Command::CreatePagingQueue, HEADER_SIZE));
+        assert_eq!(reply.len(), 24);
+        let (queue, fence) = (status_of(&reply), u64_at(&reply, 8).unwrap());
+        session.memory_mut().write_u64(fence, 3);
+        let mut destroy = message(Command::DestroyPagingQueue, 0x20);
+        set_u32(&mut destroy, 0x18, queue);
+        send(&mut session, &destroy);
+        assert_ne!(create_fence(&mut session, 0).2, fence);
+        let reply = send(&mut session, &message(Command::CreatePagingQueue, HEADER_SIZE));
+        assert_eq!(u64_at(&reply, 8), Ok(fence));
+        assert_eq!(session.memory().read_u64(fence), 0);
+    }
+}
+
+mod queues {
+    use super::*;
+
+    #[test]
+    fn the_context_answer_is_its_message_with_a_handle() {
+        let mut session = session();
+        let context = create_context(&mut session, 3);
+        assert_eq!(session.context_nodes[&context], 3);
+    }
+
+    #[test]
+    fn a_queue_answer_has_its_handles_and_vendor_data() {
+        let mut session = session();
+        let context = create_context(&mut session, 0);
+        let mut request = message(Command::CreateHardwareQueue, 0x48);
+        set_u32(&mut request, 0x38, context);
+        set_u32(&mut request, 0x40, 4);
+        let reply = send(&mut session, &request);
+        assert_eq!(u32_at(&reply, 0x20).unwrap() - u32_at(&reply, 0x1C).unwrap(), 0x40);
+        assert_eq!(reply[0x44], 1, "the vendor saw the first queue's serial");
+        assert_eq!(u32_at(&reply, 0x24), Ok(0));
+    }
+
+    #[test]
+    fn work_that_does_not_reach_the_gpu_completes_its_fence() {
+        let mut session = session();
+        let context = create_context(&mut session, 0);
+        let (queue, _, fence) = create_queue(&mut session, context);
+        submit(&mut session, queue, 9);
+        assert_eq!(session.memory().read_u64(fence), 9);
+    }
+
+    #[test]
+    fn work_on_the_gpu_leaves_the_fence_to_it() {
+        let mut session = session();
+        session.backend_mut().run_work = true;
+        let context = create_context(&mut session, 0);
+        let (queue, _, fence) = create_queue(&mut session, context);
+        submit(&mut session, queue, 9);
+        assert_eq!(session.memory().read_u64(fence), 0);
+        assert_eq!(session.backend().doorbells, [(queue, 9)]);
+    }
+
+    #[test]
+    fn a_backend_can_take_gpu_addresses_for_its_channels() {
+        let mut session = session();
+        session.backend_mut().run_work = true;
+        let context = create_context(&mut session, 0);
+        let (queue, _, _) = create_queue(&mut session, context);
+        submit(&mut session, queue, 1);
+        let taken = session.backend().channel_address.unwrap();
+        let (_, handle) = allocate(&mut session, private(0x1000));
+        assert_eq!(map(&mut session, handle, 0, 0, 0).0, taken + 0x10000);
+    }
+
+    #[test]
+    fn submitting_to_an_unknown_queue_succeeds_and_does_nothing() {
+        submit(&mut session(), 0x999, 1);
+    }
+
+    #[test]
+    fn a_context_without_a_queue_gets_one() {
+        let mut session = session();
+        let context = create_context(&mut session, 0);
+        let mut request = message(Command::SubmitToContext, 0x198);
+        set_u32(&mut request, 0x34, context);
+        assert_eq!(status_of(&send(&mut session, &request)), SUCCESS);
+        let queue = session.context_queues[&context][0];
+        assert_eq!(session.memory().read_u64(session.queues[&queue].fence), 1);
+        assert_eq!(status_of(&send(&mut session, &request)), SUCCESS);
+        assert_eq!(session.context_queues[&context], [queue]);
+    }
+
+    fn gpu_wait(session: &mut TestSession, handle: u32, object: u32, value: u64) {
+        let mut request = message(Command::WaitOnGpu, 0x28);
+        set_u32(&mut request, 0x18, handle);
+        set_u32(&mut request, 0x1C, 1);
+        request.extend_from_slice(&value.to_le_bytes());
+        request.extend_from_slice(&object.to_le_bytes());
+        assert_eq!(status_of(&send(session, &request)), SUCCESS);
+    }
+
+    #[test]
+    fn a_gate_holds_doorbells_until_its_fence_moves() {
+        let mut session = session();
+        session.backend_mut().run_work = true;
+        let context = create_context(&mut session, 0);
+        let (queue, _, _) = create_queue(&mut session, context);
+        let (sync, _, fence) = create_fence(&mut session, 0);
+        gpu_wait(&mut session, context, sync, 4);
+        submit(&mut session, queue, 1);
+        assert!(session.backend().doorbells.is_empty());
+        assert!(session.poll(Instant::now()));
+        session.memory_mut().write_u64(fence, 4);
+        session.poll(Instant::now());
+        assert_eq!(session.backend().doorbells, [(queue, 1)]);
+        assert!(session.gates.is_empty());
+    }
+
+    #[test]
+    fn a_wait_already_reached_shuts_no_gate() {
+        let mut session = session();
+        let context = create_context(&mut session, 0);
+        create_queue(&mut session, context);
+        let (sync, _, _) = create_fence(&mut session, 4);
+        gpu_wait(&mut session, context, sync, 4);
+        assert!(session.gates.is_empty());
+    }
+
+    #[test]
+    fn a_gate_gives_up_at_its_deadline() {
+        let mut session = session();
+        session.backend_mut().run_work = true;
+        let context = create_context(&mut session, 0);
+        let (queue, _, _) = create_queue(&mut session, context);
+        let (sync, _, _) = create_fence(&mut session, 0);
+        gpu_wait(&mut session, context, sync, 4);
+        submit(&mut session, queue, 1);
+        session.poll(Instant::now() + crate::pending::GATE_TIMEOUT + Duration::from_secs(1));
+        assert_eq!(session.backend().doorbells, [(queue, 1)]);
+    }
+
+    #[test]
+    fn a_signal_after_gpu_work_waits_for_that_work() {
+        let mut session = session();
+        session.backend_mut().run_work = true;
+        let context = create_context(&mut session, 0);
+        let (queue, _, queue_fence) = create_queue(&mut session, context);
+        let (sync, _, fence) = create_fence(&mut session, 0);
+        submit(&mut session, queue, 1);
+        send(&mut session, &signal_message(&[sync], &[context], &[7]));
+        assert_eq!(session.memory().read_u64(fence), 0);
+        session.memory_mut().write_u64(queue_fence, 1);
+        session.poll(Instant::now());
+        assert_eq!(session.memory().read_u64(fence), 7);
+    }
+
+    #[test]
+    fn a_present_token_comes_back_when_the_gpu_gets_there() {
+        let mut session = session();
+        session.backend_mut().run_work = true;
+        let context = create_context(&mut session, 0);
+        let (queue, _, queue_fence) = create_queue(&mut session, context);
+        submit(&mut session, queue, 1);
+        let mut request = message(Command::PresentToken, 0x38);
+        set_u32(&mut request, 0x18, context);
+        set_u64(&mut request, 0x20, 1);
+        set_u64(&mut request, 0x28, 2);
+        set_u64(&mut request, 0x30, 3);
+        send(&mut session, &request);
+        assert_eq!(session.take_notices().count(), 0);
+        session.memory_mut().write_u64(queue_fence, 1);
+        session.poll(Instant::now());
+        let notices: Vec<_> = session.take_notices().collect();
+        assert_eq!(notices, [Notice::PresentDone { token: [1, 2, 3] }]);
+    }
+
+    #[test]
+    fn a_cpu_event_signal_wakes_with_release_and_leaves_the_objects() {
+        let mut session = session();
+        let (sync, _, fence) = create_fence(&mut session, 0);
+        let mut request = signal_message(&[sync], &[], &[5]);
+        set_u32(&mut request, 0x1C, 2);
+        set_u64(&mut request, 0x30, 0xE);
+        send(&mut session, &request);
+        assert_eq!(session.memory().read_u64(fence), 0);
+        let notices: Vec<_> = session.take_notices().collect();
+        assert_eq!(notices, [Notice::WakeEvent { event: 0xE, release: 1 }]);
+    }
+
+    #[test]
+    fn freeing_waits_for_the_gpu() {
+        let mut session = session();
+        session.backend_mut().run_work = true;
+        let context = create_context(&mut session, 0);
+        let (queue, _, queue_fence) = create_queue(&mut session, context);
+        let (resource, _) = allocate(&mut session, private(0x1000));
+        submit(&mut session, queue, 1);
+        let blocks = session.backend().live_memory_blocks();
+        destroy(&mut session, resource, &[]);
+        assert_eq!(session.backend().live_memory_blocks(), blocks, "the GPU may still be using it");
+        session.memory_mut().write_u64(queue_fence, 1);
+        submit(&mut session, queue, 1);
+        assert_eq!(session.backend().live_memory_blocks(), blocks - 1);
+    }
+
+    #[test]
+    fn a_stuck_queue_times_out_and_frees_the_guest() {
+        let mut session = session();
+        session.backend_mut().run_work = true;
+        let context = create_context(&mut session, 0);
+        let (queue, _, fence) = create_queue(&mut session, context);
+        submit(&mut session, queue, 3);
+        assert!(session.poll(Instant::now()));
+        assert!(!session.poll(Instant::now() + crate::pending::QUEUE_TIMEOUT + Duration::from_secs(1)));
+        assert_eq!(session.memory().read_u64(fence), 3);
+        assert!(session.queues[&queue].failed);
+    }
+
+    #[test]
+    fn too_many_failed_queues_stop_all_work() {
+        let mut session = session();
+        session.queue_failures = crate::pending::MOST_QUEUE_FAILURES;
+        session.backend_mut().run_work = true;
+        let context = create_context(&mut session, 0);
+        let (queue, _, fence) = create_queue(&mut session, context);
+        submit(&mut session, queue, 1);
+        assert!(session.backend().doorbells.is_empty());
+        assert_eq!(session.memory().read_u64(fence), 1);
+    }
+
+    #[test]
+    fn destroying_a_context_closes_its_queues_and_frees_their_fences() {
+        let mut session = session();
+        let context = create_context(&mut session, 0);
+        let (queue, _, fence) = create_queue(&mut session, context);
+        let mut request = message(Command::DestroyContext, 0x20);
+        set_u32(&mut request, 0x18, context);
+        send(&mut session, &request);
+        assert_eq!(session.backend().closed_queues, [queue]);
+        assert_eq!(create_fence(&mut session, 0).2, fence);
+    }
+
+    #[test]
+    fn a_dead_process_loses_its_address_space_at_the_next_deferred_run() {
+        let mut session = session();
+        let (_, handle) = allocate(&mut session, private(0x1000));
+        map(&mut session, handle, 0, 0, 0);
+        assert_eq!(session.backend().live_address_spaces(), 1);
+        send(&mut session, &message(Command::DestroyProcess, HEADER_SIZE));
+        assert_eq!(session.backend().live_address_spaces(), 1);
+        submit(&mut session, 0x999, 1);
+        assert_eq!(session.backend().live_address_spaces(), 0);
+        assert!(session.allocations[&handle].mappings.is_empty());
+    }
+
+    fn copy_message(context: u32, source: u32, target: u32, private_size: u32) -> Vec<u8> {
+        let mut request = message(Command::CopyToStaging, 0x50);
+        set_u32(&mut request, 0x1C, context);
+        set_u32(&mut request, 0x20, source);
+        set_u32(&mut request, 0x24, target);
+        set_u32(&mut request, 0x30, 640);
+        set_u32(&mut request, 0x34, 480);
+        set_u32(&mut request, 0x4C, private_size);
+        request
+    }
+
+    #[test]
+    fn a_copy_needs_two_known_surfaces() {
+        let mut session = session();
+        let (_, buffer) = allocate(&mut session, private(0x1000));
+        let (_, surface) = allocate(&mut session, surface_private(640, 480));
+        let reply = send(&mut session, &copy_message(0, surface, buffer, 0));
+        assert_eq!(status_of(&reply), Status::INVALID_PARAMETER.0);
+    }
+
+    #[test]
+    fn a_copy_maps_both_surfaces_once_in_the_daemons_space() {
+        let mut session = session();
+        let (_, source) = allocate(&mut session, surface_private(640, 480));
+        let (_, target) = allocate(&mut session, surface_private(640, 480));
+        assert_eq!(status_of(&send(&mut session, &copy_message(0, source, target, 0))), SUCCESS);
+        assert_eq!(status_of(&send(&mut session, &copy_message(0, source, target, 0))), SUCCESS);
+        let copies = &session.backend().copies;
+        assert_eq!(copies.len(), 2);
+        assert_eq!(copies[0].source_address, copies[1].source_address);
+        assert_ne!(copies[0].source_address, copies[0].target_address);
+        assert_eq!(session.allocations[&source].mappings.len(), 1);
+        assert!(!copies[0].is_screen, "the target is not in the shared window");
+    }
+
+    #[test]
+    fn the_screen_is_a_locked_target_with_no_driver_data() {
+        let mut session = session();
+        let (_, source) = allocate(&mut session, surface_private(640, 480));
+        let (_, target) = allocate(&mut session, surface_private(640, 480));
+        lock(&mut session, target);
+        send(&mut session, &copy_message(0, source, target, 0));
+        send(&mut session, &copy_message(0, source, target, 8));
+        let copies = &session.backend().copies;
+        assert!(copies[0].is_screen);
+        assert!(!copies[1].is_screen);
+    }
+}

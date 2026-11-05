@@ -1,0 +1,23 @@
+[package]
+name = "guesthouse-core"
+description = "The vendor-neutral daemon: processes, devices, allocations, sync objects, fences and address spaces."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+guesthouse-backend.workspace = true
+guesthouse-messages.workspace = true
+# The facade alone. When logging is off a call costs one load, so it can stay on the message path.
+log = "0.4"
+
+[dev-dependencies]
+guesthouse-backend-standin.workspace = true
+
+[lints]
+workspace = true
+
+[[bench]]
+name = "message_path"
+harness = false

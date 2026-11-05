@@ -1,0 +1,305 @@
+//! Handlers for GPU addresses.
+
+use super::{Handled, Session, answer_status};
+use crate::deferred::{DeferredAction, FreedAllocation};
+use crate::gpu_addresses::{ALLOCATION_ALIGN, GpuAddresses, LARGE_ALIGN};
+use crate::pending::Pending;
+use crate::tables::Mapping;
+use guesthouse_backend::{Backend, BackendError, GuestMemory, MapRequest, MemoryId, SpaceId, UnmapRequest};
+use guesthouse_messages::address::{
+    MapRequest as GuestMap, PAGE_SIZE, UpdateOperation, UpdateRequest, reserve_size, two_values_and_status,
+};
+use guesthouse_messages::wire::{Malformed, align_up, put_u64};
+use guesthouse_messages::{MessageHeader, Status};
+
+/// From this size an allocation can use 2 MiB pages.
+const LARGE_PAGES_FROM: u64 = 2 << 20;
+
+fn map_answer(address: u64, status: Status, out: &mut Vec<u8>) {
+    two_values_and_status(address, 0, status, out);
+}
+
+impl<B: Backend, M: GuestMemory> Session<B, M> {
+    pub(super) fn map_gpu_addresses(&mut self, message: &[u8], out: &mut Vec<u8>) -> Handled {
+        let request = GuestMap::parse(message)?;
+        let handle = request.allocation;
+        if handle == 0 {
+            map_answer(request.address, Status::SUCCESS, out);
+            return Ok(());
+        }
+        let Some(memory) = self.allocations.get(&handle).and_then(|allocation| allocation.memory) else {
+            map_answer(0, Status::INVALID_PARAMETER, out);
+            return Ok(());
+        };
+        let space = self.space_for(MessageHeader::process_of(message)?)?;
+        let allocation = &self.allocations[&handle];
+        let first = request.first_page * PAGE_SIZE;
+        let length = if request.pages != 0 { request.pages * PAGE_SIZE } else { allocation.size };
+        let needed = first + length;
+        let mut memory = memory;
+        if needed > allocation.size && allocation.guest_address.is_none() && allocation.mappings.is_empty() {
+            // A vendor's size can be too small, and nothing is stored here yet.
+            self.backend.release_memory(memory);
+            let (grown, size) = self.backend.allocate_video_memory(needed)?;
+            let allocation = self.allocations.get_mut(&handle).expect("read above");
+            allocation.memory = Some(grown);
+            allocation.size = size;
+            memory = grown;
+        }
+        if request.address != 0 {
+            // A guest-chosen address, usually in a reserved range: map only the pages it asked for.
+            let chosen = self.map_chosen(request.address, memory, first, length, space, handle);
+            if let Err(error) = chosen {
+                log::warn!("mapping {handle:#x} at {:#x}: {error}", request.address);
+                map_answer(0, Status::UNSUCCESSFUL, out);
+                return Ok(());
+            }
+            let mapping = Mapping { address: request.address, first, length, space };
+            self.allocations.get_mut(&handle).expect("read above").mappings.push(mapping);
+            map_answer(request.address, Status::SUCCESS, out);
+            return Ok(());
+        }
+        let allocation = &self.allocations[&handle];
+        if let Some(mine) = allocation.mappings.iter().find(|mapping| mapping.space == space) {
+            // This takes the mapping to start at the allocation's first byte, which one at a
+            // guest-chosen address may not.
+            map_answer(mine.address + first, Status::SUCCESS, out);
+            return Ok(());
+        }
+        // Mapping is only possible in whole pages of the size in use, and the guest asks for single
+        // small ones. So each allocation is mapped whole, once, and addresses come from inside that.
+        let size = allocation.size;
+        let align = if size >= LARGE_PAGES_FROM { LARGE_ALIGN } else { ALLOCATION_ALIGN };
+        let base = self.gpu_addresses.take(align_up(size, ALLOCATION_ALIGN), align)?;
+        let gpu_cached = allocation.gpu_cached;
+        let map = MapRequest {
+            space,
+            memory,
+            offset: 0,
+            length: size,
+            address: base,
+            small_pages: false,
+            gpu_cached,
+        };
+        if let Err(error) = self.backend.map(&map) {
+            log::warn!("mapping {handle:#x}: {error}");
+            map_answer(0, Status::UNSUCCESSFUL, out);
+            return Ok(());
+        }
+        let mapping = Mapping { address: base, first: 0, length: size, space };
+        self.allocations.get_mut(&handle).expect("read above").mappings.push(mapping);
+        map_answer(base + first, Status::SUCCESS, out);
+        Ok(())
+    }
+
+    pub(super) fn reserve_gpu_addresses(&mut self, message: &[u8], out: &mut Vec<u8>) -> Handled {
+        let size = align_up(reserve_size(message)?, ALLOCATION_ALIGN);
+        let address = self.gpu_addresses.take(size, ALLOCATION_ALIGN)?;
+        put_u64(out, address);
+        put_u64(out, 0);
+        Ok(())
+    }
+
+    /// Maps at an address the guest chose. If it is taken, the guest has finished with what is there:
+    /// drivers manage pools of addresses themselves, and reuse one without saying it is free.
+    fn map_chosen(
+        &mut self,
+        address: u64,
+        memory: MemoryId,
+        offset: u64,
+        length: u64,
+        space: SpaceId,
+        handle: u32,
+    ) -> Result<(), BackendError> {
+        if !GpuAddresses::in_a_range(address) {
+            return Err(BackendError::new("no GPU address range holds this"));
+        }
+        let gpu_cached = self.allocations[&handle].gpu_cached;
+        let map = MapRequest { space, memory, offset, length, address, small_pages: true, gpu_cached };
+        if self.backend.map(&map).is_ok() {
+            return Ok(());
+        }
+        self.clear_gpu_addresses(address, length, space)?;
+        self.backend.map(&map)
+    }
+
+    /// Maps part of an allocation, at an address the guest chose earlier.
+    fn map_piece(
+        &mut self,
+        address: u64,
+        length: u64,
+        handle: u32,
+        offset: u64,
+        space: SpaceId,
+    ) -> Result<(), BackendError> {
+        let allocation = self.allocations.get_mut(&handle).ok_or(UNKNOWN_ALLOCATION)?;
+        let memory = allocation.memory.ok_or(UNKNOWN_ALLOCATION)?;
+        let gpu_cached = allocation.gpu_cached;
+        self.backend.map(&MapRequest {
+            space,
+            memory,
+            offset,
+            length,
+            address,
+            small_pages: true,
+            gpu_cached,
+        })?;
+        allocation.mappings.push(Mapping { address, first: offset, length, space });
+        Ok(())
+    }
+
+    /// Finds a live mapping that overlaps a range, and its allocation.
+    fn overlapping(&self, address: u64, size: u64, space: SpaceId) -> Option<(u32, Mapping)> {
+        self.allocations.iter().find_map(|(&handle, allocation)| {
+            let mut mappings = allocation.mappings.iter();
+            let found = mappings.find(|mapping| mapping.space == space && mapping.overlaps(address, size))?;
+            Some((handle, *found))
+        })
+    }
+
+    /// Unmaps a range. Only whole mappings can be removed, so any part outside is mapped again.
+    fn unmap_gpu_addresses(&mut self, address: u64, size: u64, space: SpaceId) -> Result<(), BackendError> {
+        let end = address + size;
+        while let Some((handle, found)) = self.overlapping(address, size, space) {
+            let allocation = self.allocations.get_mut(&handle).expect("just found");
+            let memory = allocation.memory.ok_or(UNKNOWN_ALLOCATION)?;
+            self.backend.unmap(&UnmapRequest {
+                space,
+                memory,
+                address: found.address,
+                length: found.length,
+            })?;
+            allocation.mappings.retain(|mapping| *mapping != found);
+            if found.address < address {
+                self.map_piece(found.address, address - found.address, handle, found.first, space)?;
+            }
+            let found_end = found.address + found.length;
+            if end < found_end {
+                self.map_piece(end, found_end - end, handle, found.first + end - found.address, space)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Empties a range, including anything still waiting for the GPU before it is unmapped.
+    fn clear_gpu_addresses(&mut self, address: u64, size: u64, space: SpaceId) -> Result<(), BackendError> {
+        self.unmap_gpu_addresses(address, size, space)?;
+        let in_range = |freed: &FreedAllocation| {
+            freed.mappings.iter().any(|mapping| mapping.space == space && mapping.overlaps(address, size))
+        };
+        let (due, kept) = std::mem::take(&mut self.deferred).into_iter().partition(
+            |item| matches!(&item.action, DeferredAction::FreeAllocation(freed) if in_range(freed)),
+        );
+        self.deferred = kept;
+        let due: Vec<crate::deferred::Deferred> = due;
+        due.into_iter().for_each(|item| self.run_deferred_action(item.action));
+        Ok(())
+    }
+
+    /// The mapping holding an address: its allocation and where it is.
+    fn mapping_at(&self, address: u64, space: SpaceId) -> Option<(u32, Mapping)> {
+        self.allocations.iter().find_map(|(&handle, allocation)| {
+            let mut mappings = allocation.mappings.iter();
+            let found = mappings.find(|mapping| mapping.space == space && mapping.contains(address))?;
+            Some((handle, *found))
+        })
+    }
+
+    fn apply_update(&mut self, operation: UpdateOperation, space: SpaceId) -> Result<(), BackendError> {
+        match operation {
+            UpdateOperation::Map { address, size, allocation, offset } => {
+                if let Some((handle, current)) = self.mapping_at(address, space)
+                    && handle == allocation
+                    && current.first + address - current.address == offset
+                    && address + size <= current.address + current.length
+                {
+                    // Already there. Only page attributes could differ, and those stay at the default.
+                    return Ok(());
+                }
+                self.unmap_gpu_addresses(address, size, space)?;
+                self.map_piece(address, size, allocation, offset, space)
+            }
+            UpdateOperation::Unmap { address, size } => self.unmap_gpu_addresses(address, size, space),
+            UpdateOperation::Copy { source, size, destination } => {
+                self.unmap_gpu_addresses(destination, size, space)?;
+                let mut done = 0;
+                while done < size {
+                    let Some((handle, found)) = self.mapping_at(source + done, space) else {
+                        done += PAGE_SIZE;
+                        continue;
+                    };
+                    let piece = (size - done).min(found.address + found.length - source - done);
+                    let offset = found.first + source + done - found.address;
+                    self.map_piece(destination + done, piece, handle, offset, space)?;
+                    done += piece;
+                }
+                Ok(())
+            }
+            UpdateOperation::Unknown(kind) => {
+                log::warn!("unknown address update {kind}");
+                Ok(())
+            }
+        }
+    }
+
+    fn apply_updates(&mut self, operations: &[u8], space: SpaceId) -> Result<(), super::Failure> {
+        for operation in operations.chunks(UpdateRequest::OPERATION_SIZE) {
+            self.apply_update(UpdateOperation::parse(operation)?, space)?;
+        }
+        Ok(())
+    }
+
+    /// Runs an update that waited, and raises its fence for the next.
+    pub(crate) fn finish_update(&mut self, operations: &[u8], space: SpaceId, fence: u32, value: u64) {
+        if let Err(failure) = self.apply_updates(operations, space) {
+            log::warn!("a waiting address update failed: {failure}");
+            return;
+        }
+        self.write_fence(fence, value + 1);
+    }
+
+    /// Updates on a fence run in turn, each raising it for the next. The guest's driver has the queue
+    /// wait for that, so nothing needs holding back here.
+    pub(super) fn update_gpu_addresses(&mut self, message: &[u8], out: &mut Vec<u8>) -> Handled {
+        let request = UpdateRequest::parse(message)?;
+        let space = self.space_for(MessageHeader::process_of(message)?)?;
+        let (fence, value) = (request.fence, request.fence_value);
+        if self.fence_reached(fence, value) {
+            self.apply_updates(request.raw_operations(), space)?;
+            if !request.is_complete() {
+                return Err(Malformed.into());
+            }
+            self.write_fence(fence, value + 1);
+        } else {
+            let operations = request.raw_operations().to_vec();
+            self.pending.push(Pending::Update { fence, value, space, operations });
+        }
+        answer_status(Status::SUCCESS, out);
+        Ok(())
+    }
+
+    /// A GPU address for a whole allocation in the daemon's own space, for its copies.
+    pub(crate) fn surface_address(&mut self, handle: u32) -> Result<u64, BackendError> {
+        let space = self.own_space()?;
+        let allocation = self.allocations.get(&handle).ok_or(UNKNOWN_ALLOCATION)?;
+        if let Some(mapping) = allocation.mappings.iter().find(|mapping| mapping.space == space) {
+            return Ok(mapping.address - mapping.first);
+        }
+        let (size, memory) = (allocation.size, allocation.memory.ok_or(UNKNOWN_ALLOCATION)?);
+        let address = self.gpu_addresses.take(align_up(size, ALLOCATION_ALIGN), ALLOCATION_ALIGN)?;
+        self.backend.map(&MapRequest {
+            space,
+            memory,
+            offset: 0,
+            length: size,
+            address,
+            small_pages: true,
+            gpu_cached: false,
+        })?;
+        let mapping = Mapping { address, first: 0, length: size, space };
+        self.allocations.get_mut(&handle).expect("read above").mappings.push(mapping);
+        Ok(address)
+    }
+}
+
+const UNKNOWN_ALLOCATION: BackendError = BackendError(std::borrow::Cow::Borrowed("no such allocation"));
