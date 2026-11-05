@@ -51,6 +51,12 @@ Once work reaches the card it runs at full speed. Getting it there is what costs
 
 **How fast is a real program?** Superposition at 1080p Extreme in Direct3D 11 scores **20,912**, averaging 156 fps with a minimum of 98. That's with no viewer open. The lowest 5090 I could find on Unigine's leaderboard is around 31,000, so call it two thirds of what the card can do. Something is still eating the rest, and I don't know what yet.
 
+![Superposition's result in the VM: 20,912 at 1080p Extreme](docs/images/superposition-result.jpg)
+
+![Superposition running in the VM](docs/images/superposition-running.jpg)
+
+*Dumps of the guest's real screen, shrunk for this page. The running shot is from an earlier run at the same settings. It says "GPU: NVIDIA" because the launcher can't read the card's name yet, and its RAM line is wrong: the VM had 16 GB.*
+
 A heavy Godot test scene at 1280x720 does about 690 fps natively. In the VM it's about 196 on Vulkan and 158–186 on Direct3D 12. GPU time per frame is the same as native, about 1.2 ms, so that gap isn't the GPU either.
 
 **Is the picture right?** I don't judge that by eye. These tests compare exact values, and the Vulkan and OpenGL ones check the final screen pixel by pixel:
