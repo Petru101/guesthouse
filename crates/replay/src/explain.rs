@@ -18,7 +18,7 @@ pub fn first_difference(expected: &[u8], actual: &[u8]) -> Option<usize> {
 }
 
 fn looks_like_handle(value: u32) -> bool {
-    (FIRST_HANDLE..LAST_HANDLE).contains(&value) && value % HANDLE_STEP == 0
+    (FIRST_HANDLE..LAST_HANDLE).contains(&value) && value.is_multiple_of(HANDLE_STEP)
 }
 
 /// The field a reply offset is in, where it is worth naming.

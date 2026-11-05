@@ -62,7 +62,7 @@ impl SharedMemory {
     fn word(&self, address: u64) -> &AtomicU64 {
         let offset = address - WINDOW_BASE;
         assert!(
-            offset + 8 <= self.window_size && offset % 8 == 0,
+            offset + 8 <= self.window_size && offset.is_multiple_of(8),
             "{address:#x} is not a word in the window"
         );
         // SAFETY: the assert keeps it inside the mapping and aligned, and the mapping outlives &self.

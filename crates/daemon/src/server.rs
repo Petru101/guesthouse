@@ -89,12 +89,12 @@ impl<B: Backend, M: GuestMemory> Server<B, M> {
     pub fn step(&mut self, timeout: Option<Duration>) -> io::Result<()> {
         // Each port has two places, its listener and its connection. Poll skips a negative descriptor.
         let mut descriptors = [readable(NO_DESCRIPTOR); 2 * Channel::ALL.len()];
-        for (port, pair) in self.ports.iter().zip(descriptors.chunks_exact_mut(2)) {
+        for (port, pair) in self.ports.iter().zip(descriptors.as_chunks_mut::<2>().0) {
             pair[0].fd = port.listener.as_raw_fd();
             pair[1].fd = port.connection.as_ref().map_or(NO_DESCRIPTOR, |open| open.stream.as_raw_fd());
         }
         wait(&mut descriptors, timeout)?;
-        for (index, pair) in descriptors.chunks_exact(2).enumerate() {
+        for (index, pair) in descriptors.as_chunks::<2>().0.iter().enumerate() {
             if pair[1].revents != 0 {
                 self.read_channel(index);
             }

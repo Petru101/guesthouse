@@ -28,7 +28,7 @@ impl GpaRanges<'_> {
     }
 
     pub fn iter(&self) -> impl Iterator<Item = GpaRange> + '_ {
-        self.raw.chunks_exact(RANGE_SIZE).map(|range| {
+        self.raw.as_chunks::<RANGE_SIZE>().0.iter().map(|range| {
             let (base, length) = range.split_at(RANGE_SIZE / 2);
             GpaRange {
                 base: u64::from_le_bytes(base.try_into().expect("half of a range")),

@@ -140,10 +140,8 @@ pub fn put_utf16_terminated(out: &mut Vec<u8>, text: &str) {
 
 /// Reads UTF-16 up to the first zero, replacing what does not decode.
 pub fn utf16_until_zero(bytes: &[u8]) -> String {
-    let units = bytes
-        .chunks_exact(2)
-        .map(|unit| u16::from_le_bytes([unit[0], unit[1]]))
-        .take_while(|&unit| unit != 0);
+    let units = bytes.as_chunks::<2>().0.iter().map(|unit| u16::from_le_bytes(*unit));
+    let units = units.take_while(|&unit| unit != 0);
     char::decode_utf16(units).map(|unit| unit.unwrap_or(char::REPLACEMENT_CHARACTER)).collect()
 }
 
