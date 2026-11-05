@@ -59,7 +59,7 @@ impl<'a> U32List<'a> {
         self.0.is_empty()
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = u32> + 'a {
+    pub fn iter(&self) -> impl Iterator<Item = u32> + Clone + 'a {
         self.0.chunks_exact(4).map(|word| u32::from_le_bytes(word.try_into().expect("four bytes")))
     }
 }
@@ -81,7 +81,7 @@ impl<'a> U64List<'a> {
         self.0.is_empty()
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = u64> + 'a {
+    pub fn iter(&self) -> impl Iterator<Item = u64> + Clone + 'a {
         self.0.chunks_exact(8).map(|word| u64::from_le_bytes(word.try_into().expect("eight bytes")))
     }
 }

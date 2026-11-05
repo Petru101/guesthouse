@@ -1,0 +1,32 @@
+[package]
+name = "guesthouse-daemon"
+description = "One process per VM: the sockets to QEMU, the shared memory, and the session between them."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "guesthouse-daemon"
+path = "src/main.rs"
+
+[features]
+# Answers messages with no GPU behind them, to try the sockets by hand. Never for a real guest.
+stand-in = ["dep:guesthouse-backend-standin"]
+
+[dependencies]
+guesthouse-backend.workspace = true
+guesthouse-backend-standin = { workspace = true, optional = true }
+guesthouse-core.workspace = true
+guesthouse-messages.workspace = true
+guesthouse-transport.workspace = true
+# mmap and ppoll, which the standard library does not offer.
+libc = "0.2"
+# The facade, for the logger in logger.rs to serve.
+log = "0.4"
+
+[dev-dependencies]
+guesthouse-backend-standin.workspace = true
+
+[lints]
+workspace = true

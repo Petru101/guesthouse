@@ -27,12 +27,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "guesthouse-daemon"
+version = "0.1.0"
+dependencies = [
+ "guesthouse-backend",
+ "guesthouse-backend-standin",
+ "guesthouse-core",
+ "guesthouse-messages",
+ "guesthouse-transport",
+ "libc",
+ "log",
+]
+
+[[package]]
 name = "guesthouse-messages"
 version = "0.1.0"
 
 [[package]]
 name = "guesthouse-transport"
 version = "0.1.0"
+
+[[package]]
+name = "libc"
+version = "0.2.191"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "65cd87c9a6d60536580b316ad985726104730a5151c99845f2490428ef91240a"
 
 [[package]]
 name = "log"

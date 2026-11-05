@@ -72,6 +72,11 @@ impl<'a> UpdateRequest<'a> {
         })
     }
 
+    /// Whether the message really holds as many operations as it says.
+    pub fn is_complete(&self) -> bool {
+        self.operations.len() == self.count.saturating_mul(Self::OPERATION_SIZE)
+    }
+
     /// The raw operations, to keep when the update has to wait.
     pub fn raw_operations(&self) -> &'a [u8] {
         self.operations
