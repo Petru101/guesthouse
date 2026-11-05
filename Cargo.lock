@@ -3,6 +3,13 @@
 version = 4
 
 [[package]]
+name = "guesthouse-backend"
+version = "0.1.0"
+dependencies = [
+ "guesthouse-messages",
+]
+
+[[package]]
 name = "guesthouse-messages"
 version = "0.1.0"
 
