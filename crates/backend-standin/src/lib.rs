@@ -190,7 +190,9 @@ impl Backend for StandIn {
 
     fn map(&mut self, request: &MapRequest) -> Result<(), BackendError> {
         assert!(self.live_memory.contains(&request.memory), "mapping memory that does not exist");
-        let space = self.spaces.get_mut(&request.space).expect("mapping in a closed address space");
+        let Some(space) = self.spaces.get_mut(&request.space) else {
+            return Err(BackendError::new("this address space is closed"));
+        };
         if !space.ranges.iter().any(|range| range.contains(request.address)) {
             return Err(BackendError::new("no range holds this address"));
         }
@@ -202,7 +204,9 @@ impl Backend for StandIn {
     }
 
     fn unmap(&mut self, unmap: &UnmapRequest) -> Result<(), BackendError> {
-        let space = self.spaces.get_mut(&unmap.space).expect("unmapping in a closed address space");
+        let Some(space) = self.spaces.get_mut(&unmap.space) else {
+            return Err(BackendError::new("this address space is closed"));
+        };
         match space.mappings.remove(&unmap.address) {
             Some(length) if length == unmap.length => Ok(()),
             _ => Err(BackendError::new("no mapping like this one")),

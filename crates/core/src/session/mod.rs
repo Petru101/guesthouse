@@ -94,6 +94,7 @@ pub struct Session<B, M> {
 
     pub(crate) deferred: Vec<Deferred>,
     pub(crate) pending: Vec<Pending>,
+    pub(crate) pending_spare: Vec<Pending>,
     pub(crate) notices: Vec<Notice>,
 }
 
@@ -128,6 +129,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             queue_failures: 0,
             deferred: Vec::new(),
             pending: Vec::new(),
+            pending_spare: Vec::new(),
             notices: Vec::new(),
         }
     }

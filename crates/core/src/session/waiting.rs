@@ -288,11 +288,15 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
     /// Checks everything that is waiting. Returns true if anything still is, and the caller should
     /// call again soon. `now` decides deadlines, and tests pass their own.
     pub fn poll(&mut self, now: Instant) -> bool {
-        for item in std::mem::take(&mut self.pending) {
+        // The two lists swap places, so polling does not allocate.
+        let spare = std::mem::take(&mut self.pending_spare);
+        let mut items = std::mem::replace(&mut self.pending, spare);
+        for item in items.drain(..) {
             if let Some(item) = self.try_finish(item, now) {
                 self.pending.push(item);
             }
         }
+        self.pending_spare = items;
         !self.pending.is_empty()
     }
 

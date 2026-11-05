@@ -7,10 +7,11 @@ use guesthouse_backend::{
 };
 use guesthouse_backend_standin::StandIn;
 use guesthouse_messages::adapter::AdapterQuery;
+use guesthouse_messages::address::PAGE_SIZE;
 use guesthouse_messages::allocation::{CreateAllocation, CreateAllocationAnswer};
 use guesthouse_messages::queue::CreateHardwareQueue;
 use guesthouse_messages::standard::StandardRecord;
-use guesthouse_messages::wire::{u32_at, u64_at};
+use guesthouse_messages::wire::{align_up, u32_at, u64_at};
 use guesthouse_messages::{Command, MessageHeader};
 use std::collections::VecDeque;
 
@@ -122,8 +123,10 @@ impl Backend for RecordedAnswers {
         self.inner.facts()
     }
 
+    /// Whole pages, as a real driver gives. Only an allocation grown by a map gets here unrounded,
+    /// and the recording does not say what the vendor's driver made of that.
     fn allocate_video_memory(&mut self, size: u64) -> Result<(MemoryId, u64), BackendError> {
-        self.inner.allocate_video_memory(size)
+        self.inner.allocate_video_memory(align_up(size, PAGE_SIZE))
     }
 
     fn adopt_host_pages(&mut self, host_address: u64, size: u64) -> Result<MemoryId, BackendError> {

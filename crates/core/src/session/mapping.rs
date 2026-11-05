@@ -285,8 +285,10 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         if let Some(mapping) = allocation.mappings.iter().find(|mapping| mapping.space == space) {
             return Ok(mapping.address - mapping.first);
         }
-        let (size, memory) = (allocation.size, allocation.memory.ok_or(UNKNOWN_ALLOCATION)?);
+        let (size, memory) = (allocation.size, allocation.memory);
         let address = self.gpu_addresses.take(align_up(size, ALLOCATION_ALIGN), ALLOCATION_ALIGN)?;
+        // Checked after taking addresses, so a guest-backed surface with no pages yet uses some up.
+        let memory = memory.ok_or(UNKNOWN_ALLOCATION)?;
         self.backend.map(&MapRequest {
             space,
             memory,

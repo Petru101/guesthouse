@@ -39,8 +39,10 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
 
     /// Frees an address space, and anything still running or mapped there.
     pub(crate) fn close_space(&mut self, space: SpaceId) {
-        let owned: Vec<u32> =
+        let mut owned: Vec<u32> =
             self.queues.iter().filter(|(_, queue)| queue.space == space).map(|(&handle, _)| handle).collect();
+        // Oldest first, as each gives back a fence and the order decides who gets which one next.
+        owned.sort_unstable();
         owned.into_iter().for_each(|queue| self.close_queue(queue));
         for allocation in self.allocations.values_mut() {
             let Some(memory) = allocation.memory else { continue };
