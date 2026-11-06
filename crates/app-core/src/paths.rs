@@ -78,6 +78,7 @@ pub struct Paths {
     guest: PathBuf,
     /// The sources of a Linux guest. See [`shipped_folder`].
     linux: PathBuf,
+    pub home: PathBuf,
     /// The program folder: QEMU and the guest's files. It isn't in this repo, and the app runs plain
     /// VMs without it.
     pub program: PathBuf,
@@ -140,6 +141,7 @@ impl Paths {
         Self {
             guest: shipped_folder(&program, running_from, PROGRAM_MARK, REPO_GUEST_MARK),
             linux: shipped_folder(&program, running_from, SOURCES_FOLDER, SOURCES_MARK),
+            home: variables.home(),
             qemu: variables.folder(QEMU_VARIABLE).unwrap_or_else(|| qemu_program(variables, &program)),
             binaries: running_from.map_or_else(|| program.clone(), Path::to_owned),
             store,

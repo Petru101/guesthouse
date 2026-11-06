@@ -5,6 +5,7 @@ use crate::common::choose_folder;
 use crate::rows::row_button;
 use adw::prelude::*;
 use guesthouse_app_core::machine::Kind;
+use guesthouse_app_core::start_checks::share_problem;
 use guesthouse_app_core::tasks::{State, Status};
 use std::cell::Cell;
 use std::rc::Rc;
@@ -87,6 +88,10 @@ impl Sharing {
     }
 
     fn set_folder(&self, path: String) {
+        if let Some(problem) = share_problem(&self.0.shared.window.context(), &path) {
+            self.0.shared.window.problem(&problem);
+            return;
+        }
         self.0.shared.machine.borrow_mut().share = path;
         self.0.shared.save();
         self.show_folder();

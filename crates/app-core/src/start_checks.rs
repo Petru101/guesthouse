@@ -13,7 +13,9 @@ use crate::slots;
 use crate::tasks::no_slot_text;
 use std::path::Path;
 
-pub const ALREADY_RUNNING: &str = "This machine is running.";
+pub const SHARE_REFUSAL: &str = "This folder can't be shared. Choose a folder inside your home that isn't hidden, and \
+                             isn't one Guesthouse keeps its own files in.";
+const ALREADY_RUNNING: &str = "This machine is running.";
 pub const MEMORY_TAKEN: &str =
     "Another VM on this PC has just taken this slot's shared memory. Start the machine again.";
 pub const SECOND_INSTANCE_REFUSAL: &str = "A second instance leaves GPU-PV alone.";
@@ -92,6 +94,21 @@ pub fn video_cap(machine: &Machine, others: &[Machine], max_vram_gib: u32) -> u3
     }
 }
 
+/// Why this folder can't be shared. A guest can write to what it's given, so it can't be given the
+/// user's home as a whole, the hidden folders in it, or what this app runs from.
+pub fn share_problem(context: &Context, folder: &str) -> Option<String> {
+    let folder = Path::new(folder).canonicalize().ok()?;
+    let paths = &context.paths;
+    let canonical = |path: &Path| path.canonicalize().unwrap_or_else(|_| path.to_owned());
+    let home = canonical(&paths.home);
+    let ours = [&paths.store, &paths.config, &paths.state].map(|path| canonical(path));
+    let holds_ours = ours.iter().any(|path| path.starts_with(&folder) || folder.starts_with(path));
+    let hidden = folder.strip_prefix(&home).is_ok_and(|inside| {
+        inside.components().next().is_some_and(|first| first.as_os_str().to_string_lossy().starts_with('.'))
+    });
+    (folder == home || home.starts_with(&folder) || holds_ours || hidden).then(|| SHARE_REFUSAL.to_owned())
+}
+
 /// Says why this machine can't start on this host now.
 pub fn start_problems(context: &Context, machine: &Machine) -> Result<Vec<String>> {
     let mut found = machine.problems(max_vram_gib(context));
@@ -106,6 +123,7 @@ pub fn start_problems(context: &Context, machine: &Machine) -> Result<Vec<String
     if !machine.share.is_empty() && !Path::new(&machine.share).is_dir() {
         found.push(format!("{} is missing. Choose another shared folder in the settings.", machine.share));
     }
+    found.extend(share_problem(context, &machine.share));
     if machine.kind == Kind::Windows && !gpu_ready(context) {
         found.push(NO_GPU_YET.to_owned());
     }
@@ -165,6 +183,40 @@ mod tests {
 
     fn says(found: &[String], text: &str) -> bool {
         found.iter().any(|problem| problem.contains(text))
+    }
+
+    #[test]
+    fn the_home_folder_and_whats_above_it_cant_be_shared() {
+        let scratch = Scratch::new();
+        let mut context = scratch_context(&scratch);
+        context.paths.home = scratch.path("home");
+        fs::create_dir_all(&context.paths.home).unwrap();
+        let home = context.paths.home.display().to_string();
+        assert!(share_problem(&context, &home).is_some());
+        assert!(share_problem(&context, &scratch.path("").display().to_string()).is_some());
+    }
+
+    #[test]
+    fn hidden_folders_and_the_apps_own_cant_be_shared() {
+        let scratch = Scratch::new();
+        let mut context = scratch_context(&scratch);
+        context.paths.home = scratch.path("home");
+        let hidden = scratch.path("home/.config/autostart");
+        fs::create_dir_all(&hidden).unwrap();
+        fs::create_dir_all(context.paths.machines.join("one")).unwrap();
+        assert!(share_problem(&context, &hidden.display().to_string()).is_some());
+        let machine = context.paths.machines.join("one").display().to_string();
+        assert!(share_problem(&context, &machine).is_some());
+    }
+
+    #[test]
+    fn a_folder_of_its_own_can_be_shared() {
+        let scratch = Scratch::new();
+        let mut context = scratch_context(&scratch);
+        context.paths.home = scratch.path("home");
+        let documents = scratch.path("home/Documents/For the guest");
+        fs::create_dir_all(&documents).unwrap();
+        assert_eq!(share_problem(&context, &documents.display().to_string()), None);
     }
 
     #[test]
