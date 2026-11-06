@@ -1280,6 +1280,24 @@ mod queues {
     }
 
     #[test]
+    fn engines_get_a_mutex_in_the_order_they_asked() {
+        let mut session = session();
+        session.backend_mut().run_work = true;
+        let contexts = [6, 7, 8].map(|node| create_context(&mut session, node));
+        let queues = contexts.map(|context| create_queue(&mut session, context).0);
+        let mutex = create_mutex(&mut session);
+        contexts.iter().for_each(|&context| gpu_wait(&mut session, context, mutex, 0));
+        queues.iter().for_each(|&queue| submit(&mut session, queue, 1));
+        assert_eq!(session.backend().doorbells, [(queues[0], 1)]);
+        signal_mutex(&mut session, mutex);
+        let _ = session.poll(Instant::now());
+        assert_eq!(session.backend().doorbells, [(queues[0], 1), (queues[1], 1)]);
+        signal_mutex(&mut session, mutex);
+        let _ = session.poll(Instant::now());
+        assert_eq!(session.backend().doorbells.last(), Some(&(queues[2], 1)));
+    }
+
+    #[test]
     fn a_held_mutex_is_given_up_on_at_the_gates_time_limit() {
         let mut session = session();
         session.backend_mut().run_work = true;

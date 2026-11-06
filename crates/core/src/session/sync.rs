@@ -147,7 +147,10 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
 
     pub(crate) fn fence_reached(&self, handle: u32, value: u64) -> bool {
         let fence = match self.sync_objects.get(self.resolve_shared(handle)) {
-            Some(SyncObject { tokens: Some(tokens), .. }) => return tokens.free > 0,
+            Some(SyncObject { tokens: Some(tokens), .. }) => {
+                return tokens.free > 0
+                    && self.sync_objects.next_in_line(self.resolve_shared(handle)).is_none();
+            }
             Some(object) => object.fence,
             None => self.queue_progress.get(&handle).copied().unwrap_or(0),
         };
@@ -157,10 +160,38 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
     /// Takes what a finished wait holds, for those objects that are held. A wait for any one of them
     /// takes only the one that let it through.
     pub(crate) fn take_tokens(&mut self, signals: &[(u32, u64)], wake_on_any: bool) {
-        let reached = signals.iter().filter(|&&(handle, value)| self.fence_reached(handle, value));
-        let reached: Vec<u32> = reached.map(|&(handle, _)| self.resolve_shared(handle)).collect();
-        let taken = if wake_on_any { &reached[..reached.len().min(1)] } else { &reached };
+        let free = |handle: &u32| {
+            let object = self.sync_objects.get(*handle);
+            object.is_some_and(|object| object.tokens.is_some_and(|tokens| tokens.free > 0))
+        };
+        let handles = signals.iter().map(|&(handle, _)| self.resolve_shared(handle));
+        let free: Vec<u32> = handles.filter(free).collect();
+        let taken = if wake_on_any { &free[..free.len().min(1)] } else { &free };
         taken.iter().for_each(|&handle| self.sync_objects.take_token(handle));
+    }
+
+    /// Puts a gate's wait in line for each object that has tokens.
+    pub(crate) fn join_lines(&mut self, signals: &[(u32, u64)], wait: u64) {
+        for &(handle, _) in signals {
+            self.sync_objects.join_line(self.resolve_shared(handle), wait);
+        }
+    }
+
+    pub(crate) fn leave_lines(&mut self, signals: &[(u32, u64)], wait: u64) {
+        for &(handle, _) in signals {
+            self.sync_objects.leave_line(self.resolve_shared(handle), wait);
+        }
+    }
+
+    /// Whether a wait that's in line can go: it's first for everything held, and fences have moved.
+    pub(crate) fn wait_can_go(&self, signals: &[(u32, u64)], wait: u64) -> bool {
+        signals.iter().all(|&(handle, value)| {
+            let handle = self.resolve_shared(handle);
+            match self.sync_objects.get(handle).and_then(|object| object.tokens) {
+                Some(tokens) => tokens.free > 0 && self.sync_objects.next_in_line(handle) == Some(wait),
+                None => self.fence_reached(handle, value),
+            }
+        })
     }
 
     pub(super) fn signal_fence(&mut self, message: &[u8], out: &mut Vec<u8>) -> Handled {

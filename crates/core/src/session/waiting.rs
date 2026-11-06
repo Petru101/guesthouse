@@ -257,12 +257,17 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         let queues = self.context_queues.get(&handle).cloned().unwrap_or_else(|| vec![handle]);
         let deadline = Instant::now() + GATE_TIMEOUT;
         for queue in queues {
-            if let Some(gate) = self.gates.get_mut(&queue) {
-                gate.push_back(GateStep::Wait { signals: signals.clone(), deadline });
-            } else if self.signals_finished(&signals, false) {
+            if !self.gates.contains_key(&queue) && self.signals_finished(&signals, false) {
                 self.take_tokens(&signals, false);
+                continue;
+            }
+            let id = self.next_wait;
+            self.next_wait += 1;
+            self.join_lines(&signals, id);
+            let step = GateStep::Wait { signals: signals.clone(), deadline, id };
+            if let Some(gate) = self.gates.get_mut(&queue) {
+                gate.push_back(step);
             } else {
-                let step = GateStep::Wait { signals: signals.clone(), deadline };
                 self.gates.insert(queue, VecDeque::from([step]));
                 self.pending.push(Pending::Gate { queue });
             }
@@ -275,13 +280,17 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
     fn run_gate(&mut self, queue: u32, now: Instant) -> bool {
         while let Some(step) = self.gates.get_mut(&queue).and_then(VecDeque::pop_front) {
             match step {
-                GateStep::Wait { signals, deadline } => {
-                    if !self.signals_finished(&signals, false) && now < deadline {
-                        let held = GateStep::Wait { signals, deadline };
+                GateStep::Wait { signals, deadline, id } => {
+                    let can_go = self.wait_can_go(&signals, id);
+                    if !can_go && now < deadline {
+                        let held = GateStep::Wait { signals, deadline, id };
                         self.gates.get_mut(&queue).expect("just read").push_front(held);
                         return false;
                     }
-                    self.take_tokens(&signals, false);
+                    self.leave_lines(&signals, id);
+                    if can_go {
+                        self.take_tokens(&signals, false);
+                    }
                 }
                 GateStep::Ring { doorbell, fence, value } => self.ring(queue, doorbell, fence, value),
                 GateStep::Copy { id } => {

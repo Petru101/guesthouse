@@ -3,6 +3,7 @@
 use super::waiting::GpuTook;
 use super::{Failure, Handled, Session, answer_status};
 use crate::deferred::DeferredAction;
+use crate::pending::GateStep;
 use crate::tables::{Queue, ReservedRange};
 use guesthouse_backend::{Backend, CommandBuffer, GuestMemory, SpaceId, UnmapRequest, WorkSource};
 use guesthouse_messages::queue::{CreateContext, CreateHardwareQueue, SubmitToContext, SubmitToQueue};
@@ -149,7 +150,11 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
 
     pub(crate) fn close_queue(&mut self, handle: u32) {
         let closed = self.queues.remove(&handle);
-        self.gates.remove(&handle);
+        for step in self.gates.remove(&handle).unwrap_or_default() {
+            if let GateStep::Wait { signals, id, .. } = step {
+                self.leave_lines(&signals, id);
+            }
+        }
         for queues in self.context_queues.values_mut() {
             queues.retain(|&queue| queue != handle);
         }

@@ -1,6 +1,6 @@
 //! Sync objects. One object can have many handles, and goes away with the last.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 /// What's left of a mutex or semaphore, which engines take and give back.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,6 +26,8 @@ pub struct SyncObject {
 pub struct SyncTable {
     objects: Vec<SyncObject>,
     by_handle: HashMap<u32, usize>,
+    /// Waits in line for each object that has tokens, by the object's place in `objects`.
+    lines: HashMap<usize, VecDeque<u64>>,
 }
 
 impl SyncTable {
@@ -43,6 +45,27 @@ impl SyncTable {
         if let Some(&index) = self.by_handle.get(&handle) {
             self.objects[index].tokens = Some(Tokens { free, most });
         }
+    }
+
+    /// Puts a wait in line. The guest's engines take a mutex in the order they asked for it: a copy
+    /// is queued first and then the encoder that reads what it wrote, and the other way round the
+    /// encoder gets an old picture.
+    pub fn join_line(&mut self, handle: u32, wait: u64) {
+        if let Some(&index) = self.by_handle.get(&handle) {
+            self.lines.entry(index).or_default().push_back(wait);
+        }
+    }
+
+    pub fn leave_line(&mut self, handle: u32, wait: u64) {
+        if let Some(line) = self.by_handle.get(&handle).and_then(|index| self.lines.get_mut(index)) {
+            line.retain(|&waiting| waiting != wait);
+        }
+    }
+
+    /// Who is next for this object, if anyone is waiting.
+    pub fn next_in_line(&self, handle: u32) -> Option<u64> {
+        let line = self.by_handle.get(&handle).and_then(|index| self.lines.get(index))?;
+        line.front().copied()
     }
 
     /// Takes one token, if this object has them. Only for an object that has one free.
@@ -97,6 +120,21 @@ mod tests {
         assert_eq!(table.get(2).map(|object| object.gpu_address), Some(0x2000));
         assert_eq!(table.close(2).map(|object| object.fence), Some(0x1000));
         assert_eq!(table.get(2), None);
+    }
+
+    #[test]
+    fn a_line_goes_in_order_and_anyone_can_leave_it() {
+        let mut table = SyncTable::new();
+        table.insert(1, 0, 0, None);
+        table.set_tokens(1, 1, 1);
+        assert_eq!(table.next_in_line(1), None);
+        table.join_line(1, 7);
+        table.join_line(1, 8);
+        table.join_line(1, 9);
+        table.leave_line(1, 8);
+        assert_eq!(table.next_in_line(1), Some(7));
+        table.leave_line(1, 7);
+        assert_eq!(table.next_in_line(1), Some(9));
     }
 
     #[test]

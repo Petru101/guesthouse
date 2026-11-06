@@ -126,6 +126,8 @@ pub enum GateStep {
     Wait {
         signals: Vec<Signal>,
         deadline: Instant,
+        /// Its place in the line for objects that are held.
+        id: u64,
     },
     Ring {
         doorbell: u64,
