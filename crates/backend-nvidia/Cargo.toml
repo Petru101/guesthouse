@@ -1,0 +1,28 @@
+[package]
+name = "guesthouse-backend-nvidia"
+description = "The NVIDIA backend: the host's resource manager, channels, and what the guest's driver expects to hear."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[features]
+# The pretend resource manager, for tests in other crates. It never goes near a card.
+fake-rm = []
+
+[dependencies]
+guesthouse-backend.workspace = true
+guesthouse-messages.workspace = true
+# ioctl and mmap, which the standard library does not offer.
+libc = "0.2"
+# The facade, as in the core.
+log = "0.4"
+
+[dev-dependencies]
+guesthouse-backend-nvidia = { path = ".", features = ["fake-rm"] }
+guesthouse-backend-standin.workspace = true
+guesthouse-core.workspace = true
+
+[lints]
+workspace = true
