@@ -144,7 +144,7 @@ I'd rather you hear this from me:
 - **You can't install it.** See above.
 - **It has only ever run on my PC, on an RTX 5090.** A clean clone does set itself up and pass its tests now, but that's still my machine and my card.
 - **Drivers are tied together.** Linux and Windows have to come from the same NVIDIA branch, and a new branch means new work.
-- **CUDA, NVENC and NVDEC don't work in Windows yet.** `nvidia-smi` can't open the card there either, and Task Manager doesn't show the GPU.
+- **CUDA, NVENC and NVDEC don't work in Windows yet.** `nvidia-smi` can't open the card there either, and Task Manager doesn't show the GPU. That holds up Sunshine too. The new display driver keeps a frame channel made for Sunshine Foundation, so it should be able to take frames straight from the driver once NVENC works, but I haven't tried it.
 - **No HDR in the app yet.** It's a must for me. The new display driver isn't in the app, but in tests it gets every frame to the host at up to 4K 240 Hz, in SDR and HDR, with none lost. That's a simple test picture reaching a test client, so a real game and a real viewer still have to prove it.
 - **The viewer drops frames.** With the old viewer, at 144 Hz about 116 frames a second reached it, and about 90 at 4K. I haven't measured the new one yet. It also costs speed: Superposition scored 16,240 with it open.
 - **Several GPU VMs at once is early.** Three Windows VMs have run together on one card with their tests passing and no GPU faults, but that was during my testing, not a proper test of its own. I haven't tried it through the app, and they share the card's speed.
