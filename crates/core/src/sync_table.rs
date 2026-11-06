@@ -2,6 +2,13 @@
 
 use std::collections::HashMap;
 
+/// What's left of a mutex or semaphore, which engines take and give back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Tokens {
+    pub free: u32,
+    pub most: u32,
+}
+
 /// A sync object's state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SyncObject {
@@ -10,6 +17,7 @@ pub struct SyncObject {
     pub gpu_address: u64,
     /// The guest event to wake instead of counting.
     pub event: Option<u64>,
+    pub tokens: Option<Tokens>,
     references: u32,
 }
 
@@ -26,8 +34,31 @@ impl SyncTable {
     }
 
     pub fn insert(&mut self, handle: u32, fence: u64, gpu_address: u64, event: Option<u64>) {
-        self.objects.push(SyncObject { fence, gpu_address, event, references: 1 });
+        self.objects.push(SyncObject { fence, gpu_address, event, tokens: None, references: 1 });
         self.by_handle.insert(handle, self.objects.len() - 1);
+    }
+
+    /// Makes `handle`, which was just inserted, an object that's held and given back.
+    pub fn set_tokens(&mut self, handle: u32, free: u32, most: u32) {
+        if let Some(&index) = self.by_handle.get(&handle) {
+            self.objects[index].tokens = Some(Tokens { free, most });
+        }
+    }
+
+    /// Takes one token, if this object has them. Only for an object that has one free.
+    pub fn take_token(&mut self, handle: u32) {
+        let index = self.by_handle.get(&handle).copied();
+        if let Some(tokens) = index.and_then(|index| self.objects[index].tokens.as_mut()) {
+            tokens.free = tokens.free.saturating_sub(1);
+        }
+    }
+
+    /// Gives one token back. A signal with nothing held changes nothing.
+    pub fn give_token(&mut self, handle: u32) {
+        let index = self.by_handle.get(&handle).copied();
+        if let Some(tokens) = index.and_then(|index| self.objects[index].tokens.as_mut()) {
+            tokens.free = tokens.free.saturating_add(1).min(tokens.most);
+        }
     }
 
     pub fn get(&self, handle: u32) -> Option<&SyncObject> {
@@ -66,6 +97,19 @@ mod tests {
         assert_eq!(table.get(2).map(|object| object.gpu_address), Some(0x2000));
         assert_eq!(table.close(2).map(|object| object.fence), Some(0x1000));
         assert_eq!(table.get(2), None);
+    }
+
+    #[test]
+    fn tokens_are_shared_by_every_handle_and_stop_at_the_most() {
+        let mut table = SyncTable::new();
+        table.insert(1, 0, 0, None);
+        table.set_tokens(1, 1, 1);
+        table.open(1, 2);
+        table.take_token(2);
+        assert_eq!(table.get(1).unwrap().tokens, Some(Tokens { free: 0, most: 1 }));
+        table.give_token(1);
+        table.give_token(1);
+        assert_eq!(table.get(2).unwrap().tokens, Some(Tokens { free: 1, most: 1 }));
     }
 
     #[test]

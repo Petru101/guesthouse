@@ -1223,6 +1223,68 @@ mod queues {
         assert!(session.gates.is_empty());
     }
 
+    /// A mutex that starts free. Returns its handle.
+    fn create_mutex(session: &mut TestSession) -> u32 {
+        let mut request = message(Command::CreateSyncObject, 0x30);
+        set_u32(&mut request, 0x20, guesthouse_messages::sync::KIND_MUTEX);
+        set_u64(&mut request, 0x28, 1);
+        u32_at(&send(session, &request), 0).unwrap()
+    }
+
+    fn signal_mutex(session: &mut TestSession, mutex: u32) {
+        let mut request = message(Command::SignalSyncObject, 0x38);
+        set_u32(&mut request, 0x18, 1);
+        request.extend_from_slice(&mutex.to_le_bytes());
+        assert_eq!(status_of(&send(session, &request)), SUCCESS);
+    }
+
+    #[test]
+    fn a_mutex_lets_one_context_through_until_it_is_signalled() {
+        let mut session = session();
+        session.backend_mut().run_work = true;
+        let (first, second) = (create_context(&mut session, 6), create_context(&mut session, 7));
+        let (first_queue, _, _) = create_queue(&mut session, first);
+        let (second_queue, _, _) = create_queue(&mut session, second);
+        let mutex = create_mutex(&mut session);
+        gpu_wait(&mut session, first, mutex, 0);
+        gpu_wait(&mut session, second, mutex, 0);
+        submit(&mut session, first_queue, 1);
+        submit(&mut session, second_queue, 1);
+        assert_eq!(session.backend().doorbells, [(first_queue, 1)], "the second is held");
+        signal_mutex(&mut session, mutex);
+        let _ = session.poll(Instant::now());
+        assert_eq!(session.backend().doorbells, [(first_queue, 1), (second_queue, 1)]);
+    }
+
+    #[test]
+    fn a_held_mutex_is_given_up_on_at_the_gates_time_limit() {
+        let mut session = session();
+        session.backend_mut().run_work = true;
+        let context = create_context(&mut session, 6);
+        let (queue, _, _) = create_queue(&mut session, context);
+        let mutex = create_mutex(&mut session);
+        gpu_wait(&mut session, context, mutex, 0);
+        gpu_wait(&mut session, context, mutex, 0);
+        submit(&mut session, queue, 1);
+        assert!(session.backend().doorbells.is_empty());
+        let _ = session.poll(Instant::now() + crate::pending::GATE_TIMEOUT + Duration::from_secs(1));
+        assert_eq!(session.backend().doorbells, [(queue, 1)]);
+    }
+
+    #[test]
+    fn a_wait_on_a_context_with_no_queue_yet_still_holds_its_first_work() {
+        let mut session = session();
+        session.backend_mut().run_work = true;
+        let context = create_context(&mut session, 6);
+        let (sync, _, fence) = create_fence(&mut session, 0);
+        gpu_wait(&mut session, context, sync, 4);
+        assert_eq!(session.context_queues[&context].len(), 1);
+        assert!(session.gates.contains_key(&session.context_queues[&context][0]));
+        session.memory_mut().write_u64(fence, 4).unwrap();
+        let _ = session.poll(Instant::now());
+        assert!(session.gates.is_empty());
+    }
+
     #[test]
     fn a_wait_already_reached_shuts_no_gate() {
         let mut session = session();

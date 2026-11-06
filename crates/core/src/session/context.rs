@@ -1,7 +1,7 @@
 //! Handlers for processes, contexts, queues and work.
 
 use super::waiting::GpuTook;
-use super::{Handled, Session, answer_status};
+use super::{Failure, Handled, Session, answer_status};
 use crate::deferred::DeferredAction;
 use crate::tables::{Queue, ReservedRange};
 use guesthouse_backend::{Backend, CommandBuffer, GuestMemory, SpaceId, UnmapRequest, WorkSource};
@@ -101,6 +101,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             return Ok(());
         }
         let handle = self.handles.take();
+        log::debug!("context {handle:#x} on node {}, hint {:#x}", request.node, request.client_hint);
         self.context_nodes.insert(handle, request.node);
         self.context_hints.insert(handle, request.client_hint);
         let answer_at = out.len();
@@ -181,17 +182,20 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
     }
 
     /// A context that has no queue gets one here, so what waits for it can treat it like any other.
-    pub(super) fn submit_to_context(&mut self, message: &[u8], out: &mut Vec<u8>) -> Handled {
-        let request = SubmitToContext::parse(message)?;
-        if self.context_queues.get(&request.context).is_none_or(Vec::is_empty) {
+    pub(super) fn queue_of_context(&mut self, context: u32, message: &[u8]) -> Result<u32, Failure> {
+        if self.context_queues.get(&context).is_none_or(Vec::is_empty) {
             let handle = self.handles.take();
             let (fence, fence_gpu_address) = self.take_fence()?;
             let space = self.space_for(MessageHeader::process_of(message)?)?;
-            let context = request.context;
             self.queues.insert(handle, Queue::new(fence, fence_gpu_address, space, context));
             self.context_queues.entry(context).or_default().push(handle);
         }
-        let queue = self.context_queues[&request.context][0];
+        Ok(self.context_queues[&context][0])
+    }
+
+    pub(super) fn submit_to_context(&mut self, message: &[u8], out: &mut Vec<u8>) -> Handled {
+        let request = SubmitToContext::parse(message)?;
+        let queue = self.queue_of_context(request.context, message)?;
         let record = self.queues.get(&queue).ok_or(Malformed)?;
         let (fence, value) = (record.fence, record.last_fence.unwrap_or(0).saturating_add(1));
         match self.start_on_gpu(queue, WorkSource::Context, request.private, CommandBuffer::default(), value)

@@ -233,6 +233,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         let release = u64::from(request.release_event);
         let signals: Vec<Signal> = request.objects.iter().zip(request.values.iter()).collect();
         if self.signals_finished(&signals, request.wake_on_any) {
+            self.take_tokens(&signals);
             self.notices.push(Notice::WakeEvent { event: request.event, release });
         } else {
             let (wake_on_any, event) = (request.wake_on_any, request.event);
@@ -247,12 +248,17 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         let request = WaitOnGpu::parse(message)?;
         let signals: Vec<Signal> = request.objects.iter().zip(request.values.iter()).collect();
         let handle = request.queue_or_context;
+        if self.context_nodes.contains_key(&handle) {
+            self.queue_of_context(handle, message)?;
+        }
         let queues = self.context_queues.get(&handle).cloned().unwrap_or_else(|| vec![handle]);
         let deadline = Instant::now() + GATE_TIMEOUT;
         for queue in queues {
             if let Some(gate) = self.gates.get_mut(&queue) {
                 gate.push_back(GateStep::Wait { signals: signals.clone(), deadline });
-            } else if !self.signals_finished(&signals, false) {
+            } else if self.signals_finished(&signals, false) {
+                self.take_tokens(&signals);
+            } else {
                 let step = GateStep::Wait { signals: signals.clone(), deadline };
                 self.gates.insert(queue, VecDeque::from([step]));
                 self.pending.push(Pending::Gate { queue });
@@ -272,6 +278,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
                         self.gates.get_mut(&queue).expect("just read").push_front(held);
                         return false;
                     }
+                    self.take_tokens(&signals);
                 }
                 GateStep::Ring { doorbell, fence, value } => self.ring(queue, doorbell, fence, value),
                 GateStep::Copy { id } => {
@@ -400,6 +407,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             }
             Pending::CpuWait { signals, wake_on_any, event, release } => {
                 if self.signals_finished(&signals, wake_on_any) {
+                    self.take_tokens(&signals);
                     self.notices.push(Notice::WakeEvent { event, release });
                     None
                 } else {

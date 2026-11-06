@@ -3,6 +3,7 @@
 use super::{Handled, Session, answer_status};
 use crate::deferred::DeferredAction;
 use crate::fences::{FENCE_PAGE, Fence, FenceBlock};
+use crate::sync_table::SyncObject;
 use guesthouse_backend::{Backend, BackendError, GuestMemory};
 use guesthouse_messages::Status;
 use guesthouse_messages::notice::Notice;
@@ -77,6 +78,9 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             None
         };
         self.sync_objects.insert(handle, fence, gpu_address, event);
+        if let Some((free, most)) = request.tokens() {
+            self.sync_objects.set_tokens(handle, free, most);
+        }
         if monitored {
             // Some swapchains start their fences above zero, and wait for that before any signal.
             self.memory.write_u64(fence, request.initial.ok_or(Malformed)?)?;
@@ -125,12 +129,16 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         self.shared_objects.get(&handle).copied().unwrap_or(handle)
     }
 
-    /// Raises a fence, or wakes a notification's event. Fences never go backwards.
+    /// Raises a fence, wakes a notification's event, or gives back what a wait took. Fences never go
+    /// backwards.
     pub(crate) fn write_fence(&mut self, handle: u32, value: u64) {
-        let Some(&object) = self.sync_objects.get(self.resolve_shared(handle)) else {
+        let handle = self.resolve_shared(handle);
+        let Some(&object) = self.sync_objects.get(handle) else {
             return;
         };
-        if let Some(event) = object.event {
+        if object.tokens.is_some() {
+            self.sync_objects.give_token(handle);
+        } else if let Some(event) = object.event {
             self.notices.push(Notice::WakeEvent { event, release: 0 });
         } else if object.fence != 0 && value > self.fence_value(object.fence) {
             self.store_fence(object.fence, value);
@@ -139,10 +147,18 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
 
     pub(crate) fn fence_reached(&self, handle: u32, value: u64) -> bool {
         let fence = match self.sync_objects.get(self.resolve_shared(handle)) {
+            Some(SyncObject { tokens: Some(tokens), .. }) => return tokens.free > 0,
             Some(object) => object.fence,
             None => self.queue_progress.get(&handle).copied().unwrap_or(0),
         };
         fence == 0 || self.fence_value(fence) >= value
+    }
+
+    /// Takes what a finished wait holds, for those objects that are held.
+    pub(crate) fn take_tokens(&mut self, signals: &[(u32, u64)]) {
+        for &(handle, _) in signals {
+            self.sync_objects.take_token(self.resolve_shared(handle));
+        }
     }
 
     pub(super) fn signal_fence(&mut self, message: &[u8], out: &mut Vec<u8>) -> Handled {
