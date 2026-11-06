@@ -1,0 +1,10 @@
+#!/bin/sh
+# Stands in for dnf, apt-get, pacman, zypper and usermod. Installing means the libraries are then found.
+printf '%s %s\n' "${0##*/}" "$*" >>"$STAND_IN_LOG"
+[ "$*" != update ] || exit 0
+touch "$STAND_IN_LOG.installed"
+printf '{"targets": [{"architecture": "x86_64"}]}' >"$FAKE_FIRMWARE/x.json"
+for tool in qemu-img 7z genisoimage swtpm isoinfo openssl ssh-keygen; do
+    printf '#!/bin/sh\n' >"${0%/*}/$tool"
+    chmod +x "${0%/*}/$tool"
+done
