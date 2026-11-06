@@ -111,7 +111,7 @@ fn gpu_boot(task: &mut Task) -> Result<UbuntuBoot> {
     let context = task.context;
     let reason_file = task.run_file(REASON_FILE);
     let refused = |task: &mut Task, reason: String| -> Result<UbuntuBoot> {
-        fs::create_dir_all(task.context.run_folder(None))?;
+        task.context.make_run_folder(None)?;
         fs::write(&reason_file, format!("{reason}\n"))?;
         Ok(UbuntuBoot::NoGpu { reason_file: reason_file.clone() })
     };

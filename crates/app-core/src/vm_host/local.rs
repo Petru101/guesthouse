@@ -195,7 +195,7 @@ impl LocalHost<'_> {
 
 impl VmHost for LocalHost<'_> {
     fn start(&self, plan: &VmPlan, machine: &Machine) -> Result<()> {
-        fs::create_dir_all(&plan.run_folder)?;
+        self.context.make_run_folder(Some(plan.slot))?;
         if !plan.is_gpu() {
             return self.start_plain(plan);
         }

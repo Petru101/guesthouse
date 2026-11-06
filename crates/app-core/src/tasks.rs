@@ -175,7 +175,7 @@ pub fn launch(
         }
         arguments = vec![task.pid.to_string()];
     }
-    fs::create_dir_all(context.run_folder(Some(slot)))?;
+    context.make_run_folder(Some(slot))?;
     let log = open_for_appending(context)?;
     let process = detached(
         Command::new(context.paths.binary(TASK_PROGRAM)).arg(action).arg(&machine.id).args(arguments),
