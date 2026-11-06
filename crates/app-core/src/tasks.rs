@@ -21,6 +21,9 @@ pub const TASK_PROGRAM: &str = "guesthouse-task";
 const TASK_FILE: &str = "guesthouse-task.json";
 const STILL_BUSY: &str = "Something else is still in progress.";
 const QEMU_PAUSED_WORDS: [&str; 2] = ["paused", "debug"];
+/// How `/proc/PID/stat` says a process has ended: a zombie, and one on its way out.
+const ENDED_STATES: [char; 2] = ['Z', 'X'];
+const TASK_DIED: &str = "The task stopped before it finished. The log has more.";
 /// How a machine is told it would be one too many.
 /// Why there's no slot. Slots and their shared memory are the whole PC's, so another user's or another
 /// install's VM really does take one, and it's only fair to say whose they are.
@@ -108,6 +111,16 @@ pub fn task_alive(context: &Context, record: &TaskRecord) -> bool {
     words.windows(TASK_PROGRAM.len()).any(|part| part == TASK_PROGRAM.as_bytes())
 }
 
+/// Whether a task's process has really gone. `task_alive` can't say: `spawn` returns while the kernel
+/// is still loading the task, and until that's done its name isn't there to find.
+fn task_ended(context: &Context, record: &TaskRecord) -> bool {
+    let file = context.processes.join(record.pid.to_string()).join("stat");
+    let stat = fs::read_to_string(file).unwrap_or_default();
+    // The state comes after the program's name, which can hold anything, brackets too.
+    let state = stat.rsplit_once(')').and_then(|(_, rest)| rest.trim_start().chars().next());
+    state.is_none_or(|state| ENDED_STATES.contains(&state))
+}
+
 /// The slot this machine is running in or has a task in.
 pub fn slot_of(context: &Context, machine: &Machine) -> Option<Slot> {
     let running = running_slots(context);
@@ -148,6 +161,14 @@ pub fn status(context: &Context, machine: &Machine) -> Status {
     found
 }
 
+/// Whether the task in `read` ended without finishing. A task's last act is to clear its pid, so this
+/// looks again once it has ended: after that it can't write anything more.
+fn task_died(context: &Context, number: u8, read: &TaskRecord) -> bool {
+    read.pid != 0
+        && task_ended(context, read)
+        && read_task(context, Some(slots::number(number))).pid == read.pid
+}
+
 /// Looks at what is really running, so a VM started some other way counts like any other.
 fn what_is_running(context: &Context, machine: &Machine) -> Status {
     let running = running_slots(context);
@@ -162,7 +183,7 @@ fn what_is_running(context: &Context, machine: &Machine) -> Status {
     let number = slot.filter(|running| mine.contains(running)).unwrap_or(*first);
     let task = &tasks[&number];
     if !task_alive(context, task) {
-        let died = if task.pid != 0 { "The task stopped before it finished. The log has more." } else { "" };
+        let died = if task_died(context, number, task) { TASK_DIED } else { "" };
         let error = if task.error.is_empty() { died.to_owned() } else { task.error.clone() };
         return Status { state, error, slot, ..Status::default() };
     }
@@ -307,6 +328,37 @@ mod tests {
         assert!(!found.busy && found.error.contains("before it finished"));
         write_task(&context, None, &record("sample", 0, "")).unwrap();
         assert_eq!(status(&context, &machine()).error, "", "one that finished said all it had to");
+    }
+
+    #[test]
+    fn a_task_still_being_loaded_has_not_died() {
+        let scratch = Scratch::new();
+        let context = scratch_context(&scratch);
+        write_task(&context, None, &record("sample", 79, "")).unwrap();
+        for words in [&["/usr/bin/guesthouse"][..], &[""][..]] {
+            fake_process(&context, 79, words, &[], "");
+            fs::write(context.processes.join("79/stat"), "79 (a) b) R 1 79").unwrap();
+            assert_eq!(status(&context, &machine()).error, "", "{words:?}");
+        }
+    }
+
+    #[test]
+    fn a_task_killed_and_not_yet_collected_has_died() {
+        let scratch = Scratch::new();
+        let context = scratch_context(&scratch);
+        write_task(&context, None, &record("sample", 79, "")).unwrap();
+        fake_process(&context, 79, &[""], &[], "");
+        fs::write(context.processes.join("79/stat"), "79 (guesthouse-task) Z 1 79").unwrap();
+        assert_eq!(status(&context, &machine()).error, TASK_DIED);
+    }
+
+    #[test]
+    fn a_task_that_finishes_just_after_its_record_is_read_has_not_died() {
+        let scratch = Scratch::new();
+        let context = scratch_context(&scratch);
+        let read_while_running = record("sample", (1 << 22) + 1, "");
+        write_task(&context, None, &record("sample", 0, "")).unwrap();
+        assert!(!task_died(&context, 0, &read_while_running));
     }
 
     #[test]
