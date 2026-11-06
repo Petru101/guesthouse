@@ -5595,3 +5595,355 @@ index 0000000..b79179e
 -- 
 2.56.0
 
+From b1e18a17c0caeb12b2f2a553a9244ff2fd7055a9 Mon Sep 17 00:00:00 2001
+From: xnixy <x@ruxn.com>
+Date: Thu, 5 Nov 2026 22:59:41 -0800
+Subject: [PATCH 20/21] hw/misc/nvfwd: hand a guest's frames to a viewer
+
+Buffers go over a socket as dmabufs, and which is newest through a small shared
+file. The frames stay in video memory.
+---
+ hw/misc/nvfwd/meson.build |   1 +
+ hw/misc/nvfwd/show.c      | 318 ++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 319 insertions(+)
+ create mode 100644 hw/misc/nvfwd/show.c
+
+diff --git a/hw/misc/nvfwd/meson.build b/hw/misc/nvfwd/meson.build
+index e6aa521..fb0d1f7 100644
+--- a/hw/misc/nvfwd/meson.build
++++ b/hw/misc/nvfwd/meson.build
+@@ -13,6 +13,7 @@ nvfwd_ss = files(
+   'fds.c',
+   'forward.c',
+   'window.c',
++  'show.c',
+ )
+ system_ss.add(when: 'CONFIG_PCI', if_true: nvfwd_ss)
+ 
+diff --git a/hw/misc/nvfwd/show.c b/hw/misc/nvfwd/show.c
+new file mode 100644
+index 0000000..cbc008e
+--- /dev/null
++++ b/hw/misc/nvfwd/show.c
+@@ -0,0 +1,318 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++/*
++ * Showing frames: the buffers a guest offers go to a viewer over <show>.sock, as dmabufs, and which
++ * one is newest goes through a small shared file, <show>.display. Nothing here reaches the host's
++ * driver but the import of a buffer the guest has exported. See nvfwd.h.
++ */
++#include "qemu/osdep.h"
++#include "qapi/error.h"
++#include <sys/ioctl.h>
++#include <sys/mman.h>
++#include <sys/socket.h>
++#include <sys/un.h>
++#include "nvfwd.h"
++
++#define DISPLAY_LATEST 0x40 /* newest finished frame: sequence << 8 | slot */
++#define DISPLAY_HELD 0x48 /* the slots the viewer still needs, written by the viewer */
++#define DRM_IOCTL_NVIDIA_IMPORT_MEMORY _IOC(_IOC_READ | _IOC_WRITE, 'd', 0x41, 40)
++#define DRM_IOCTL_PRIME_TO_FD _IOC(_IOC_READ | _IOC_WRITE, 'd', 0x2d, 12)
++#define DRM_IOCTL_CLOSE _IOC(_IOC_WRITE, 'd', 0x09, 8)
++#define DISPLAY_CLAIMED 0x50 /* slots a frame is being copied into */
++#define DISPLAY_READING 0x58 /* the present number of the frame the viewer is reading: its buffer is not to be released */
++#define DISPLAY_RATE 0x60 /* the viewer's refresh period in ns, and above it a count of its ticks, which shows it is alive */
++#define DISPLAY_PRESENT 0x80 /* per slot: the present number of the frame in it, for checking */
++#define NVKMS_LAYOUT_BLOCK_LINEAR 0
++#define NVKMS_LAYOUT_PITCH 1
++#define MODIFIER_NVIDIA_BLOCK_LINEAR 0x0300000000606010ull /* sector layout 1, generation 2, kind 6, as the guest driver offers; low bits are log2 height */
++
++static int render_node(void)
++{
++    char link[256], path[64], target[256];
++    for (int i = 128; i < 136; i++) {
++        snprintf(link, sizeof(link), "/sys/class/drm/renderD%d/device/driver", i);
++        ssize_t n = readlink(link, target, sizeof(target) - 1);
++        if (n > 0) {
++            target[n] = 0;
++            if (!strcmp(g_path_get_basename(target), "nvidia")) {
++                snprintf(path, sizeof(path), "/dev/dri/renderD%d", i);
++                return open(path, O_RDWR | O_CLOEXEC);
++            }
++        }
++    }
++    return -1;
++}
++
++/* A GEM import on the render node, then PRIME, from a file that already holds the exported object. */
++static int import_dmabuf_laid_out(NvfwdState *s, int exported, uint64_t size, uint32_t layout, uint32_t gobs_y,
++                                  uint32_t pitch_blocks, uint8_t generic)
++{
++    struct { int32_t fd; uint32_t layout, block[3], pitch_blocks; uint8_t generic, pad[3]; } params = {
++        .fd = exported, .layout = layout, .block = { 0, gobs_y, 0 }, .pitch_blocks = pitch_blocks, .generic = generic };
++    struct { uint64_t size, params, length; uint32_t handle, pad; uint64_t spare; } req = {
++        .size = size, .params = (uint64_t)&params, .length = sizeof(params) };
++    struct { uint32_t handle, flags; int32_t fd; } prime = { 0, O_CLOEXEC | O_RDWR, -1 };
++    struct { uint32_t handle, pad; } close_req = { 0, 0 };
++
++    if (s->render < 0) {
++        s->render = render_node();
++    }
++    if (s->render < 0 || ioctl(s->render, DRM_IOCTL_NVIDIA_IMPORT_MEMORY, &req)) {
++        fprintf(s->log, "show: gem import of %#llx bytes failed: %s\n", (unsigned long long)size, strerror(errno));
++        fflush(s->log);
++        return -1;
++    }
++    prime.handle = close_req.handle = req.handle;
++    if (ioctl(s->render, DRM_IOCTL_PRIME_TO_FD, &prime)) {
++        prime.fd = -1;
++    }
++    ioctl(s->render, DRM_IOCTL_CLOSE, &close_req);
++    return prime.fd;
++}
++
++static int import_dmabuf(NvfwdState *s, int exported, uint64_t size)
++{
++    return import_dmabuf_laid_out(s, exported, size, NVKMS_LAYOUT_PITCH, 0, 0, 0);
++}
++
++/* One compositor framebuffer: announced alone, with its format. Message: width, height, pitch, 0x100 | id, fourcc, modifier. */
++static void show_announce_surface(NvfwdState *s, uint32_t id)
++{
++    uint32_t message[8] = { s->surf_w[id], s->surf_h[id], s->surf_pitch[id], 0x100 | id, s->surf_format[id],
++                            (uint32_t)s->surf_modifier[id], s->surf_modifier[id] >> 32, 0 };
++    char control[CMSG_SPACE(sizeof(int))] = { 0 };
++    struct iovec iov = { message, sizeof(message) };
++    struct msghdr m = { .msg_iov = &iov, .msg_iovlen = 1, .msg_control = control, .msg_controllen = sizeof(control) };
++    struct cmsghdr *c = CMSG_FIRSTHDR(&m);
++
++    if (s->viewer < 0) {
++        return;
++    }
++    c->cmsg_level = SOL_SOCKET;
++    c->cmsg_type = SCM_RIGHTS;
++    c->cmsg_len = CMSG_LEN(sizeof(int));
++    memcpy(CMSG_DATA(c), &s->surf_fd[id], sizeof(int));
++    if (sendmsg(s->viewer, &m, MSG_NOSIGNAL) < 0) {
++        close(s->viewer);
++        s->viewer = -1;
++    }
++}
++
++static void show_announce(NvfwdState *s)
++{
++    uint32_t message[4] = { s->show_w, s->show_h, s->show_pitch, NVFWD_SHOW_SLOTS };
++    char control[CMSG_SPACE(sizeof(int) * NVFWD_SHOW_SLOTS)] = { 0 };
++    struct iovec iov = { message, sizeof(message) };
++    struct msghdr m = { .msg_iov = &iov, .msg_iovlen = 1, .msg_control = control, .msg_controllen = sizeof(control) };
++    struct cmsghdr *c = CMSG_FIRSTHDR(&m);
++
++    if (s->viewer < 0 || s->show_ready != (1u << NVFWD_SHOW_SLOTS) - 1) {
++        return;
++    }
++    c->cmsg_level = SOL_SOCKET;
++    c->cmsg_type = SCM_RIGHTS;
++    c->cmsg_len = CMSG_LEN(sizeof(int) * NVFWD_SHOW_SLOTS);
++    memcpy(CMSG_DATA(c), s->show_fd, sizeof(int) * NVFWD_SHOW_SLOTS);
++    if (sendmsg(s->viewer, &m, MSG_NOSIGNAL) < 0) {
++        close(s->viewer);
++        s->viewer = -1;
++    }
++}
++
++static void *show_listen(void *opaque)
++{
++    NvfwdState *s = opaque;
++    for (;;) {
++        int v = accept4(s->listener, NULL, NULL, SOCK_CLOEXEC);
++        if (v < 0) {
++            continue;
++        }
++        qemu_mutex_lock(&s->show_lock);
++        if (s->viewer >= 0) {
++            close(s->viewer);
++        }
++        s->viewer = v;
++        qatomic_set(s->show_held, 0);
++        qatomic_set(s->show_reading, 0);
++        show_announce(s);
++        for (uint32_t i = 0; i < NVFWD_SHOW_MAX_SURFACES; i++) {
++            if (s->surf_have >> i & 1) {
++                show_announce_surface(s, i);
++            }
++        }
++        qemu_mutex_unlock(&s->show_lock);
++    }
++    return NULL;
++}
++
++void do_show_buffer(NvfwdState *s, struct nvfwd_req *r)
++{
++    int fd = host_fd(s, r->fdid);
++    uint32_t slot = r->a0, width = r->a1, height = r->a1 >> 32, pitch = r->a2;
++    uint64_t size = r->a3;
++
++    if (fd < 0 || !s->show_path || slot >= NVFWD_SHOW_SLOTS || !width || !height || pitch < width * 4 ||
++        (uint64_t)pitch * height > size || size & 4095) {
++        r->ret = -EINVAL;
++        return;
++    }
++    int dmabuf = import_dmabuf(s, fd, size);
++    if (dmabuf < 0) {
++        r->ret = -EIO;
++        return;
++    }
++    qemu_mutex_lock(&s->show_lock);
++    if (slot == 0) {
++        /*
++         * A new set of buffers. Nothing is announced until all of them exist, or a viewer would hold a mix of this
++         * client's and the last one's, and nothing old stays published.
++         */
++        s->show_ready = 0;
++        s->show_newest = -1;
++        qatomic_set(s->show_latest, s->show_sequence << 8 | 0xff);
++    }
++    s->show_w = width;
++    s->show_h = height;
++    s->show_pitch = pitch;
++    if (s->show_have >> slot & 1) {
++        close(s->show_fd[slot]);
++    }
++    s->show_have |= 1u << slot;
++    s->show_fd[slot] = dmabuf;
++    s->show_ready |= 1u << slot;
++    s->show_pending &= ~(1u << slot); /* a client that died mid-frame leaves no claim behind */
++    qatomic_set(s->show_claimed, s->show_pending);
++    show_announce(s);
++    qemu_mutex_unlock(&s->show_lock);
++    {
++        struct stat st = { 0 };
++        fstat(dmabuf, &st);
++        fprintf(s->log, "show: slot %u %ux%u pitch %u size %#llx dmabuf %d inode %llu\n", slot, width, height, pitch,
++                (unsigned long long)size, dmabuf, (unsigned long long)st.st_ino);
++    }
++    fflush(s->log);
++    r->ret = 0;
++}
++
++void do_show_surface(NvfwdState *s, struct nvfwd_req *r)
++{
++    int fd = host_fd(s, r->fdid);
++    uint32_t id = r->a0 & 0xff, width = r->a1, height = r->a1 >> 32, pitch = r->a2, format = r->a2 >> 32;
++    uint32_t layout = r->a0 >> 8 & 1, generic = r->a0 >> 9 & 1, gobs_y = r->a0 >> 12 & 15, pitch_blocks = r->a0 >> 32;
++    uint64_t size = r->a3;
++    int dmabuf;
++
++    if (fd < 0 || !s->show_path || id >= NVFWD_SHOW_MAX_SURFACES || !width || !height || pitch < width * 4 ||
++        (uint64_t)pitch * height > size || size & 4095) {
++        r->ret = -EINVAL;
++        return;
++    }
++    dmabuf = import_dmabuf_laid_out(s, fd, size, layout, gobs_y, pitch_blocks, generic);
++    if (dmabuf < 0) {
++        r->ret = -EIO;
++        return;
++    }
++    qemu_mutex_lock(&s->show_lock);
++    if (s->surf_have >> id & 1) {
++        close(s->surf_fd[id]);
++    }
++    s->surf_have |= 1u << id;
++    s->surf_fd[id] = dmabuf;
++    s->surf_w[id] = width;
++    s->surf_h[id] = height;
++    s->surf_pitch[id] = pitch;
++    s->surf_format[id] = format;
++    s->surf_modifier[id] = layout == NVKMS_LAYOUT_BLOCK_LINEAR ? MODIFIER_NVIDIA_BLOCK_LINEAR | gobs_y : 0;
++    show_announce_surface(s, id);
++    qemu_mutex_unlock(&s->show_lock);
++    fprintf(s->log, "show: surface %u %ux%u pitch %u format %#x size %#llx\n", id, width, height, pitch, format, (unsigned long long)size);
++    fflush(s->log);
++    r->ret = 0;
++}
++
++/*
++ * A slot nobody is reading, or -EAGAIN and the guest drops this frame. The claim is made public before held is read,
++ * and the viewer sets held before reading claims, so the two cannot both miss each other and share a slot.
++ */
++void do_show_next(NvfwdState *s, struct nvfwd_req *r)
++{
++    r->ret = -EAGAIN;
++    qemu_mutex_lock(&s->show_lock);
++    for (uint32_t i = 0; i < NVFWD_SHOW_SLOTS; i++) {
++        uint32_t held;
++        s->show_turn = (s->show_turn + 1) % NVFWD_SHOW_SLOTS;
++        if ((int)s->show_turn == s->show_newest || s->show_pending >> s->show_turn & 1) {
++            continue;
++        }
++        qatomic_set(s->show_claimed, s->show_pending | 1u << s->show_turn);
++        smp_mb();
++        held = qatomic_read(s->show_held);
++        if (held >> s->show_turn & 1) {
++            qatomic_set(s->show_claimed, s->show_pending);
++            continue;
++        }
++        s->show_pending |= 1u << s->show_turn;
++        r->ret = s->show_turn;
++        break;
++    }
++    qemu_mutex_unlock(&s->show_lock);
++}
++
++void do_show_frame(NvfwdState *s, struct nvfwd_req *r)
++{
++    uint32_t slot = r->a0 & 0xff;
++    if (slot >= NVFWD_SHOW_MAX_SURFACES) {
++        r->ret = -EINVAL;
++        return;
++    }
++    qemu_mutex_lock(&s->show_lock);
++    qatomic_set(s->show_present + slot, r->a0 >> 8);
++    s->show_pending &= ~(1u << slot);
++    qatomic_set(s->show_claimed, s->show_pending);
++    s->show_newest = slot;
++    s->show_sequence++;
++    qatomic_set(s->show_latest, s->show_sequence << 8 | slot);
++    qemu_mutex_unlock(&s->show_lock);
++    r->ret = 0;
++}
++
++void do_show_reading(NvfwdState *s, struct nvfwd_req *r)
++{
++    smp_mb(); /* the frame published before this call, against the viewer: see newest() in the app's forwarded_frames.rs */
++    r->a3 = s->show_reading ? qatomic_read(s->show_reading) : 0;
++    r->ret = 0;
++}
++
++void do_show_rate(NvfwdState *s, struct nvfwd_req *r)
++{
++    r->a3 = s->show_rate ? qatomic_read(s->show_rate) : 0;
++    r->ret = 0;
++}
++
++void show_init(NvfwdState *s, Error **errp)
++{
++    g_autofree char *display = g_strdup_printf("%s.display", s->show_path);
++    g_autofree char *sock = g_strdup_printf("%s.sock", s->show_path);
++    struct sockaddr_un addr = { .sun_family = AF_UNIX };
++    int f = open(display, O_RDWR | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
++    uint8_t *page;
++    if (f < 0 || ftruncate(f, 4096)) {
++        error_setg_errno(errp, errno, "nvfwd display file");
++        return;
++    }
++    page = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, f, 0);
++    close(f);
++    s->show_latest = (uint64_t *)(page + DISPLAY_LATEST);
++    s->show_held = (uint32_t *)(page + DISPLAY_HELD);
++    s->show_present = (uint64_t *)(page + DISPLAY_PRESENT);
++    s->show_reading = (uint64_t *)(page + DISPLAY_READING);
++    s->show_rate = (uint64_t *)(page + DISPLAY_RATE);
++    s->show_claimed = (uint32_t *)(page + DISPLAY_CLAIMED);
++    unlink(sock);
++    snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", sock);
++    s->listener = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
++    if (s->listener < 0 || bind(s->listener, (void *)&addr, sizeof(addr)) || listen(s->listener, 1)) {
++        error_setg_errno(errp, errno, "nvfwd screen socket");
++        return;
++    }
++    qemu_thread_create(&s->show_thread, "nvfwd-show", show_listen, s, QEMU_THREAD_DETACHED);
++}
+-- 
+2.56.0
+
