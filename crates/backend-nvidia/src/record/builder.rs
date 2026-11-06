@@ -55,8 +55,8 @@ const GRAPHICS_ENTRIES: u32 = 0x3F;
 const FRAMEBUFFER_ENTRIES: u32 = 0x45;
 const BUS_ENTRIES: u32 = 0x34;
 const GRAPHICS_GPC_COUNT: u32 = 0x14;
-const GRAPHICS_SM_VERSION: u32 = 0x0C;
-const TABLE_ENTRY_SIZE: usize = 8;
+pub(super) const GRAPHICS_SM_VERSION: u32 = 0x0C;
+pub(super) const TABLE_ENTRY_SIZE: usize = 8;
 
 const FB_RAM: u32 = 7;
 const FB_BAR1: u32 = 5;

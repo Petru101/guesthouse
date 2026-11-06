@@ -44,7 +44,7 @@ use profile::{
     Generation, GuestBranch, HostBranch, generation_for, guest_branch, guest_channel_classes, host_branch,
 };
 use queue::LiveQueue;
-use record::{CardReader, HostFacts, build, read_host_facts};
+use record::{CardReader, HostFacts, SummaryFacts, build, read_host_facts, summary};
 use ring_position::GuestRing;
 use rm::device::{AddressSpace, Device};
 use rm::linux::LinuxRm;
@@ -244,6 +244,19 @@ impl<R: Rm> NvidiaBackend<R> {
         let generation = self.generation;
         let class = if encodes { generation.video_encode_class } else { generation.video_decode_class };
         Some(VideoEngine { rm_engine, class, instance })
+    }
+
+    /// What a person trying a card can post: what the backend found and will tell the guest, with
+    /// nothing in it that identifies the card or the PC.
+    pub fn card_summary(&self) -> String {
+        summary(&SummaryFacts {
+            record: self.answers.record(),
+            layout: &self.guest.record,
+            generation: self.generation,
+            guest_branch: self.guest.name,
+            engines: self.answers.rm_engines(),
+            nodes: &self.nodes,
+        })
     }
 
     pub fn answers(&self) -> &AdapterAnswers {
