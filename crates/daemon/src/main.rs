@@ -48,7 +48,7 @@ fn serve(slot: Slot, project: PathBuf) -> Result<(), Box<dyn std::error::Error>>
     const WINDOW_SIZE: u64 = 8 << 30;
 
     let backend = StandIn::new();
-    let (ram, cap) = (env::var("RAM").ok(), env::var("VRAM").ok());
+    let (ram, cap) = (env::var("GUESTHOUSE_RAM").ok(), env::var("GUESTHOUSE_VRAM").ok());
     let limits = MemoryLimits::new(backend.facts(), video_cap(cap.as_deref()), guest_ram(ram.as_deref()));
     let memory = SparseMemory::new(WINDOW_BASE + WINDOW_SIZE);
     let router = Router::new(Session::new(backend, memory, Config::new(limits)));
