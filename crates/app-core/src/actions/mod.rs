@@ -282,6 +282,8 @@ fn run_action(task: &mut Task, arguments: &[String]) -> Result<()> {
 }
 
 fn take_lock(context: &Context) -> Result<File> {
+    // A task can be the first thing to run on a new install, with no run folder yet.
+    context.make_run_folder(None)?;
     let lock = File::create(context.run_folder(None).join(LOCK_FILE))?;
     flock(&lock, FlockOperation::NonBlockingLockExclusive)
         .map_err(|_| Failure::new("Something else is still in progress."))?;

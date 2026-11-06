@@ -223,6 +223,15 @@ fn a_task_leaves_its_error_and_clears_its_pid() {
 }
 
 #[test]
+fn a_new_install_gets_its_run_folder_from_the_first_task() {
+    let scratch = Scratch::new();
+    let context = scratch_context(&scratch);
+    let _ = fs::remove_dir_all(context.run_folder(None));
+    assert!(take_lock(&context).is_ok());
+    assert!(context.run_folder(None).is_dir());
+}
+
+#[test]
 fn only_one_task_holds_the_lock() {
     let scratch = Scratch::new();
     let context = scratch_context(&scratch);
