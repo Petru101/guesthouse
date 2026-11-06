@@ -68,6 +68,7 @@ impl<B: Backend, M: GuestMemory> Router<B, M> {
             log::info!("{channel:?}: {:?}", header.kind);
             if header.kind == FrameKind::Reset {
                 self.session.guest_reset();
+                self.session.guest_restarted();
             }
             return Ok(());
         }

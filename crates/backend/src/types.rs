@@ -47,6 +47,14 @@ pub struct AdapterFacts {
     pub guest_driver_version: u64,
 }
 
+/// How much video memory this guest has and has taken, in bytes. The core keeps the books, and a
+/// vendor's escape may have to report them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VideoMemoryUse {
+    pub total: u64,
+    pub used: u64,
+}
+
 /// A failed backend call on the message path. The text is for the log.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BackendError(pub Cow<'static, str>);

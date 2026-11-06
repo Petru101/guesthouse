@@ -55,12 +55,14 @@ pub fn allocation_size(layout: &AllocationLayout, data: &[u8]) -> u64 {
     let mut size = u64::from(word(data, layout.size));
     let (depth, mips, layers) =
         (word(data, layout.depth), word(data, layout.depth + 4), word(data, layout.depth + 8));
+    let mut one_piece = false;
     if size == 0 {
         // A block of a pool has its total in one field and what this request wants in another. The
         // driver takes the answer's size off and asks again.
         let (whole, asked) = (word(data, layout.whole_size), word(data, layout.asked_size));
         let limit = word(data, layout.size_limit);
         size = if asked != 0 && asked <= whole && mips == 0 && limit == 0 {
+            one_piece = asked < whole;
             u64::from(asked)
         } else {
             match word(data, layout.fallback_size) {
@@ -75,7 +77,10 @@ pub fn allocation_size(layout: &AllocationLayout, data: &[u8]) -> u64 {
     if depth > 1 || mips > 1 || layers > 1 || total % SMALL_PAGE == 0 {
         size = size.max(total);
     }
-    if data.len() >= layout.rows + 4 {
+    // The tiling fields describe a whole image, so a piece of one must not grow to it. If it does, the
+    // guest's OpenGL gives up on every render target of 64 MiB and over, which it builds from pieces
+    // of 32 MiB: the framebuffer comes back unsupported, and the program draws nothing to it.
+    if data.len() >= layout.rows + 4 && !one_piece {
         // A tiled image fills whole blocks, whatever the size fields hold.
         let tiling = word(data, layout.tiling);
         let columns = u64::from(word(data, layout.columns));
@@ -267,6 +272,27 @@ mod tests {
         set_word(&mut bytes, LAYOUT.whole_size, 0x10_0000);
         set_word(&mut bytes, LAYOUT.asked_size, 0x8000);
         assert_eq!(allocation_size(LAYOUT, &bytes), 0x8000);
+    }
+
+    /// A 4096 x 4096 image of 32-bit pixels, as OpenGL asks for it: 64 MiB of tiles, in pieces.
+    fn piece_of_an_image(whole: u32, asked: u32) -> Vec<u8> {
+        let mut bytes = data(0);
+        set_word(&mut bytes, LAYOUT.whole_size, whole);
+        set_word(&mut bytes, LAYOUT.asked_size, asked);
+        set_word(&mut bytes, LAYOUT.columns, 0x100);
+        set_word(&mut bytes, LAYOUT.rows, 0x20);
+        set_word(&mut bytes, LAYOUT.tiling, 4);
+        bytes
+    }
+
+    #[test]
+    fn a_piece_of_a_tiled_image_stays_the_size_it_asked_for() {
+        assert_eq!(allocation_size(LAYOUT, &piece_of_an_image(0x400_0000, 0x200_0000)), 0x200_0000);
+    }
+
+    #[test]
+    fn a_tiled_image_in_one_piece_still_fills_its_blocks() {
+        assert_eq!(allocation_size(LAYOUT, &piece_of_an_image(0x400_0000, 0x400_0000)), 0x400_0000);
     }
 
     #[test]

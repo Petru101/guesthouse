@@ -121,4 +121,8 @@ pub trait Rm {
 
     /// Tells the GPU a channel has new work. Needs [`Rm::map_doorbell`] first.
     fn ring_doorbell(&mut self, token: u32);
+
+    /// The GPU's timer in nanoseconds, read from the doorbell's page, so no RM lock is taken. `None`
+    /// until [`Rm::map_doorbell`] has run, or if the reading won't hold still.
+    fn read_gpu_timer(&self) -> Option<u64>;
 }

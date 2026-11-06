@@ -66,6 +66,8 @@ if=none,id=cd1,media=cdrom,readonly=on
 ide-cd,bus=ahci.2,drive=cd1
 -device
 vmbus-bridge,mmio-base=0x10000000000,mmio-size=0x1000000000
+-device
+hv-timesync
 -chardev
 socket,id=gpg,path=/x/run/global.sock,reconnect-ms=500
 -object

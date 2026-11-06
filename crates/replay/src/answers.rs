@@ -3,7 +3,7 @@
 use guesthouse_backend::{
     AdapterFacts, AllocationShape, Backend, BackendError, DriverSurvey, GpuRange, HostServices, MapRequest,
     MemoryId, PciCard, Refusal, RegistryName, RegistryValue, Setup, SpaceId, StagingCopy, StagingStart,
-    Status, SurfaceShape, UnmapRequest, VendorQuery, Work, WorkStart,
+    Status, SurfaceShape, UnmapRequest, VendorQuery, VideoMemoryUse, Work, WorkStart,
 };
 use guesthouse_backend_standin::StandIn;
 use guesthouse_messages::adapter::AdapterQuery;
@@ -234,7 +234,7 @@ impl Backend for RecordedAnswers {
         Ok(())
     }
 
-    fn escape(&mut self, data: &mut [u8]) {
+    fn escape(&mut self, data: &mut [u8], _memory: &dyn Fn() -> VideoMemoryUse) {
         self.note(Provenance::Recorded);
         let length = data.len().min(self.expected.len());
         data[..length].copy_from_slice(&self.expected[..length]);

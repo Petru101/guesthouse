@@ -137,6 +137,9 @@ impl VmPlan {
             "ide-cd,bus=ahci.2,drive=cd1",
             "-device",
             &format!("vmbus-bridge,mmio-base={VMBUS_WINDOW_BASE},mmio-size={VMBUS_WINDOW_SIZE}"),
+            // Windows keeps its clock on the host's through this. OpenGL needs the two close.
+            "-device",
+            "hv-timesync",
             "-chardev",
             &format!("socket,id=gpg,path={},reconnect-ms={RECONNECT_MS}", self.in_run_folder("global.sock")),
             // On tmpfs, because the GPU pins these pages.
