@@ -10,7 +10,7 @@ use guesthouse_backend_nvidia::profile::GUEST_617;
 use guesthouse_backend_nvidia::pushbuffer::{increasing, ring_entry};
 use guesthouse_backend_nvidia::rm::classes::{CHANNEL_GROUP, ENGINE_COPY_0};
 use guesthouse_backend_nvidia::rm::fake::{Call, FakeRm};
-use guesthouse_backend_nvidia::rm::fake_card::{FAKE_GPU_ID, FAKE_NAME};
+use guesthouse_backend_nvidia::rm::fake_card::{FAKE_CLASSES, FAKE_GPU_ID, FAKE_NAME};
 use guesthouse_backend_nvidia::sensors::{Snapshot, SnapshotReader};
 use guesthouse_backend_standin::{RandomMessages, SparseMemory};
 use guesthouse_core::{Answer, Config, CopyOrder, MemoryLimits, ReplyTicket, Session};
@@ -144,6 +144,18 @@ fn the_record_reaches_the_guest_with_the_discovery_word_set() {
     assert_eq!(reply.len(), 4 + size);
     assert_eq!(&reply[4..8], b"ADVN");
     assert_eq!(u32_at(&reply, 4 + GUEST_617.record.gpu_discovery), Ok(1));
+}
+
+#[test]
+fn the_records_class_list_starts_with_its_length() {
+    let mut session = guest();
+    let size = GUEST_617.record.size;
+    let mut query = message(Command::QueryAdapter, HEADER_SIZE + 8);
+    set_u32(&mut query, HEADER_SIZE + 4, size as u32);
+    let reply = send(&mut session, &query);
+    let at = 4 + GUEST_617.record.classes;
+    assert_eq!(u32_at(&reply, at), Ok(FAKE_CLASSES.len() as u32));
+    assert_eq!(u32_at(&reply, at + 4), Ok(FAKE_CLASSES[0]));
 }
 
 #[test]
