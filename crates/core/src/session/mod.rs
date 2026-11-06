@@ -429,10 +429,11 @@ pub(crate) struct Services<'a, M> {
 
 impl<M: GuestMemory> Services<'_, M> {
     /// The allocation in shared pages whose mapping holds this address, and the mapping.
-    fn shared_mapping(&self, address: u64) -> Option<(u64, &Mapping)> {
+    fn shared_mapping(&self, space: SpaceId, address: u64) -> Option<(u64, &Mapping)> {
         self.allocations.values().find_map(|allocation| {
             let base = allocation.guest_address?;
-            Some((base, allocation.mappings.iter().find(|mapping| mapping.contains(address))?))
+            let mut mappings = allocation.mappings.iter();
+            Some((base, mappings.find(|mapping| mapping.space == space && mapping.contains(address))?))
         })
     }
 }
@@ -442,13 +443,13 @@ impl<M: GuestMemory> HostServices for Services<'_, M> {
         self.gpu_addresses.take(size, align, AddressUse::Host)
     }
 
-    fn read_at_gpu_address(&self, address: u64, out: &mut [u8]) -> Option<usize> {
-        let span = self.shared_span(address)?;
+    fn read_at_gpu_address(&self, space: SpaceId, address: u64, out: &mut [u8]) -> Option<usize> {
+        let span = self.shared_span(space, address)?;
         Some(self.memory.read_bytes(span.guest_address, out))
     }
 
-    fn shared_span(&self, address: u64) -> Option<SharedSpan> {
-        let (base, mapping) = self.shared_mapping(address)?;
+    fn shared_span(&self, space: SpaceId, address: u64) -> Option<SharedSpan> {
+        let (base, mapping) = self.shared_mapping(space, address)?;
         let offset_in_mapping = address - mapping.address;
         Some(SharedSpan {
             guest_address: base.checked_add(mapping.first)?.checked_add(offset_in_mapping)?,

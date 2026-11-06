@@ -144,12 +144,13 @@ pub trait HostServices {
     /// Takes GPU addresses from the pool guest allocations use, as both share every address space.
     fn take_gpu_addresses(&mut self, size: u64, align: u64) -> Result<u64, BackendError>;
 
-    /// Reads guest-visible memory by GPU address. Returns how many bytes it could, as this stops at
+    /// Reads guest-visible memory by GPU address, in one address space, as two processes can use the
+    /// same address for different memory. Returns how many bytes it could, as this stops at
     /// the end of the window, or `None` if the address is not in shared pages.
-    fn read_at_gpu_address(&self, address: u64, out: &mut [u8]) -> Option<usize>;
+    fn read_at_gpu_address(&self, space: SpaceId, address: u64, out: &mut [u8]) -> Option<usize>;
 
-    /// Where a GPU address is in shared pages.
-    fn shared_span(&self, address: u64) -> Option<SharedSpan>;
+    /// Where a GPU address in this space is in shared pages.
+    fn shared_span(&self, space: SpaceId, address: u64) -> Option<SharedSpan>;
 
     /// Writes a 32-bit word by guest physical address, where the GPU may be reading.
     fn write_u32(&mut self, address: u64, value: u32) -> Result<(), MemoryError>;
