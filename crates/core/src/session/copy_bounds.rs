@@ -198,7 +198,7 @@ mod tests {
         assert!(fits(&surface(1024, 768, 4096), exact));
         assert!(!fits(&surface(1024, 768, 4096), exact - 1));
         assert!(!fits(&surface(1024, 768, 4092), exact), "rows would overlap");
-        assert!(!fits(&surface(1024, 768, u32::MAX), exact), "products must not wrap");
+        assert!(!fits(&surface(1024, 768, u32::MAX), exact), "one row of this pitch is past the memory");
     }
 
     #[test]

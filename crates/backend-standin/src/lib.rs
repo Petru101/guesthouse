@@ -161,18 +161,14 @@ impl StandIn {
         rows.left + rows.width <= pitch && end <= i128::from(mapped)
     }
 
-    fn tiled_is_mapped(&self, space: SpaceId, address: u64, surface: &SurfaceShape, rows: &Touched) -> bool {
-        let mapped = self.spaces.get(&space).and_then(|space| space.mappings.get(&address));
-        let (x, y) = (rows.left as u64, rows.top as u64);
-        mapped.zip(self.tiled_bytes(surface, x, y)).is_some_and(|(&mapped, bytes)| bytes <= mapped)
+    /// What's mapped at an address, for a test to compare a copy with.
+    pub fn mapped_length(&self, space: SpaceId, address: u64) -> Option<u64> {
+        self.spaces.get(&space)?.mappings.get(&address).copied()
     }
 
+    /// A tiled surface's sums are left to the test, so that they aren't checked against themselves.
     fn source_is_mapped(&self, space: SpaceId, address: u64, surface: &SurfaceShape, rows: &Touched) -> bool {
-        if surface.tiling.is_some() {
-            self.tiled_is_mapped(space, address, surface, rows)
-        } else {
-            self.rows_are_mapped(space, address, surface, rows)
-        }
+        surface.tiling.is_some() || self.rows_are_mapped(space, address, surface, rows)
     }
 
     fn note_staging_copy(&mut self, copy: &StagingCopy) {
@@ -219,9 +215,11 @@ const PITCH_FIELD: usize = 20;
 /// Where private data can ask for tiling, as one more than the log2 of the block height. Zero means
 /// rows in order.
 const TILING_FIELD: usize = 24;
-/// Rows in the shortest block of a pretend tiled surface, and the tallest log2 there is.
+/// The narrowest and shortest block of a pretend tiled surface, and the tallest log2 there is.
+const TILE_WIDTH: u64 = 64;
 const TILE_ROWS: u64 = 8;
 const MOST_TILING: u32 = 5;
+const TILED_CORNER_LIMIT: u64 = 1 << 16;
 
 fn field(private: &[u8], at: usize) -> u32 {
     private.get(at..at + 4).map_or(0, |bytes| u32::from_le_bytes(bytes.try_into().expect("four bytes")))
@@ -429,11 +427,16 @@ impl Backend for StandIn {
         if self.slow_copies { StagingStart::Running } else { StagingStart::Finished(self.slot_copy_status) }
     }
 
-    /// Blocks are a whole pitch wide here, so only the height rounds up.
-    fn tiled_bytes(&self, surface: &SurfaceShape, _x: u64, _y: u64) -> Option<u64> {
+    /// As a copy engine lays one out: whole blocks of 64 bytes by `8 << block` rows, and a corner
+    /// that has to fit 16 bits each way.
+    fn tiled_bytes(&self, surface: &SurfaceShape, x: u64, y: u64) -> Option<u64> {
         let block = surface.tiling.filter(|&block| block <= MOST_TILING)?;
+        if x >= TILED_CORNER_LIMIT || y >= TILED_CORNER_LIMIT {
+            return None;
+        }
         let rows = u64::from(surface.height).next_multiple_of(TILE_ROWS << block);
-        rows.checked_mul(u64::from(surface.pitch))
+        let width = u64::from(surface.pitch).next_multiple_of(TILE_WIDTH);
+        rows.checked_mul(width)
     }
 
     fn read_memory_start(
