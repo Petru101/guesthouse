@@ -51,7 +51,10 @@ impl Sampler {
                 loop {
                     let mut sample = card.sample();
                     sample.taken = started.elapsed();
-                    if let Ok(mut latest) = on_thread.latest.lock() {
+                    // Asked under this lock, so a reading on its way can't land after `stop` has cleared it.
+                    if let Ok(mut latest) = on_thread.latest.lock()
+                        && !on_thread.stopping.lock().is_ok_and(|stopping| *stopping)
+                    {
                         *latest = Some(sample);
                     }
                     let stopping = on_thread.stopping.lock().unwrap_or_else(|poisoned| poisoned.into_inner());

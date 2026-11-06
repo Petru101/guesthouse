@@ -63,14 +63,10 @@ pub fn forwarding_problem(qemu: &Path, allow_list: &Path) -> Option<GpuOff> {
 mod tests {
     use super::*;
     use crate::testing::Scratch;
-    use std::fs;
-    use std::os::unix::fs::PermissionsExt;
 
     /// As the real one does, it exits with 0 whether or not it knows the device.
     fn fake_qemu(scratch: &Scratch, answer: &str) -> std::path::PathBuf {
-        let qemu = scratch.write("qemu", format!("#!/bin/sh\necho '{answer}'\nexit 0\n"));
-        fs::set_permissions(&qemu, fs::Permissions::from_mode(0o755)).unwrap();
-        qemu
+        scratch.program("qemu", &format!("#!/bin/sh\necho '{answer}'\nexit 0\n"))
     }
 
     #[test]

@@ -362,7 +362,7 @@ mod tests {
                 && found.text.contains("libslirp.so.0")
                 && found.fix.contains("dnf install")
         );
-        fs::write(&context.paths.qemu, "#!/bin/sh\necho QEMU\n").unwrap();
+        scratch.program("qemu", "#!/bin/sh\necho QEMU\n");
         assert_eq!(check_qemu(&context).state, CheckState::Ok);
     }
 
