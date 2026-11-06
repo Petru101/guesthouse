@@ -1,6 +1,8 @@
 //! Creating, destroying, opening and locking allocations.
 
-use crate::wire::{Malformed, U32List, U64List, pad_to, put_u32, put_u64, set_u32, set_u64, u32_at};
+use crate::wire::{
+    Malformed, U32List, U64List, declared_count, pad_to, put_u32, put_u64, set_u32, set_u64, u32_at,
+};
 use crate::{HEADER_SIZE, Status};
 
 const RUNTIME_DATA_SIZE: usize = 0x20;
@@ -10,6 +12,7 @@ const FLAGS: usize = 0x2C;
 const ENTRIES: usize = 0x40;
 const ENTRY_SIZE: usize = 12;
 const ENTRY_PRIVATE_SIZE: usize = 4;
+const HANDLE_SIZE: usize = 4;
 
 /// Request flags that say the guest brings its own memory and will list its pages afterwards.
 const GUEST_BACKED: u32 = 0x20020;
@@ -43,7 +46,7 @@ impl<'a> CreateAllocation<'a> {
     pub fn parse(message: &'a [u8]) -> Result<Self, Malformed> {
         let runtime = u32_at(message, RUNTIME_DATA_SIZE)? as usize;
         let driver = u32_at(message, DRIVER_DATA_SIZE)? as usize;
-        let count = u32_at(message, COUNT)? as usize;
+        let count = declared_count(message, COUNT, CreateAllocationAnswer::ENTRY_SIZE)?;
         let flags = u32_at(message, FLAGS)?;
         let first_private = count
             .checked_mul(ENTRY_SIZE)
@@ -185,11 +188,12 @@ impl OpenResource {
     const ANSWER_ALIGN_MASK: usize = !7;
 
     pub fn parse(message: &[u8]) -> Result<Self, Malformed> {
-        Ok(Self { shared: u32_at(message, Self::SHARED)?, count: u32_at(message, Self::COUNT)? as usize })
+        let count = declared_count(message, Self::COUNT, HANDLE_SIZE)?;
+        Ok(Self { shared: u32_at(message, Self::SHARED)?, count })
     }
 
     fn answer_size(&self) -> usize {
-        (self.count * 4 + Self::ANSWER_FIXED_SIZE) & Self::ANSWER_ALIGN_MASK
+        (self.count * HANDLE_SIZE + Self::ANSWER_FIXED_SIZE) & Self::ANSWER_ALIGN_MASK
     }
 
     pub fn refuse(&self, out: &mut Vec<u8>) {

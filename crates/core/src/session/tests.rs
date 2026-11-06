@@ -815,6 +815,45 @@ mod mappings {
     }
 }
 
+mod declared_sizes {
+    use super::*;
+    use guesthouse_messages::wire::MAX_ANSWER_SIZE;
+
+    const TOO_MANY: u32 = MAX_ANSWER_SIZE as u32 + 1;
+
+    /// A message whose field at `at` asks for more than an answer can hold.
+    fn asking_too_much(command: Command, size: usize, at: usize) -> Vec<u8> {
+        let mut request = message(command, size);
+        set_u32(&mut request, at, TOO_MANY);
+        request
+    }
+
+    #[test]
+    fn a_size_past_the_most_an_answer_can_hold_is_refused() {
+        let requests = [
+            ("adapter query", asking_too_much(Command::QueryAdapter, 0x30, HEADER_SIZE + 4)),
+            ("caps", asking_too_much(Command::QueryDriverCaps, 0x30, HEADER_SIZE + 8)),
+            ("escape", asking_too_much(Command::DriverEscape, 0x40, HEADER_SIZE + 16)),
+            ("context", asking_too_much(Command::CreateContext, 0x34, 0x30)),
+            ("queue", asking_too_much(Command::CreateHardwareQueue, 0x44, 0x40)),
+            ("open", asking_too_much(Command::OpenResource, 0x28, 0x24)),
+            ("standard", asking_too_much(Command::DescribeStandardAllocation, 0x40, HEADER_SIZE + 4)),
+        ];
+        for (name, request) in requests {
+            let reply = send(&mut session(), &request);
+            assert_eq!(reply, Status::UNSUCCESSFUL.0.to_le_bytes(), "{name}");
+        }
+    }
+
+    #[test]
+    fn the_size_of_a_description_query_is_still_honoured_up_to_the_limit() {
+        let mut request = message(Command::QueryAdapter, 0x30);
+        set_u32(&mut request, HEADER_SIZE, AdapterQuery::DESCRIPTION);
+        set_u32(&mut request, HEADER_SIZE + 4, MAX_ANSWER_SIZE as u32);
+        assert_eq!(send(&mut session(), &request).len(), 4 + MAX_ANSWER_SIZE);
+    }
+}
+
 mod io_space {
     use super::*;
     use crate::FENCE_PAGE;

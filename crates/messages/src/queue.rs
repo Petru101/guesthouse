@@ -1,15 +1,16 @@
 //! Contexts, hardware queues, submissions and copies to the screen.
 
 use crate::wire::{
-    Malformed, align_up, clamped, i32_at, pad_to, put_u32, put_u64, set_u32, set_u64, u32_at, u64_at,
+    Malformed, align_up, clamped, declared_size, i32_at, pad_to, put_u32, put_u64, set_u32, set_u64, u32_at,
+    u64_at,
 };
 
 const ANSWER_ALIGN: u64 = 8;
 /// The guest sizes these answers a few bytes past the private data before rounding up.
 const ANSWER_SLACK: u64 = 3;
 
-fn padded(fixed_part: usize, private_size: u32) -> usize {
-    let used = fixed_part as u64 + u64::from(private_size) + ANSWER_SLACK;
+fn padded(fixed_part: usize, private_size: usize) -> usize {
+    let used = (fixed_part + private_size) as u64 + ANSWER_SLACK;
     align_up(used, ANSWER_ALIGN) as usize
 }
 
@@ -19,7 +20,7 @@ pub struct CreateContext {
     pub node: u32,
     /// Which graphics API the guest says this context is for.
     pub client_hint: u32,
-    pub private_size: u32,
+    pub private_size: usize,
 }
 
 impl CreateContext {
@@ -33,7 +34,7 @@ impl CreateContext {
         Ok(Self {
             node: u32_at(message, Self::NODE)?,
             client_hint: u32_at(message, Self::CLIENT_HINT)?,
-            private_size: u32_at(message, Self::PRIVATE_SIZE)?,
+            private_size: declared_size(message, Self::PRIVATE_SIZE)?,
         })
     }
 
@@ -48,7 +49,7 @@ impl CreateContext {
 #[derive(Debug, Clone, Copy)]
 pub struct CreateHardwareQueue {
     pub context: u32,
-    pub private_size: u32,
+    pub private_size: usize,
 }
 
 impl CreateHardwareQueue {
@@ -64,7 +65,7 @@ impl CreateHardwareQueue {
     pub fn parse(message: &[u8]) -> Result<Self, Malformed> {
         Ok(Self {
             context: u32_at(message, Self::CONTEXT)?,
-            private_size: u32_at(message, Self::PRIVATE_SIZE)?,
+            private_size: declared_size(message, Self::PRIVATE_SIZE)?,
         })
     }
 
@@ -216,7 +217,7 @@ impl<'a> DriverEscape<'a> {
     const DATA: usize = crate::HEADER_SIZE + 24;
 
     pub fn parse(message: &'a [u8]) -> Result<Self, Malformed> {
-        let size = u32_at(message, Self::SIZE)? as usize;
+        let size = declared_size(message, Self::SIZE)?;
         Ok(Self { size, data: clamped(message, Self::DATA, size) })
     }
 }

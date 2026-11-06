@@ -2,8 +2,8 @@
 
 use guesthouse_backend::{Backend, GuestMemory};
 use guesthouse_core::{Answer, ReplyTicket, Session, Stage, Waiting};
-use guesthouse_messages::strip_extended_header;
-use guesthouse_transport::{Frame, FrameHeader, FrameKind, Truncated, split_ranges};
+use guesthouse_messages::{Status, strip_extended_header};
+use guesthouse_transport::{Frame, FrameHeader, FrameKind, MAX_OUTGOING_PAYLOAD, Truncated, split_ranges};
 use std::io;
 use std::time::Instant;
 
@@ -80,11 +80,22 @@ impl<B: Backend, M: GuestMemory> Router<B, M> {
         // A handler's notices go out before its reply, the order the guest has always seen.
         self.send_waiting(sink)?;
         if wants_reply && answer == Answer::Now {
+            self.limit_reply();
             let completion = FrameHeader::completion(header.transaction, self.reply.len());
             sink.send(channel, completion, &self.reply)?;
         }
         self.session.timings_mut().mark(Stage::Replied);
         Ok(())
+    }
+
+    /// QEMU drops all it has buffered at a frame past its limit, which would strand every guest
+    /// thread waiting on this channel. A bare failure gets through.
+    fn limit_reply(&mut self) {
+        if self.reply.len() > MAX_OUTGOING_PAYLOAD {
+            log::warn!("a reply of {} bytes is too long to send", self.reply.len());
+            self.reply.clear();
+            self.reply.extend_from_slice(&Status::UNSUCCESSFUL.0.to_le_bytes());
+        }
     }
 
     /// Checks what is waiting on fences, and says how soon to look again.
@@ -138,3 +149,66 @@ impl std::fmt::Display for RouterError {
 }
 
 impl std::error::Error for RouterError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use guesthouse_backend::Backend;
+    use guesthouse_backend_standin::{SparseMemory, StandIn};
+    use guesthouse_core::{Config, MemoryLimits};
+    use guesthouse_messages::Command;
+    use guesthouse_messages::wire::set_u32;
+    use guesthouse_transport::{FrameFlags, HEADER_SIZE};
+
+    const NEEDS_COMPLETION: u16 = 1;
+    /// Where a context's message ends. The guest reads the whole message back as the answer.
+    const CONTEXT_SIZE: usize = 0x34;
+
+    #[derive(Default)]
+    struct Sent(Vec<Vec<u8>>);
+
+    impl FrameSink for Sent {
+        fn send(&mut self, _: Channel, _: FrameHeader, payload: &[u8]) -> io::Result<()> {
+            self.0.push(payload.to_vec());
+            Ok(())
+        }
+    }
+
+    fn reply_to(message: &[u8]) -> Vec<u8> {
+        let backend = StandIn::new();
+        let limits = MemoryLimits::new(backend.facts(), None, 1 << 30);
+        let session = Session::new(backend, SparseMemory::new(1 << 41), Config::new(limits));
+        let mut router = Router::new(session);
+        let header = FrameHeader {
+            payload_len: message.len() as u32,
+            kind: FrameKind::Inband,
+            flags: FrameFlags(NEEDS_COMPLETION),
+            transaction: 1,
+        };
+        let mut sent = Sent::default();
+        router.handle_frame(Channel::Vgpu, Frame { header, payload: message }, &mut sent).unwrap();
+        sent.0.pop().unwrap()
+    }
+
+    fn context_message(size: usize) -> Vec<u8> {
+        let mut message = vec![0; size];
+        set_u32(&mut message, 16, Command::CreateContext.to_wire());
+        message
+    }
+
+    #[test]
+    fn a_reply_qemu_would_take_goes_out_whole() {
+        assert_eq!(reply_to(&context_message(MAX_OUTGOING_PAYLOAD)).len(), MAX_OUTGOING_PAYLOAD);
+    }
+
+    #[test]
+    fn a_reply_qemu_would_not_take_becomes_a_failure() {
+        let reply = reply_to(&context_message(MAX_OUTGOING_PAYLOAD + HEADER_SIZE));
+        assert_eq!(reply, Status::UNSUCCESSFUL.0.to_le_bytes());
+    }
+
+    #[test]
+    fn a_short_context_is_not_a_reply_too_long() {
+        assert_eq!(reply_to(&context_message(CONTEXT_SIZE)).len(), 0x38);
+    }
+}

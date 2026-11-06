@@ -1,7 +1,8 @@
 //! Opening the adapter, and what the guest asks about it.
 
 use crate::wire::{
-    Malformed, clamped, pad_to, put_u32, put_u64, put_utf16_field, set_u32, set_u64, u32_at, u64_at,
+    Malformed, clamped, declared_size, pad_to, put_u32, put_u64, put_utf16_field, set_u32, set_u64, u32_at,
+    u64_at,
 };
 use crate::{HEADER_SIZE, Status};
 
@@ -80,7 +81,7 @@ impl CapsQuery {
     pub const PHYSICAL_ADAPTER: u32 = 15;
 
     pub fn parse(message: &[u8]) -> Result<Self, Malformed> {
-        Ok(Self { kind: u32_at(message, HEADER_SIZE)?, out_size: u32_at(message, HEADER_SIZE + 8)? as usize })
+        Ok(Self { kind: u32_at(message, HEADER_SIZE)?, out_size: declared_size(message, HEADER_SIZE + 8)? })
     }
 }
 
@@ -206,7 +207,7 @@ impl<'a> AdapterQuery<'a> {
     pub const USER_DRIVER_VERSION: u32 = 18;
 
     pub fn parse(message: &'a [u8]) -> Result<Self, Malformed> {
-        let size = u32_at(message, HEADER_SIZE + 4)? as usize;
+        let size = declared_size(message, HEADER_SIZE + 4)?;
         Ok(Self { kind: u32_at(message, HEADER_SIZE)?, size, data: clamped(message, HEADER_SIZE + 8, size) })
     }
 }

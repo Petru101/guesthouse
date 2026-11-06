@@ -1,18 +1,36 @@
 //! Reading and writing little-endian fields, with bounds checks instead of panics.
 //!
-//! The guest is not trusted to send well-formed messages, so every read can fail.
+//! Any message may be cut short or carry a nonsense field, so every read can fail, and a size that
+//! the host makes room for has to pass [`declared_size`] or [`declared_count`] first.
 
-/// A message too short for the field being read from it.
+/// A message too short for the field being read from it, or with a size that's out of bounds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Malformed;
 
 impl std::fmt::Display for Malformed {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("the message is too short for a field it should have")
+        f.write_str("the message is too short for a field it should have, or a size in it is too large")
     }
 }
 
 impl std::error::Error for Malformed {}
+
+/// The most bytes the host makes room for because a message asks. The guest's channel takes packets
+/// of 128 KiB at most, and the largest answer seen from a real guest is the 50,616-byte adapter
+/// record, which grows with the driver, so this is the limit that stays right as drivers change.
+pub const MAX_ANSWER_SIZE: usize = 128 << 10;
+
+/// A size in a message, for an answer the host will make room for.
+pub fn declared_size(bytes: &[u8], at: usize) -> Result<usize, Malformed> {
+    declared_count(bytes, at, 1)
+}
+
+/// A count in a message, of entries in an answer that take `entry_size` bytes each.
+pub fn declared_count(bytes: &[u8], at: usize, entry_size: usize) -> Result<usize, Malformed> {
+    let count = u32_at(bytes, at)? as usize;
+    let fits = count.checked_mul(entry_size).is_some_and(|size| size <= MAX_ANSWER_SIZE);
+    if fits { Ok(count) } else { Err(Malformed) }
+}
 
 pub fn u8_at(bytes: &[u8], at: usize) -> Result<u8, Malformed> {
     bytes.get(at).copied().ok_or(Malformed)
@@ -114,6 +132,14 @@ pub const fn align_up(value: u64, align: u64) -> u64 {
     (value + align - 1) & !(align - 1)
 }
 
+/// [`align_up`] for a value from a message, which may be too close to the top to round up.
+pub const fn checked_align_up(value: u64, align: u64) -> Option<u64> {
+    match value.checked_add(align - 1) {
+        Some(end) => Some(end & !(align - 1)),
+        None => None,
+    }
+}
+
 /// Pads with zeros until the buffer is at least `length` long. Never shortens it.
 pub fn pad_to(out: &mut Vec<u8>, length: usize) {
     if out.len() < length {
@@ -157,6 +183,23 @@ mod tests {
         assert_eq!(u32_at(&bytes, 100), Err(Malformed));
         assert_eq!(u64_at(&bytes, 0), Err(Malformed));
         assert_eq!(u8_at(&bytes, 4), Ok(2));
+    }
+
+    #[test]
+    fn declared_sizes_stop_at_the_most_an_answer_can_hold() {
+        let most = (MAX_ANSWER_SIZE as u32).to_le_bytes();
+        let over = (MAX_ANSWER_SIZE as u32 + 1).to_le_bytes();
+        assert_eq!(declared_size(&most, 0), Ok(MAX_ANSWER_SIZE));
+        assert_eq!(declared_size(&over, 0), Err(Malformed));
+        assert_eq!(declared_size(&most, 1), Err(Malformed));
+    }
+
+    #[test]
+    fn declared_counts_are_judged_by_the_room_their_entries_take() {
+        let count = (MAX_ANSWER_SIZE as u32 / 4 + 1).to_le_bytes();
+        assert_eq!(declared_count(&count, 0, 4), Err(Malformed));
+        assert_eq!(declared_count(&count, 0, 1), Ok(MAX_ANSWER_SIZE / 4 + 1));
+        assert_eq!(declared_count(&u32::MAX.to_le_bytes(), 0, usize::MAX), Err(Malformed));
     }
 
     #[test]
@@ -208,5 +251,12 @@ mod tests {
         assert_eq!(align_up(0, 8), 0);
         assert_eq!(align_up(1, 8), 8);
         assert_eq!(align_up(8, 8), 8);
+    }
+
+    #[test]
+    fn checked_align_up_says_when_there_is_no_multiple_left() {
+        assert_eq!(checked_align_up(1, 8), Some(8));
+        assert_eq!(checked_align_up(u64::MAX - 7, 8), Some(u64::MAX - 7));
+        assert_eq!(checked_align_up(u64::MAX, 8), None);
     }
 }

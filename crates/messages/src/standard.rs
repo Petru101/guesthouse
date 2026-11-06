@@ -4,7 +4,7 @@
 //! description back when it creates the allocation. Nothing else reads the record, so its format
 //! is ours. It is the only private allocation data the core understands.
 
-use crate::wire::{Malformed, align_up, pad_to, put_u32, u32_at};
+use crate::wire::{Malformed, align_up, declared_size, pad_to, put_u32, u32_at};
 use crate::{HEADER_SIZE, Status};
 
 const MAGIC: &[u8; 4] = b"GPVS";
@@ -53,7 +53,7 @@ impl StandardRecord {
         })
     }
 
-    /// The bytes one row-exact copy of the surface needs.
+    /// The bytes one row-exact copy of the surface needs. Two 32-bit numbers can't overflow this.
     pub fn exact_size(&self) -> u64 {
         u64::from(self.height) * u64::from(self.pitch)
     }
@@ -62,8 +62,8 @@ impl StandardRecord {
 /// Answers a request to describe a standard allocation.
 pub fn describe(message: &[u8], out: &mut Vec<u8>) -> Result<(), Malformed> {
     let kind = u32_at(message, HEADER_SIZE)?;
-    let allocation_data = u32_at(message, HEADER_SIZE + 4)?;
-    let resource_data = u32_at(message, HEADER_SIZE + 8)?;
+    let allocation_data = declared_size(message, HEADER_SIZE + 4)?;
+    let resource_data = declared_size(message, HEADER_SIZE + 8)?;
     let mut fields = [0; FIELD_COUNT];
     for (index, field) in fields.iter_mut().enumerate() {
         *field = u32_at(message, DESCRIPTION + index * 4)?;
@@ -90,7 +90,7 @@ pub fn describe(message: &[u8], out: &mut Vec<u8>) -> Result<(), Malformed> {
             put_u32(out, field);
         }
     }
-    let data = u64::from(allocation_data) + u64::from(resource_data);
+    let data = (allocation_data + resource_data) as u64;
     pad_to(out, align_up(data + u64::from(ANSWER_FIXED_SIZE), ANSWER_ALIGN) as usize);
     Ok(())
 }
