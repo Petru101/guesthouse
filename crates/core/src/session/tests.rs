@@ -437,11 +437,12 @@ mod allocations {
     }
 
     #[test]
-    fn naming_an_allocation_of_a_live_resource_frees_nothing() {
+    fn naming_an_allocation_frees_it_and_its_resource_goes_with_the_last_one() {
         let mut session = session();
         let (_, handle) = allocate(&mut session, private(0x1000));
         destroy(&mut session, 0, &[handle]);
-        assert!(session.allocations.contains_key(&handle));
+        assert!(session.allocations.is_empty());
+        assert!(session.resources.is_empty());
     }
 
     fn open(session: &mut TestSession, shared: u32, count: u32) -> Vec<u8> {
@@ -459,6 +460,38 @@ mod allocations {
         destroy(&mut session, resource, &[]);
         assert!(session.allocations.contains_key(&handle));
         destroy(&mut session, resource, &[]);
+        assert!(session.allocations.is_empty());
+    }
+
+    #[test]
+    fn a_frame_another_process_opened_survives_its_maker_naming_it() {
+        let mut session = session();
+        let (resource, handle) = allocate(&mut session, private(0x1000));
+        open(&mut session, resource, 1);
+        destroy(&mut session, 0, &[handle]);
+        assert!(session.allocations.contains_key(&handle));
+        // The maker has gone, which leaves one user, and its second message must still free nothing.
+        destroy(&mut session, resource, &[]);
+        destroy(&mut session, 0, &[handle]);
+        assert!(session.allocations.contains_key(&handle));
+        destroy(&mut session, resource, &[]);
+        assert!(session.allocations.is_empty());
+        assert!(session.resources.is_empty() && session.resource_users.is_empty());
+    }
+
+    #[test]
+    fn a_shared_object_keeps_a_named_allocation_until_it_goes() {
+        let mut session = session();
+        let (resource, handle) = allocate(&mut session, private(0x1000));
+        let mut request = message(Command::CreateSharedObject, 0x20);
+        set_u32(&mut request, 0x18, resource);
+        let shared = status_of(&send(&mut session, &request));
+        destroy(&mut session, 0, &[handle]);
+        assert!(session.allocations.contains_key(&handle));
+        let mut request = message(Command::DestroySharedObject, 0x20);
+        set_u32(&mut request, 0x18, shared);
+        send(&mut session, &request);
+        destroy(&mut session, 0, &[handle]);
         assert!(session.allocations.is_empty());
     }
 

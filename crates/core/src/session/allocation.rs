@@ -140,17 +140,21 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         }
         self.resource_users.remove(&resource);
         // Each process sends this twice: once for the resource and once for its allocations by name.
-        // The second must not free what a live resource still holds for someone else.
+        // Naming one frees it, unless other processes may still reach it, like dwm's last frame. An
+        // entry in the users table stays until the last user goes, however few are left.
         let held_elsewhere = |handle: &u32| {
-            self.allocations
-                .get(handle)
-                .is_some_and(|allocation| self.resources.contains_key(&allocation.resource))
+            self.allocations.get(handle).is_some_and(|allocation| {
+                let owner = allocation.resource;
+                self.resource_users.contains_key(&owner)
+                    || self.shared_objects.values().any(|&object| object == owner)
+            })
         };
         let mut handles: Vec<u32> = request.handles.iter().filter(|handle| !held_elsewhere(handle)).collect();
         handles.extend(self.resources.remove(&resource).unwrap_or_default());
         self.run_deferred();
         for handle in handles {
             let Some(allocation) = self.allocations.remove(&handle) else { continue };
+            self.leave_resource(allocation.resource, handle);
             let Some(memory) = allocation.memory else { continue };
             let freed = FreedAllocation {
                 memory,
@@ -161,6 +165,15 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             self.defer(DeferredAction::FreeAllocation(freed));
         }
         Ok(())
+    }
+
+    /// A resource goes with its last allocation, as nothing can open it after that.
+    fn leave_resource(&mut self, resource: u32, handle: u32) {
+        let Some(members) = self.resources.get_mut(&resource) else { return };
+        members.retain(|&member| member != handle);
+        if members.is_empty() {
+            self.resources.remove(&resource);
+        }
     }
 
     /// Handles mean the same to every process here, so opening returns the existing ones and the
