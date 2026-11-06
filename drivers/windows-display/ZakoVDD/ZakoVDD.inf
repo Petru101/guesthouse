@@ -69,10 +69,12 @@ ZakoVDD.dll
 ; =================== Generic ==================================
 
 [Strings]
-ManufacturerName="ZakoTech"
-DiskName = "ZakoVDD Installation Disk"
+ManufacturerName="Guesthouse"
+DiskName = "Guesthouse display driver"
 WudfRdDisplayName="Windows Driver Foundation - User-mode Driver Framework Reflector"
-DeviceName="Zako Display Adapter"
+; This exact name is how the guest's OpenGL and Vulkan drivers find their GPU when an indirect display is the only display.
+; Without it OpenGL falls back to GDI Generic and Vulkan finds nothing. See notes/display-design.md.
+DeviceName="RDPUDD Chained DD"
 
 REG_MULTI_SZ  = 0x00010000
 REG_SZ        = 0x00000000

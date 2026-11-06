@@ -57,7 +57,8 @@
 		-->
 	</colour>
 	<cursor>
-		<HardwareCursor>true</HardwareCursor>
+		<HardwareCursor>false</HardwareCursor>
+		<!--Guesthouse: off. A hardware cursor moving doesn't make Windows send a frame, so ours would only move when something else did. With this off DWM draws the cursor into the frame, at the right SDR white level.-->
 		<!--Whether to display a hardware cursor in the buffer (If disabled streaming apps will use client cursor)-->
 		<CursorMaxY>128</CursorMaxY>
 		<!--The maximum height support for all cursor types. Older intel cpus may be limited to 64x64 -->
@@ -65,7 +66,8 @@
 		<!--The maximum width supported for all supported cursor types.-->
 		<AlphaCursorSupport>true</AlphaCursorSupport>
 		<!--Indicates if the adapter supports the 32-bit alpha cursor format. Most cursors are alpha format.-->
-		<XorCursorSupportLevel>2</XorCursorSupportLevel>
+		<XorCursorSupportLevel>1</XorCursorSupportLevel>
+		<!--Guesthouse: the frame pass only draws alpha cursors, so leave XOR ones to Windows if the hardware cursor is ever turned on.-->
 		<!-- Do not change if you don't know what you're doing -->
 		<!--
 		0 = IDDCX_XOR_CURSOR_SUPPORT_UNINITIALIZED
