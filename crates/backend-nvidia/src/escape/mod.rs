@@ -7,11 +7,14 @@ mod client_alloc;
 mod control;
 mod gpu_groups;
 mod gpu_range;
+mod time_pairs;
+mod video_memory;
 
 pub use gpu_range::RUNTIME_GPU_RANGE;
 
 use crate::rm::device::Device;
 use crate::rm::{Rm, RmError};
+use guesthouse_backend::VideoMemoryUse;
 
 // The escape's fixed fields.
 const HEADER_SIZE_FIELD: usize = 0x08;
@@ -34,6 +37,8 @@ const FUNCTION_LIST_GPU_GROUPS: u32 = 0x0700_0004;
 /// Which GPU addresses the compute runtime may treat as its own.
 const FUNCTION_RUNTIME_GPU_RANGE: u32 = 0x0100_0113;
 const FUNCTION_RM_ALLOC: u32 = 0x0500_002A;
+/// How much video memory there is, for OpenGL's memory queries.
+const FUNCTION_VIDEO_MEMORY: u32 = 0x0100_0012;
 
 const GPU_LIST_COUNT: usize = 0x34;
 const GPU_LIST_HANDLES: usize = 0x38;
@@ -55,6 +60,7 @@ fn put(data: &mut [u8], at: usize, value: u32) {
 pub fn answer<R: Rm>(
     device: &mut Device<R>,
     channel_classes: &[(u32, u32)],
+    memory: &dyn Fn() -> VideoMemoryUse,
     data: &mut [u8],
 ) -> Result<(), RmError> {
     let Some(function) = get(data, FUNCTION) else { return Ok(()) };
@@ -72,6 +78,7 @@ pub fn answer<R: Rm>(
         FUNCTION_LIST_COMPUTE_GPUS => {}
         FUNCTION_CHECK_DISPLAY => {}
         FUNCTION_RUNTIME_GPU_RANGE => gpu_range::answer(data),
+        FUNCTION_VIDEO_MEMORY => video_memory::answer(memory(), data),
         FUNCTION_RM_ALLOC => {
             put(data, HEADER_SIZE_FIELD, HEADER_SIZE);
             client_alloc::answer(data);
@@ -91,6 +98,8 @@ pub(super) mod tests {
     use crate::rm::classes::CONTROL_GET_GPU_ID;
     use crate::rm::fake::FakeRm;
 
+    pub(super) const NO_MEMORY: fn() -> VideoMemoryUse = || VideoMemoryUse { total: 0, used: 0 };
+
     pub(super) fn device() -> Device<FakeRm> {
         let mut rm = FakeRm::new();
         rm.answer(CONTROL_GET_GPU_ID, |params| {
@@ -109,7 +118,7 @@ pub(super) mod tests {
     #[test]
     fn a_plain_escape_gets_the_usual_answer() {
         let mut data = escape(0x0123, 0x40);
-        answer(&mut device(), &[], &mut data).unwrap();
+        answer(&mut device(), &[], &NO_MEMORY, &mut data).unwrap();
         assert_eq!(get(&data, HEADER_SIZE_FIELD), Some(HEADER_SIZE));
         assert_eq!(get(&data, ANSWERED), Some(1));
         assert_eq!(get(&data, RESULT), Some(1));
@@ -118,7 +127,7 @@ pub(super) mod tests {
     #[test]
     fn one_escape_says_it_is_unsupported_as_the_real_driver_does() {
         let mut data = escape(FUNCTION_UNSUPPORTED, 0x40);
-        answer(&mut device(), &[], &mut data).unwrap();
+        answer(&mut device(), &[], &NO_MEMORY, &mut data).unwrap();
         assert_eq!(get(&data, RESULT), Some(RESULT_UNSUPPORTED as u32));
     }
 
@@ -126,20 +135,30 @@ pub(super) mod tests {
     fn a_display_check_keeps_its_own_size() {
         let mut data = escape(FUNCTION_CHECK_DISPLAY, 0x40);
         put(&mut data, HEADER_SIZE_FIELD, 0x1234);
-        answer(&mut device(), &[], &mut data).unwrap();
+        answer(&mut device(), &[], &NO_MEMORY, &mut data).unwrap();
         assert_eq!(get(&data, HEADER_SIZE_FIELD), Some(0x1234));
     }
 
     #[test]
     fn the_gpu_list_has_this_one_card() {
         let mut data = escape(FUNCTION_LIST_GPUS, GPU_LIST_KINDS + 4);
-        answer(&mut device(), &[], &mut data).unwrap();
+        answer(&mut device(), &[], &NO_MEMORY, &mut data).unwrap();
         assert_eq!(get(&data, GPU_LIST_COUNT), Some(1));
         assert_eq!(get(&data, GPU_LIST_HANDLES), Some(0x300));
     }
 
     #[test]
+    fn the_memory_escape_keeps_its_own_size() {
+        let mut data = escape(FUNCTION_VIDEO_MEMORY, 0x54);
+        put(&mut data, HEADER_SIZE_FIELD, 0x54);
+        let memory = || VideoMemoryUse { total: 1 << 30, used: 0 };
+        answer(&mut device(), &[], &memory, &mut data).unwrap();
+        assert_eq!(get(&data, HEADER_SIZE_FIELD), Some(0x54));
+        assert_eq!(get(&data, RESULT), Some(1));
+    }
+
+    #[test]
     fn a_short_escape_is_not_a_problem() {
-        answer(&mut device(), &[], &mut [0; 4]).unwrap();
+        answer(&mut device(), &[], &NO_MEMORY, &mut [0; 4]).unwrap();
     }
 }

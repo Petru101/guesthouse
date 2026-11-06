@@ -44,6 +44,8 @@ pub struct FakeRm {
     /// How many of the engine's copies have had that done.
     copies_looked_at: usize,
     pub engine: FakeEngine,
+    /// What [`Rm::read_gpu_timer`] says. `None` plays a page that isn't mapped yet.
+    pub gpu_timer: Option<u64>,
     answers: HashMap<u32, Answer>,
     /// Each range's mappings, address to length, to refuse a map over a map.
     mappings: BTreeMap<(Handle, u64), u64>,
@@ -69,6 +71,7 @@ impl FakeRm {
             memory_starts: HashMap::new(),
             copies_looked_at: 0,
             engine: FakeEngine::default(),
+            gpu_timer: None,
             answers: HashMap::new(),
             mappings: BTreeMap::new(),
             mapped: Mapped::new(),
@@ -271,5 +274,9 @@ impl Rm for FakeRm {
             self.engine.run(token, &self.mapped, &self.exports);
             self.copy_starts_to_host_pages();
         }
+    }
+
+    fn read_gpu_timer(&self) -> Option<u64> {
+        self.gpu_timer
     }
 }
