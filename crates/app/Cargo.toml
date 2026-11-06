@@ -1,0 +1,35 @@
+[package]
+name = "guesthouse-app"
+description = "The desktop app: a library of machines, their settings, first-run setup and the viewer's shell."
+version.workspace = true
+edition.workspace = true
+# GTK's Rust bindings need this.
+rust-version = "1.92"
+publish.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "guesthouse"
+path = "src/main.rs"
+
+[dependencies]
+guesthouse-app-core.workspace = true
+# The UI, and the features each version brings: spinners and dialogs from libadwaita 1.8.
+adw = { package = "libadwaita", version = "0.9", features = ["v1_8"] }
+gtk = { package = "gtk4", version = "0.11", features = ["v4_18"] }
+# Progress from a thread to GTK's main loop, which glib no longer has a channel for.
+async-channel = "2"
+# Local time for snapshot dates.
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+# The slot type that names a VM.
+guesthouse-daemon.workspace = true
+# Locking the pointer: GTK has no API for the two Wayland protocols it takes, so they're used directly,
+# on GTK's own connection.
+gdk-wayland = { package = "gdk4-wayland", version = "0.11", features = ["wayland_crate"] }
+wayland-client = "0.31"
+wayland-protocols = { version = "0.32", features = ["client", "unstable"] }
+# What the app remembers is a small JSON file.
+serde_json = "1"
+
+[lints]
+workspace = true
