@@ -334,6 +334,7 @@ impl<R: Rm + OpenRm> Backend for NvidiaBackend<R> {
     }
 
     fn escape(&mut self, data: &mut [u8]) {
+        log::debug!("escape {:02x?}, {} bytes", data.get(0x10..0x14), data.len());
         if let Err(error) = escape::answer(&mut self.device, &self.channel_classes, data) {
             log::warn!("an escape failed: {error}");
         }

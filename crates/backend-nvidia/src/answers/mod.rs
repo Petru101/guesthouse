@@ -2,6 +2,7 @@
 //! own driver.
 
 pub mod adapter;
+mod caps;
 mod guid;
 pub mod nodes;
 pub mod perf_data;
