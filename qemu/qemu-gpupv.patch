@@ -2320,3 +2320,469 @@ index 0000000..2e15d1d
 -- 
 2.56.0
 
+From 9d93982bdb21e293722d5e1dd01e909139637ee3 Mon Sep 17 00:00:00 2001
+From: xnixy <x@ruxn.com>
+Date: Thu, 5 Nov 2026 22:59:41 -0800
+Subject: [PATCH 12/21] hw/misc/nvfwd: find the pointer and file fields of a
+ call
+
+The device says where these are, from the call itself. The guest only offers to
+fill them in, and any it leaves alone are cleared.
+---
+ hw/misc/nvfwd/meson.build |   1 +
+ hw/misc/nvfwd/rmargs.c    | 371 ++++++++++++++++++++++++++++++++++++++
+ hw/misc/nvfwd/rmargs.h    |  53 ++++++
+ 3 files changed, 425 insertions(+)
+ create mode 100644 hw/misc/nvfwd/rmargs.c
+ create mode 100644 hw/misc/nvfwd/rmargs.h
+
+diff --git a/hw/misc/nvfwd/meson.build b/hw/misc/nvfwd/meson.build
+index 1fba80e..1dedc3a 100644
+--- a/hw/misc/nvfwd/meson.build
++++ b/hw/misc/nvfwd/meson.build
+@@ -5,5 +5,6 @@ nvfwd_ss = files(
+   'maps.c',
+   'runs.c',
+   'bounce.c',
++  'rmargs.c',
+ )
+ system_ss.add(when: 'CONFIG_PCI', if_true: nvfwd_ss)
+diff --git a/hw/misc/nvfwd/rmargs.c b/hw/misc/nvfwd/rmargs.c
+new file mode 100644
+index 0000000..9859a4c
+--- /dev/null
++++ b/hw/misc/nvfwd/rmargs.c
+@@ -0,0 +1,371 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++/* See rmargs.h. */
++#include "rmargs.h"
++
++#include <errno.h>
++#include <stddef.h>
++#include <string.h>
++
++#define IOCTL_TYPE_RM 'F'
++#define IOCTL_TYPE(cmd) (((cmd) >> 8) & 0xff)
++#define IOCTL_NR(cmd) ((cmd) & 0xff)
++#define IOCTL_SIZE(cmd) (((cmd) >> 16) & 0x3fff)
++#define MAX_ESCAPE 0xff
++#define POINTER_BYTES 8u
++#define FD_BYTES 4u
++#define EVENT_PARAMS_BYTES (RM_EVENT_DATA + POINTER_BYTES)
++#define VID_HEAP_OS_DESCRIPTOR 27
++#define RM_IDLE_BYTES 40u
++#define HANDLE_BYTES 4u
++
++struct embedded {
++    uint32_t cmd, ptr_off, count_off, count_size, elem;
++};
++static const struct embedded embedded[] = {
++#include "nv_tables.h"
++#include "nv_tables_extra.h"
++};
++
++struct fd_control {
++    uint32_t cmd, off;
++};
++static const struct fd_control fd_controls[] = {
++#include "fd_controls.h"
++};
++
++struct class_size {
++    uint32_t hclass, size;
++};
++static const struct class_size class_sizes[] = {
++#include "class_tables.h"
++};
++
++struct uvm_call {
++    uint32_t cmd, size;
++    int fd_off;
++};
++static const struct uvm_call uvm_calls[] = {
++#include "uvm_tables.h"
++    { 0x30000002, 0, -1 }, /* UVM_DEINITIALIZE */
++};
++
++#define ARRAY_LENGTH(a) (sizeof(a) / sizeof((a)[0]))
++
++typedef struct Walk {
++    const RmCall *call;
++    RmField *fields;
++    int *matched;
++    uint32_t count;
++    bool used[NVFWD_MAX_FIX];
++    int error;
++} Walk;
++
++static uint32_t read32(const uint8_t *at)
++{
++    uint32_t v;
++
++    memcpy(&v, at, sizeof(v));
++    return v;
++}
++
++static uint64_t read_count(const uint8_t *at, uint32_t size)
++{
++    uint64_t v = 0;
++
++    memcpy(&v, at, size);
++    return v;
++}
++
++static uint32_t field_bytes(uint32_t kind)
++{
++    return kind == NVFWD_FIX_FD ? FD_BYTES : POINTER_BYTES;
++}
++
++static int find_fix(const Walk *w, uint32_t at)
++{
++    for (uint32_t i = 0; i < w->call->nfix; i++) {
++        if (w->call->fix[i].at == at) {
++            return i;
++        }
++    }
++    return -1;
++}
++
++/*
++ * Notes a field at `at` in the data. For a pointer that the guest did offer to fix, true, with
++ * where it points in `target`. `size` is 64 bits so a count times an element size cannot wrap.
++ */
++static bool field(Walk *w, uint32_t at, uint32_t kind, uint64_t size, uint32_t *target)
++{
++    const RmCall *c = w->call;
++    int i;
++
++    if (w->error) {
++        return false;
++    }
++    if ((uint64_t)at + field_bytes(kind) > c->len || w->count == RMARGS_MAX_FIELDS) {
++        w->error = -EINVAL;
++        return false;
++    }
++    i = find_fix(w, at);
++    if (i >= 0) {
++        const struct nvfwd_fix *f = &c->fix[i];
++
++        if (f->kind != kind || w->used[i] ||
++            (kind == NVFWD_FIX_PTR && (f->target > c->len || size > c->len - f->target))) {
++            w->error = -EINVAL;
++            return false;
++        }
++        w->used[i] = true;
++        if (target) {
++            *target = f->target;
++        }
++    }
++    w->fields[w->count] = (RmField){ at, kind, size > UINT32_MAX ? UINT32_MAX : (uint32_t)size };
++    w->matched[w->count++] = i;
++    return i >= 0;
++}
++
++/* Everything read from behind a pointer has to be inside what that pointer was checked for. */
++static bool inside(Walk *w, uint64_t start, uint64_t bytes, uint32_t size)
++{
++    if (start + bytes > size) {
++        w->error = -EINVAL;
++        return false;
++    }
++    return true;
++}
++
++static void walk_control(Walk *w)
++{
++    const RmCall *c = w->call;
++    const uint8_t *arg = c->data + c->arg_at;
++    uint32_t cmd, size, params;
++
++    if (c->size < RM_CONTROL_BYTES) {
++        w->error = -EINVAL;
++        return;
++    }
++    cmd = read32(arg + RM_CONTROL_CMD);
++    size = read32(arg + RM_CONTROL_PARAMS_SIZE);
++    if (!field(w, c->arg_at + RM_CONTROL_PARAMS, NVFWD_FIX_PTR, size, &params)) {
++        return;
++    }
++    for (size_t i = 0; i < ARRAY_LENGTH(fd_controls); i++) {
++        if (fd_controls[i].cmd == cmd && inside(w, fd_controls[i].off, FD_BYTES, size)) {
++            field(w, params + fd_controls[i].off, NVFWD_FIX_FD, 0, NULL);
++        }
++    }
++    for (size_t i = 0; i < ARRAY_LENGTH(embedded); i++) {
++        const struct embedded *e = &embedded[i];
++
++        if (e->cmd == cmd && inside(w, e->ptr_off, POINTER_BYTES, size) &&
++            inside(w, e->count_off, e->count_size, size)) {
++            uint64_t count = read_count(c->data + params + e->count_off, e->count_size);
++
++            field(w, params + e->ptr_off, NVFWD_FIX_PTR, count * e->elem, NULL);
++        }
++    }
++}
++
++static uint32_t class_params_bytes(uint32_t hclass)
++{
++    for (size_t i = 0; i < ARRAY_LENGTH(class_sizes); i++) {
++        if (class_sizes[i].hclass == hclass) {
++            return class_sizes[i].size;
++        }
++    }
++    return 0;
++}
++
++static void walk_alloc(Walk *w)
++{
++    const RmCall *c = w->call;
++    const uint8_t *arg = c->data + c->arg_at;
++    bool long_form = c->size == RM_ALLOC_LONG_BYTES;
++    uint32_t hclass, size, params;
++
++    if (!long_form && c->size != RM_ALLOC_SHORT_BYTES) {
++        w->error = -EINVAL;
++        return;
++    }
++    hclass = read32(arg + RM_ALLOC_CLASS);
++    size = read32(arg + (long_form ? RM_ALLOC_LONG_PARAMS_SIZE : RM_ALLOC_SHORT_PARAMS_SIZE));
++    if (!size) { /* the driver then takes the size from its class table */
++        size = class_params_bytes(hclass);
++    }
++    if (long_form) {
++        field(w, c->arg_at + RM_ALLOC_RIGHTS, NVFWD_FIX_PTR, HANDLE_BYTES, NULL);
++    }
++    if (!field(w, c->arg_at + RM_ALLOC_PARAMS, NVFWD_FIX_PTR, size, &params)) {
++        return;
++    }
++    if (hclass == CLASS_OS_EVENT || hclass == CLASS_EVENT) {
++        /* Any other kind of event carries a pointer in this field, and no guest has a use for one. */
++        if (!inside(w, 0, EVENT_PARAMS_BYTES, size) ||
++            read32(c->data + params + RM_EVENT_KIND) != CLASS_OS_EVENT) {
++            w->error = w->error ? w->error : -EPERM;
++            return;
++        }
++        field(w, params + RM_EVENT_DATA, NVFWD_FIX_FD, 0, NULL);
++    }
++}
++
++static void walk_memory(Walk *w)
++{
++    const RmCall *c = w->call;
++    uint32_t hclass;
++
++    if (c->size != RM_MEMORY_BYTES) {
++        w->error = -EINVAL;
++        return;
++    }
++    hclass = read32(c->data + c->arg_at + RM_MEMORY_CLASS);
++    field(w, c->arg_at + RM_MEMORY_POINTER,
++          hclass == CLASS_OS_DESCRIPTOR ? NVFWD_FIX_PAGES : NVFWD_FIX_PTR, 0, NULL);
++    field(w, c->arg_at + RM_MEMORY_FD, NVFWD_FIX_FD, 0, NULL);
++}
++
++static void walk_idle(Walk *w)
++{
++    const RmCall *c = w->call;
++    uint64_t bytes;
++
++    if (c->size < RM_IDLE_BYTES) {
++        w->error = -EINVAL;
++        return;
++    }
++    bytes = (uint64_t)read32(c->data + c->arg_at + RM_IDLE_COUNT) * HANDLE_BYTES;
++    field(w, c->arg_at + RM_IDLE_CLIENTS, NVFWD_FIX_PTR, bytes, NULL);
++    field(w, c->arg_at + RM_IDLE_DEVICES, NVFWD_FIX_PTR, bytes, NULL);
++    field(w, c->arg_at + RM_IDLE_CHANNELS, NVFWD_FIX_PTR, bytes, NULL);
++}
++
++static void walk_fd_at(Walk *w, uint32_t at, uint32_t min_size)
++{
++    if (w->call->size < min_size) {
++        w->error = -EINVAL;
++        return;
++    }
++    field(w, w->call->arg_at + at, NVFWD_FIX_FD, 0, NULL);
++}
++
++static void walk_vid_heap(Walk *w)
++{
++    const RmCall *c = w->call;
++
++    /* This function takes an address to pin: guest memory goes through RM_ALLOC_MEMORY only. */
++    if (c->size != RM_VID_HEAP_BYTES) {
++        w->error = -EINVAL;
++    } else if (read32(c->data + c->arg_at + RM_VID_HEAP_FUNCTION) == VID_HEAP_OS_DESCRIPTOR) {
++        w->error = -EPERM;
++    }
++}
++
++bool rmargs_parse(RmCall *call, uint32_t cmd, const uint8_t *data, uint32_t len,
++                  const struct nvfwd_fix *fix, uint32_t nfix)
++{
++    *call = (RmCall){ .nr = IOCTL_NR(cmd), .cmd = cmd, .size = IOCTL_SIZE(cmd), .data = data,
++                      .len = len, .fix = fix, .nfix = nfix };
++    if (IOCTL_TYPE(cmd) != IOCTL_TYPE_RM || call->size > len) {
++        return false;
++    }
++    if (call->nr == ESC_XFER) {
++        uint32_t inner, inner_size;
++
++        if (call->size != RM_XFER_BYTES) {
++            return false;
++        }
++        inner = read32(data + RM_XFER_CMD);
++        inner_size = read32(data + RM_XFER_SIZE);
++        /* The driver takes this word whole, so it has to be a plain escape number. */
++        if (inner > MAX_ESCAPE || inner_size > len - RM_XFER_BYTES) {
++            return false;
++        }
++        call->nr = inner;
++        call->arg_at = RM_XFER_BYTES;
++        call->size = inner_size;
++    }
++    return true;
++}
++
++int rmargs_fields(const RmCall *call, RmField *fields, int *matched)
++{
++    Walk w = { .call = call, .fields = fields, .matched = matched };
++
++    if (IOCTL_NR(call->cmd) == ESC_XFER) {
++        uint32_t target = 0;
++
++        /* The filter has read the arguments here, so here is where the driver must find them. */
++        if (!field(&w, RM_XFER_POINTER, NVFWD_FIX_PTR, call->size, &target) ||
++            target != RM_XFER_BYTES) {
++            return w.error ? w.error : -EINVAL;
++        }
++    }
++    switch (call->nr) {
++    case ESC_RM_CONTROL:
++        walk_control(&w);
++        break;
++    case ESC_RM_ALLOC:
++        walk_alloc(&w);
++        break;
++    case ESC_RM_ALLOC_MEMORY:
++        walk_memory(&w);
++        break;
++    case ESC_RM_MAP_MEMORY:
++        walk_fd_at(&w, RM_MAP_FD, RM_MAP_BYTES);
++        break;
++    case ESC_REGISTER_FD:
++        walk_fd_at(&w, 0, FD_BYTES);
++        break;
++    case ESC_ALLOC_OS_EVENT:
++    case ESC_FREE_OS_EVENT:
++        walk_fd_at(&w, RM_OS_EVENT_FD, RM_OS_EVENT_FD + FD_BYTES);
++        break;
++    case ESC_RM_IDLE_CHANNELS:
++        walk_idle(&w);
++        break;
++    case ESC_RM_VID_HEAP_CONTROL:
++        walk_vid_heap(&w);
++        break;
++    default:
++        break;
++    }
++    if (w.error) {
++        return w.error;
++    }
++    for (uint32_t i = 0; i < call->nfix; i++) {
++        if (!w.used[i]) {
++            return -EINVAL;
++        }
++    }
++    return w.count;
++}
++
++int rmargs_uvm_fields(uint32_t cmd, uint32_t len, const struct nvfwd_fix *fix, uint32_t nfix,
++                      RmField *fields, int *matched)
++{
++    RmCall call = { .cmd = cmd, .len = len, .fix = fix, .nfix = nfix };
++    Walk w = { .call = &call, .fields = fields, .matched = matched };
++
++    for (size_t i = 0; i < ARRAY_LENGTH(uvm_calls); i++) {
++        if (uvm_calls[i].cmd == cmd) {
++            if (len < uvm_calls[i].size) {
++                return -EINVAL;
++            }
++            if (uvm_calls[i].fd_off >= 0) {
++                field(&w, uvm_calls[i].fd_off, NVFWD_FIX_FD, 0, NULL);
++            }
++            if (w.error) {
++                return w.error;
++            }
++            for (uint32_t j = 0; j < nfix; j++) {
++                if (!w.used[j]) {
++                    return -EINVAL;
++                }
++            }
++            return w.count;
++        }
++    }
++    return -EPERM;
++}
+diff --git a/hw/misc/nvfwd/rmargs.h b/hw/misc/nvfwd/rmargs.h
+new file mode 100644
+index 0000000..3687d71
+--- /dev/null
++++ b/hw/misc/nvfwd/rmargs.h
+@@ -0,0 +1,53 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++/*
++ * Which parts of a forwarded call the host's driver will treat as a pointer or a file. A guest
++ * only says where it would like these patched; this file says where they are, from the call alone.
++ * Any field the guest left alone is cleared rather than passed on, so a value of the guest's can
++ * never reach the driver as a host address or a host file.
++ */
++#ifndef NVFWD_RMARGS_H
++#define NVFWD_RMARGS_H
++
++#include <stdbool.h>
++#include <stdint.h>
++#include "nvfwd_proto.h"
++#include "rm_layout.h"
++
++#define RMARGS_MAX_FIELDS (NVFWD_MAX_FIX + 16u)
++
++typedef struct RmField {
++    uint32_t at;   /* in the call's data */
++    uint32_t kind; /* NVFWD_FIX_* */
++    uint32_t size; /* for a pointer, bytes the driver may touch behind it */
++} RmField;
++
++typedef struct RmCall {
++    uint32_t nr;      /* the escape, after any transfer header */
++    uint32_t cmd;     /* the ioctl number as the guest gave it */
++    uint32_t arg_at;  /* where the arguments start in the data */
++    uint32_t size;    /* their length */
++    const uint8_t *data;
++    uint32_t len;     /* bytes of data in this call */
++    const struct nvfwd_fix *fix;
++    uint32_t nfix;
++} RmCall;
++
++/*
++ * Reads what the guest sent into a call: which escape, where its arguments are, and how long. On
++ * false, the request cannot be what it says it is.
++ */
++bool rmargs_parse(RmCall *call, uint32_t cmd, const uint8_t *data, uint32_t len,
++                  const struct nvfwd_fix *fix, uint32_t nfix);
++
++/*
++ * Lists the fields of a call, and matches the fixes against them. Fills `fields` and returns how
++ * many, or a negative errno if a fix is aimed at anything else or a size does not fit the call.
++ * Each field's `fix` index is in `matched`, or -1 where the guest offered none.
++ */
++int rmargs_fields(const RmCall *call, RmField *fields, int *matched);
++
++/* The same for UVM, where the only such field is one optional fd at a place given by the call. */
++int rmargs_uvm_fields(uint32_t cmd, uint32_t len, const struct nvfwd_fix *fix, uint32_t nfix,
++                      RmField *fields, int *matched);
++
++#endif
+-- 
+2.56.0
+
