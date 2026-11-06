@@ -498,3 +498,155 @@ impl<R: Rm> NvidiaBackend<R> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use guesthouse_backend::MemoryError;
+
+    /// Where a ring entry's upper word keeps its length.
+    const ONE_WORD_SHIFT: u32 = 10;
+
+    /// Reports every list as present, full of one-word entries, and remembers what was asked.
+    #[derive(Default)]
+    struct ListHost {
+        asked: std::cell::Cell<usize>,
+        reads: std::cell::Cell<usize>,
+        /// Whether addresses are in shared pages.
+        ring: bool,
+    }
+
+    impl HostServices for ListHost {
+        fn take_gpu_addresses(&mut self, _: u64, _: u64) -> Result<u64, guesthouse_backend::BackendError> {
+            Ok(0)
+        }
+        fn read_at_gpu_address(&self, _: SpaceId, _: u64, out: &mut [u8]) -> Option<usize> {
+            self.asked.set(out.len());
+            self.reads.set(self.reads.get() + 1);
+            let one_word = 1u64 << (u32::BITS + ONE_WORD_SHIFT);
+            out.chunks_mut(ENTRY_SIZE)
+                .for_each(|entry| entry.copy_from_slice(&one_word.to_le_bytes()[..entry.len()]));
+            Some(out.len())
+        }
+        fn shared_span(&self, _: SpaceId, _: u64) -> Option<guesthouse_backend::SharedSpan> {
+            self.ring.then_some(guesthouse_backend::SharedSpan {
+                guest_address: 0,
+                offset_in_mapping: 0,
+                mapping_length: 0,
+            })
+        }
+        fn guest_span(&self, _: SpaceId, _: u64) -> Option<guesthouse_backend::GuestSpan> {
+            None
+        }
+        fn read_guest_span(&self, space: SpaceId, address: u64, out: &mut [u8]) -> Option<usize> {
+            self.read_at_gpu_address(space, address, out)
+        }
+        fn write_guest_span(&mut self, _: SpaceId, _: u64, _: u32) -> bool {
+            true
+        }
+        fn write_u32(&mut self, _: u64, _: u32) -> Result<(), MemoryError> {
+            Ok(())
+        }
+        fn write_u64(&mut self, _: u64, _: u64) -> Result<(), MemoryError> {
+            Ok(())
+        }
+        fn read_guest(&self, _: u64, _: &mut [u8]) -> usize {
+            0
+        }
+        fn fence_value(&self, _: u64) -> Result<u64, MemoryError> {
+            Ok(0)
+        }
+    }
+
+    fn private_data(entries: u32) -> Vec<u8> {
+        let mut private = vec![0; SMALLEST_PRIVATE_DATA];
+        private[ENTRIES..ENTRIES + 4].copy_from_slice(&entries.to_le_bytes());
+        private[LIST_ADDRESS..LIST_ADDRESS + 8].copy_from_slice(&0x1000u64.to_le_bytes());
+        private
+    }
+
+    fn work(private: &[u8]) -> Work<'_> {
+        Work {
+            source: WorkSource::HardwareQueue,
+            queue: 1,
+            space: SpaceId(1),
+            node: 1,
+            private,
+            fence: 0,
+            fence_gpu_address: 0,
+            fence_value: 1,
+            may_run: true,
+            queue_failed: false,
+        }
+    }
+
+    #[test]
+    fn a_ring_gap_can_start_at_the_last_position_there_is() {
+        let mut host = ListHost { ring: true, ..ListHost::default() };
+        NvidiaBackend::<crate::rm::fake::FakeRm>::clear_ring_gap(
+            &mut host,
+            SpaceId(1),
+            0,
+            8,
+            u32::MAX,
+            3,
+            true,
+        );
+    }
+
+    #[test]
+    fn a_list_as_long_as_the_ring_is_read() {
+        let host = ListHost::default();
+        let private = private_data(ListChannel::RING_ENTRIES);
+        assert!(NvidiaBackend::<crate::rm::fake::FakeRm>::listing(&host, &work(&private)).is_ok());
+        assert_eq!(host.asked.get(), ListChannel::RING_ENTRIES as usize * ENTRY_SIZE);
+    }
+
+    #[test]
+    fn a_longer_list_stops_the_queue_before_any_room_is_made_for_it() {
+        let host = ListHost::default();
+        let private = private_data(ListChannel::RING_ENTRIES + 1);
+        let listing = NvidiaBackend::<crate::rm::fake::FakeRm>::listing(&host, &work(&private));
+        assert_eq!(listing, Err(WorkStart::QueueFailed));
+        assert_eq!(host.asked.get(), 0);
+    }
+
+    #[test]
+    fn a_submission_longer_than_any_ring_is_not_walked_when_standing_in() {
+        let mut host = ListHost::default();
+        let entries = ListChannel::RING_ENTRIES + 1;
+        let mut private = private_data(entries);
+        private[RING_END..RING_END + 4].copy_from_slice(&entries.to_le_bytes());
+        NvidiaBackend::<crate::rm::fake::FakeRm>::stand_in(&mut host, SpaceId(1), &private);
+        assert_eq!(host.reads.get(), 1, "the ring itself, and no entry in it");
+    }
+
+    #[test]
+    fn a_ring_is_the_largest_power_of_two_that_fits() {
+        assert_eq!(ring_entries_of(0x10000), Some(0x2000));
+        assert_eq!(ring_entries_of(0x10008), Some(0x2000));
+        assert_eq!(ring_entries_of(0xFFF8), Some(0x1000));
+    }
+
+    #[test]
+    fn a_ring_a_channel_could_not_count_is_not_used() {
+        assert_eq!(ring_entries_of(1 << 34), Some(1 << 31));
+        assert_eq!(ring_entries_of(1 << 35), None);
+    }
+
+    #[test]
+    fn a_list_within_the_ring_is_left_alone() {
+        assert_eq!(unwrap_list(vec![1, 2, 3], 3), [1, 2, 3]);
+    }
+
+    #[test]
+    fn an_overrun_list_comes_out_oldest_first() {
+        let mut listing = vec![0xAA; ENTRY_SIZE];
+        listing.extend(vec![0xBB; (LIST_RING_ENTRIES - 1) * ENTRY_SIZE]);
+        listing.extend(vec![0xCC; ENTRY_SIZE]);
+        let fixed = unwrap_list(listing, LIST_RING_ENTRIES as u32 + 1);
+        assert_eq!(fixed.len(), LIST_RING_ENTRIES * ENTRY_SIZE);
+        assert_eq!(fixed[0], 0xBB);
+        assert_eq!(fixed[fixed.len() - 1], 0xAA);
+    }
+}
