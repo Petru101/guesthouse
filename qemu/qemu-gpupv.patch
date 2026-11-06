@@ -1,7 +1,7 @@
-From 65ab7380804588f7c67aa737cb2ce303e143f3c8 Mon Sep 17 00:00:00 2001
+From 4f1c666991ab0f009520da04f561454e8312b085 Mon Sep 17 00:00:00 2001
 From: xnixy <x@ruxn.com>
 Date: Tue, 3 Nov 2026 18:56:28 -0800
-Subject: [PATCH 1/5] hw/hyperv: add GPU-PV transport for Windows guests
+Subject: [PATCH 1/6] hw/hyperv: add GPU-PV transport for Windows guests
 
 Add the three things a Hyper-V GPU-PV partition sees: the global and per-vGPU
 DXGK VMBus channels, and the 1414:008E virtual render PCI function whose config
@@ -538,10 +538,10 @@ index 2cf7307..d0a6722 100644
 2.56.0
 
 
-From 3011d38e424521b58e7585d26eb989536ff8a7e7 Mon Sep 17 00:00:00 2001
+From e62d2c60903e14be2cbd02114c136f4920cec7ae Mon Sep 17 00:00:00 2001
 From: xnixy <x@ruxn.com>
 Date: Wed, 4 Nov 2026 10:50:40 -0800
-Subject: [PATCH 2/5] hw/hyperv: map shared memory for GPU-PV fences
+Subject: [PATCH 2/6] hw/hyperv: map shared memory for GPU-PV fences
 
 Let gpupv-global map a memory backend over the VMBus MMIO window, so the guest can map
 fence storage that the backend can also reach.
@@ -599,10 +599,10 @@ index 9a8aed5..f5531b8 100644
 2.56.0
 
 
-From d79190ce8dbfcb9fb59ef2ef8e3814fd97d6b27b Mon Sep 17 00:00:00 2001
+From 4ead396f4d61a9e28113a0129f70b4737e2d9e39 Mon Sep 17 00:00:00 2001
 From: xnixy <x@ruxn.com>
 Date: Thu, 5 Nov 2026 02:30:11 -0800
-Subject: [PATCH 3/5] hw/usb: poll the high-speed usb-mouse every millisecond
+Subject: [PATCH 3/6] hw/usb: poll the high-speed usb-mouse every millisecond
 
 At 8 ms a guest's game sees mouse movement arrive in steps. The tablet already polls at 1 ms.
 ---
@@ -626,10 +626,10 @@ index ae19d60..9576925 100644
 2.56.0
 
 
-From 592e306d07c9d975970e5459f32abe14c6f3e278 Mon Sep 17 00:00:00 2001
+From f9c3967ee568e237cfa57ae3c2cd15caefd0b040 Mon Sep 17 00:00:00 2001
 From: xnixy <x@ruxn.com>
 Date: Thu, 5 Nov 2026 08:37:32 -0800
-Subject: [PATCH 4/5] hw/hyperv: let the GPU-PV backend hand over memory by
+Subject: [PATCH 4/6] hw/hyperv: let the GPU-PV backend hand over memory by
  file descriptor
 
 A backend can send GPUPV_EVT_ARENA with a base, a size and a file. QEMU maps
@@ -770,10 +770,10 @@ index f5531b8..f0b0f3a 100644
 2.56.0
 
 
-From 9ef2d718c6b114df5df85ab09553f58dfa44374c Mon Sep 17 00:00:00 2001
+From 2a5b7563a329f8e6c2be67640cea9e08d36306f1 Mon Sep 17 00:00:00 2001
 From: xnixy <x@ruxn.com>
 Date: Thu, 5 Nov 2026 12:13:11 -0800
-Subject: [PATCH 5/5] hw/hyperv: keep reading a GPU-PV channel until a pass
+Subject: [PATCH 5/6] hw/hyperv: keep reading a GPU-PV channel until a pass
  finds nothing
 
 A guest signals only when it finds the ring empty, so a packet written after
@@ -828,6 +828,455 @@ index f0b0f3a..6a3bfbd 100644
  }
  
  static void gpupv_drop_arena(GpupvChannel *s)
+-- 
+2.56.0
+
+
+From 607b90ffc1e0ae0fa4159511a72c7f93237195ff Mon Sep 17 00:00:00 2001
+From: xnixy <x@ruxn.com>
+Date: Fri, 6 Nov 2026 02:17:47 -0800
+Subject: [PATCH 6/6] hw/hyperv: add the Time Synchronization integration
+ service
+
+A Windows guest's clock starts from the real-time clock's whole seconds, and
+nothing keeps it on the host's time. OpenGL in the guest pairs the host's time
+with its own, and goes wrong when the two are apart.
+
+This is the VMBus channel Hyper-V uses for that. Windows binds its own driver and
+starts its own service, with no network and no setting changed. The channel is
+a message pipe, so an offer can now carry a pipe mode.
+---
+ hw/hyperv/hv-timesync.c         | 368 ++++++++++++++++++++++++++++++++
+ hw/hyperv/meson.build           |   1 +
+ hw/hyperv/vmbus.c               |   1 +
+ include/hw/hyperv/vmbus-proto.h |   1 +
+ include/hw/hyperv/vmbus.h       |   2 +
+ 5 files changed, 373 insertions(+)
+ create mode 100644 hw/hyperv/hv-timesync.c
+
+diff --git a/hw/hyperv/hv-timesync.c b/hw/hyperv/hv-timesync.c
+new file mode 100644
+index 0000000..2226ba8
+--- /dev/null
++++ b/hw/hyperv/hv-timesync.c
+@@ -0,0 +1,368 @@
++/*
++ * Hyper-V's Time Synchronization integration service, as a VMBus device.
++ *
++ * Windows keeps a guest's clock on the host's time through this channel, with
++ * no network and no settings changed. The host speaks first: it offers
++ * versions, the guest picks, and then the host sends the time, every few
++ * seconds and once marked as a sync when the channel opens.
++ *
++ * That first sync is the one that counts here. Later samples go to Windows' time
++ * service, which is off unless the PC is in a domain, and more syncs changed
++ * nothing when tried every 30 s with the clocks up to 6 ms apart.
++ *
++ * The messages follow what Linux's drivers/hv/hv_util.c and include/linux/hyperv.h
++ * read and answer.
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#include "qemu/osdep.h"
++#include "qemu/error-report.h"
++#include "qemu/module.h"
++#include "qemu/timer.h"
++#include "qemu/uuid.h"
++#include "hw/hyperv/vmbus.h"
++#include "qom/object.h"
++#include "system/kvm.h"
++#include <linux/kvm.h>
++
++#define TYPE_HV_TIMESYNC "hv-timesync"
++OBJECT_DECLARE_SIMPLE_TYPE(HvTimeSync, HV_TIMESYNC)
++
++#define TIMESYNC_CLASS_ID    "9527e630-d0ae-497b-adce-e80ab0175caf"
++#define TIMESYNC_INSTANCE_ID "2dd1ce17-079e-403c-b352-a1921ee207ee"
++
++#define FIRST_MESSAGE_DELAY_MS 10
++#define SAMPLE_PERIOD_MS 5000
++
++/* 100 ns units between 1 Jan 1601, where Windows counts from, and 1970. */
++#define WINDOWS_EPOCH_TICKS 116444736000000000ULL
++#define NS_PER_TICK 100
++
++#define PIPE_PACKET_DATA 1
++
++#define MESSAGE_NEGOTIATE 0
++#define MESSAGE_TIMESYNC 4
++
++#define FLAG_TRANSACTION 1
++#define FLAG_REQUEST 2
++#define FLAG_RESPONSE 4
++
++#define TIMESYNC_FLAG_SYNC 1
++#define TIMESYNC_FLAG_SAMPLE 2
++
++typedef struct QEMU_PACKED IcVersion {
++    uint16_t major;
++    uint16_t minor;
++} IcVersion;
++
++typedef struct QEMU_PACKED IcHeader {
++    uint32_t pipe_flags;
++    uint32_t pipe_size;
++    IcVersion frame_version;
++    uint16_t type;
++    IcVersion message_version;
++    uint16_t size;
++    uint32_t status;
++    uint8_t transaction;
++    uint8_t flags;
++    uint8_t reserved[2];
++} IcHeader;
++
++typedef struct QEMU_PACKED IcNegotiate {
++    uint16_t frame_versions;
++    uint16_t message_versions;
++    uint32_t reserved;
++} IcNegotiate;
++
++/* What versions from 4.0 send. */
++typedef struct QEMU_PACKED TimeSample {
++    uint64_t parent_time;
++    uint64_t reference_time;
++    uint8_t flags;
++    uint8_t leap_indicator;
++    uint8_t stratum;
++    uint8_t reserved[5];
++} TimeSample;
++
++/* What earlier versions send. */
++typedef struct QEMU_PACKED OldTimeSample {
++    uint64_t parent_time;
++    uint64_t child_time;
++    uint64_t round_trip_time;
++    uint8_t flags;
++    uint8_t reserved[3];
++} OldTimeSample;
++
++/* Framework versions, newest first, then message versions. */
++static const IcVersion frame_versions[] = { { 3, 0 }, { 1, 0 } };
++static const IcVersion message_versions[] = { { 4, 0 }, { 3, 0 }, { 1, 0 } };
++
++#define FIRST_VERSION_WITH_REFERENCE 4
++
++typedef enum Stage {
++    STAGE_CLOSED,
++    STAGE_OFFER_VERSIONS,
++    STAGE_WAIT_VERSIONS,
++    STAGE_SEND_SYNC,
++    STAGE_SEND_SAMPLES,
++} Stage;
++
++struct HvTimeSync {
++    VMBusDevice parent;
++    QEMUTimer *timer;
++    Stage stage;
++    IcVersion frame_version;
++    IcVersion message_version;
++};
++
++static void fill_header(HvTimeSync *sync, IcHeader *header, uint16_t type,
++                        uint16_t size)
++{
++    memset(header, 0, sizeof(*header));
++    header->pipe_flags = PIPE_PACKET_DATA;
++    header->pipe_size = sizeof(*header) - offsetof(IcHeader, frame_version)
++                        + size;
++    header->frame_version = sync->frame_version;
++    header->message_version = sync->message_version;
++    header->type = type;
++    header->size = size;
++    header->flags = FLAG_TRANSACTION | FLAG_REQUEST;
++}
++
++/* False if the ring has no room, which only means this message is skipped. */
++static bool send_message(HvTimeSync *sync, void *message, uint32_t size)
++{
++    VMBusChannel *chan = vmbus_device_channel(&sync->parent, 0);
++
++    if (!chan || vmbus_channel_reserve(chan, 0, size) < 0) {
++        return false;
++    }
++    return vmbus_channel_send(chan, VMBUS_PACKET_DATA_INBAND, NULL, 0,
++                              message, size, false, 0) >= 0;
++}
++
++static void offer_versions(HvTimeSync *sync)
++{
++    struct QEMU_PACKED {
++        IcHeader header;
++        IcNegotiate negotiate;
++        IcVersion versions[ARRAY_SIZE(frame_versions) +
++                           ARRAY_SIZE(message_versions)];
++    } message = { 0 };
++
++    sync->frame_version = (IcVersion) { 0, 0 };
++    sync->message_version = (IcVersion) { 0, 0 };
++    fill_header(sync, &message.header, MESSAGE_NEGOTIATE,
++                sizeof(message) - sizeof(message.header));
++    message.negotiate.frame_versions = ARRAY_SIZE(frame_versions);
++    message.negotiate.message_versions = ARRAY_SIZE(message_versions);
++    memcpy(message.versions, frame_versions, sizeof(frame_versions));
++    memcpy(message.versions + ARRAY_SIZE(frame_versions), message_versions,
++           sizeof(message_versions));
++    if (send_message(sync, &message, sizeof(message))) {
++        sync->stage = STAGE_WAIT_VERSIONS;
++    }
++}
++
++/*
++ * The guest's reference counter, in 100 ns units. KVM counts it from the same
++ * clock it gives here. The guest takes off how old a sample is by this, so the
++ * time it sets doesn't depend on how long the message took to reach it.
++ */
++static uint64_t reference_time(void)
++{
++    struct kvm_clock_data clock = { 0 };
++
++    if (kvm_vm_ioctl(kvm_state, KVM_GET_CLOCK, &clock) < 0) {
++        return 0;
++    }
++    return clock.clock / NS_PER_TICK;
++}
++
++static void send_time(HvTimeSync *sync, uint8_t flags)
++{
++    struct QEMU_PACKED {
++        IcHeader header;
++        union {
++            TimeSample sample;
++            OldTimeSample old_sample;
++        };
++    } message = { 0 };
++    uint64_t reference = reference_time();
++    uint64_t now = qemu_clock_get_ns(QEMU_CLOCK_HOST) / NS_PER_TICK +
++                   WINDOWS_EPOCH_TICKS;
++    bool has_reference =
++        sync->message_version.major >= FIRST_VERSION_WITH_REFERENCE;
++    uint16_t size = has_reference ? sizeof(message.sample)
++                                  : sizeof(message.old_sample);
++
++    fill_header(sync, &message.header, MESSAGE_TIMESYNC, size);
++    if (has_reference) {
++        message.sample.parent_time = now;
++        message.sample.reference_time = reference;
++        message.sample.flags = flags;
++    } else {
++        message.old_sample.parent_time = now;
++        message.old_sample.flags = flags;
++    }
++    if (send_message(sync, &message, sizeof(message.header) + size) &&
++        sync->stage == STAGE_SEND_SYNC) {
++        sync->stage = STAGE_SEND_SAMPLES;
++    }
++}
++
++static void timer_fired(void *opaque)
++{
++    HvTimeSync *sync = opaque;
++
++    switch (sync->stage) {
++    case STAGE_OFFER_VERSIONS:
++        offer_versions(sync);
++        break;
++    case STAGE_SEND_SYNC:
++        send_time(sync, TIMESYNC_FLAG_SYNC);
++        break;
++    case STAGE_SEND_SAMPLES:
++        send_time(sync, TIMESYNC_FLAG_SAMPLE);
++        break;
++    default:
++        return;
++    }
++    if (sync->stage != STAGE_WAIT_VERSIONS) {
++        timer_mod(sync->timer,
++                  qemu_clock_get_ms(QEMU_CLOCK_REALTIME) + SAMPLE_PERIOD_MS);
++    }
++}
++
++/* What the guest chose, which it says by leaving one of each in the list. */
++static void read_versions(HvTimeSync *sync, const uint8_t *data, uint32_t size)
++{
++    IcHeader header;
++    IcNegotiate negotiate;
++    IcVersion chosen[2];
++
++    if (size < sizeof(header) + sizeof(negotiate) + sizeof(chosen)) {
++        warn_report("hv-timesync: the guest took none of the versions offered");
++        return;
++    }
++    memcpy(&header, data, sizeof(header));
++    memcpy(&negotiate, data + sizeof(header), sizeof(negotiate));
++    memcpy(chosen, data + sizeof(header) + sizeof(negotiate), sizeof(chosen));
++    if (header.status || negotiate.frame_versions != 1 ||
++        negotiate.message_versions != 1) {
++        warn_report("hv-timesync: the guest took none of the versions offered");
++        return;
++    }
++    sync->frame_version = chosen[0];
++    sync->message_version = chosen[1];
++    sync->stage = STAGE_SEND_SYNC;
++    timer_mod(sync->timer, qemu_clock_get_ms(QEMU_CLOCK_REALTIME));
++}
++
++static void handle_packet(HvTimeSync *sync, VMBusChanReq *req)
++{
++    IcHeader header;
++
++    if (req->msglen < sizeof(header)) {
++        return;
++    }
++    memcpy(&header, req->msg, sizeof(header));
++    if (!(header.flags & FLAG_RESPONSE)) {
++        return;
++    }
++    if (header.type == MESSAGE_NEGOTIATE &&
++        sync->stage == STAGE_WAIT_VERSIONS) {
++        read_versions(sync, req->msg, req->msglen);
++    }
++}
++
++static void channel_notified(VMBusChannel *chan)
++{
++    HvTimeSync *sync = HV_TIMESYNC(vmbus_channel_device(chan));
++    VMBusChanReq *req;
++
++    if (vmbus_channel_recv_start(chan)) {
++        return;
++    }
++    while ((req = vmbus_channel_recv_peek(chan, sizeof(*req)))) {
++        handle_packet(sync, req);
++        vmbus_free_req(req);
++        vmbus_channel_recv_pop(chan);
++    }
++    vmbus_channel_recv_done(chan);
++}
++
++static int channel_opened(VMBusChannel *chan)
++{
++    HvTimeSync *sync = HV_TIMESYNC(vmbus_channel_device(chan));
++
++    sync->stage = STAGE_OFFER_VERSIONS;
++    timer_mod(sync->timer,
++              qemu_clock_get_ms(QEMU_CLOCK_REALTIME) + FIRST_MESSAGE_DELAY_MS);
++    return 0;
++}
++
++static void stop(HvTimeSync *sync)
++{
++    sync->stage = STAGE_CLOSED;
++    timer_del(sync->timer);
++}
++
++static void channel_closed(VMBusChannel *chan)
++{
++    stop(HV_TIMESYNC(vmbus_channel_device(chan)));
++}
++
++static void device_reset(VMBusDevice *vdev)
++{
++    stop(HV_TIMESYNC(vdev));
++}
++
++static void device_realize(VMBusDevice *vdev, Error **errp)
++{
++    HvTimeSync *sync = HV_TIMESYNC(vdev);
++
++    sync->timer = timer_new_ms(QEMU_CLOCK_REALTIME, timer_fired, sync);
++}
++
++static void device_unrealize(VMBusDevice *vdev)
++{
++    HvTimeSync *sync = HV_TIMESYNC(vdev);
++
++    timer_free(sync->timer);
++    sync->timer = NULL;
++}
++
++static void class_init(ObjectClass *klass, const void *data)
++{
++    DeviceClass *dc = DEVICE_CLASS(klass);
++    VMBusDeviceClass *vdc = VMBUS_DEVICE_CLASS(klass);
++
++    qemu_uuid_parse(TIMESYNC_CLASS_ID, &vdc->classid);
++    qemu_uuid_parse(TIMESYNC_INSTANCE_ID, &vdc->instanceid);
++    set_bit(DEVICE_CATEGORY_MISC, dc->categories);
++    vdc->channel_flags = VMBUS_CHANNEL_ENUMERATE_DEVICE_INTERFACE |
++                         VMBUS_CHANNEL_NAMED_PIPE_MODE;
++    vdc->pipe_mode = VMBUS_PIPE_MODE_MESSAGE;
++    vdc->vmdev_realize = device_realize;
++    vdc->vmdev_unrealize = device_unrealize;
++    vdc->vmdev_reset = device_reset;
++    vdc->open_channel = channel_opened;
++    vdc->close_channel = channel_closed;
++    vdc->chan_notify_cb = channel_notified;
++}
++
++static const TypeInfo hv_timesync_type = {
++    .name = TYPE_HV_TIMESYNC,
++    .parent = TYPE_VMBUS_DEVICE,
++    .instance_size = sizeof(HvTimeSync),
++    .class_init = class_init,
++};
++
++static void register_type(void)
++{
++    type_register_static(&hv_timesync_type);
++}
++
++type_init(register_type)
+diff --git a/hw/hyperv/meson.build b/hw/hyperv/meson.build
+index 5a5e325..a3533dc 100644
+--- a/hw/hyperv/meson.build
++++ b/hw/hyperv/meson.build
+@@ -2,6 +2,7 @@ system_ss.add(when: 'CONFIG_HYPERV', if_true: files('hyperv.c'))
+ system_ss.add(when: 'CONFIG_HYPERV_TESTDEV', if_true: files('hyperv_testdev.c'))
+ system_ss.add(when: 'CONFIG_VMBUS', if_true: files('vmbus.c'))
+ system_ss.add(when: 'CONFIG_GPUPV', if_true: files('gpupv.c'))
++specific_ss.add(when: ['CONFIG_GPUPV', 'CONFIG_KVM'], if_true: files('hv-timesync.c'))
+ system_ss.add(when: 'CONFIG_SYNDBG', if_true: files('syndbg.c'))
+ system_ss.add(when: 'CONFIG_HV_BALLOON', if_true: files('hv-balloon.c', 'hv-balloon-page_range_tree.c', 'hv-balloon-our_range_memslots.c'))
+ system_ss.add(when: 'CONFIG_HV_BALLOON', if_false: files('hv-balloon-stub.c'))
+diff --git a/hw/hyperv/vmbus.c b/hw/hyperv/vmbus.c
+index b36b39f..9f16891 100644
+--- a/hw/hyperv/vmbus.c
++++ b/hw/hyperv/vmbus.c
+@@ -1740,6 +1740,7 @@ static void send_offer(VMBus *vmbus)
+ 
+             memcpy(msg.type_uuid, &classid, sizeof(classid));
+             memcpy(msg.instance_uuid, &instanceid, sizeof(instanceid));
++            memcpy(msg.user_data, &vdc->pipe_mode, sizeof(vdc->pipe_mode));
+ 
+             trace_vmbus_send_offer(chan->id, chan->dev);
+ 
+diff --git a/include/hw/hyperv/vmbus-proto.h b/include/hw/hyperv/vmbus-proto.h
+index 4628d3b..39288a8 100644
+--- a/include/hw/hyperv/vmbus-proto.h
++++ b/include/hw/hyperv/vmbus-proto.h
+@@ -71,6 +71,7 @@
+ #define VMBUS_CHANNEL_SERVER_SUPPORTS_TRANSFER_PAGES  0x2
+ #define VMBUS_CHANNEL_SERVER_SUPPORTS_GPADLS          0x4
+ #define VMBUS_CHANNEL_NAMED_PIPE_MODE                 0x10
++#define VMBUS_PIPE_MODE_MESSAGE        0x4
+ #define VMBUS_CHANNEL_LOOPBACK_OFFER                  0x100
+ #define VMBUS_CHANNEL_PARENT_OFFER                    0x200
+ #define VMBUS_CHANNEL_REQUEST_MONITORED_NOTIFICATION  0x400
+diff --git a/include/hw/hyperv/vmbus.h b/include/hw/hyperv/vmbus.h
+index e0ef2f2..4e3ec98 100644
+--- a/include/hw/hyperv/vmbus.h
++++ b/include/hw/hyperv/vmbus.h
+@@ -50,6 +50,8 @@ struct VMBusDeviceClass {
+     QemuUUID instanceid;     /* Fixed UUID for singleton devices */
+     uint16_t channel_flags;
+     uint16_t mmio_size_mb;
++    /* How a channel in pipe mode sends data, the first word of the offer's user data. */
++    uint32_t pipe_mode;
+ 
+     /* Extensions to standard device callbacks */
+     void (*vmdev_realize)(VMBusDevice *vdev, Error **errp);
 -- 
 2.56.0
 
