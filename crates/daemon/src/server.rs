@@ -100,6 +100,7 @@ impl<B: Backend, M: GuestMemory> Server<B, M> {
             let timings = self.router.session().timings();
             if timings.is_enabled() && now - last_report > TIMING_REPORT {
                 log::info!("where submissions spend their time:\n{timings}");
+                log::info!("kept: {:?}", self.router.session().table_sizes());
                 last_report = now;
             }
         }

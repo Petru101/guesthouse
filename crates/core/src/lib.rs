@@ -29,5 +29,5 @@ pub use gpu_addresses::{ALLOCATION_ALIGN, AddressUse, GPU_RANGES, GpuAddresses, 
 pub use guest_ranges::{GUEST_RANGE_GRAIN, GuestRanges};
 pub use handles::HandleCounter;
 pub use pending::Waiting;
-pub use session::{Answer, HeldReply, ReplyTicket, Session};
+pub use session::{Answer, HeldReply, ReplyTicket, Session, TableSizes};
 pub use timing::{HeldFor, Stage, Timings};

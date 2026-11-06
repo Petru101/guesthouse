@@ -84,6 +84,16 @@ impl std::fmt::Display for Failure {
 
 pub(crate) type Handled = Result<(), Failure>;
 
+/// See [`Session::table_sizes`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TableSizes {
+    pub allocations: usize,
+    pub resources: usize,
+    pub resource_users: usize,
+    pub shared_objects: usize,
+    pub deferred: usize,
+}
+
 /// Everything the host knows about one guest. See the crate documentation.
 pub struct Session<B, M> {
     pub(crate) backend: B,
@@ -221,6 +231,17 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
     /// Chooses how copies to the staging surface wait.
     pub fn set_copy_order(&mut self, order: crate::CopyOrder) {
         self.config.copy_order = order;
+    }
+
+    /// How much is being kept, to show that it comes back down when processes finish.
+    pub fn table_sizes(&self) -> TableSizes {
+        TableSizes {
+            allocations: self.allocations.len(),
+            resources: self.resources.len(),
+            resource_users: self.resource_users.len(),
+            shared_objects: self.shared_objects.len(),
+            deferred: self.deferred.len(),
+        }
     }
 
     pub fn timings(&self) -> &Timings {
