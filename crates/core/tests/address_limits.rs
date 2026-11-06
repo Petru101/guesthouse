@@ -149,6 +149,15 @@ fn a_copy_finds_what_lies_past_a_gap() {
 }
 
 #[test]
+fn a_copy_steps_past_an_empty_mapping() {
+    let mut session = session();
+    let allocation = allocate(&mut session);
+    send(&mut session, &update(KIND_MAP, ADDRESS, 0, u64::from(allocation), 0));
+    let reply = send(&mut session, &update(KIND_COPY, ADDRESS, 0x1000, 0x3000_0000, 0));
+    assert_eq!(reply, Status::SUCCESS.0.to_le_bytes());
+}
+
+#[test]
 fn pages_of_a_mapping_that_would_overflow_are_refused() {
     let mut session = session();
     let allocation = allocate(&mut session);

@@ -257,7 +257,8 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
     /// The first mapping that starts in a range, for walking past the gaps in it.
     fn next_mapping_start(&self, address: u64, end: u64, space: SpaceId) -> Option<u64> {
         let mappings = self.allocations.values().flat_map(|allocation| &allocation.mappings);
-        let in_space = mappings.filter(|mapping| mapping.space == space);
+        // An empty mapping holds no address, so stopping at one would never get past it.
+        let in_space = mappings.filter(|mapping| mapping.space == space && mapping.length != 0);
         in_space.map(|mapping| mapping.address).filter(|start| (address..end).contains(start)).min()
     }
 
