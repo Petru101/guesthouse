@@ -195,6 +195,7 @@ pub struct AdapterQuery<'a> {
 
 impl<'a> AdapterQuery<'a> {
     pub const SEGMENT_SIZES: u32 = 3;
+    pub const CURRENT_DISPLAY_MODE: u32 = 9;
     pub const DRIVER_MODEL: u32 = 13;
     pub const DIRECT_FLIP: u32 = 19;
     pub const CONSOLE_CAPS: u32 = 27;
@@ -209,6 +210,48 @@ impl<'a> AdapterQuery<'a> {
     pub fn parse(message: &'a [u8]) -> Result<Self, Malformed> {
         let size = declared_size(message, HEADER_SIZE + 4)?;
         Ok(Self { kind: u32_at(message, HEADER_SIZE)?, size, data: clamped(message, HEADER_SIZE + 8, size) })
+    }
+}
+
+/// What's on the screen, for the current display mode query. Desktop Duplication asks this of the
+/// adapter that renders the screen, and a refusal there is an invalid-argument error to the app.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DisplayMode {
+    pub width: u32,
+    pub height: u32,
+    /// In Windows' own format numbers, as the desktop has it.
+    pub format: u32,
+    pub refresh_millihertz: u32,
+}
+
+impl DisplayMode {
+    /// Windows' format numbers for an ordinary desktop and an HDR one.
+    pub const FORMAT_8_BIT: u32 = 21;
+    pub const FORMAT_16_BIT_FLOAT: u32 = 113;
+    /// The source, size, format, two rates, scan order, rotation, fixed output and flags.
+    pub const ANSWER_SIZE: usize = 11 * size_of::<u32>();
+    const PROGRESSIVE: u32 = 1;
+    const NOT_ROTATED: u32 = 1;
+    const MILLIHERTZ: u32 = 1000;
+
+    /// Writes the answer for the source the guest asked about.
+    pub fn answer(&self, source: u32, out: &mut Vec<u8>) {
+        let rate = self.refresh_millihertz;
+        for word in [
+            source,
+            self.width,
+            self.height,
+            self.format,
+            rate.div_ceil(Self::MILLIHERTZ),
+            rate,
+            Self::MILLIHERTZ,
+            Self::PROGRESSIVE,
+            Self::NOT_ROTATED,
+            0,
+            0,
+        ] {
+            out.extend_from_slice(&word.to_le_bytes());
+        }
     }
 }
 
@@ -241,6 +284,17 @@ pub fn description_answer(description: &str, size: usize, out: &mut Vec<u8>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_display_mode_says_its_size_and_rate() {
+        let mode = DisplayMode { width: 2560, height: 1440, format: 21, refresh_millihertz: 143_856 };
+        let mut out = Vec::new();
+        mode.answer(2, &mut out);
+        assert_eq!(out.len(), DisplayMode::ANSWER_SIZE);
+        let words: Vec<u32> =
+            out.chunks(4).map(|word| u32::from_le_bytes(word.try_into().unwrap())).collect();
+        assert_eq!(words, [2, 2560, 1440, 21, 144, 143_856, 1000, 1, 1, 0, 0]);
+    }
 
     #[test]
     fn open_adapter_repeats_the_oldest_version() {

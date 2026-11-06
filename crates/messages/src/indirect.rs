@@ -40,6 +40,7 @@ const HEIGHT_AT: usize = 32;
 const PITCH_AT: usize = 36;
 const SLOT_SIZE_AT: usize = 40;
 const FOURCC_AT: usize = 48;
+const MODE_REFRESH_AT: usize = 52;
 const CICP_AT: usize = 56;
 // In a FRAME.
 const SLOT_AT: usize = 24;
@@ -145,6 +146,8 @@ pub struct Register {
     pub height: u32,
     pub pitch: u32,
     pub slot_size: u64,
+    /// The rate Windows committed for this mode, 0 from a driver too old to say.
+    pub refresh_millihertz: u32,
     pub look: Look,
 }
 
@@ -265,6 +268,7 @@ fn register_at(data: &[u8], name: RingName) -> Result<Register, Malformed> {
         height: u32_at(data, HEIGHT_AT)?,
         pitch: u32_at(data, PITCH_AT)?,
         slot_size: u64_at(data, SLOT_SIZE_AT)?,
+        refresh_millihertz: u32_at(data, MODE_REFRESH_AT)?,
         look: look_at(data)?,
     })
 }
@@ -413,6 +417,7 @@ pub mod as_the_driver_sends {
         set_u32(&mut data, PITCH_AT, ring.pitch);
         set_u64(&mut data, SLOT_SIZE_AT, ring.slot_size);
         set_u32(&mut data, FOURCC_AT, ring.look.fourcc);
+        set_u32(&mut data, MODE_REFRESH_AT, ring.refresh_millihertz);
         let look = ring.look;
         data[CICP_AT..CICP_AT + 4].copy_from_slice(&[look.primaries, look.transfer, look.matrix, 1]);
         data
@@ -514,6 +519,7 @@ mod tests {
         set_u32(&mut data, PITCH_AT, 7680);
         set_u64(&mut data, SLOT_SIZE_AT, 7680 * 1080);
         set_u32(&mut data, FOURCC_AT, Look::HDR.fourcc);
+        set_u32(&mut data, MODE_REFRESH_AT, 143_856);
         data[CICP_AT..CICP_AT + 4].copy_from_slice(&[CICP_BT2020, CICP_PQ, CICP_IDENTITY, 1]);
         data
     }
@@ -533,6 +539,7 @@ mod tests {
         assert_eq!(ring.name, RingName { generation: 3, monitor: 1 });
         assert_eq!((ring.slots, ring.width, ring.height, ring.pitch), (6, 1920, 1080, 7680));
         assert_eq!(ring.slot_size, 7680 * 1080);
+        assert_eq!(ring.refresh_millihertz, 143_856);
         assert_eq!(ring.look, Look::HDR);
     }
 
