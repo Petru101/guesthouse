@@ -1,7 +1,6 @@
-# Where a release is built. A program built here runs on this glibc or a newer one, and the app, its
-# bundled QEMU and its libraries are all held to that.
+# Where the app and its helpers are built. They call so little of glibc that they run on far older
+# ones than this. GTK is what the build needs to be recent, and its programs load the host's anyway.
 FROM registry.fedoraproject.org/fedora:44
-RUN dnf -y install gcc gcc-c++ make ninja-build meson python3 git bzip2 diffutils findutils which xz \
-      glib2-devel pixman-devel zlib-devel libfdt-devel libslirp-devel pipewire-devel libusb1-devel \
-      rust cargo gtk4-devel libadwaita-devel binutils \
+RUN dnf -y install gcc git xz findutils which binutils pkgconf-pkg-config rust cargo gtk4-devel \
+      libadwaita-devel \
     && dnf clean all

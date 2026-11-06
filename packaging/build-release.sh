@@ -10,8 +10,9 @@
 #   payload   guesthouse-VERSION-x86_64.tar.xz
 #   source    guesthouse-VERSION-source.tar.xz, and SHA256SUMS
 #
-# Run it inside the image from packaging/Containerfile, because what it builds only runs on systems
-# with that image's glibc or a newer one. QEMU_UPSTREAM can name a local clone of QEMU.
+# Everything built here only runs on this system's glibc or a newer one, so a release doesn't run this
+# directly: packaging/build-in-images.sh runs each stage in its own image. On its own it builds for
+# this PC, which is what install.sh --from-source wants. QEMU_UPSTREAM can name a local clone of QEMU.
 set -eu
 
 QEMU_TAG=v11.1.3
@@ -87,6 +88,16 @@ build_qemu() {
     ninja -C "$OUT/qemu-build" $targets
 }
 
+# Which package a library came from, as whoever receives a copy can ask for its source.
+library_package() {
+    if command -v dpkg-query >/dev/null 2>&1; then
+        package=$(dpkg-query -S "$(readlink -f "$1")" 2>/dev/null | head -n 1 | cut -d : -f 1)
+        [ -z "$package" ] || dpkg-query -W -f '${Package} ${Version}' "$package"
+    elif command -v rpm >/dev/null 2>&1; then
+        rpm -qf "$1"
+    fi
+}
+
 # Libraries are copied under their sonames, which is what the loader asks for.
 bundle_libraries() {
     program=$1
@@ -100,7 +111,7 @@ bundle_libraries() {
         fi
         cp -L "$path" "$folder/$name"
         chmod u+w "$folder/$name"
-        printf '%s %s\n' "$name" "$(rpm -qf "$path" 2>/dev/null || echo unknown)" >>"$list"
+        printf '%s %s\n' "$name" "$(library_package "$path" || echo unknown)" >>"$list"
     done
 }
 

@@ -379,11 +379,9 @@ build_from_source() {
     if command -v cargo >/dev/null 2>&1 && command -v ninja >/dev/null 2>&1; then
         sh "$bundle/packaging/build-release.sh" --out "$STAGING/built" qemu app payload
     else
-        engine=$(command -v podman || command -v docker) ||
+        command -v podman >/dev/null 2>&1 || command -v docker >/dev/null 2>&1 ||
             die "building needs cargo and ninja, or podman or docker, and this PC has none of those."
-        "$engine" build -t guesthouse-release -f "$bundle/packaging/Containerfile" "$bundle/packaging"
-        "$engine" run --rm --security-opt label=disable -v "$STAGING:$STAGING" -w "$bundle" \
-            guesthouse-release sh packaging/build-release.sh --out "$STAGING/built" qemu app payload
+        sh "$bundle/packaging/build-in-images.sh" --out "$STAGING/built" qemu app payload
     fi
     mv "$STAGING/built/guesthouse-$RELEASE_VERSION-$ARCH.tar.xz" "$STAGING/"
 }
