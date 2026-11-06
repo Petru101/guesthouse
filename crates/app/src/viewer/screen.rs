@@ -2,13 +2,15 @@
 //!
 //! Frames come from a [`FrameSource`], with a new texture for each one.
 
+use super::dbus_frames::DbusFrames;
 use super::frames::{FrameSource, thumbnail};
 use super::overlay::PerformanceOverlay;
 use super::pointer_lock::{PointerLock, pointer_lock};
 use super::socket_frames::SocketFrames;
 use adw::prelude::*;
 use gtk::{gdk, glib};
-use guesthouse_app_core::input::{Guest, INPUT_SOCKET};
+use guesthouse_app_core::input::{Guest, INPUT_SOCKET, MOUSE, TABLET};
+use guesthouse_app_core::vm_args::DISPLAY_SOCKET;
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -34,6 +36,10 @@ pub(super) struct Inner {
     /// The guest's frames from the GPU, when it has any.
     pub(super) gpu: RefCell<Option<Box<dyn FrameSource>>>,
     pub(super) gpu_frames: Cell<bool>,
+    /// QEMU's display, for whatever has no GPU frames to show.
+    pub(super) qemu: RefCell<Option<Box<dyn FrameSource>>>,
+    /// A GPU guest has no frames of its own until its driver is up, and again after a reset.
+    pub(super) booting: Cell<bool>,
     pub(super) input_socket: RefCell<PathBuf>,
     pub(super) guest: RefCell<Option<Guest>>,
     pub(super) latest: RefCell<Option<gdk::Texture>>,
@@ -92,6 +98,8 @@ impl Screen {
             aspect,
             spinner,
             gpu: RefCell::default(),
+            qemu: RefCell::default(),
+            booting: Cell::new(true),
             gpu_frames: Cell::new(gpu_frames),
             input_socket: RefCell::new(run_folder.join(INPUT_SOCKET)),
             run_folder: RefCell::new(run_folder),
@@ -149,6 +157,8 @@ impl Screen {
         if self.0.gpu_frames.replace(gpu_frames) != gpu_frames || *self.0.input_socket.borrow() != socket {
             *self.0.run_folder.borrow_mut() = run_folder;
             self.0.gpu.borrow_mut().take();
+            self.0.qemu.borrow_mut().take();
+            self.0.booting.set(true);
             *self.0.input_socket.borrow_mut() = socket;
             self.close_guest();
             self.follow_guest();
@@ -188,6 +198,7 @@ impl Screen {
         self.let_go();
         self.close_guest();
         self.0.gpu.borrow_mut().take();
+        self.0.qemu.borrow_mut().take();
         self.0.latest.borrow_mut().take();
         self.0.picture.set_paintable(None::<&gdk::Paintable>);
     }
@@ -208,8 +219,20 @@ impl Screen {
         }
     }
 
+    /// The guest's own frames win, and QEMU's are only looked at until they come.
     fn next_texture(&self) -> Option<gdk::Texture> {
-        self.0.gpu.borrow_mut().as_mut()?.newest()
+        let from_gpu = self.0.gpu.borrow_mut().as_mut().and_then(|source| source.newest());
+        if from_gpu.is_some() {
+            self.0.booting.set(false);
+            self.0.qemu.borrow_mut().take();
+            return from_gpu;
+        }
+        let mut qemu = self.0.qemu.borrow_mut();
+        let source = qemu.as_mut()?;
+        if let Some(cursor) = source.new_cursor() {
+            self.0.picture.set_cursor(Some(&cursor));
+        }
+        source.newest()
     }
 
     fn show(&self, texture: gdk::Texture) {
@@ -250,15 +273,40 @@ impl Screen {
         }
     }
 
+    /// Picks up QEMU's display once it's listening, and a restarted one.
+    fn follow_qemu(&self) {
+        let mut qemu = self.0.qemu.borrow_mut();
+        if qemu.as_ref().is_some_and(|source| !source.alive()) {
+            *qemu = None;
+        }
+        let wanted = self.0.booting.get() || !self.0.gpu_frames.get();
+        if qemu.is_none() && wanted {
+            let monitor = self.0.run_folder.borrow().join(DISPLAY_SOCKET);
+            if monitor.exists() {
+                *qemu = Some(Box::new(DbusFrames::connect(monitor)));
+            }
+        }
+    }
+
     fn follow_guest(&self) {
-        self.follow_gpu();
         let mut guest = self.0.guest.borrow_mut();
         if guest.as_ref().is_some_and(|found| !found.alive()) {
             *guest = None;
+            self.0.booting.set(true);
         }
         if guest.is_none() {
             *guest = Guest::connect(&self.0.input_socket.borrow()).ok();
         }
+        if let Some(guest) = guest.as_mut() {
+            if guest.take_resets() > 0 {
+                self.0.booting.set(true);
+            }
+            // The guest's driver puts its device first when it starts, and that can be at any time.
+            guest.point_with(if self.0.captured.get() { MOUSE } else { TABLET });
+        }
+        drop(guest);
+        self.follow_gpu();
+        self.follow_qemu();
     }
 
     fn close_guest(&self) {

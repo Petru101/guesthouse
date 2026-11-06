@@ -2,6 +2,9 @@
 
 mod capture;
 mod clipboard;
+mod dbus_frames;
+mod display_attach;
+mod display_surface;
 mod frames;
 mod import;
 mod input;

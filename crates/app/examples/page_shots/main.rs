@@ -3,6 +3,7 @@
 //!
 //! Usage: `page_shots FOLDER`, with the store and the XDG folders already pointing somewhere harmless.
 
+mod fake_display;
 mod fake_frames;
 
 use adw::prelude::*;
@@ -285,6 +286,22 @@ async fn viewer_page(
     check(&failures, window.open_screen().is_none(), "leaving the page closes it");
 }
 
+/// A machine with no GPU shows QEMU's display, as firmware and an install do.
+async fn plain_viewer(window: Window, folder: PathBuf, failures: Rc<Cell<u32>>, machine: MachineHandle) {
+    glib::timeout_future(LONG).await;
+    window.show_screen(machine);
+    glib::timeout_future(LONG).await;
+    glib::timeout_future(LONG).await;
+    let page = window.open_screen().unwrap();
+    let before = page.frames_shown();
+    glib::timeout_future(LONG).await;
+    let after = page.frames_shown();
+    check(&failures, after > before && before > 0, &format!("QEMU's display shows: {before} then {after}"));
+    shot_after_paint(&window, &folder, "21-viewer-qemu-display").await;
+    window.pages().pop_to_tag("library");
+    glib::timeout_future(SETTLE).await;
+}
+
 async fn walk_pages(window: Window, context: Arc<Context>, folder: PathBuf) {
     let failures = Rc::new(Cell::new(0));
     wizard_pages(window.clone(), folder.clone(), failures.clone()).await;
@@ -302,7 +319,12 @@ async fn walk_pages(window: Window, context: Arc<Context>, folder: PathBuf) {
     fake_frames::serve(&context.run_folder(None), released.clone());
     let mut vm = pretend_vm(&context, &machines[1].borrow());
     running_pages(window.clone(), folder.clone(), failures.clone(), machines[1].clone()).await;
-    viewer_page(window.clone(), folder, failures.clone(), machines[1].clone(), released).await;
+    viewer_page(window.clone(), folder.clone(), failures.clone(), machines[1].clone(), released).await;
+    let _ = vm.kill();
+    let _ = vm.wait();
+    fake_display::serve(&context.run_folder(None));
+    let mut vm = pretend_vm(&context, &machines[0].borrow());
+    plain_viewer(window.clone(), folder, failures.clone(), machines[0].clone()).await;
     let _ = vm.kill();
     let _ = vm.wait();
     println!("failures: {}", failures.get());

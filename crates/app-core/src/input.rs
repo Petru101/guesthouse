@@ -12,7 +12,7 @@ use std::io::{self, BufRead, BufReader, ErrorKind};
 use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
@@ -25,6 +25,7 @@ pub const TABLET_RANGE: i64 = 32767;
 const MOST_UNSENT: usize = 1 << 20;
 const GREETING: &[u8] = b"{\"execute\":\"qmp_capabilities\"}\n{\"execute\":\"query-mice\",\"id\":\"mice\"}\n";
 const MICE_REPLY: &str = "mice";
+const RESET_EVENT: &str = "RESET";
 /// Linux key codes are the PC scan code for the main block. These are the ones that differ.
 const EXTENDED_KEYS: [(u32, u32); 18] = [
     (96, 0x9C),
@@ -51,6 +52,7 @@ const EXTENDED_KEYS: [(u32, u32); 18] = [
 struct Shared {
     answered: AtomicBool,
     gone: AtomicBool,
+    resets: AtomicU32,
     mice: Mutex<Option<HashMap<String, u64>>>,
 }
 
@@ -78,6 +80,11 @@ impl Guest {
 
     pub fn alive(&self) -> bool {
         !self.shared.gone.load(Ordering::Relaxed)
+    }
+
+    /// How many times the guest has reset since this was last asked.
+    pub fn take_resets(&self) -> u32 {
+        self.shared.resets.swap(0, Ordering::Relaxed)
     }
 
     /// Whether QEMU has said which mice it has.
@@ -172,7 +179,7 @@ fn send_without_waiting(stream: &UnixStream, data: &[u8]) -> io::Result<usize> {
     net::send(stream, data, SendFlags::DONTWAIT | SendFlags::NOSIGNAL).map_err(io::Error::from)
 }
 
-/// Takes in QEMU's replies. Only the list of mice matters, and it comes first.
+/// Takes in QEMU's replies. Only the list of mice matters, and it comes first, and the guest's resets.
 fn drain(stream: UnixStream, shared: &Shared) {
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
@@ -183,6 +190,9 @@ fn drain(stream: UnixStream, shared: &Shared) {
         }
         shared.answered.store(true, Ordering::Relaxed);
         let Ok(reply) = serde_json::from_str::<Value>(&line) else { continue };
+        if reply["event"] == RESET_EVENT {
+            shared.resets.fetch_add(1, Ordering::Relaxed);
+        }
         if reply["id"] == MICE_REPLY {
             let list = reply["return"].as_array().cloned().unwrap_or_default();
             let named = list
