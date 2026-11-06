@@ -109,6 +109,22 @@ There are three pieces:
 
 Apart from one small workaround, the guest's commands aren't translated. The Windows driver writes them, and the GPU runs them. Finished frames stay in video memory and reach the viewer as dmabufs.
 
+## Keeping guests apart
+
+A VM is only worth having if what's in it stays in it, so here's where that stands.
+
+What's in place for Windows guests:
+
+- **Programs in a VM can't see each other on the GPU.** Each process gets its own GPU page tables, like on real Windows. My test has one process hold a secret and another try to read it by its GPU address. With one shared space it read all 16,384 words. Now it reads none. The one thing they still share is a block of fences, which only holds counters.
+- **Windows never talks to the host's driver.** It talks to my daemon, and the daemon makes the calls. Sizes and ranges in every message get checked, and the parsers and handlers are fuzz tested.
+- **You can cap a VM's video memory.** With a limit set, anything over it gets refused. Without one, the VM is told to leave a share of the card for the host, but that's a budget and not a wall.
+- **The daemon's sockets are for its owner alone.**
+
+What's still coming:
+
+- **Jails.** The daemon and QEMU run as you, with nothing around them. That's the next wall to build.
+- **Linux guests aren't walled off yet.** Their driver calls get forwarded to the host, so for now treat a Linux guest like your own user account, and don't run anything in it you wouldn't run on your host. I'm fixing that now with stricter checks on every forwarded call, limits on calls and video memory, and then a proper jail around the part that talks to the driver. This route won't go public until the checks are in.
+
 ## My favourite bugs
 
 **"The window is occluded."** Every Vulkan present failed with `PRESENT_OCCLUDED` while the window sat there in plain sight. I spent hours in Windows' visibility code. The real cause was my own daemon: Windows was sending it a copy to do, and it was refusing with "not surfaces I know". That line had been in my own log the whole time.
@@ -129,9 +145,9 @@ I'd rather you hear this from me:
 - **It has only ever run on my PC, on an RTX 5090.** A clean clone does set itself up and pass its tests now, but that's still my machine and my card.
 - **Drivers are tied together.** Linux and Windows have to come from the same NVIDIA branch, and a new branch means new work.
 - **CUDA, NVENC and NVDEC don't work in Windows yet.** `nvidia-smi` can't open the card there either, and Task Manager doesn't show the GPU.
-- **No HDR yet.** It's a must for me, and it needs a new display path.
-- **The viewer drops frames.** At 144 Hz about 116 frames a second reach it, and about 90 at 4K.
-- **One GPU VM at a time** for now.
+- **No HDR in the app yet.** It's a must for me. The new display driver already gets HDR frames to the host in tests, but it isn't in the app.
+- **The viewer drops frames.** With the old viewer, at 144 Hz about 116 frames a second reached it, and about 90 at 4K. I haven't measured the new one yet. It also costs speed: Superposition scored 16,240 with it open.
+- **Several GPU VMs at once isn't proven.** Two Windows VMs have sat at the desktop together on one card, but I haven't tested them both busy yet.
 
 ## What's next
 
@@ -139,10 +155,11 @@ The full list, with what's already done, is in the [roadmap](https://github.com/
 
 1. Move the NVIDIA backend here, so this repo can boot a guest
 2. An installer, so you can try it
-3. CUDA and video in Windows
-4. Find the missing third of the speed
-5. HDR
-6. Several GPU VMs at once
+3. The new display driver, for real refresh rates and HDR
+4. CUDA and video in Windows
+5. Find the missing third of the speed
+6. Lock down Linux guests, and put jails around the daemon and QEMU
+7. Test several GPU VMs at once properly
 
 ## Trying the code
 

@@ -30,7 +30,6 @@ They're in `crates/`, listed here from the bottom up. Each depends only on crate
 | `frame-socket` | The four messages that bring frames to a viewer, on their own so a producer can use them as they are. |
 | `daemon` | Slots, shared memory, sockets, the viewer's socket, and the main loop. |
 | `replay` | Replays a recording and compares every reply. |
-| `frame-socket` | The four messages that bring frames to a viewer, on their own so a producer can use them as they are. |
 | `app-core` | The desktop app's work with no UI: machines, tasks, setup, a VM's start, and `guesthouse-task` and `guesthouse-share`. |
 | `app` | The desktop app's GTK 4 and libadwaita pages. |
 
