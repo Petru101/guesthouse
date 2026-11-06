@@ -112,6 +112,19 @@ static void A_daemon_without_the_protocol_means_giving_up_quietly()
 	CHECK(link.NextSlot() == GH_NO_SLOT);
 }
 
+// An echoed request can look like a good reply, as status lands on a field that may be zero. Only the magic tells them apart.
+static void An_echo_is_never_taken_for_a_reply()
+{
+	FakeDaemon daemon;
+	daemon.speaksProtocol = false;
+	HostLink link(daemon);
+	RingShape shape = Shape(WireFormat::Sdr);
+	shape.slots = 0;
+
+	CHECK(!link.OpenRing(shape));
+	CHECK(link.GaveUp());
+}
+
 static void A_refusal_stops_until_the_mode_changes()
 {
 	FakeDaemon daemon;
@@ -221,6 +234,7 @@ int main()
 	A_skipped_frame_asks_for_a_slot_without_claiming_one();
 	Hdr_metadata_goes_with_the_frame_only_when_there_is_some();
 	A_daemon_without_the_protocol_means_giving_up_quietly();
+	An_echo_is_never_taken_for_a_reply();
 	A_refusal_stops_until_the_mode_changes();
 	A_stale_generation_closes_the_ring_but_does_not_give_up();
 	A_failed_escape_loses_the_slot();
