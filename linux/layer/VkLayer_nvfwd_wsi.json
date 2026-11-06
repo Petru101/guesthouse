@@ -1,0 +1,14 @@
+{
+    "file_format_version": "1.1.2",
+    "layer": {
+        "name": "VK_LAYER_NVFWD_wsi",
+        "type": "GLOBAL",
+        "library_path": "/opt/nv/layer/libVkLayer_nvfwd_wsi.so",
+        "api_version": "1.4.335",
+        "implementation_version": "1",
+        "description": "Owns surfaces and swapchains for a guest with no NVIDIA display driver",
+        "functions": { "vkNegotiateLoaderLayerInterfaceVersion": "vkNegotiateLoaderLayerInterfaceVersion" },
+        "enable_environment": { "ENABLE_NVFWD_WSI": "1" },
+        "disable_environment": { "DISABLE_NVFWD_WSI": "1" }
+    }
+}
