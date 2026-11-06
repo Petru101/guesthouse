@@ -44,7 +44,7 @@ Everything here was measured on one machine: Ryzen 9 9950X3D, RTX 5090, Fedora 4
 
 ### Windows guests
 
-Direct3D 12, Direct3D 11, Vulkan and OpenGL all run on the real card, along with the desktop and normal apps. A fresh install takes about 9 minutes from picking the ISO to the GPU working.
+Direct3D 12, Direct3D 11, Vulkan and OpenGL all run on the real card, along with the desktop and normal apps. So do CUDA, NVENC and NVDEC, on real video engines, which ffmpeg uses with H.264, HEVC and AV1. `nvidia-smi` finds the card. A fresh install takes about 9 minutes from picking the ISO to the GPU working.
 
 **Is it really the GPU, at full speed?** Yes. This is my own benchmark, run on Linux and then inside the VM:
 
@@ -144,7 +144,7 @@ I'd rather you hear this from me:
 - **You can't install it.** See above.
 - **It has only ever run on my PC, on an RTX 5090.** A clean clone does set itself up and pass its tests now, but that's still my machine and my card.
 - **Drivers are tied together.** Linux and Windows have to come from the same NVIDIA branch, and a new branch means new work.
-- **CUDA, NVENC and NVDEC don't work in Windows yet.** `nvidia-smi` can't open the card there either, and Task Manager doesn't show the GPU.
+- **Task Manager doesn't show the GPU in Windows.** `nvidia-smi` can't read memory use there yet either, and it says Not Supported.
 - **No HDR in the app yet.** It's a must for me. The new display driver isn't in the app, but in tests it gets every frame to the host at up to 4K 240 Hz, in SDR and HDR, with none lost. That's a simple test picture reaching a test client, so a real game and a real viewer still have to prove it.
 - **The viewer drops frames.** With the old viewer, at 144 Hz about 116 frames a second reached it, and about 90 at 4K. I haven't measured the new one yet. It also costs speed: Superposition scored 16,240 with it open.
 - **Several GPU VMs at once is early.** Three Windows VMs have run together on one card with their tests passing and no GPU faults, but that was during my testing, not a proper test of its own. I haven't tried it through the app, and they share the card's speed.
@@ -156,10 +156,9 @@ The full list, with what's already done, is in the [roadmap](https://github.com/
 1. Move the NVIDIA backend here, so this repo can boot a guest
 2. An installer, so you can try it
 3. The new display driver, for real refresh rates and HDR
-4. CUDA and video in Windows
-5. Find the missing third of the speed
-6. Lock down Linux guests, and put jails around the daemon and QEMU
-7. Several GPU VMs at once through the app, tested properly
+4. Find the missing third of the speed
+5. Lock down Linux guests, and put jails around the daemon and QEMU
+6. Several GPU VMs at once through the app, tested properly
 
 ## Trying the code
 

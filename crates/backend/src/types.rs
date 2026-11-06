@@ -151,14 +151,6 @@ pub enum WorkSource {
     Context,
 }
 
-/// Commands a submission names by GPU address. Most forms leave this empty.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct CommandBuffer {
-    pub address: u64,
-    /// In bytes.
-    pub length: u32,
-}
-
 /// A submission, as the core understood it.
 #[derive(Debug, Clone, Copy)]
 pub struct Work<'a> {
@@ -169,7 +161,6 @@ pub struct Work<'a> {
     pub node: u32,
     /// What the guest said its context is for.
     pub client_hint: u32,
-    pub commands: CommandBuffer,
     /// The vendor driver's private data.
     pub private: &'a [u8],
     pub fence: u64,

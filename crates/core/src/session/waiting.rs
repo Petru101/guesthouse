@@ -483,7 +483,6 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         queue: u32,
         source: guesthouse_backend::WorkSource,
         private: &[u8],
-        commands: guesthouse_backend::CommandBuffer,
         value: u64,
     ) -> GpuTook {
         let Some(record) = self.queues.get(&queue) else { return GpuTook::Nothing };
@@ -494,7 +493,6 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             space: record.space,
             node: self.context_nodes.get(&record.context).copied().unwrap_or(0),
             client_hint: self.context_hints.get(&record.context).copied().unwrap_or(0),
-            commands,
             private,
             fence,
             fence_gpu_address,

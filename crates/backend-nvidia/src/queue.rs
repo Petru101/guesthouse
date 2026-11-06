@@ -585,7 +585,6 @@ mod tests {
             space: SpaceId(1),
             node: 1,
             client_hint: 0,
-            commands: guesthouse_backend::CommandBuffer::default(),
             private,
             fence: 0,
             fence_gpu_address: 0,

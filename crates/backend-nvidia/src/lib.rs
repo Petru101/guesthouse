@@ -63,7 +63,6 @@ const UNFINISHED_ENTRIES_LIMIT: u64 = 4000;
 const CLIENT_HINT_VULKAN: u32 = 4;
 
 const CONTEXT_READY: usize = 0xD7C;
-const VIDEO_CONTEXT_DATA: usize = 0xDF5;
 
 const RECORD_QUEUE_TOKEN: usize = 0x40;
 const RECORD_QUEUE_HEAP: usize = 0x5C;
@@ -391,13 +390,12 @@ impl<R: Rm + OpenRm> Backend for NvidiaBackend<R> {
         self.answers.node_has_channel(node) || self.answers.node_is_video(node)
     }
 
-    /// The video runtime's contexts have no hardware queue of their own, and it checks that the
-    /// answer says the context can take work. A zero stops it. Those are on video nodes, and on the
-    /// graphics node for Direct3D 11's decoder, where the size of the data tells them apart.
+    /// A context on a video node has no hardware queue of its own. Its runtime checks that the answer
+    /// says the context can take work, and a zero stops it.
     fn finish_context_data(&mut self, node: u32, private: &mut [u8]) {
-        log::debug!("context data of {:#x} bytes on node {node}", private.len());
-        let runtimes = self.answers.node_is_video(node) || private.len() >= VIDEO_CONTEXT_DATA;
-        if runtimes && let Some(field) = private.get_mut(CONTEXT_READY..CONTEXT_READY + 4) {
+        if self.answers.node_is_video(node)
+            && let Some(field) = private.get_mut(CONTEXT_READY..CONTEXT_READY + 4)
+        {
             field.copy_from_slice(&1u32.to_le_bytes());
         }
     }

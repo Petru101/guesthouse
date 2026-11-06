@@ -154,7 +154,7 @@ Nothing here is forwarded to the host's driver for this. CUDA's memory is plain 
 
 A context on a video node gets a channel on that engine, in `Channel::new`, and its commands run as they are. It's the list path, the same as any context. Vulkan's contexts on those nodes are the exception: its video queue families can also transfer, so they stay on copy channels, and a Vulkan Video program would land on one.
 
-The guest's video runtime holds its engines and buffers with mutexes: it waits, sends work, and signals. So a sync object that has no fence has tokens, in `sync_table.rs`. A wait on a queue takes one when its gate opens, and a signal gives it back once the queue has got there. Without this all the encoders run at once on shared state, and the only sign is damaged video.
+The guest's video runtime holds its engines and buffers with mutexes: it waits, sends work, and signals. So a sync object that has no fence has tokens, in `sync_table.rs`. A wait on a queue takes one when its gate opens, and a signal gives it back once the queue has got there. Waits stand in line, first come first served, because a copy and the encoder that reads what it wrote share a mutex and nothing else orders them. Without the tokens all the encoders run at once on shared state, and without the line an encoder now and then gets an old picture. The only sign of either is damaged video.
 
 ## Host sensors
 

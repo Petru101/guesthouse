@@ -5,7 +5,7 @@ use super::{Failure, Handled, Session, answer_status};
 use crate::deferred::DeferredAction;
 use crate::pending::GateStep;
 use crate::tables::{Queue, ReservedRange};
-use guesthouse_backend::{Backend, CommandBuffer, GuestMemory, SpaceId, UnmapRequest, WorkSource};
+use guesthouse_backend::{Backend, GuestMemory, SpaceId, UnmapRequest, WorkSource};
 use guesthouse_messages::queue::{CreateContext, CreateHardwareQueue, SubmitToContext, SubmitToQueue};
 use guesthouse_messages::sync::first_handle;
 use guesthouse_messages::wire::{Malformed, put_u32, u8_at};
@@ -168,8 +168,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         self.run_deferred();
         let request = SubmitToQueue::parse(message)?;
         let value = request.fence_value;
-        let commands = CommandBuffer { address: request.commands, length: request.commands_length };
-        match self.start_on_gpu(request.queue, WorkSource::HardwareQueue, request.private, commands, value) {
+        match self.start_on_gpu(request.queue, WorkSource::HardwareQueue, request.private, value) {
             GpuTook::Work(work) => self.hold_if_ring_is_full(request.queue, value, work),
             GpuTook::NoRoom => {
                 self.retry_later(message);
@@ -203,8 +202,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         let queue = self.queue_of_context(request.context, message)?;
         let record = self.queues.get(&queue).ok_or(Malformed)?;
         let (fence, value) = (record.fence, record.last_fence.unwrap_or(0).saturating_add(1));
-        match self.start_on_gpu(queue, WorkSource::Context, request.private, CommandBuffer::default(), value)
-        {
+        match self.start_on_gpu(queue, WorkSource::Context, request.private, value) {
             GpuTook::Work(_) => {}
             GpuTook::NoRoom => {
                 self.retry_later(message);

@@ -26,9 +26,8 @@ const SEMAPHORE_WORDS: u32 = 5;
 /// Release, after earlier work has finished, with a 64-bit value.
 const SEMAPHORE_RELEASE_64: u32 = 0x0110_0001;
 
-/// A video engine's own semaphore, from the public headers for the video classes. A host release
-/// doesn't wait for such an engine to finish, so the next frame could start on the one before. It
-/// writes the fence's low word, and the high one stays zero, which only four billion frames reach.
+/// A video engine's own semaphore, from the public headers for the video classes, so the fence moves
+/// in the engine's own order. It writes one word, so a value past that gets a host release.
 const VIDEO_SEMAPHORE_ADDRESS: u32 = 0x240;
 const VIDEO_SEMAPHORE_ADDRESS_WORDS: u32 = 3;
 const VIDEO_SEMAPHORE_RELEASE: u32 = 0x304;
@@ -37,7 +36,7 @@ const VIDEO_RELEASE_ONE_WORD: u32 = 0;
 /// What releases a fence at the end of a list.
 fn release_words(engine: Engine, fence_gpu_address: u64, value: u64) -> [u32; 6] {
     match engine {
-        Engine::Video(_) => [
+        Engine::Video(_) if value <= u64::from(u32::MAX) => [
             increasing(VIDEO_SUBCHANNEL, VIDEO_SEMAPHORE_ADDRESS, VIDEO_SEMAPHORE_ADDRESS_WORDS),
             (fence_gpu_address >> 32) as u32,
             fence_gpu_address as u32,
@@ -53,7 +52,7 @@ fn release_words(engine: Engine, fence_gpu_address: u64, value: u64) -> [u32; 6]
             increasing(COPY_SUBCHANNEL, METHOD_LAUNCH, 1),
             LAUNCH_SEMAPHORE_ONLY,
         ],
-        Engine::Graphics | Engine::Copy => [
+        _ => [
             increasing(HOST_SUBCHANNEL, SEMAPHORE_ADDRESS_LOW, SEMAPHORE_WORDS),
             fence_gpu_address as u32,
             (fence_gpu_address >> 32) as u32,
