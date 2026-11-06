@@ -457,43 +457,10 @@ void HandleCreateMonitorCommand(wchar_t *param)
 	}
 }
 
+// The monitor belongs to Guesthouse and lives as long as the guest. Sunshine sends this whenever it exits, whatever the display is.
 void HandleDestroyMonitorCommand(wchar_t *)
 {
-	if (g_GlobalDevice == nullptr)
-	{
-		VDD_LOG_ERROR("Global device not initialized for monitor destruction");
-		return;
-	}
-
-	lock_guard<mutex> lock(g_Mutex);
-	auto *pContext = WdfObjectGet_IndirectDeviceContextWrapper(g_GlobalDevice);
-	if (!pContext || !pContext->pContext)
-	{
-		VDD_LOG_ERROR("Failed to get device context for monitor destruction");
-		return;
-	}
-
-	VDD_LOG_INFO("Starting monitor destruction process");
-	VDD_LOG_DEBUG("Preparing system for monitor destruction");
-	Sleep(50);
-
-	try
-	{
-		pContext->pContext->DestroyAllMonitors();
-		VDD_LOG_DEBUG("Allowing system to stabilize after monitor destruction");
-		Sleep(100);
-		VDD_LOG_INFO("All monitors destroyed successfully");
-	}
-	catch (const exception &e)
-	{
-		VDD_LOG_ERROR_STREAM("Exception during monitor destruction: " << e.what());
-		Sleep(200);
-	}
-	catch (...)
-	{
-		VDD_LOG_ERROR("Unknown exception during monitor destruction");
-		Sleep(200);
-	}
+	VDD_LOG_INFO("Ignoring DESTROYMONITOR");
 }
 
 void HandleRefreshModesCommand(wchar_t *)
