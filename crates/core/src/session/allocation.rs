@@ -3,7 +3,8 @@
 use super::{Handled, Session, answer_status};
 use crate::deferred::{DeferredAction, FreedAllocation};
 use crate::gpu_addresses::ADDRESSES_END;
-use crate::tables::Allocation;
+use crate::pending::QueueAction;
+use crate::tables::{Allocation, Queue};
 use guesthouse_backend::{AllocationShape, Backend, GuestMemory, MapRequest, SurfaceShape, UnmapRequest};
 use guesthouse_messages::Status;
 use guesthouse_messages::address::PAGE_SIZE;
@@ -13,6 +14,7 @@ use guesthouse_messages::allocation::{
 };
 use guesthouse_messages::standard::StandardRecord;
 use guesthouse_messages::wire::{align_up, checked_align_up};
+use std::time::Instant;
 
 /// The guest's own number for 32-bit colour.
 const FORMAT_32_BIT: u32 = 21;
@@ -112,6 +114,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
                 allocation.memory = Some(memory);
                 allocation.size = size;
             }
+            log::debug!("allocation {handle:#x}: {:#x} bytes, guest backed {guest_backed}", allocation.size);
             let flags = (entry.flags & PRIMARY) | CACHED_FOR_CPU;
             CreateAllocationAnswer::set_entry(index, handle, entry.private_size, flags, allocation.size, out);
             if let Some(surface) = shape.surface {
@@ -211,6 +214,25 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         Ok(())
     }
 
+    /// Holds a first lock until the queues in its address spaces get to where they are now, if they
+    /// aren't there. Moving an allocation under an engine that's using it loses what the engine
+    /// writes, which shows up as damage here and there in encoded video.
+    fn wait_for_first_lock(&mut self, handle: u32, message: &[u8]) -> bool {
+        let mappings = &self.allocations[&handle].mappings;
+        let in_use = |queue: &Queue| mappings.iter().any(|mapping| mapping.space == queue.space);
+        let queues: Vec<u32> =
+            self.queues.iter().filter(|(_, queue)| in_use(queue)).map(|(&handle, _)| handle).collect();
+        if self.queues_idle(queues.iter().copied()) {
+            return false;
+        }
+        self.first_locks_waited.insert(handle);
+        let action =
+            QueueAction::Retry { message: message.to_vec(), ticket: self.ticket, started: Instant::now() };
+        self.after_queues(queues.iter().copied(), action);
+        self.hold_reply();
+        true
+    }
+
     /// Gives the guest's CPU access. The first lock moves the allocation from video memory to pages
     /// shared with the guest, at the same GPU addresses.
     pub(super) fn lock_for_cpu(&mut self, message: &[u8], out: &mut Vec<u8>) -> Handled {
@@ -233,6 +255,9 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         }
         let size = allocation.size;
         let preserve = self.work_started > 0 && !allocation.mappings.is_empty();
+        if preserve && !self.first_locks_waited.remove(&handle) && self.wait_for_first_lock(handle, message) {
+            return Ok(());
+        }
         if preserve && !self.copies.is_empty() {
             // The vendor's copies run in order, and this one needs them finished.
             self.park(message);

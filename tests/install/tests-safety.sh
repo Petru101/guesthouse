@@ -107,7 +107,7 @@ t_a_file_it_did_not_install_is_not_replaced() {
     release 1.0
     give_everything
     mkdir -p "$H/.local/share/applications"
-    echo mine >"$H/.local/share/applications/net.gpupv.Guesthouse.desktop"
+    echo mine >"$H/.local/share/applications/io.github.xnixy.Guesthouse.desktop"
     snapshot >"$T/before"
     install_version 1.0
     check_exit 1

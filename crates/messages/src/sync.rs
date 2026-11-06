@@ -8,6 +8,11 @@ pub const KIND_MONITORED_FENCE: u32 = 5;
 /// An object that wakes a guest event instead of counting.
 pub const KIND_CPU_NOTIFICATION: u32 = 4;
 
+/// Held by one engine at a time: a wait takes it, and a signal gives it back.
+pub const KIND_MUTEX: u32 = 1;
+/// The same, with a count.
+pub const KIND_SEMAPHORE: u32 = 2;
+
 /// A request for a new sync object.
 #[derive(Debug, Clone, Copy)]
 pub struct CreateSyncObject {
@@ -19,6 +24,17 @@ pub struct CreateSyncObject {
 impl CreateSyncObject {
     const KIND: usize = 0x20;
     const INITIAL: usize = 0x28;
+
+    /// (free now, the most there can be) for an object that is held and given back.
+    pub fn tokens(&self) -> Option<(u32, u32)> {
+        let [first, second] = [self.initial.unwrap_or(0) as u32, (self.initial.unwrap_or(0) >> 32) as u32];
+        match self.kind {
+            // Measured: one made with a one here is waited for first, so one means free.
+            KIND_MUTEX => Some((u32::from(first != 0), 1)),
+            KIND_SEMAPHORE => Some((second.min(first), first)),
+            _ => None,
+        }
+    }
 
     pub fn parse(message: &[u8]) -> Result<Self, Malformed> {
         Ok(Self { kind: u32_at(message, Self::KIND)?, initial: u64_at(message, Self::INITIAL).ok() })
@@ -172,6 +188,29 @@ impl<'a> WaitOnGpu<'a> {
             values: U64List::at(message, Self::VALUES, count)?,
             objects: U32List::at(message, Self::VALUES + 8 * count, count)?,
         })
+    }
+}
+
+#[cfg(test)]
+mod token_tests {
+    use super::*;
+
+    #[test]
+    fn a_new_mutex_is_free_if_it_says_so() {
+        assert_eq!(CreateSyncObject { kind: KIND_MUTEX, initial: Some(1) }.tokens(), Some((1, 1)));
+        assert_eq!(CreateSyncObject { kind: KIND_MUTEX, initial: Some(0) }.tokens(), Some((0, 1)));
+    }
+
+    #[test]
+    fn a_semaphore_starts_where_it_says_within_its_most() {
+        let tokens = |initial| CreateSyncObject { kind: KIND_SEMAPHORE, initial: Some(initial) }.tokens();
+        assert_eq!(tokens(4 | 2 << 32), Some((2, 4)));
+        assert_eq!(tokens(4 | 9 << 32), Some((4, 4)));
+    }
+
+    #[test]
+    fn a_fence_has_no_tokens() {
+        assert_eq!(CreateSyncObject { kind: KIND_MONITORED_FENCE, initial: Some(0) }.tokens(), None);
     }
 }
 

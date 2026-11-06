@@ -140,7 +140,14 @@ pub struct Session<B, M> {
     pub(crate) queues: HashMap<u32, Queue>,
     pub(crate) context_queues: HashMap<u32, Vec<u32>>,
     pub(crate) context_nodes: HashMap<u32, u32>,
+    pub(crate) context_hints: HashMap<u32, u32>,
+    /// The process each context was made for, as the one that destroys it may be another.
+    pub(crate) context_processes: HashMap<u32, u32>,
     pub(crate) gates: HashMap<u32, Gate>,
+    /// The number of the next wait to join a line.
+    pub(crate) next_wait: u64,
+    /// Allocations whose first lock has waited for the GPU once, and goes ahead when it comes back.
+    pub(crate) first_locks_waited: HashSet<u32>,
     pub(crate) queues_made: u32,
     /// Statistics have been refused once, which is worth saying once.
     pub(crate) statistics_refused: bool,
@@ -197,6 +204,10 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             queues: HashMap::new(),
             context_queues: HashMap::new(),
             context_nodes: HashMap::new(),
+            context_hints: HashMap::new(),
+            context_processes: HashMap::new(),
+            next_wait: 0,
+            first_locks_waited: HashSet::new(),
             gates: HashMap::new(),
             queues_made: 0,
             statistics_refused: false,

@@ -27,7 +27,8 @@ const CONTROL_GET_ATTACHED_IDS: u32 = 0x0000_0201;
 /// empty buffer would tell the guest its card is at 0 degrees and 0 MHz, and a refusal is honest.
 /// Real readings reach the guest another way, from the host's sampler.
 const SENSOR_CONTROL_CLASS: u32 = 0x2080;
-/// Thermal, clock, perf and voltage, each in its plain, legacy and privileged numbering.
+/// `NV2080_CTRL_THERMAL`, `_CLK`, `_PERF` and `_VOLT` in `ctrl2080base.h`, each with its
+/// `_LEGACY_NON_PRIVILEGED` and `_LEGACY_PRIVILEGED` numbers.
 const SENSOR_CONTROL_CATEGORIES: [u32; 12] =
     [0x05, 0x85, 0xC5, 0x10, 0x90, 0xD0, 0x20, 0xA0, 0xE0, 0x32, 0xB2, 0xF2];
 
@@ -351,8 +352,9 @@ mod tests {
 
     #[test]
     fn controls_the_guests_drivers_need_to_succeed_keep_their_status() {
-        // The first two limit clocks and change how a context caches, so they must not run. All
-        // three are sent while a guest's drivers start, and they get success on a real install.
+        // The first two are NV0080_CTRL_CMD_PERF_CUDA_LIMIT_SET_CONTROL and
+        // NV0090_CTRL_CMD_SET_LG_SECTOR_PROMOTION, which would change the host's card, so they
+        // don't run. Guests send all three as their drivers start, and each one gets success.
         for command in [0x0080_1909, 0x0090_010B, 0x0080_9908] {
             let mut device = device();
             let mut data = control(command, 16);

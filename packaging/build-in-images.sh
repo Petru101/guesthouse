@@ -7,8 +7,6 @@
 # The stages are build-release.sh's. It needs podman or docker and no root, and publishes nothing.
 set -eu
 
-APP_IMAGE=guesthouse-build-app
-QEMU_IMAGE=guesthouse-build-qemu
 # The oldest glibc a release promises to run on. Ubuntu 24.04 has this one.
 GLIBC_CEILING=2.39
 
@@ -28,9 +26,12 @@ find_engine() {
     esac
 }
 
+# Named after its definition, so a change to one can't quietly use an image from before it.
 make_image() {
-    "$ENGINE" image inspect "$1" >/dev/null 2>&1 ||
-        "$ENGINE" build -t "$1" -f "$REPO/packaging/$2" "$REPO/packaging"
+    tag=guesthouse-build-$1:$(sha256sum <"$REPO/packaging/$2" | cut -c 1-12)
+    "$ENGINE" image inspect "$tag" >/dev/null 2>&1 ||
+        "$ENGINE" build -t "$tag" -f "$REPO/packaging/$2" "$REPO/packaging" >&2
+    printf '%s' "$tag"
 }
 
 # A clone holds exactly what's committed, and a git worktree's .git points outside any mount. An
@@ -53,7 +54,7 @@ in_image() {
 
 image_for() {
     case $1 in
-        qemu) printf '%s' "$QEMU_IMAGE" ;;
+        qemu | bundled) printf '%s' "$QEMU_IMAGE" ;;
         *) printf '%s' "$APP_IMAGE" ;;
     esac
 }
@@ -68,21 +69,29 @@ check_glibc_ceiling() {
     printf 'this release needs glibc %s\n' "$needed"
 }
 
+# What's in the payload but isn't ours has to go out with its source, or not at all.
+check_bundled_source() {
+    [ -f "$OUT/SHA256SUMS" ] || return 0
+    grep -q 'bundled-source' "$OUT/SHA256SUMS" ||
+        die "SHA256SUMS has no bundled source, and a release can't go out without it."
+}
+
 main() {
     if [ "${1:-}" = --out ]; then
         OUT=$2
         shift 2
     fi
-    [ $# -gt 0 ] || set -- qemu app payload source
+    [ $# -gt 0 ] || set -- qemu bundled app payload source
     find_engine
-    make_image "$QEMU_IMAGE" Containerfile.qemu
-    make_image "$APP_IMAGE" Containerfile
+    QEMU_IMAGE=$(make_image qemu Containerfile.qemu)
+    APP_IMAGE=$(make_image app Containerfile)
     mkdir -p "$OUT/home"
     find_tree
     for stage in "$@"; do
         in_image "$(image_for "$stage")" "$stage"
     done
     check_glibc_ceiling
+    check_bundled_source
 }
 
 { main "$@"; }

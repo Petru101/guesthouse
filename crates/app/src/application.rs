@@ -11,16 +11,16 @@ use std::path::Path;
 use std::rc::Rc;
 use std::sync::Arc;
 
-pub const APP_ID: &str = "net.gpupv.Guesthouse";
+pub const APP_ID: &str = "io.github.xnixy.Guesthouse";
 /// Built in, so the app has its icon however it was started. GTK only reads icons from a folder.
 const ICONS: [(&str, &[u8]); 2] = [
     (
-        "hicolor/scalable/apps/net.gpupv.Guesthouse.svg",
-        include_bytes!("../data/icons/hicolor/scalable/apps/net.gpupv.Guesthouse.svg"),
+        "hicolor/scalable/apps/io.github.xnixy.Guesthouse.svg",
+        include_bytes!("../data/icons/hicolor/scalable/apps/io.github.xnixy.Guesthouse.svg"),
     ),
     (
-        "hicolor/symbolic/apps/net.gpupv.Guesthouse-symbolic.svg",
-        include_bytes!("../data/icons/hicolor/symbolic/apps/net.gpupv.Guesthouse-symbolic.svg"),
+        "hicolor/symbolic/apps/io.github.xnixy.Guesthouse-symbolic.svg",
+        include_bytes!("../data/icons/hicolor/symbolic/apps/io.github.xnixy.Guesthouse-symbolic.svg"),
     ),
 ];
 

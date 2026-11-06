@@ -167,6 +167,8 @@ pub struct Work<'a> {
     pub space: SpaceId,
     /// The engine node of the queue's context.
     pub node: u32,
+    /// What the guest said its context is for.
+    pub client_hint: u32,
     /// The vendor driver's private data.
     pub private: &'a [u8],
     pub fence: u64,

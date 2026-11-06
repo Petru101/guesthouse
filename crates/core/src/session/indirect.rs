@@ -282,6 +282,8 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         self.frames.registering = None;
         self.frames.cursor = Cursor::default();
         self.end_indirect_ring("the guest restarted");
+        self.context_processes.clear();
+        self.backend.all_processes_gone();
     }
 
     pub(super) fn allocation_going(&mut self, handle: u32) {

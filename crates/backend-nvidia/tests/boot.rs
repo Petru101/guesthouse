@@ -6,11 +6,13 @@ use guesthouse_backend_nvidia::NvidiaBackend;
 use guesthouse_backend_nvidia::fake_guest::{
     PROCESS, blank_request, fake_backend, message, start_on_fake_card,
 };
-use guesthouse_backend_nvidia::profile::GUEST_617;
+use guesthouse_backend_nvidia::profile::{BLACKWELL, GUEST_617};
 use guesthouse_backend_nvidia::pushbuffer::{increasing, ring_entry};
-use guesthouse_backend_nvidia::rm::classes::{CHANNEL_GROUP, ENGINE_COPY_0};
+use guesthouse_backend_nvidia::rm::classes::{
+    CHANNEL_GROUP, CONTROL_ENCODE_SLOT_GIVE_BACK, CONTROL_ENCODE_SLOT_TAKE, ENGINE_COPY_0,
+};
 use guesthouse_backend_nvidia::rm::fake::{Call, FakeRm};
-use guesthouse_backend_nvidia::rm::fake_card::{FAKE_GPU_ID, FAKE_NAME};
+use guesthouse_backend_nvidia::rm::fake_card::{FAKE_CLASSES, FAKE_GPU_ID, FAKE_NAME};
 use guesthouse_backend_nvidia::sensors::{Snapshot, SnapshotReader};
 use guesthouse_backend_standin::{RandomMessages, SparseMemory};
 use guesthouse_core::{Answer, Config, CopyOrder, MemoryLimits, ReplyTicket, Session};
@@ -24,6 +26,8 @@ const WINDOW_END: u64 = WINDOW + (1 << 30);
 const TICKET: Option<ReplyTicket> = Some(ReplyTicket { channel: 1, transaction: 9 });
 const SUCCESS: u32 = Status::SUCCESS.0;
 const DECODE_NODE: u32 = 1;
+/// The fake card's first decoder, in the RM's numbers.
+const RM_DECODER: u32 = 0x13;
 /// The decode and the two encode nodes the fake card has.
 const VIDEO_NODES: [u32; 3] = [1, 5, 6];
 /// Its security, JPEG and VR nodes.
@@ -144,6 +148,18 @@ fn the_record_reaches_the_guest_with_the_discovery_word_set() {
     assert_eq!(reply.len(), 4 + size);
     assert_eq!(&reply[4..8], b"ADVN");
     assert_eq!(u32_at(&reply, 4 + GUEST_617.record.gpu_discovery), Ok(1));
+}
+
+#[test]
+fn the_records_class_list_starts_with_its_length() {
+    let mut session = guest();
+    let size = GUEST_617.record.size;
+    let mut query = message(Command::QueryAdapter, HEADER_SIZE + 8);
+    set_u32(&mut query, HEADER_SIZE + 4, size as u32);
+    let reply = send(&mut session, &query);
+    let at = 4 + GUEST_617.record.classes;
+    assert_eq!(u32_at(&reply, at), Ok(FAKE_CLASSES.len() as u32));
+    assert_eq!(u32_at(&reply, at + 4), Ok(FAKE_CLASSES[0]));
 }
 
 #[test]
@@ -413,11 +429,63 @@ fn a_flagged_submission_with_a_ring_address_still_runs_on_that_ring() {
     assert_eq!(session.backend().device().rm.doorbells().len(), 1);
 }
 
+/// A submission to a context, with one ring entry in its private data as the guest sends it.
+fn context_submission(context: u32) -> Vec<u8> {
+    const SUBMISSION_CONTEXT: usize = 0x34;
+    const SUBMISSION_PRIVATE_SIZE: usize = 0x140;
+    const SUBMISSION_PRIVATE: usize = 0x198;
+    const LIST_OFFSET: usize = 0x0C;
+    const LIST_ENTRIES: usize = 0x18;
+    const LIST_AT: usize = 0x84;
+    let mut private = vec![0; LIST_AT];
+    set_u32(&mut private, LIST_OFFSET, LIST_AT as u32);
+    set_u32(&mut private, LIST_ENTRIES, 1);
+    private.extend_from_slice(&ring_entry(0x4000_0000, 4).to_le_bytes());
+    let mut request = message(Command::SubmitToContext, SUBMISSION_PRIVATE);
+    set_u32(&mut request, SUBMISSION_CONTEXT, context);
+    set_u32(&mut request, SUBMISSION_PRIVATE_SIZE, private.len() as u32);
+    request.extend_from_slice(&private);
+    request
+}
+
+fn group_engines(session: &Guest) -> Vec<u32> {
+    let made = session.backend().device().rm.allocated();
+    made.filter(|(class, _)| *class == CHANNEL_GROUP)
+        .map(|(_, params)| u32_at(params, 0x0C).unwrap())
+        .collect()
+}
+
 #[test]
-fn a_video_node_gets_no_context() {
+fn a_video_context_runs_on_its_own_engine() {
     let mut session = guest();
-    assert_eq!(context(&mut session, DECODE_NODE), 0);
-    assert_ne!(context(&mut session, 0), 0);
+    let context = context(&mut session, DECODE_NODE);
+    assert_ne!(context, 0);
+    send(&mut session, &context_submission(context));
+    assert!(group_engines(&session).contains(&RM_DECODER));
+    let mut made = session.backend().device().rm.allocated();
+    let bound = made.find(|(class, _)| *class == BLACKWELL.video_decode_class).unwrap();
+    assert_eq!(bound.1, [12, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+}
+
+#[test]
+fn a_vulkan_context_on_a_video_node_gets_a_copy_channel() {
+    let mut session = guest();
+    let context = vulkan_context(&mut session, DECODE_NODE);
+    send(&mut session, &context_submission(context));
+    assert!(group_engines(&session).contains(&ENGINE_COPY_0));
+    assert!(!group_engines(&session).contains(&RM_DECODER));
+}
+
+#[test]
+fn a_video_context_says_it_can_take_work() {
+    const PRIVATE: usize = 0x34;
+    const READY: usize = 0xD7C;
+    const CONTEXT_PRIVATE_SIZE: usize = 0x30;
+    let mut request = message(Command::CreateContext, PRIVATE + READY + 4);
+    set_u32(&mut request, 0x20, DECODE_NODE);
+    set_u32(&mut request, CONTEXT_PRIVATE_SIZE, READY as u32 + 4);
+    let reply = send(&mut guest(), &request);
+    assert_eq!(u32_at(&reply, PRIVATE + READY), Ok(1));
 }
 
 fn vulkan_context(session: &mut Guest, node: u32) -> u32 {
@@ -612,6 +680,82 @@ fn performance_queries_keep_working_with_no_readings() {
     session.backend_mut().set_sensors(Box::new(FixedReadings(None)));
     assert_eq!(send(&mut session, &adapter_speed_query()), before);
     assert_eq!(u32_at(&before, 0), Ok(SUCCESS));
+}
+
+const ENCODE_NODES: [u32; 2] = [5, 6];
+const ENCODE_ASKS: [u32; 3] = [0x0100_0128, 0x0100_0119, 0x0100_011A];
+const ENCODE_ANSWER: usize = 0x30;
+/// What the host's driver says when the card has no slot left, as measured.
+const NO_SLOT: u32 = 0x69;
+
+/// A guest on a card whose driver has slots.
+fn encoding_guest() -> Guest {
+    let mut session = guest();
+    let rm = &mut session.backend_mut().device_mut().rm;
+    rm.answer(CONTROL_ENCODE_SLOT_TAKE, |_| 0);
+    rm.answer(CONTROL_ENCODE_SLOT_GIVE_BACK, |_| 0);
+    session
+}
+
+fn ask_to_encode(session: &mut Guest, function: u32) -> u8 {
+    let mut escape = message(Command::DriverEscape, HEADER_SIZE + 24);
+    set_u32(&mut escape, HEADER_SIZE + 16, 0x40);
+    let mut data = [0; 0x40];
+    data[0x10..0x14].copy_from_slice(&function.to_le_bytes());
+    escape.extend_from_slice(&data);
+    send(session, &escape)[ENCODE_ANSWER]
+}
+
+fn slots_given_back(session: &Guest) -> usize {
+    let calls = session.backend().device().rm.calls.iter();
+    calls.filter(|call| matches!(call, Call::Control { command: CONTROL_ENCODE_SLOT_GIVE_BACK, .. })).count()
+}
+
+#[test]
+fn every_way_of_asking_to_encode_gets_the_drivers_answer() {
+    for function in ENCODE_ASKS {
+        let mut session = encoding_guest();
+        assert_eq!(ask_to_encode(&mut session, function), 1, "{function:#x}");
+        session.backend_mut().device_mut().rm.answer(CONTROL_ENCODE_SLOT_TAKE, |_| NO_SLOT);
+        assert_eq!(ask_to_encode(&mut session, function), 0, "{function:#x}");
+    }
+}
+
+#[test]
+fn a_session_ending_gives_its_slot_back() {
+    let mut session = encoding_guest();
+    ask_to_encode(&mut session, ENCODE_ASKS[0]);
+    let contexts = ENCODE_NODES.map(|node| context(&mut session, node));
+    for context in contexts {
+        let mut request = message(Command::DestroyContext, HEADER_SIZE + 8);
+        set_u32(&mut request, HEADER_SIZE, context);
+        send(&mut session, &request);
+    }
+    assert_eq!(slots_given_back(&session), 1);
+}
+
+#[test]
+fn a_process_ending_gives_its_slots_back() {
+    let mut session = encoding_guest();
+    ask_to_encode(&mut session, ENCODE_ASKS[0]);
+    ask_to_encode(&mut session, ENCODE_ASKS[0]);
+    for node in ENCODE_NODES {
+        context(&mut session, node);
+    }
+    send(&mut session, &message(Command::DestroyProcess, HEADER_SIZE));
+    assert_eq!(slots_given_back(&session), 2);
+}
+
+#[test]
+fn decoding_takes_no_slot() {
+    let mut session = guest();
+    context(&mut session, DECODE_NODE);
+    let calls = session.backend().device().rm.calls.iter();
+    assert!(
+        !calls
+            .into_iter()
+            .any(|call| matches!(call, Call::Control { command: CONTROL_ENCODE_SLOT_TAKE, .. }))
+    );
 }
 
 #[test]

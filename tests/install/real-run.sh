@@ -47,7 +47,7 @@ sandboxed python3 -I "$HERE/tty.py" 'yes\n' sh "$T/install.sh"
 printf '\n== installed, %s files, %s\n' "$(grep -c '^file' "$H/.local/lib/guesthouse/manifest")" "$(du -sh "$H" | cut -f 1)"
 grep -E '^(format|version|mode)' "$H/.local/lib/guesthouse/manifest"
 ls -la "$H/.local/lib/guesthouse"
-cat "$H/.local/share/applications/net.gpupv.Guesthouse.desktop"
+cat "$H/.local/share/applications/io.github.xnixy.Guesthouse.desktop"
 
 printf '\n== the real programs start from the install\n'
 sandboxed "$current/qemu/build/qemu-system-x86_64" -version | head -n 1

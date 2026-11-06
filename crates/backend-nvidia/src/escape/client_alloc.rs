@@ -1,10 +1,10 @@
 //! A guest's request to make an RM client, answered here.
 //!
-//! With a client of zero the guest asks again on every call. Nothing is made on the host: controls never use the guest's handles, so a number that isn't zero is all
-//! that is needed. A guest's allocation never reaches the RM.
+//! Nothing is made on the host: controls never use the guest's handles, so the answer is a fixed
+//! number that isn't zero. A guest's allocation never reaches the RM.
 //!
-//! Two layouts share this escape. Both start the same, and one has a mark in the next field that
-//! moves its answer further along.
+//! The status and handle go in one of two places, further along when the word at `LAYOUT_MARK`
+//! holds `MARKED_LAYOUT`.
 
 use super::{get, put};
 use crate::rm::Handle;
@@ -37,7 +37,7 @@ pub(super) fn answer(data: &mut [u8]) {
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{device, escape};
+    use super::super::tests::{NO_FACTS, device, escape};
     use super::super::{FUNCTION_RM_ALLOC, RESULT, answer as answer_escape};
     use super::*;
     use crate::rm::classes::SUBDEVICE;
@@ -61,7 +61,7 @@ mod tests {
     fn the_marked_layout_gets_its_client_further_along() {
         let mut data = request(ROOT_CLIENT, MARKED_SIZE);
         put(&mut data, LAYOUT_MARK, MARKED_LAYOUT);
-        answer_escape(&mut device(), &[], &super::super::tests::NO_MEMORY, &mut data).unwrap();
+        answer_escape(&mut device(), NO_FACTS, &mut data).unwrap();
         assert_eq!(get(&data, RESULT), Some(1));
         assert_eq!(get(&data, MARKED_STATUS), Some(0));
         assert_eq!(get(&data, MARKED_HANDLE), Some(GUEST_CLIENT));
@@ -71,7 +71,7 @@ mod tests {
     #[test]
     fn the_plain_layout_gets_its_client_straight_after_the_status() {
         let mut data = request(ROOT_CLIENT, PLAIN_SIZE);
-        answer_escape(&mut device(), &[], &super::super::tests::NO_MEMORY, &mut data).unwrap();
+        answer_escape(&mut device(), NO_FACTS, &mut data).unwrap();
         assert_eq!(get(&data, PLAIN_STATUS), Some(0));
         assert_eq!(get(&data, PLAIN_HANDLE), Some(GUEST_CLIENT));
     }
@@ -82,7 +82,7 @@ mod tests {
         let made = allocations(&device);
         for class in [ROOT_CLIENT, SUBDEVICE] {
             let mut data = request(class, PLAIN_SIZE);
-            answer_escape(&mut device, &[], &super::super::tests::NO_MEMORY, &mut data).unwrap();
+            answer_escape(&mut device, NO_FACTS, &mut data).unwrap();
         }
         assert_eq!(allocations(&device), made);
     }
@@ -91,13 +91,13 @@ mod tests {
     fn other_classes_keep_the_usual_echo() {
         let mut data = request(SUBDEVICE, PLAIN_SIZE);
         put(&mut data, PLAIN_HANDLE, 0x1234);
-        answer_escape(&mut device(), &[], &super::super::tests::NO_MEMORY, &mut data).unwrap();
+        answer_escape(&mut device(), NO_FACTS, &mut data).unwrap();
         assert_eq!(get(&data, PLAIN_HANDLE), Some(0x1234));
     }
 
     #[test]
     fn a_short_request_is_not_a_problem() {
         let mut data = request(ROOT_CLIENT, CLASS + 4);
-        answer_escape(&mut device(), &[], &super::super::tests::NO_MEMORY, &mut data).unwrap();
+        answer_escape(&mut device(), NO_FACTS, &mut data).unwrap();
     }
 }

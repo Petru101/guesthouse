@@ -1,17 +1,15 @@
 //! Pairs of CPU and GPU time, which a guest's OpenGL driver asks for many times a second.
 //!
-//! The real control takes the RM's locks, so it queues behind whatever else the card is doing,
-//! including the host's desktop. Most calls take 100 µs, and under load some take over 10 ms, all
-//! of it on the one thread that serves the guest. The GPU's timer can be read from a mapped page
-//! instead, which gives the same numbers with no lock. Only the plain OS clock is answered this way.
-//! Anything else goes on to the RM, which knows what to do with it.
+//! The GPU's timer is read from a mapped page here, so these calls don't go through the RM. Only the
+//! plain OS clock is answered this way. Anything else goes on to the RM, which knows what to do with
+//! it.
 //!
-//! The CPU time has to follow the guest's clock, as its OpenGL driver checks the two against each
-//! other. If they're a few milliseconds apart it asks again on nearly every submission, and its
-//! timestamps come out wrong. The guest's clock is set from the host's when it boots, and after that
-//! it runs at the raw speed of the CPU's counter, with none of the corrections NTP makes to the
-//! host's: measured here, the two parted by 11.7 parts in a million, and the guest and the host's
-//! raw clock not at all. So this runs off the raw clock, from the wall clock at the guest's start.
+//! The CPU time follows the guest's clock. Measured: with the answer a few milliseconds from that
+//! clock, `GL_TIMESTAMP` went backwards in 840 of 2,000 reads, and on the guest's clock it never did.
+//! The guest's clock is set from the host's when it boots, and after that it runs at the raw speed
+//! of the CPU's counter, with none of the corrections NTP makes to the host's: measured here, the two
+//! parted by 11.7 parts in a million, and the guest and the host's raw clock not at all. So this runs
+//! off the raw clock, from the wall clock at the guest's start.
 //!
 //! The layout is the public `NV2080_CTRL_TIMER_GET_GPU_CPU_TIME_CORRELATION_INFO_PARAMS`.
 

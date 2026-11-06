@@ -34,7 +34,7 @@ const LAUNCH_PITCH_LINES: u32 = 0x38E;
 const LAUNCH_BLOCK_TO_PITCH_LINES: u32 = 0x30E;
 const LAUNCH_PITCH_ONE_LINE: u32 = 0x18E;
 /// Flushed, with nothing to transfer, ending in a one-word semaphore.
-const LAUNCH_SEMAPHORE_ONLY: u32 = 0xC;
+pub(crate) const LAUNCH_SEMAPHORE_ONLY: u32 = 0xC;
 const BLOCK_HEIGHT_SHIFT: u32 = 4;
 /// Blocks are one GOB wide and deep, and GOBs have eight rows.
 const BLOCK_GOB_HEIGHT_8: u32 = 1 << 12;

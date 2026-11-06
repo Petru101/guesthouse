@@ -1,13 +1,10 @@
-//! How the vendor's API learns which GPUs work together.
-//!
-//! A GPU this answer leaves out fails every later call by its handle, even when the GPU list named
-//! it.
+//! The answer to the GPU groups escape: one group, holding this card.
 
 use super::{GPU_KIND_DISPLAY_DRIVER, put};
 
 const GROUP_COUNT: usize = 0x34;
 const GROUP_GPU_IDS: usize = 0x3C;
-/// One word per GPU, whose meaning is not known. Zero is the guess for a group of one.
+/// One word per GPU, which we leave at zero.
 const GROUP_GPU_DETAILS: usize = 0x13C;
 const GROUP_GPU_COUNT: usize = 0x23C;
 const GROUP_KEY: usize = 0x240;
@@ -30,17 +27,17 @@ pub(super) fn answer(gpu_id: u32, data: &mut [u8]) {
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{device, escape};
+    use super::super::tests::{NO_FACTS, device, escape};
     use super::super::{FUNCTION_LIST_GPU_GROUPS, RESULT, answer as answer_escape, get};
     use super::*;
 
-    /// The size the guest's API really asks with.
+    /// A size with room for the whole answer.
     const WHOLE_ANSWER: usize = 0x8538;
 
     #[test]
     fn the_answer_names_this_card_as_a_group_of_one() {
         let mut data = escape(FUNCTION_LIST_GPU_GROUPS, WHOLE_ANSWER);
-        answer_escape(&mut device(), &[], &super::super::tests::NO_MEMORY, &mut data).unwrap();
+        answer_escape(&mut device(), NO_FACTS, &mut data).unwrap();
         assert_eq!(get(&data, RESULT), Some(1));
         assert_eq!(get(&data, GROUP_COUNT), Some(1));
         assert_eq!(get(&data, GROUP_GPU_COUNT), Some(1));
@@ -52,7 +49,7 @@ mod tests {
     fn old_bytes_in_the_guests_buffer_do_not_survive() {
         let mut data = vec![0xAA; WHOLE_ANSWER];
         data[..0x14].copy_from_slice(&escape(FUNCTION_LIST_GPU_GROUPS, 0x14));
-        answer_escape(&mut device(), &[], &super::super::tests::NO_MEMORY, &mut data).unwrap();
+        answer_escape(&mut device(), NO_FACTS, &mut data).unwrap();
         assert_eq!(get(&data, GROUP_KEY), Some(DEVICE_INSTANCE));
         assert_eq!(get(&data, GROUP_FLAGS), Some(0));
         assert_eq!(get(&data, GROUP_GPU_DETAILS), Some(0));
@@ -61,7 +58,7 @@ mod tests {
     #[test]
     fn a_short_buffer_gets_what_fits() {
         let mut data = escape(FUNCTION_LIST_GPU_GROUPS, GROUP_COUNT + 4);
-        answer_escape(&mut device(), &[], &super::super::tests::NO_MEMORY, &mut data).unwrap();
+        answer_escape(&mut device(), NO_FACTS, &mut data).unwrap();
         assert_eq!(get(&data, GROUP_COUNT), Some(1));
     }
 }

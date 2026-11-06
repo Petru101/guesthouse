@@ -80,8 +80,22 @@ const ECID_HIGH: u32 = 2;
 const FB_CLEARED_ON_ALLOCATION: (usize, u8) = (2, 0x02);
 const FIFO_NO_PIPELINED_PAGE_TABLE_BLIT: (usize, u8) = (0, 0x80);
 
+/// Measured: with this bit clear, Direct3D 11 offers no video decoders at all.
+const FLAG_VIDEO_DECODE: u32 = 1 << 20;
+
+/// The next word, as a real install's record has it. Measured: without it, a Direct3D 11 decoder
+/// can be made but its first frame fails as out of memory.
+const FLAGS_VIDEO_FRAMES: u32 = 0x40_0030;
+
+/// As a real install's record has it. Measured: with this byte at zero, making a Direct3D 11 decoder
+/// fails.
+const DECODER_FLAGS: u8 = 0x48;
+
 /// The identifiers the guest's adapter goes by, which the core's identity answer repeats.
 const ADAPTER_ID: [u32; 2] = [0xABC, 1];
+
+/// The most classes the record's list has room for, before the next field.
+const MOST_CLASSES: usize = 200;
 
 /// (index, value) pairs, as the record lays them out.
 type Table = Vec<(u32, u32)>;
@@ -108,6 +122,20 @@ impl Record {
         for (index, &value) in values.iter().enumerate() {
             self.word(at + index * 4, value);
         }
+    }
+
+    /// A list with its length in front. The guest's runtime copies as many words as the length says
+    /// into a buffer of its own, so a word out of place here overruns its stack.
+    fn counted_words(&mut self, at: usize, values: &[u32]) -> Result<(), Refusal> {
+        if values.len() > MOST_CLASSES {
+            return Err(Refusal(format!(
+                "The card has {} classes, and the guest's record holds {MOST_CLASSES}.",
+                values.len()
+            )));
+        }
+        self.word(at, values.len() as u32);
+        self.words(at + 4, values);
+        Ok(())
     }
 
     fn table(&mut self, at: usize, values: &[(u32, u32)]) {
@@ -301,7 +329,9 @@ pub fn build<R: Rm>(
         record.word(layout.memory_low + index * 4, size as u32);
     }
 
-    record.words(layout.classes, &card.classes().map_err(card_failed)?);
+    record.words(layout.flags, &[FLAG_VIDEO_DECODE, FLAGS_VIDEO_FRAMES]);
+    record.put(layout.decoder_flags, &[DECODER_FLAGS]);
+    record.counted_words(layout.classes, &card.classes().map_err(card_failed)?)?;
 
     let (graphics_hertz, memory_hertz) = host.rated_clocks;
     let graphics_khz = (graphics_hertz / 1000) as u32;

@@ -110,7 +110,7 @@ pub trait Backend: Sized {
     fn guest_restarted(&mut self) {}
 
     /// `memory` adds up the guest's allocations, so it's only for the escapes that ask.
-    fn escape(&mut self, data: &mut [u8], memory: &dyn Fn() -> VideoMemoryUse);
+    fn escape(&mut self, process: u32, data: &mut [u8], memory: &dyn Fn() -> VideoMemoryUse);
 
     /// Answers an adapter query the vendor owns by appending the answer to `out`. Returns `None` for
     /// a query it leaves to the core.
@@ -132,6 +132,21 @@ pub trait Backend: Sized {
     /// context is for. Work for a node with no channel has nowhere to run, and sent to the wrong
     /// engine it would be a fault on a card the host is using.
     fn context_allowed(&mut self, node: u32, client_hint: u32) -> bool;
+
+    /// A context has been made for this process.
+    fn context_made(&mut self, _process: u32, _node: u32) {}
+
+    /// A context has gone.
+    fn context_gone(&mut self, _process: u32, _node: u32) {}
+
+    /// A guest process has ended, however it ended. What the backend holds for it must go.
+    fn process_gone(&mut self, _process: u32) {}
+
+    /// The guest has restarted, and its old processes will never say they ended.
+    fn all_processes_gone(&mut self) {}
+
+    /// A last look at a new context's private data, which goes back to the guest. Most need nothing.
+    fn finish_context_data(&mut self, _node: u32, _private: &mut [u8]) {}
 
     /// How much of a queue may be unfinished before the guest's next submission is held back. In the
     /// vendor's own units, the ones [`WorkStart::Started`] counts in. `None` means no limit.
