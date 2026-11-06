@@ -62,6 +62,35 @@ pub const FAKE_BLACKWELL: FakeCard = FakeCard {
     class_count: FAKE_CLASSES.len(),
 };
 
+/// A pretend 40-series card. Its engines are only there to make the nodes come out.
+pub const FAKE_ADA: FakeCard = FakeCard {
+    name: "Fake Ada Card",
+    device: 0x2704,
+    architecture: 0x190,
+    implementation: Some(0x3),
+    sm_version: 0x809,
+    engines: &[0x01, 0x09, 0x0D, 0x0E, 0x13, 0x1B, 0x1C, 0x26, 0x33],
+    graphics_copy: 0x09,
+    classes: &[
+        0x902D, 0xA140, 0xC36F, 0xC361, 0xC46F, 0xC461, 0xC56F, 0xC561, 0xC7B5, 0xC997, 0xC9B0, 0xC9B7,
+        0xC9C0,
+    ],
+    class_count: 127,
+};
+
+/// A pretend 16-series card, as the one above.
+pub const FAKE_TURING: FakeCard = FakeCard {
+    name: "Fake Turing Card",
+    device: 0x21C4,
+    architecture: 0x160,
+    implementation: Some(0x8),
+    sm_version: 0x703,
+    engines: &[0x01, 0x09, 0x0A, 0x0B, 0x0C, 0x13, 0x1B, 0x26],
+    graphics_copy: 0x09,
+    classes: &[0x902D, 0xA140, 0xC36F, 0xC361, 0xC46F, 0xC461, 0xC4B0, 0xC4B7, 0xC597, 0xC5B5, 0xC5C0],
+    class_count: 110,
+};
+
 // A real RM copes with parameters of the wrong size, so these do too.
 fn word(params: &[u8], at: usize) -> u32 {
     params.get(at..at + 4).map_or(0, |bytes| u32::from_le_bytes(bytes.try_into().expect("four bytes")))
