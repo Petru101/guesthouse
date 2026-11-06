@@ -106,6 +106,8 @@ fn a_gpu_machine_starts_through_the_same_host_and_sets_up_its_desktop() {
     let agent = Arc::new(ScriptedAgent::answering(&[
         "3
 ",
+        "gpu working 1
+",
         "",
         "screen 1920x1080
 ",
@@ -120,8 +122,9 @@ fn a_gpu_machine_starts_through_the_same_host_and_sets_up_its_desktop() {
     assert_eq!(host.said(), ["start gpu"]);
     assert_eq!(task.error, "");
     let asked = agent.requests.lock().unwrap();
-    assert!(asked[1].2.contains("WriteAllBytes"), "the script goes to the guest first");
-    assert!(asked[2].2.contains("New-ScheduledTaskPrincipal"), "and runs in the user's session");
+    assert!(asked[1].2.contains("Win32_VideoController"), "the GPU is checked before anything else");
+    assert!(asked[2].2.contains("WriteAllBytes"), "the script goes to the guest first");
+    assert!(asked[3].2.contains("New-ScheduledTaskPrincipal"), "and runs in the user's session");
 }
 
 #[test]
@@ -132,6 +135,8 @@ fn a_desktop_at_the_wrong_size_is_set_and_checked_again() {
     scratch.write("program/guest/setmode.ps1", "set the mode");
     let answers = [
         "3
+",
+        "gpu working 1
 ",
         "",
         "screen 1024x768
@@ -164,6 +169,54 @@ fn a_failed_gpu_start_gives_back_what_it_took() {
     let booted = boot(&mut task);
     assert!(booted.is_err());
     assert_eq!(host.said(), ["start gpu", "release"]);
+}
+
+/// A guest whose desktop comes up, and which then says this about its GPU every time it's asked.
+fn guest_saying(context: &mut Context, gpu: &'static str) -> Machine {
+    let mut answers = vec!["3\n"];
+    answers.resize(20, gpu);
+    context.agent = Arc::new(ScriptedAgent::answering(&answers));
+    context.clock = Arc::new(FakeClock::default());
+    let vm = machine(context);
+    crate::agent::make_token(context, &vm).unwrap();
+    fs::create_dir_all(context.run_folder(None)).unwrap();
+    vm
+}
+
+#[test]
+fn a_guest_with_no_gpu_fails_the_start_says_so_and_turns_off() {
+    let scratch = Scratch::new();
+    let mut context = plain_task_context(&scratch);
+    let vm = guest_saying(&mut context, "gpu working 0\n");
+    let log = "INFO  Vgpu: Reset\nERROR /dev/shm/window: No such file\nWARN  it failed\n";
+    fs::write(context.run_folder(None).join(crate::daemon::OUTPUT_FILE), log).unwrap();
+    let host = RecordingHost::default();
+    let mut task = Task::new(&context, &host, "start", vm);
+    let error = boot(&mut task).unwrap_err();
+    assert!(error.0.contains("without its GPU"), "{error}");
+    assert!(error.0.contains("/dev/shm/window: No such file"), "{error}");
+    assert_eq!(host.said(), ["start gpu", "stop 30"]);
+}
+
+#[test]
+fn a_guest_that_will_not_say_counts_as_having_no_gpu() {
+    let scratch = Scratch::new();
+    let mut context = plain_task_context(&scratch);
+    let vm = guest_saying(&mut context, "");
+    let host = RecordingHost::default();
+    let mut task = Task::new(&context, &host, "start", vm);
+    assert!(boot(&mut task).unwrap_err().0.contains("without its GPU"));
+}
+
+#[test]
+fn a_gpu_that_is_a_moment_late_is_waited_for() {
+    let scratch = Scratch::new();
+    let mut context = plain_task_context(&scratch);
+    let vm = guest_saying(&mut context, "");
+    context.agent = Arc::new(ScriptedAgent::answering(&["gpu working 0\n", "", "gpu working 1\n"]));
+    let host = RecordingHost::default();
+    let task = Task::new(&context, &host, "start", vm);
+    assert_eq!(check_gpu(&task), Ok(()));
 }
 
 #[test]

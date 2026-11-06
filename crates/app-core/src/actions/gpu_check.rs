@@ -1,0 +1,51 @@
+//! Whether Windows really got its GPU. A guest whose GPU failed to start boots all the same, on the
+//! basic display, so nothing else in a start would notice.
+
+use super::Task;
+use crate::daemon;
+use crate::failure::{Failure, Result};
+use std::fs;
+use std::time::Duration;
+
+/// The virtual render device in the QEMU patch, as Windows names it.
+const RENDER_DEVICE: &str = r"PCI\VEN_1414&DEV_008E*";
+const WORKING_MARK: &str = "gpu working ";
+/// A device that's still starting gets a moment. One that has failed stays that way.
+const CHECK_ATTEMPTS: u32 = 10;
+const CHECK_POLL: Duration = Duration::from_secs(3);
+const CHECK_ANSWER_SECONDS: u64 = 15;
+const NO_GPU: &str = "Windows started without its GPU, so the VM was turned off.";
+const DAEMON_ERROR_MARK: &str = "ERROR ";
+
+fn working_devices(task: &Task) -> Option<u32> {
+    let script = format!(
+        "$found = @(Get-CimInstance Win32_VideoController | \
+         Where-Object {{ $_.PNPDeviceID -like '{RENDER_DEVICE}' -and $_.ConfigManagerErrorCode -eq 0 }}); \
+         \"{WORKING_MARK}$($found.Count)\""
+    );
+    let said = task.ask_guest(&script, CHECK_ANSWER_SECONDS);
+    said.split(WORKING_MARK).nth(1)?.trim().parse().ok()
+}
+
+/// The daemon's last error, which is the most likely reason.
+fn daemons_reason(task: &Task) -> Option<String> {
+    let said = fs::read_to_string(task.run_file(daemon::OUTPUT_FILE)).ok()?;
+    let last = said.lines().rev().find_map(|line| line.strip_prefix(DAEMON_ERROR_MARK))?;
+    Some(last.trim().to_owned())
+}
+
+pub(super) fn check_gpu(task: &Task) -> Result<()> {
+    task.step("Checking the GPU");
+    for attempt in 0..CHECK_ATTEMPTS {
+        if attempt > 0 {
+            task.sleep(CHECK_POLL);
+        }
+        if working_devices(task).is_some_and(|count| count > 0) {
+            return Ok(());
+        }
+    }
+    Err(Failure(match daemons_reason(task) {
+        Some(reason) => format!("{NO_GPU} The daemon said: {reason}"),
+        None => NO_GPU.to_owned(),
+    }))
+}

@@ -2,12 +2,14 @@
 //! the app watches the small file it leaves.
 
 mod desktop;
+mod gpu_check;
 mod guest_files;
 mod install;
 mod ubuntu;
 
 pub use desktop::{apply_share, boots, rebooted};
 use desktop::{note_boot, set_up_desktop, wait_for_desktop};
+use gpu_check::check_gpu;
 use guest_files::place_driver_files;
 pub use install::{
     INSTALL_STEPS, answer_disc_path, answer_file, install, install_step, make_answer_disc, wait_for_setup,
@@ -169,6 +171,7 @@ fn get_ready(task: &mut Task) -> Result<()> {
     if !wait_for_desktop(task) {
         return Err(Failure::new("Windows started, but its desktop never came up."));
     }
+    check_gpu(task)?;
     set_up_desktop(task)?;
     place_driver_files(task)
 }
