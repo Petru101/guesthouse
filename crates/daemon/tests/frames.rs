@@ -363,7 +363,15 @@ fn a_new_viewer_takes_the_place_of_the_old_one() {
     assert!(new.ring.generation > old.ring.generation);
     rig.next_frame(&new);
     assert_eq!(rig.live_exports(), SLOTS as usize);
-    assert!(old.socket.receive().map(|_| ()).is_err_and(|error| error.kind() == ErrorKind::UnexpectedEof));
+    // A frame can be on its way to the old viewer when the new one comes, and that's read first.
+    let ended = loop {
+        match old.socket.receive() {
+            Ok(Some(_)) => continue,
+            Ok(None) => break None,
+            Err(error) => break Some(error.kind()),
+        }
+    };
+    assert_eq!(ended, Some(ErrorKind::UnexpectedEof));
 }
 
 #[test]
