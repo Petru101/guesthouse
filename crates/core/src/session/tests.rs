@@ -1338,6 +1338,7 @@ mod held_replies {
     }
 
     fn surfaces(session: &mut TestSession) -> (u32, u32, u32, u32) {
+        session.set_copy_order(crate::CopyOrder::Held);
         let (source_resource, source) = allocate(session, surface_private(640, 480));
         let (target_resource, target) = allocate(session, surface_private(640, 480));
         (source_resource, source, target_resource, target)
@@ -1445,6 +1446,31 @@ mod held_replies {
         let replies: Vec<_> = session.take_replies().collect();
         assert_eq!(replies.len(), 2);
         assert_eq!(replies[1].bytes.len(), 16, "the lock's own answer");
+    }
+
+    #[test]
+    fn the_blocking_order_answers_at_once_and_runs_on_this_thread() {
+        let mut session = session();
+        let (_, source, _, target) = surfaces(&mut session);
+        session.set_copy_order(crate::CopyOrder::Blocking);
+        session.backend_mut().slow_copies = true;
+        session.backend_mut().copy_done = true;
+        let (answer, reply) = send_with_ticket(&mut session, &copy(0, source, target));
+        assert_eq!((answer, reply), (Answer::Now, SUCCESS.to_le_bytes().to_vec()));
+    }
+
+    #[test]
+    fn a_rectangle_the_wrong_way_up_or_too_big_is_refused() {
+        let mut session = session();
+        let (_, source, _, target) = surfaces(&mut session);
+        session.set_copy_order(crate::CopyOrder::Blocking);
+        for (left, right) in [(10i32, 5i32), (-1, 5), (0, 100_000)] {
+            let mut request = copy(0, source, target);
+            request[0x28..0x2C].copy_from_slice(&left.to_le_bytes());
+            request[0x30..0x34].copy_from_slice(&right.to_le_bytes());
+            assert_eq!(send(&mut session, &request), Status::UNSUCCESSFUL.0.to_le_bytes(), "{left} {right}");
+        }
+        assert!(session.backend().copies.is_empty());
     }
 
     #[derive(Default)]

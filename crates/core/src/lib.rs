@@ -22,7 +22,7 @@ mod sync_table;
 mod tables;
 mod timing;
 
-pub use config::{Config, MemoryLimits, video_budget};
+pub use config::{Config, CopyOrder, MemoryLimits, video_budget};
 pub use fences::{FENCE_AREA, FENCE_PAGE};
 pub use frames::{Frame, FrameRing, FrameSink};
 pub use gpu_addresses::{ALLOCATION_ALIGN, AddressUse, GPU_RANGES, GpuAddresses, LARGE_ALIGN};
@@ -30,4 +30,4 @@ pub use guest_ranges::{GUEST_RANGE_GRAIN, GuestRanges};
 pub use handles::HandleCounter;
 pub use pending::Waiting;
 pub use session::{Answer, HeldReply, ReplyTicket, Session};
-pub use timing::{Stage, Timings};
+pub use timing::{HeldFor, Stage, Timings};

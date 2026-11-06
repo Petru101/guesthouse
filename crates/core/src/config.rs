@@ -33,6 +33,16 @@ pub fn video_budget(dedicated: u64) -> u64 {
     card.saturating_sub((card / HOST_SHARE).max(HOST_MINIMUM_GIB)) * GIB
 }
 
+/// How a copy to the staging surface waits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CopyOrder {
+    /// On the message thread, so nothing else happens until the copy is done. This is slower, and
+    /// it is the order the prototype has been proven in.
+    Blocking,
+    /// With the reply held, while other messages are served.
+    Held,
+}
+
 /// Settings for a session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Config {
@@ -41,6 +51,7 @@ pub struct Config {
     pub async_messages: bool,
     /// The longest a copy to the screen waits for its frame, on the message thread.
     pub frame_wait: Duration,
+    pub copy_order: CopyOrder,
 }
 
 impl Config {
@@ -48,7 +59,7 @@ impl Config {
     pub const FRAME_WAIT: Duration = Duration::from_millis(50);
 
     pub fn new(limits: MemoryLimits) -> Self {
-        Self { limits, async_messages: false, frame_wait: Self::FRAME_WAIT }
+        Self { limits, async_messages: false, frame_wait: Self::FRAME_WAIT, copy_order: CopyOrder::Blocking }
     }
 }
 

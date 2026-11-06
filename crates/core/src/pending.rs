@@ -66,6 +66,7 @@ pub enum Pending {
     Retry {
         message: Vec<u8>,
         ticket: Option<ReplyTicket>,
+        started: Instant,
     },
     /// Only here to notice a GPU that has stopped, so nobody is in a hurry for it.
     Watch {

@@ -218,6 +218,11 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         self.frame_sink = Some(sink);
     }
 
+    /// Chooses how copies to the staging surface wait.
+    pub fn set_copy_order(&mut self, order: crate::CopyOrder) {
+        self.config.copy_order = order;
+    }
+
     pub fn timings(&self) -> &Timings {
         &self.timings
     }

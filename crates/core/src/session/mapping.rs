@@ -193,6 +193,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
     fn unmap_gpu_addresses(&mut self, address: u64, size: u64, space: SpaceId) -> Result<(), BackendError> {
         let end = address + size;
         while let Some((handle, found)) = self.overlapping(address, size, space) {
+            self.log_unmap_in_flight("an address change", found.address, found.length);
             let allocation = self.allocations.get_mut(&handle).expect("just found");
             let memory = allocation.memory.ok_or(UNKNOWN_ALLOCATION)?;
             self.backend.unmap(&UnmapRequest {

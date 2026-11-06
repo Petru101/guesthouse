@@ -26,6 +26,20 @@ pub enum Stage {
 
 const STAGES: [Stage; 5] = [Stage::Received, Stage::Started, Stage::Prepared, Stage::Rung, Stage::Replied];
 
+/// Why a reply took time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeldFor {
+    RingRoom,
+    /// Waiting for a frame and copying it, whichever thread that happened on.
+    Copy,
+    /// Parked behind a copy.
+    Parked,
+    /// Tried again, as there was no room.
+    Retry,
+}
+
+const HELD_KINDS: [HeldFor; 4] = [HeldFor::RingRoom, HeldFor::Copy, HeldFor::Parked, HeldFor::Retry];
+
 /// How often and how long, for one stage.
 #[derive(Debug, Clone, Copy)]
 struct Histogram {
@@ -70,7 +84,7 @@ pub struct Timings {
     last: Option<(Stage, Instant)>,
     stages: [Histogram; STAGES.len()],
     fence: Histogram,
-    held: Histogram,
+    held: [Histogram; HELD_KINDS.len()],
 }
 
 impl Timings {
@@ -80,7 +94,7 @@ impl Timings {
             last: None,
             stages: [Histogram::EMPTY; STAGES.len()],
             fence: Histogram::EMPTY,
-            held: Histogram::EMPTY,
+            held: [Histogram::EMPTY; HELD_KINDS.len()],
         }
     }
 
@@ -115,10 +129,10 @@ impl Timings {
         }
     }
 
-    /// Notes how long a reply was held.
-    pub fn reply_released(&mut self, taken: Duration) {
+    /// Notes how long a reply was held, and why.
+    pub fn reply_released(&mut self, why: HeldFor, taken: Duration) {
         if self.enabled {
-            self.held.record(taken);
+            self.held[why as usize].record(taken);
         }
     }
 }
@@ -130,7 +144,7 @@ impl fmt::Display for Timings {
             let mean = histogram.total.as_nanos().checked_div(u128::from(count)).unwrap_or(0);
             writeln!(
                 f,
-                "{name:<12} {count:>9} times, median under {:>9} ns, mean {mean:>9} ns, longest {:>9} ns",
+                "{name:<14} {count:>9} times, median under {:>9} ns, mean {mean:>9} ns, longest {:>9} ns",
                 histogram.median_nanos(),
                 histogram.longest.as_nanos()
             )
@@ -139,7 +153,10 @@ impl fmt::Display for Timings {
             line(&format!("{stage:?}"), histogram)?;
         }
         line("Fence seen", &self.fence)?;
-        line("Reply held", &self.held)
+        for (why, histogram) in HELD_KINDS.iter().zip(&self.held) {
+            line(&format!("Held {why:?}"), histogram)?;
+        }
+        Ok(())
     }
 }
 

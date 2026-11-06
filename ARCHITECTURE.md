@@ -42,7 +42,7 @@ The cost is that a slow backend call holds up both channels, so backend calls on
 
 The thread must never wait, because one guest thread waiting is no reason to stop the others. So a handler that can't answer yet returns `Answer::Held`, and keeps the `ReplyTicket` it was given. The reply goes out later through `Session::take_replies`, and the guest thread that sent the message stays blocked on it, which is the whole point: it can't get ahead. Every other message goes on being served.
 
-Three things use this. A submission to a queue that's too far behind holds its reply until the ring has room. A copy to the staging surface becomes a job that waits for its frame, runs, and then replies. And a message that frees or moves a surface in use by such a job is parked, whole, and run again from the start when the jobs are done. A thread instead of a list would have needed locks on every table, and a wait on the message thread stalls every other guest thread behind it.
+Three things use this. A submission to a queue that's too far behind holds its reply until the ring has room. A copy to the staging surface can become a job that waits for its frame, runs, and then replies, though for now that's off and `GUESTHOUSE_HELD_COPIES` turns it on: by default a copy runs on the message thread, in the order the prototype was proven in, as the held order met a fault on its first real run and is not cleared of it yet. And a message that frees or moves a surface in use by such a job is parked, whole, and run again from the start when the jobs are done. A thread instead of a list would have needed locks on every table, and a wait on the message thread stalls every other guest thread behind it.
 
 ### Waiting for fences
 

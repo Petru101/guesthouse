@@ -6,7 +6,7 @@ use crate::recording::{BadRecording, Record, RecordedFrame, Recording};
 use crate::report::{Difference, Report};
 use guesthouse_backend::{AdapterFacts, GuestMemory, PciCard};
 use guesthouse_backend_standin::SparseMemory;
-use guesthouse_core::{Config, MemoryLimits, Session};
+use guesthouse_core::{Config, CopyOrder, MemoryLimits, Session};
 use guesthouse_daemon::guest_memory::WINDOW_BASE;
 use guesthouse_daemon::router::{Channel, FrameSink, Router};
 use guesthouse_messages::{Command, MessageHeader, strip_extended_header};
@@ -83,6 +83,7 @@ fn build_session(recording: &Recording<'_>) -> Result<ReplaySession, BadRecordin
         async_messages: recording.number("async_messages")? != 0,
         // A replay has no GPU to wait for, and its fences move only when the recording says.
         frame_wait: Duration::ZERO,
+        copy_order: CopyOrder::Blocking,
     };
     let memory = SparseMemory::new(WINDOW_BASE + recording.number("window_size")?);
     Ok(Session::new(RecordedAnswers::new(facts), memory, config))

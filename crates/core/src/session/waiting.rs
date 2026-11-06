@@ -9,7 +9,7 @@ use crate::pending::{
 };
 use crate::session::{Answer, HeldReply, ReplyTicket};
 use crate::tables::Queue;
-use crate::timing::Stage;
+use crate::timing::{HeldFor, Stage};
 use guesthouse_backend::{Backend, GuestMemory, UnmapRequest, WorkStart};
 use guesthouse_messages::Status;
 use guesthouse_messages::notice::Notice;
@@ -73,9 +73,27 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         }
     }
 
+    /// Notes an unmap the GPU could still be affected by.
+    pub(crate) fn log_unmap_in_flight(&self, why: &str, address: u64, length: u64) {
+        if !log::log_enabled!(log::Level::Debug) {
+            return;
+        }
+        let busy = self.queues.iter().filter(|(_, queue)| {
+            !queue.failed && queue.last_fence.is_some_and(|value| self.fence_value(queue.fence) < value)
+        });
+        let busy: Vec<String> = busy.map(|(handle, _)| format!("{handle:#x}")).collect();
+        if !busy.is_empty() {
+            log::debug!(
+                "unmap for {why} at {address:#x}, {length:#x} bytes, with queues busy: {}",
+                busy.join(" ")
+            );
+        }
+    }
+
     pub(crate) fn free_allocation(&mut self, freed: FreedAllocation) {
         for mapping in &freed.mappings {
             if !self.closed_spaces.contains(&mapping.space) {
+                self.log_unmap_in_flight("a free", mapping.address, mapping.length);
                 let unmap = UnmapRequest {
                     space: mapping.space,
                     memory: freed.memory,
@@ -338,7 +356,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
     }
 
     fn release_reply(&mut self, ticket: ReplyTicket, started: Instant) {
-        self.timings.reply_released(started.elapsed());
+        self.timings.reply_released(HeldFor::RingRoom, started.elapsed());
         let bytes = Status::SUCCESS.0.to_le_bytes().to_vec();
         self.replies.push(HeldReply { ticket, bytes });
     }
@@ -392,10 +410,11 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
                     Some(Pending::Update { fence, value, space, operations })
                 }
             }
-            Pending::Retry { message, ticket } => {
+            Pending::Retry { message, ticket, started } => {
                 let mut out = Vec::new();
                 let answer = self.handle_message(&message, ticket, &mut out);
                 if let (Answer::Now, Some(ticket)) = (answer, ticket) {
+                    self.timings.reply_released(HeldFor::Retry, started.elapsed());
                     self.replies.push(HeldReply { ticket, bytes: out });
                 }
                 None
@@ -429,7 +448,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
     /// Sets a submission aside for another try, as the backend had no room for it.
     pub(super) fn retry_later(&mut self, message: &[u8]) {
         let ticket = self.ticket;
-        self.pending.push(Pending::Retry { message: message.to_vec(), ticket });
+        self.pending.push(Pending::Retry { message: message.to_vec(), ticket, started: Instant::now() });
         self.hold_reply();
     }
 

@@ -222,6 +222,9 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             let host = &mut super::services!(self);
             self.backend.preserve_contents(host, own, memory, shared, size)?;
         }
+        for mapping in &self.allocations[&handle].mappings {
+            self.log_unmap_in_flight("a first lock", mapping.address, mapping.length);
+        }
         let allocation = self.allocations.get_mut(&handle).expect("read above");
         for mapping in &allocation.mappings {
             let unmap = UnmapRequest {
