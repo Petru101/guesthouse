@@ -56,6 +56,14 @@ pub fn answer_file(context: &Context, zone: &str, password: &str) -> Result<Stri
     Ok(template.replace("<TimeZone>UTC<", &format!("<TimeZone>{name}<")).replace(PASSWORD_MARK, password))
 }
 
+/// An account with the template's own text for a password is one nobody chose, so no disc gets made.
+fn password_is_filled(answers: String) -> Result<String> {
+    if answers.contains(PASSWORD_MARK) {
+        return Err(Failure::new("The answer file has no password in it, so nothing was installed."));
+    }
+    Ok(answers)
+}
+
 pub fn answer_disc_path(context: &Context, machine: &Machine) -> PathBuf {
     machine.folder(context).join(ANSWER_DISC)
 }
@@ -77,10 +85,9 @@ fn fill_answer_disc(context: &Context, machine: &Machine, files: &Path) -> Resul
         fs::copy(context.paths.guest_files().join(name), files.join(name))?;
     }
     fs::copy(context.paths.guest_files().join(SETMODE_FILE), files.join(SETMODE_FILE))?;
-    fs::write(
-        files.join("autounattend.xml"),
-        answer_file(context, &zones::host_zone(zones::HOST_ZONE_LINK), &make_password(context, machine)?)?,
-    )?;
+    let password = make_password(context, machine)?;
+    let answers = answer_file(context, &zones::host_zone(zones::HOST_ZONE_LINK), &password)?;
+    fs::write(files.join("autounattend.xml"), password_is_filled(answers)?)?;
     fs::write(files.join(TOKEN_ON_DISC), make_token(context, machine)? + "\n")?;
     let path = answer_disc_path(context, machine);
     // Made private first: the disc holds the token, and genisoimage keeps a file's mode.

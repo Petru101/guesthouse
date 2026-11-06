@@ -117,6 +117,13 @@ fn the_answer_file_gets_the_machines_password() {
     );
 }
 
+#[test]
+fn an_answer_file_with_no_password_is_refused() {
+    let unfilled = "<Value>@PASSWORD@</Value>".to_owned();
+    assert!(password_is_filled(unfilled).unwrap_err().0.contains("no password"));
+    assert_eq!(password_is_filled("<Value>secret</Value>".to_owned()).unwrap(), "<Value>secret</Value>");
+}
+
 fn with_install_files(scratch: &Scratch, context: &Context) {
     for name in INSTALL_FILES {
         scratch.write(&format!("program/guest/{name}"), "<TimeZone>UTC</TimeZone>");
