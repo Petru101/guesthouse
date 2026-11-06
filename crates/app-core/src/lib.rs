@@ -36,5 +36,6 @@ pub mod text;
 pub mod usb;
 pub mod vm_args;
 pub mod vm_host;
+pub mod zones;
 
 pub use failure::{Failure, Result};
