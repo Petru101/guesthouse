@@ -1,4 +1,4 @@
-//! A pretend Ada card and a pretend Turing card, held to what `tools/card-report` gives for each chip.
+//! A pretend Ada card and a pretend Turing card, and what a guest should be told about each chip.
 //! This shows the tables and the code around them agree with those values, and nothing about a real
 //! card. The engines the pretend cards list are only there to make the nodes come out.
 
@@ -10,6 +10,7 @@ use guesthouse_backend_nvidia::profile::{
     ADA, GUEST_617, Generation, HOST_615, TURING, generation_for, guest_channel_classes,
 };
 use guesthouse_backend_nvidia::pushbuffer::{RingEntry, ring_entry};
+use guesthouse_backend_nvidia::record::card::COPY_ENGINE_CAPS;
 use guesthouse_backend_nvidia::rm::device::Device;
 use guesthouse_backend_nvidia::rm::fake::FakeRm;
 use guesthouse_backend_nvidia::rm::fake_card::{FAKE_ADA, FAKE_TURING, FakeCard};
@@ -41,9 +42,12 @@ const LIST_OFFSET_FIELD: usize = 0x0C;
 const ENTRIES_FIELD: usize = 0x14;
 const LIST_AT: usize = 0x84;
 const VULKAN_CLIENT: u32 = 4;
+const NODE_ENTRY_SIZE: usize = 40;
+const NODE_RECORD_SIZE: usize = 0x110;
+const NODE_COPY_ENGINE_FIELD: usize = 0x0C;
 
-/// What card-report gives for a card.
-struct Report {
+/// What a guest should be told about a card.
+struct Expected {
     device: u16,
     architecture: u32,
     implementation: u32,
@@ -54,9 +58,40 @@ struct Report {
     used_classes: [u32; 7],
     /// The engine nodes Windows lists, in order.
     nodes: &'static [&'static str],
+    /// The same nodes as the record has them.
+    entries: &'static [Entry],
+    /// What the pretend card's copy engines say, as a record has it.
+    copy_caps: u32,
 }
 
-const RTX_4080: Report = Report {
+/// One node in the record.
+struct Entry {
+    kind: u32,
+    /// The word after the type, which is one on all but the overlay.
+    listed: u32,
+    scheduled: u32,
+    in_flight: u32,
+    /// The bits of a copy node's flags that don't come from the card, and its engine.
+    copy: Option<(u32, u32)>,
+}
+
+const fn plain(kind: u32) -> Entry {
+    Entry { kind, listed: 1, scheduled: 0, in_flight: 4, copy: None }
+}
+
+const fn copy(kind: u32, scheduled: u32, in_flight: u32, flags: u32, engine: u32) -> Entry {
+    Entry { kind, listed: 1, scheduled, in_flight, copy: Some((flags, engine)) }
+}
+
+const GRAPHICS: Entry =
+    Entry { kind: 0x01, listed: 1, scheduled: 1, in_flight: 12, copy: Some((0x14, 0x09)) };
+const OVERLAY: Entry = Entry { kind: 0x02, listed: 0, scheduled: 0, in_flight: 4, copy: None };
+const NO_TYPE: Entry = plain(0);
+const SECURITY: Entry = plain(0x0A);
+const VR: Entry = plain(0x1C);
+const SECURITY_VIRTUAL: Entry = plain(0x3B);
+
+const RTX_4080: Expected = Expected {
     device: 0x2704,
     architecture: 0x190,
     implementation: 0x3,
@@ -81,9 +116,27 @@ const RTX_4080: Report = Report {
         "copy",
         "Security_1",
     ],
+    entries: &[
+        GRAPHICS,
+        OVERLAY,
+        NO_TYPE,
+        copy(0x0B, 0, 4, 0x10, 0x0D),
+        copy(0x0C, 1, 32, 0x10, 0x0E),
+        SECURITY,
+        NO_TYPE,
+        NO_TYPE,
+        plain(0x21),
+        VR,
+        copy(0x1D, 0, 4, 0x02, 0x0D),
+        copy(0x0E, 0, 4, 0x10, 0x0D),
+        copy(0x0F, 0, 4, 0x10, 0x0D),
+        copy(0x10, 0, 4, 0x10, 0x0D),
+        SECURITY_VIRTUAL,
+    ],
+    copy_caps: 0x1A0,
 };
 
-const GTX_1660_SUPER: Report = Report {
+const GTX_1660_SUPER: Expected = Expected {
     device: 0x21C4,
     architecture: 0x160,
     implementation: 0x8,
@@ -107,9 +160,26 @@ const GTX_1660_SUPER: Report = Report {
         "copy",
         "Security_1",
     ],
+    entries: &[
+        GRAPHICS,
+        OVERLAY,
+        NO_TYPE,
+        copy(0x0B, 0, 4, 0x10, 0x0A),
+        copy(0x0C, 1, 32, 0x10, 0x0B),
+        copy(0x0D, 1, 32, 0x10, 0x0C),
+        SECURITY,
+        plain(0x13),
+        VR,
+        copy(0x1D, 0, 4, 0x02, 0x0A),
+        copy(0x0E, 0, 4, 0x10, 0x0A),
+        copy(0x0F, 0, 4, 0x10, 0x0A),
+        copy(0x10, 0, 4, 0x10, 0x0A),
+        SECURITY_VIRTUAL,
+    ],
+    copy_caps: 0x120,
 };
 
-const CARDS: [(&FakeCard, &Generation, &Report); 2] =
+const CARDS: [(&FakeCard, &Generation, &Expected); 2] =
     [(&FAKE_ADA, &ADA, &RTX_4080), (&FAKE_TURING, &TURING, &GTX_1660_SUPER)];
 
 fn started(card: &FakeCard) -> NvidiaBackend<FakeRm> {
@@ -136,7 +206,7 @@ fn classes_in(record: &[u8]) -> Vec<u32> {
     (0..count).map(|index| word(record, LAYOUT.classes + 4 + index * 4)).collect()
 }
 
-/// A node as the report names it.
+/// A node as Windows names it.
 fn node_label(answer: &[u8]) -> String {
     let name = &answer[NODE_NAME_FIELD..NODE_NAME_FIELD + NODE_NAME_BYTES];
     let units: Vec<u16> = name.as_chunks::<2>().0.iter().map(|unit| u16::from_le_bytes(*unit)).collect();
@@ -153,59 +223,101 @@ fn node_label(answer: &[u8]) -> String {
 
 #[test]
 fn each_architecture_finds_its_generation() {
-    for (_, generation, report) in CARDS {
-        assert_eq!(generation_for(report.architecture), Some(generation));
+    for (_, generation, expected) in CARDS {
+        assert_eq!(generation_for(expected.architecture), Some(generation));
     }
 }
 
 #[test]
-fn the_guest_is_told_what_the_report_says() {
-    for (card, _, report) in CARDS {
+fn the_guest_is_told_what_it_should_be() {
+    for (card, _, expected) in CARDS {
         let backend = started(card);
         let record = record(&backend);
-        assert_eq!(word(&record, LAYOUT.pci + PCI_DEVICE_FIELD) >> 16, u32::from(report.device));
-        assert_eq!(word(&record, LAYOUT.architecture), report.architecture);
-        assert_eq!(word(&record, LAYOUT.architecture + IMPLEMENTATION_FIELD), report.implementation);
-        assert_eq!(word(&record, LAYOUT.graphics_table + GRAPHICS_TABLE_SM), report.sm_version);
-        assert_eq!(word(&record, LAYOUT.shader_set), report.shader_set);
-        assert_eq!(backend.facts().card.device, report.device);
+        assert_eq!(word(&record, LAYOUT.pci + PCI_DEVICE_FIELD) >> 16, u32::from(expected.device));
+        assert_eq!(word(&record, LAYOUT.architecture), expected.architecture);
+        assert_eq!(word(&record, LAYOUT.architecture + IMPLEMENTATION_FIELD), expected.implementation);
+        assert_eq!(word(&record, LAYOUT.graphics_table + GRAPHICS_TABLE_SM), expected.sm_version);
+        assert_eq!(word(&record, LAYOUT.shader_set), expected.shader_set);
+        assert_eq!(backend.facts().card.device, expected.device);
     }
 }
 
 #[test]
 fn the_class_list_fits_and_holds_every_class_the_backend_makes() {
-    for (card, generation, report) in CARDS {
+    for (card, generation, expected) in CARDS {
         let classes = classes_in(&record(&started(card)));
-        assert_eq!(classes.len(), report.classes);
-        for class in report.used_classes {
+        assert_eq!(classes.len(), expected.classes);
+        for class in expected.used_classes {
             assert!(classes.contains(&class), "{class:#x}");
         }
         for class in [generation.channel_class, generation.copy_class, generation.usermode_class] {
-            assert!(report.used_classes.contains(&class), "{class:#x}");
+            assert!(expected.used_classes.contains(&class), "{class:#x}");
         }
     }
 }
 
 #[test]
-fn the_nodes_are_the_reports_in_its_order_and_its_number() {
-    for (card, _, report) in CARDS {
+fn the_nodes_come_in_the_order_and_number_windows_lists() {
+    for (card, _, expected) in CARDS {
         let backend = started(card);
         let told: Vec<String> = (0..MOST_NODES)
             .filter_map(|node| answer(&backend, NODE_QUERY, NODE_ANSWER_SIZE, &node.to_le_bytes()))
             .map(|answer| node_label(&answer))
             .collect();
-        assert_eq!(told, report.nodes);
-        assert_eq!(backend.facts().node_count as usize, report.nodes.len());
+        assert_eq!(told, expected.nodes);
+        assert_eq!(backend.facts().node_count as usize, expected.nodes.len());
         let record = record(&backend);
-        assert_eq!(word(&record, LAYOUT.node_count) as usize, report.nodes.len());
+        assert_eq!(word(&record, LAYOUT.node_count) as usize, expected.nodes.len());
     }
 }
 
 #[test]
+fn each_nodes_entry_in_the_record_is_as_the_table_says() {
+    for (card, _, expected) in CARDS {
+        let record = record(&started(card));
+        assert_eq!(expected.entries.len(), expected.nodes.len());
+        for (ordinal, entry) in expected.entries.iter().enumerate() {
+            let at = LAYOUT.node_entries + ordinal * NODE_ENTRY_SIZE;
+            let found =
+                [word(&record, at), word(&record, at + 4), word(&record, at + 8), word(&record, at + 0x14)];
+            assert_eq!(found, [entry.kind, entry.listed, entry.scheduled, entry.in_flight], "{ordinal}");
+            let details = LAYOUT.node_records + ordinal * NODE_RECORD_SIZE;
+            let (flags, engine) =
+                entry.copy.map_or((0, 0), |(flags, engine)| (flags | expected.copy_caps, engine));
+            assert_eq!(word(&record, details), flags, "{ordinal}");
+            assert_eq!(word(&record, details + NODE_COPY_ENGINE_FIELD), engine, "{ordinal}");
+        }
+    }
+}
+
+#[test]
+fn the_1660_has_two_scheduled_copy_nodes_and_the_4080_one() {
+    let scheduled = |expected: &Expected| {
+        expected
+            .entries
+            .iter()
+            .filter(|entry| entry.copy.is_some() && entry.kind != 1 && entry.scheduled == 1)
+            .count()
+    };
+    assert_eq!(scheduled(&GTX_1660_SUPER), 2);
+    assert_eq!(scheduled(&RTX_4080), 1);
+}
+
+#[test]
+fn a_card_that_will_not_say_its_copy_caps_is_refused() {
+    let mut rm = FakeRm::new();
+    rm.refuse_control = Some(COPY_ENGINE_CAPS.0);
+    let Err(refusal) = start_on_card(rm, &FAKE_ADA, FAKE_ADA.device as u16) else {
+        panic!("the record needs them");
+    };
+    assert!(refusal.0.starts_with("Reading the card failed"), "{}", refusal.0);
+}
+
+#[test]
 fn only_graphics_and_copy_nodes_take_a_context() {
-    for (card, _, report) in CARDS {
+    for (card, _, expected) in CARDS {
         let mut backend = started(card);
-        for (node, label) in (0u32..).zip(report.nodes) {
+        for (node, label) in (0u32..).zip(expected.nodes) {
             let wanted = ["3D", "copy"].contains(label);
             assert_eq!(backend.context_allowed(node, 0), wanted, "{label}");
             assert_eq!(backend.context_allowed(node, VULKAN_CLIENT), wanted, "{label} for Vulkan");
@@ -225,10 +337,10 @@ fn no_video_runs_and_the_record_offers_none() {
 
 #[test]
 fn the_guests_handles_stand_for_this_generations_classes() {
-    for (_, generation, report) in CARDS {
+    for (_, generation, expected) in CARDS {
         let classes = guest_channel_classes(&GUEST_617, generation);
         let found: Vec<u32> = classes.iter().map(|&(_, class)| class).collect();
-        assert_eq!(found, [report.used_classes[5], report.used_classes[0], report.used_classes[6]]);
+        assert_eq!(found, [expected.used_classes[5], expected.used_classes[0], expected.used_classes[6]]);
     }
 }
 
@@ -350,13 +462,13 @@ fn these_generations_have_not_been_run_with_any_guest_branch() {
 
 #[test]
 fn the_summary_says_what_was_found_and_holds_nothing_that_identifies_the_card() {
-    for (card, generation, report) in CARDS {
+    for (card, generation, expected) in CARDS {
         let backend = started(card);
         let summary = backend.card_summary();
         assert!(summary.contains(&format!("Generation: {}", generation.name)), "{summary}");
-        assert!(summary.contains(&format!("SM version: {:#X}", report.sm_version)), "{summary}");
-        assert!(summary.contains(&format!("Shader set: {:#X}", report.shader_set)), "{summary}");
-        assert!(summary.contains(&format!("Classes: {}", report.classes)), "{summary}");
+        assert!(summary.contains(&format!("SM version: {:#X}", expected.sm_version)), "{summary}");
+        assert!(summary.contains(&format!("Shader set: {:#X}", expected.shader_set)), "{summary}");
+        assert!(summary.contains(&format!("Classes: {}", expected.classes)), "{summary}");
         let record = record(&backend);
         let uuid: String =
             record[LAYOUT.uuid..LAYOUT.uuid + 4].iter().map(|byte| format!("{byte:02x}")).collect();

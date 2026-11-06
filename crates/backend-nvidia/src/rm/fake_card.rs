@@ -4,10 +4,10 @@
 use super::Rm;
 use super::fake::FakeRm;
 use crate::record::card::{
-    ARCHITECTURE_INFO, BUS_INFO, CHIPSET_INFO, CLASS_LIST, COPY_ENGINE_MASK, CPU_INFO, Control, DMA_CAPS,
-    ENGINE_PARTNERS, ENGINES, FIFO_CAPS, FRAMEBUFFER_CAPS, FRAMEBUFFER_INFO, GPC_MASK, GPU_INFO,
-    GRAPHICS_CAPS, GRAPHICS_INFO, JPEG_CAPS, NAME, PCI_INFO, SHORT_NAME, TPC_MASK, UUID, VIDEO_DECODE_CAPS,
-    ZCULL_INFO,
+    ARCHITECTURE_INFO, BUS_INFO, CHIPSET_INFO, CLASS_LIST, COPY_ENGINE_CAPS, COPY_ENGINE_MASK, CPU_INFO,
+    Control, DMA_CAPS, ENGINE_PARTNERS, ENGINES, FIFO_CAPS, FRAMEBUFFER_CAPS, FRAMEBUFFER_INFO, GPC_MASK,
+    GPU_INFO, GRAPHICS_CAPS, GRAPHICS_INFO, JPEG_CAPS, NAME, PCI_INFO, SHORT_NAME, TPC_MASK, UUID,
+    VIDEO_DECODE_CAPS, ZCULL_INFO,
 };
 use crate::rm::classes::{CONTROL_GET_GPU_ID, CONTROL_GET_TIME};
 
@@ -47,6 +47,8 @@ pub struct FakeCard {
     pub classes: &'static [u32],
     /// How many classes the card lists. Filler classes make up what `classes` doesn't name.
     pub class_count: usize,
+    /// The two bytes of caps each copy engine answers with.
+    pub copy_caps: u32,
 }
 
 /// The pretend card most tests use.
@@ -60,6 +62,7 @@ pub const FAKE_BLACKWELL: FakeCard = FakeCard {
     graphics_copy: FAKE_GRAPHICS_COPY,
     classes: &FAKE_CLASSES,
     class_count: FAKE_CLASSES.len(),
+    copy_caps: 0,
 };
 
 /// A pretend 40-series card. Its engines are only there to make the nodes come out.
@@ -76,6 +79,7 @@ pub const FAKE_ADA: FakeCard = FakeCard {
         0xC9C0,
     ],
     class_count: 127,
+    copy_caps: 0x1FF,
 };
 
 /// A pretend 16-series card, as the one above.
@@ -89,6 +93,7 @@ pub const FAKE_TURING: FakeCard = FakeCard {
     graphics_copy: 0x09,
     classes: &[0x902D, 0xA140, 0xC36F, 0xC361, 0xC46F, 0xC461, 0xC4B0, 0xC4B7, 0xC597, 0xC5B5, 0xC5C0],
     class_count: 110,
+    copy_caps: 0x12F,
 };
 
 // A real RM copes with parameters of the wrong size, so these do too.
@@ -223,6 +228,10 @@ pub fn install_card(rm: &mut FakeRm, card: &FakeCard) {
     rm.answer(COPY_ENGINE_MASK.0, |params| {
         let engine = word(params, 0);
         put(params, 4, engine & 0xF);
+        0
+    });
+    rm.answer(COPY_ENGINE_CAPS.0, move |params| {
+        put(params, 4, card.copy_caps);
         0
     });
     rm.answer(CONTROL_GET_GPU_ID, |params| {

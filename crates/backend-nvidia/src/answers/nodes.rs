@@ -172,7 +172,7 @@ pub fn node_entry(node: &Node) -> [u8; 40] {
     let engine_context = node.kind == NODE_GRAPHICS || full_copy;
     let fields = [
         node.kind,
-        1,
+        u32::from(node.engine != ENGINE_OVERLAY),
         u32::from(node.scheduled),
         u32::from(node.kind == NODE_GRAPHICS || node.kind == NODE_VR),
         0,
@@ -206,7 +206,7 @@ mod tests {
     use super::*;
     use crate::profile::BLACKWELL;
 
-    const COPY_FLAGS: u32 = BLACKWELL.copy_node_flags;
+    const COPY_FLAGS: u32 = 0x1A0;
 
     fn nodes_of(engines: &[u32], graphics_copy: Option<u32>) -> Vec<Node> {
         node_list(engines, graphics_copy, &BLACKWELL.nodes)

@@ -83,7 +83,7 @@ fn the_nodes_of_the_tested_card_have_not_changed() {
     for (ordinal, node) in (0u32..).zip(&nodes) {
         all.extend(node_metadata(ordinal, node));
         all.extend(node_entry(node));
-        all.extend(copy_record_flags(node, BLACKWELL.copy_node_flags).to_le_bytes());
+        all.extend(copy_record_flags(node, BLACKWELL.copy_node_flags.unwrap()).to_le_bytes());
     }
     assert_eq!(digest(&all), 0xf027_c5d6_0242_e90e);
 }

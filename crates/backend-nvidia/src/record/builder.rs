@@ -162,7 +162,7 @@ fn put_engines<R: Rm>(
     layout: &RecordLayout,
     card: &mut CardReader<'_, R>,
     nodes: &[Node],
-    copy_node_flags: u32,
+    copy_node_flags: Option<u32>,
 ) -> Result<(), RmError> {
     for instance in 0..VIDEO_DECODE_INSTANCES {
         let at = layout.video_decode_caps + instance as usize * VIDEO_DECODE_CAPS_SIZE;
@@ -181,7 +181,11 @@ fn put_engines<R: Rm>(
         if node.copy_engine != 0 {
             let at = layout.node_records + ordinal * RECORD_NODE_STRIDE;
             let physical = card.copy_engine_mask(node.copy_engine)?;
-            record.word(at, copy_record_flags(node, copy_node_flags));
+            let capabilities = match copy_node_flags {
+                Some(flags) => flags,
+                None => card.copy_engine_caps(node.copy_engine)?,
+            };
+            record.word(at, copy_record_flags(node, capabilities));
             record.word(at + NODE_ENGINE_COUNT_FIELD, physical.count_ones());
             record.word(at + NODE_COPY_ENGINE_FIELD, node.copy_engine);
         }

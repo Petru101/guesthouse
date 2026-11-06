@@ -30,10 +30,20 @@ pub const VIDEO_DECODE_CAPS: Control = (0x80_1C02, 12);
 pub const JPEG_CAPS: Control = (0x80_1F02, 16);
 pub const DMA_CAPS: Control = (0x80_180D, 12);
 pub const COPY_ENGINE_MASK: Control = (0x2080_2A02, 8);
+pub const COPY_ENGINE_CAPS: Control = (0x2080_2A03, 8);
 
 const CHANNEL_CLASS_LOW_BYTE: u32 = 0x6F;
 const ENGINE_GRAPHICS: u32 = 1;
 const ENTRY_VALUE_FIELD: usize = 8;
+
+/// Where the caps table starts in its control's parameters. It's two bytes.
+const COPY_CAPS_TABLE: usize = 4;
+const COPY_CAP_SYSTEM_MEMORY: u32 = 0x20;
+const COPY_CAP_LARGE_BLOCK_LINEAR: u32 = 0x80;
+const COPY_CAP_NON_PIPELINED_BLOCK_LINEAR: u32 = 0x100;
+/// The caps a copy node's record carries, at the same bits.
+const COPY_CAPS_IN_RECORD: u32 =
+    COPY_CAP_SYSTEM_MEMORY | COPY_CAP_LARGE_BLOCK_LINEAR | COPY_CAP_NON_PIPELINED_BLOCK_LINEAR;
 
 fn word(bytes: &[u8], at: usize) -> u32 {
     u32::from_le_bytes(bytes[at..at + 4].try_into().expect("four bytes"))
@@ -111,6 +121,13 @@ impl<'a, R: Rm> CardReader<'a, R> {
             Ok(answer) => answer[..size].to_vec(),
             Err(_) => vec![0; size],
         }
+    }
+
+    /// What a copy engine can do, as a copy node's record says it.
+    pub fn copy_engine_caps(&mut self, engine: u32) -> Result<u32, RmError> {
+        let answer = self.read(COPY_ENGINE_CAPS, &engine.to_le_bytes())?;
+        let table = [answer[COPY_CAPS_TABLE], answer[COPY_CAPS_TABLE + 1]];
+        Ok(u32::from(u16::from_le_bytes(table)) & COPY_CAPS_IN_RECORD)
     }
 
     /// Which physical engines serve a copy engine.

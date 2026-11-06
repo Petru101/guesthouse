@@ -52,16 +52,14 @@ pub struct Generation {
     /// An SM version that isn't here has never been run, so the backend refuses it and doesn't guess.
     pub shader_sets: &'static [(u32, u32)],
     pub nodes: EngineNodes,
-    /// What every copy node's record says. Each bit can go alone, but a guest with none of them
-    /// failed its Vulkan test.
-    pub copy_node_flags: u32,
+    /// What every copy node's record says, or `None` to ask the card about each copy engine. Each
+    /// bit can go alone, but a guest with none of them failed its Vulkan test.
+    pub copy_node_flags: Option<u32>,
     pub video_record_flags: VideoRecordFlags,
     /// Guest branches this generation has been run with. On any other the backend still starts, and
     /// says so in the log.
     pub run_on_guest_branches: &'static [&'static str],
 }
-
-const COPY_NODE_FLAGS: u32 = 0x1A0;
 
 const BLACKWELL_DMA_COPY_B: u32 = 0xCAB5;
 const BLACKWELL_B: u32 = 0xCE97;
@@ -115,7 +113,7 @@ pub const BLACKWELL: Generation = Generation {
         jpeg: &[(3, 0x27)],
         video_runs: true,
     },
-    copy_node_flags: COPY_NODE_FLAGS,
+    copy_node_flags: Some(0x1A0),
     video_record_flags: VideoRecordFlags {
         words: [BLACKWELL_VIDEO_FLAG, BLACKWELL_VIDEO_FRAMES],
         decoder: BLACKWELL_DECODER_FLAGS,
@@ -123,21 +121,23 @@ pub const BLACKWELL: Generation = Generation {
     run_on_guest_branches: &["617"],
 };
 
+const OVERLAY_NODE: u32 = 0x02;
+
 /// The nodes these generations list go in the order of the card's own list, overlay included. Video
 /// nodes take no context, so none of their commands reach the card, and the record's flags tell the
 /// guest's runtimes not to offer them.
 const ADA_NODES: EngineNodes = EngineNodes {
-    overlay: Some(NODE_TYPE_NOT_SET),
+    overlay: Some(OVERLAY_NODE),
     decode: &[(0, NODE_TYPE_NOT_SET)],
     encode: &[(0, NODE_TYPE_NOT_SET), (1, NODE_TYPE_NOT_SET)],
-    optical_flow: &[(0, NODE_TYPE_NOT_SET)],
+    optical_flow: &[(0, 0x21)],
     jpeg: &[],
     video_runs: false,
 };
 const TURING_NODES: EngineNodes = EngineNodes {
-    overlay: Some(NODE_TYPE_NOT_SET),
+    overlay: Some(OVERLAY_NODE),
     decode: &[(0, NODE_TYPE_NOT_SET)],
-    encode: &[(0, NODE_TYPE_NOT_SET)],
+    encode: &[(0, 0x13)],
     optical_flow: &[],
     jpeg: &[],
     video_runs: false,
@@ -168,7 +168,7 @@ pub const ADA: Generation = Generation {
     ],
     shader_sets: &[(0x809, 0x7005)],
     nodes: ADA_NODES,
-    copy_node_flags: COPY_NODE_FLAGS,
+    copy_node_flags: None,
     video_record_flags: NO_VIDEO_FLAGS,
     run_on_guest_branches: &[],
 };
@@ -199,7 +199,7 @@ pub const TURING: Generation = Generation {
     ],
     shader_sets: &[(0x703, 0x6000)],
     nodes: TURING_NODES,
-    copy_node_flags: COPY_NODE_FLAGS,
+    copy_node_flags: None,
     video_record_flags: NO_VIDEO_FLAGS,
     run_on_guest_branches: &[],
 };
