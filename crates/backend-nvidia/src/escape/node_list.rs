@@ -1,7 +1,8 @@
 //! The list of engine nodes the video runtime asks for.
 //!
 //! Each entry gives a node's type, the same types as the record's list, and whether it's scheduled.
-//! Video decode and encode run with this answer.
+//! Video decode and encode run with this answer. Measured: with an empty list, `cuvidCreateDecoder`
+//! fails.
 
 use super::put;
 use crate::answers::nodes::Node;

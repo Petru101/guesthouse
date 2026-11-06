@@ -438,7 +438,8 @@ impl<R: Rm + OpenRm> Backend for NvidiaBackend<R> {
         self.answers.node_has_channel(node) || self.answers.node_is_video(node)
     }
 
-    /// A context on a video node gets a one in its answer, and decode and encode run with that.
+    /// A context on a video node gets a one in its answer. Measured: left at zero, Direct3D 11 still
+    /// decodes, and `cuvidCreateDecoder` fails.
     fn finish_context_data(&mut self, node: u32, private: &mut [u8]) {
         if self.answers.node_is_video(node)
             && let Some(field) = private.get_mut(VIDEO_CONTEXT_WORD..VIDEO_CONTEXT_WORD + 4)
