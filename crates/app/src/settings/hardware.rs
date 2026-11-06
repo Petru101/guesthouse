@@ -1,10 +1,10 @@
-//! Cores, memory, screen size and pinning.
+//! Cores, memory and pinning.
 
 use super::{Shared, is_off};
-use crate::rows::{choice_row, number_row};
+use crate::rows::number_row;
 use adw::prelude::*;
 use guesthouse_app_core::host::{cpu_list, physical_cores, ram_limit_for, vcache_cpus};
-use guesthouse_app_core::machine::{Kind, MIN_CORES, MIN_RAM_GIB, SCREENS};
+use guesthouse_app_core::machine::{Kind, MIN_CORES, MIN_RAM_GIB};
 use guesthouse_app_core::settings::max_vram_gib;
 use guesthouse_app_core::tasks::Status;
 
@@ -15,7 +15,6 @@ pub struct Hardware {
     cores: adw::SpinRow,
     ram: adw::SpinRow,
     vram: adw::SpinRow,
-    screen: adw::ComboRow,
     pin: adw::SwitchRow,
     pin_possible: bool,
 }
@@ -60,10 +59,6 @@ impl Hardware {
         );
         vram.set_visible(machine.kind == Kind::Windows);
         group.add(&vram);
-        let screen = choice_row("Screen size", &SCREENS);
-        screen.set_selected(SCREENS.iter().position(|size| *size == machine.screen).unwrap_or(0) as u32);
-        screen.set_visible(machine.kind == Kind::Windows);
-        group.add(&screen);
         let cpus = vcache_cpus(&context.cpus);
         let pin = adw::SwitchRow::builder().title("V-Cache pinning").active(machine.vcache_pin).build();
         pin.set_subtitle(&if cpus.is_empty() {
@@ -72,7 +67,7 @@ impl Hardware {
             format!("Keeps the VM on CPUs {}.", cpu_list(&cpus))
         });
         group.add(&pin);
-        let this = Self { group, cores, ram, vram, screen, pin, pin_possible: !cpus.is_empty() };
+        let this = Self { group, cores, ram, vram, pin, pin_possible: !cpus.is_empty() };
         this.connect(shared);
         this
     }
@@ -94,11 +89,6 @@ impl Hardware {
             saving.save();
         });
         let saving = shared.clone();
-        self.screen.connect_selected_notify(move |row| {
-            saving.machine.borrow_mut().screen = SCREENS[row.selected() as usize].to_owned();
-            saving.save();
-        });
-        let saving = shared.clone();
         self.pin.connect_active_notify(move |row| {
             saving.machine.borrow_mut().vcache_pin = row.is_active();
             saving.save();
@@ -110,7 +100,6 @@ impl Hardware {
         self.cores.set_sensitive(off);
         self.ram.set_sensitive(off);
         self.vram.set_sensitive(off);
-        self.screen.set_sensitive(off);
         self.pin.set_sensitive(off && self.pin_possible);
         self.group.set_description((!off).then_some(VM_MUST_BE_OFF));
     }
