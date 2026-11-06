@@ -3,7 +3,9 @@
 
 mod disk;
 mod display;
+mod forwards;
 mod hardware;
+mod network;
 mod remove;
 mod sharing;
 mod snapshots;
@@ -51,6 +53,7 @@ struct Parts {
     disk: disk::Disk,
     snapshots: snapshots::Snapshots,
     sharing: sharing::Sharing,
+    network: network::Network,
     remove: remove::Remove,
 }
 
@@ -70,6 +73,7 @@ impl SettingsDialog {
             disk: disk::Disk::new(&shared, &page),
             snapshots: snapshots::Snapshots::new(&shared, &page),
             sharing: sharing::Sharing::new(&shared, &page),
+            network: network::Network::new(&shared, &page),
             remove: remove::Remove::new(&shared, &page),
             shared,
         }));
@@ -93,6 +97,7 @@ impl SettingsDialog {
         parts.disk.set_status(status);
         parts.snapshots.set_status(status);
         parts.sharing.set_status(status);
+        parts.network.set_status(status);
         parts.remove.set_status(status);
     }
 }
