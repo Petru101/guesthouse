@@ -27,6 +27,7 @@ They're in `crates/`, listed here from the bottom up. Each depends only on crate
 | `backend` | The `Backend` trait: what a GPU vendor must provide. Also the decision on whether to start. |
 | `backend-standin` | A pretend GPU, for tests only. |
 | `core` | `Session`: the tables for one guest, and the answer to each message. Vendor-neutral. |
+| `frame-socket` | The four messages that bring frames to a viewer, on their own so a producer can use them as they are. |
 | `daemon` | Slots, shared memory, sockets, and the main loop. |
 | `replay` | Replays a recording and compares every reply. |
 

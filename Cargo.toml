@@ -16,6 +16,7 @@ guesthouse-backend = { path = "crates/backend" }
 guesthouse-backend-standin = { path = "crates/backend-standin" }
 guesthouse-core = { path = "crates/core" }
 guesthouse-daemon = { path = "crates/daemon" }
+guesthouse-frame-socket = { path = "crates/frame-socket" }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
