@@ -1,10 +1,12 @@
-# Display driver
+# Windows display driver
 
-This is the indirect display driver for Windows guests. It gives Windows a real monitor at the host's refresh rate, with HDR, and sends each frame to the host without a CPU copy.
+This is the indirect display driver for Windows guests. It gives Windows a real monitor at the host's refresh rate, with HDR, and sends each frame to the host with no CPU copy.
 
-It's a fork of [zako-vdd](https://github.com/qiin2333/zako-vdd), by qiin2333 and its other authors, at v0.18.2, commit abadb3a. Nearly all of it is their work and it stays under their MIT licence, in [LICENSE](LICENSE). Their README is [README-zako.md](README-zako.md). I left their folders and names alone so that their fixes stay easy to take.
+It's a fork of [zako-vdd](https://github.com/qiin2333/zako-vdd), by qiin2333 and its other authors, at v0.18.2, commit abadb3a. Nearly all of it is their work. Their README is [README-zako.md](README-zako.md). I left their folders and names alone so that their fixes stay easy to take.
 
-Nothing here has run in a guest yet. It builds with the EWDK, and that's as far as it's got.
+This folder is under the MIT licence, in [LICENSE](LICENSE), and it stays that way, unlike the rest of this repo. Building it uses Microsoft's kit, and I don't want a question over those terms and the GPL.
+
+To build and install it, see [BUILDING.md](BUILDING.md).
 
 ## What I added
 
@@ -12,26 +14,28 @@ Everything of mine is in `ZakoVDD/Guesthouse/`, plus a few lines in zako's swap 
 
 | File | Job |
 |---|---|
-| `Common/Include/guesthouse_display_protocol.h` | The Escape messages, shared with the daemon |
-| `HostLink` | The ring conversation: REGISTER, FRAME, and which slot to use next |
+| `Common/Include/guesthouse_display_protocol.h` | The messages between this driver and the daemon |
+| `HostLink` | Asks for a slot, says when a frame is in it |
 | `KernelEscapeChannel` | Sends those through `D3DKMTEscape` |
 | `FramePass`, `Shaders/` | One compute pass from Windows' surface to a linear slot |
-| `ColourTransform`, `MonitorColour` | Windows' 3x4 transform, composed into one matrix |
-| `CursorImage` | The hardware cursor for the pass, if it's turned on |
+| `ColourTransform`, `MonitorColour` | Windows' 3x4 colour transform, as one matrix |
+| `CursorLink`, `CursorImage` | The hardware cursor, for a viewer to draw |
 | `HostExporter` | The steps of each frame, in order |
+
+The driver makes its monitor when it starts. `setup/take-over-display.ps1` makes that the only display at logon, as only a user's session can do that. Windows then remembers it.
+
+The hardware cursor is off in `vdd_settings.xml` for now, so Windows draws it into the frames.
 
 Zako's frame channel for Sunshine is still here. It only starts copying frames once something asks about it.
 
-## Building
+## What's been tested
 
-It needs the WDK, so it builds on Windows. `build-vm/start.sh` boots a plain VM with the EWDK ISO as a CD and no GPU, and `build-vm/build.sh` sends the source over and builds it. By hand, mount the ISO, run `LaunchBuildEnv.cmd`, then:
+On my PC, with an RTX 5090 and Windows 11 in a VM, in one or two runs of each:
 
-    msbuild ZakoVDD.sln /p:Configuration=Release /p:Platform=x64 /p:SignMode=Off
+- Known pictures read back on the host from a dmabuf, in SDR and HDR.
+- Frames at 1920x1080 at 60 and 3840x2160 at 60, 120 and 240 Hz, SDR and HDR, with none lost over 20 seconds. That was a simple moving picture, into a test client and not onto a monitor.
+- Mode changes between 800x600 and 4K, and SDR to HDR and back, with a viewer connected.
+- A restart and cold boots with nothing done by hand after the install.
+- Installing and loading with Secure Boot on.
 
-I turned warnings-as-errors off, because the EWDK's newer analysis flags zako's code in places I haven't touched. My files build with no warnings.
-
-## What's been checked
-
-On Linux, `tests/run.sh` runs the ring logic against a fake daemon, and the shader's colour maths from the shader's own file. `tests/compile-mingw.sh` compiles the D3D11 and Win32 parts against mingw's headers.
-
-The whole driver and its shader compile and link with the EWDK. None of it has been loaded or run.
+`tests/run.sh` runs what needs no Windows on Linux: the ring's rules against a fake daemon, and the shader's colour maths from the shader's own file. `tests/compile-mingw.sh` compiles the D3D11 parts against mingw's headers. `tests/bars/d12hdr.c` is the test app that draws the pictures.
