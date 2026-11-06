@@ -1,8 +1,10 @@
 //! What the screen needs from wherever its frames come from.
 
+use super::guest_cursor::CursorPicture;
 use gtk::gdk;
 use gtk::prelude::*;
 use guesthouse_app_core::machine::Machine;
+use guesthouse_frame_socket::CursorMove;
 
 const BYTES_PER_PIXEL: usize = 4;
 
@@ -41,6 +43,10 @@ pub trait FrameSource {
     }
     /// How bright the guest wants SDR white, while it's showing an HDR picture.
     fn sdr_white_nits(&self) -> Option<u32> {
+        None
+    }
+    /// The guest's cursor and where it is, for a viewer that has to draw it itself.
+    fn drawn_cursor(&self) -> Option<(CursorPicture, CursorMove)> {
         None
     }
     /// The pointer to show over the screen, when the guest has changed it.

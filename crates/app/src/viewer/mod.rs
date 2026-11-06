@@ -2,11 +2,13 @@
 
 mod capture;
 mod clipboard;
+mod cursor_layer;
 mod dbus_frames;
 mod display_attach;
 mod display_surface;
 mod forwarded_frames;
 mod frames;
+mod guest_cursor;
 mod import;
 mod input;
 mod monitors;

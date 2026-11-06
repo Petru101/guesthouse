@@ -2,12 +2,13 @@
 //! goes when GTK has let go of the texture, which it can do on any thread.
 
 use super::frames::FrameSource;
+use super::guest_cursor::{CursorPicture, no_pointer};
 use super::import::texture;
 use super::ring::Buffers;
 use gtk::gdk;
 use gtk::prelude::*;
 use guesthouse_frame_socket::{
-    Format, Frame, FrameSocket, Hello, Light, Message, Packet, Release, SOCKET_NAME,
+    CursorMove, Format, Frame, FrameSocket, Hello, Light, Message, Packet, Release, SOCKET_NAME,
 };
 use std::io;
 use std::path::Path;
@@ -28,6 +29,11 @@ pub struct SocketFrames {
     alive: bool,
     /// How the newest HDR picture wants to be shown. An SDR picture has none.
     light: Option<Light>,
+    /// The guest's hardware cursor, if it has one.
+    cursor: Option<CursorPicture>,
+    cursor_at: Option<CursorMove>,
+    /// The pointer over the screen no longer matches the cursor.
+    cursor_changed: bool,
 }
 
 /// What this display can show, in the producer's order of preference. The message holds a limited
@@ -60,6 +66,7 @@ impl SocketFrames {
         let socket = FrameSocket::connect(&run_folder.join(SOCKET_NAME))?;
         let hello = Hello { formats: formats(display), refresh_millihertz, peak_nits: 0 };
         socket.send(&Message::Hello(hello), &[])?;
+        socket.send(&Message::CursorWanted, &[])?;
         socket.set_nonblocking(true)?;
         let (finished, releases) = channel();
         Ok(Self {
@@ -70,6 +77,9 @@ impl SocketFrames {
             releases,
             alive: true,
             light: None,
+            cursor: None,
+            cursor_at: None,
+            cursor_changed: false,
         })
     }
 
@@ -96,6 +106,15 @@ impl SocketFrames {
                 Ok(Some(Packet { message: Message::Ring(ring), fds })) => {
                     self.buffers = Buffers::new(&ring, fds);
                     newest = None;
+                }
+                Ok(Some(Packet { message: Message::CursorShape(shape), fds })) => {
+                    self.cursor = fds.into_iter().next().and_then(|file| CursorPicture::read(&shape, file));
+                    self.cursor_changed = true;
+                }
+                Ok(Some(Packet { message: Message::CursorMove(position), .. })) => {
+                    let shown = self.cursor_at.is_some_and(|before| before.visible);
+                    self.cursor_changed |= shown != position.visible;
+                    self.cursor_at = Some(position);
                 }
                 Ok(Some(Packet { message: Message::Light(light), .. })) => {
                     self.light = Some(light);
@@ -140,6 +159,22 @@ impl FrameSource for SocketFrames {
 
     fn sdr_white_nits(&self) -> Option<u32> {
         self.light.map(|light| light.sdr_white_nits)
+    }
+
+    fn drawn_cursor(&self) -> Option<(CursorPicture, CursorMove)> {
+        let position = self.cursor_at.filter(|position| position.visible)?;
+        Some((self.cursor.clone()?, position))
+    }
+
+    fn new_cursor(&mut self) -> Option<gdk::Cursor> {
+        if !std::mem::take(&mut self.cursor_changed) {
+            return None;
+        }
+        match (&self.cursor, self.cursor_at) {
+            (_, Some(position)) if !position.visible => no_pointer(),
+            (Some(cursor), _) => Some(cursor.pointer()),
+            (None, _) => None,
+        }
     }
 }
 
