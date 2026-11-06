@@ -166,13 +166,14 @@ pub struct Session<B, M> {
 
 impl<B: Backend, M: GuestMemory> Session<B, M> {
     pub fn new(backend: B, memory: M, config: Config) -> Self {
+        let gpu_addresses = GpuAddresses::keeping_clear(backend.kept_gpu_ranges());
         Self {
             backend,
             memory,
             config,
             started: Instant::now(),
             handles: HandleCounter::new(),
-            gpu_addresses: GpuAddresses::new(),
+            gpu_addresses,
             guest_ranges: GuestRanges::new(),
             fences: FencePool::new(),
             io_space: None,

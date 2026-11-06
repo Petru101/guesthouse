@@ -86,6 +86,12 @@ pub trait Backend: Sized {
     fn finish_queue_data(&mut self, private: &mut [u8], serial: u32) -> Result<(), BackendError>;
 
     /// Answers a driver escape in place. The buffer is the guest's data and goes back to it.
+    /// GPU addresses the host must never choose, in every address space, because the vendor's
+    /// driver has told the guest they are its own to use. The guest can still map there.
+    fn kept_gpu_ranges(&self) -> &'static [GpuRange] {
+        &[]
+    }
+
     fn escape(&mut self, data: &mut [u8]);
 
     /// Answers an adapter query the vendor owns by appending the answer to `out`. Returns `None` for

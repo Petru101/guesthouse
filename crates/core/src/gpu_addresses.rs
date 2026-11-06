@@ -43,11 +43,30 @@ pub enum AddressUse {
 pub struct GpuAddresses {
     next: u64,
     free: HashMap<(AddressUse, u64, u64), Vec<u64>>,
+    /// Where new addresses come from: the ranges, less what a backend keeps for the guest.
+    hand_out: Vec<GpuRange>,
+}
+
+/// `ranges` without `kept`, in order.
+fn without(ranges: &[GpuRange], kept: &GpuRange) -> Vec<GpuRange> {
+    let mut left = Vec::with_capacity(ranges.len() + 1);
+    for range in ranges {
+        let before = GpuRange { start: range.start, end: range.end.min(kept.start) };
+        let after = GpuRange { start: range.start.max(kept.end), end: range.end };
+        left.extend([before, after].into_iter().filter(|part| part.start < part.end));
+    }
+    left
 }
 
 impl GpuAddresses {
     pub fn new() -> Self {
-        Self { next: GPU_RANGES[0].start, free: HashMap::new() }
+        Self::keeping_clear(&[])
+    }
+
+    /// Never hands out anything in `kept`. Those addresses still work, as the guest may map there.
+    pub fn keeping_clear(kept: &[GpuRange]) -> Self {
+        let hand_out = kept.iter().fold(GPU_RANGES.to_vec(), |left, range| without(&left, range));
+        Self { next: GPU_RANGES[0].start, free: HashMap::new(), hand_out }
     }
 
     /// Takes `size` bytes: what was given back for this use, or new addresses, moving to the next
@@ -56,7 +75,7 @@ impl GpuAddresses {
         if let Some(spare) = self.free.get_mut(&(usage, size, align)).and_then(Vec::pop) {
             return Ok(spare);
         }
-        for range in GPU_RANGES {
+        for range in &self.hand_out {
             let base = align_up(self.next.max(range.start), align);
             if let Some(end) = base.checked_add(size).filter(|&end| end <= range.end) {
                 self.next = end;
@@ -112,6 +131,23 @@ mod tests {
     fn the_hole_is_not_in_a_range() {
         assert!(!GpuAddresses::in_a_range(0x1_0000_0000));
         assert!(GpuAddresses::in_a_range(0x1_4000_0000));
+    }
+
+    #[test]
+    fn a_kept_range_is_jumped_over_and_still_mappable() {
+        let kept = GpuRange { start: 0x800_0000, end: GPU_RANGES[0].end };
+        let mut addresses = GpuAddresses::keeping_clear(&[kept]);
+        assert_eq!(addresses.take(0x400_0000, ALLOCATION_ALIGN, HOST), Ok(0x400_0000));
+        assert_eq!(addresses.take(0x1000, ALLOCATION_ALIGN, HOST), Ok(GPU_RANGES[1].start));
+        assert!(GpuAddresses::in_a_range(kept.start));
+    }
+
+    #[test]
+    fn a_kept_range_in_the_middle_leaves_both_sides() {
+        let kept = GpuRange { start: 0x500_0000, end: 0x600_0000 };
+        let mut addresses = GpuAddresses::keeping_clear(&[kept]);
+        assert_eq!(addresses.take(0x100_0000, ALLOCATION_ALIGN, HOST), Ok(0x400_0000));
+        assert_eq!(addresses.take(0x1000, ALLOCATION_ALIGN, HOST), Ok(0x600_0000));
     }
 
     #[test]
