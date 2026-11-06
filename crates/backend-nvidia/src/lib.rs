@@ -21,6 +21,7 @@ pub mod pushbuffer;
 pub mod record;
 pub mod rm;
 pub mod sensors;
+pub mod staging;
 pub mod startup;
 
 use answers::adapter::{AdapterAnswers, Inputs};
@@ -41,6 +42,7 @@ use rm::device::{AddressSpace, Device};
 use rm::linux::LinuxRm;
 use rm::{Handle, Rm, RmError};
 use sensors::SnapshotReader;
+use staging::Copier;
 use std::collections::HashMap;
 use std::fs;
 use std::os::fd::OwnedFd;
@@ -99,6 +101,7 @@ pub struct NvidiaBackend<R> {
     answers: AdapterAnswers,
     pub(crate) spaces: HashMap<SpaceId, AddressSpace>,
     next_space: u64,
+    pub(crate) copier: Option<Copier>,
     /// The host's live readings, if it has any.
     sensors: Option<Box<dyn SnapshotReader>>,
     card_uuid: [u8; 16],
@@ -176,6 +179,7 @@ impl<R: Rm> NvidiaBackend<R> {
             answers: AdapterAnswers::new(inputs, layout),
             spaces: HashMap::new(),
             next_space: 1,
+            copier: None,
             sensors: None,
             card_uuid,
         })
