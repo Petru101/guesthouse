@@ -129,6 +129,87 @@ fn surface_copy(session: &mut Session<StandIn, SparseMemory>) -> Vec<u8> {
     copy
 }
 
+/// Stand-in private data with its memory's size stated apart from its shape.
+fn shape(memory: u64, width: u32, height: u32, pitch: u32, tiling: u32) -> Vec<u8> {
+    let mut data = vec![0; 28];
+    set_u64(&mut data, 0, memory);
+    set_u32(&mut data, 8, width);
+    set_u32(&mut data, 12, height);
+    set_u32(&mut data, 20, pitch);
+    set_u32(&mut data, 24, tiling);
+    data
+}
+
+/// Surfaces at each edge of what a copy may do: (memory, width, height, pitch, tiling).
+const SHAPES: [(u64, u32, u32, u32, u32); 12] = [
+    (0x1_0000, 0, 64, 256, 0),
+    (0x1_0000, 64, 0, 256, 0),
+    (0x1_0000, 0, 0, 256, 0),
+    (0x1_0000, 64, 64, 4, 0),
+    (0x1000, 4096, 4096, 16384, 0),
+    (0x1000, u32::MAX, u32::MAX, u32::MAX, 0),
+    (0x1_0000, 0x4000_0000, 2, 0x4000_0000, 0),
+    (0x1_0000, 64, 64, 256, 1),
+    (0x1000, 4096, 4096, 16384, 5),
+    (0x10_0000, 64, 64, 256, 7),
+    (0x10_0000, 64, 64, 256, u32::MAX),
+    (0x10_0000, u32::MAX, u32::MAX, u32::MAX, 6),
+];
+
+/// Rectangles at the same edges, as left, top, right and bottom.
+const RECTANGLES: [[i32; 4]; 7] = [
+    [0, 0, 64, 64],
+    [0, 0, 0, 0],
+    [0, 0, 0x4000_0000, 1],
+    [0, 0, 1, i32::MAX],
+    [i32::MAX - 1, i32::MAX - 1, i32::MAX, i32::MAX],
+    [0x1_0000, 0x1_0000, 0x1_0001, 0x1_0001],
+    [64, 64, 0, 0],
+];
+
+/// A copy for each shape and rectangle, in turn as the source and as the target, and
+/// with a corner that lands past the end.
+fn shape_copies(session: &mut Session<StandIn, SparseMemory>, good_copy: &[u8]) -> Vec<Vec<u8>> {
+    let good = u32_at(good_copy, 0x20).unwrap_or(0);
+    let mut out = Vec::new();
+    let mut copies = Vec::new();
+    for (memory, width, height, pitch, tiling) in SHAPES {
+        let private = shape(memory, width, height, pitch, tiling);
+        let _ = session.handle_message(&allocation(0, &private), TICKET, &mut out);
+        let surface = u32_at(&out, 0x10).unwrap_or(0);
+        for rectangle in RECTANGLES {
+            for (source, target) in [(surface, good), (good, surface)] {
+                let mut copy = good_copy.to_vec();
+                set_u32(&mut copy, 0x20, source);
+                set_u32(&mut copy, 0x24, target);
+                for (index, value) in rectangle.into_iter().enumerate() {
+                    set_u32(&mut copy, 0x28 + index * 4, value as u32);
+                }
+                copies.push(copy.clone());
+                set_u32(&mut copy, 0x38, i32::MAX as u32);
+                set_u32(&mut copy, 0x3C, 0x1_0000);
+                copies.push(copy);
+            }
+        }
+    }
+    copies
+}
+
+#[test]
+fn no_shape_of_surface_gets_a_copy_past_its_memory() {
+    for flavour in [0, 16] {
+        let mut session = fresh_session(flavour);
+        let copy = surface_copy(&mut session);
+        let mut out = Vec::new();
+        for request in shape_copies(&mut session, &copy) {
+            let _ = session.handle_message(&request, TICKET, &mut out);
+            let _ = session.poll(Instant::now());
+        }
+        assert_eq!(session.backend().copies_past_their_memory, Vec::<String>::new());
+        assert!(!session.backend().copies.is_empty(), "some of these are fine");
+    }
+}
+
 #[test]
 fn no_handler_panics_on_a_random_message() {
     let mut messages =
@@ -140,7 +221,8 @@ fn no_handler_panics_on_a_random_message() {
         if round % ROUNDS_PER_SESSION == 0 {
             session = fresh_session(messages.number());
             let copy = surface_copy(&mut session);
-            messages.set_templates(templates().into_iter().chain([copy]).collect());
+            let shaped = shape_copies(&mut session, &copy);
+            messages.set_templates(templates().into_iter().chain([copy]).chain(shaped).collect());
         }
         let message = messages.message();
         let ticket = if messages.number() & 1 == 0 { TICKET } else { None };
@@ -151,5 +233,6 @@ fn no_handler_panics_on_a_random_message() {
         let now = Instant::now();
         let _ = session.poll(if messages.number().is_multiple_of(64) { now + FAR_FUTURE } else { now });
         session.backend_mut().copy_done = messages.number().is_multiple_of(4);
+        assert_eq!(session.backend().copies_past_their_memory, Vec::<String>::new());
     }
 }
