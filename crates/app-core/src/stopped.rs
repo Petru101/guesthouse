@@ -5,13 +5,15 @@ use crate::context::Context;
 use crate::log::write_log;
 use crate::machine::Machine;
 use crate::slots;
-use crate::tasks::read_task;
+use crate::tasks::{read_task, write_task};
 use crate::vm_args::OUTPUT_FILE;
 use std::fs;
 
 /// What this app does to stop a VM on purpose.
 const STOPPING_ACTIONS: [&str; 3] = ["stop", "force", "install"];
 const LAST_WORDS_LINES: usize = 3;
+const STOPPED_BY_ITSELF: &str =
+    "It stopped, and this app didn't stop it. Unless the guest shut itself down, the log has more.";
 
 fn last_words(context: &Context, slot: u8) -> String {
     let file = context.run_folder(Some(slots::number(slot))).join(OUTPUT_FILE);
@@ -21,18 +23,20 @@ fn last_words(context: &Context, slot: u8) -> String {
     lines.into_iter().rev().collect::<Vec<_>>().join(" ")
 }
 
-/// What to tell the user about a VM that was running in `slot` and has gone, if it's worth telling.
-pub fn stopped_by_itself(context: &Context, machine: &Machine, slot: u8) -> Option<String> {
-    let task = read_task(context, Some(slots::number(slot)));
+/// Notes why a VM that was running in `slot` has gone, if nobody here stopped it. It goes in the slot's
+/// task record, so the machine's row says so until the next time it's started.
+pub fn note_if_stopped_by_itself(context: &Context, machine: &Machine, slot: u8) {
+    let number = Some(slots::number(slot));
+    let mut task = read_task(context, number);
     if task.machine == machine.id && STOPPING_ACTIONS.contains(&task.action.as_str()) {
-        return None;
+        return;
     }
     let words = last_words(context, slot);
     let _ = write_log(context, &format!("{} stopped by itself. QEMU's last words: {words}", machine.id));
-    Some(format!(
-        "{} stopped, and this app didn't stop it. Unless the guest shut itself down, the log has more.",
-        machine.name
-    ))
+    task.machine.clone_from(&machine.id);
+    task.pid = 0;
+    task.error = STOPPED_BY_ITSELF.to_owned();
+    let _ = write_task(context, number, &task);
 }
 
 #[cfg(test)]
@@ -60,9 +64,18 @@ mod tests {
         after_action(&context, "start");
         let folder = context.run_folder(Some(slots::number(1)));
         fs::write(folder.join(OUTPUT_FILE), "first\nsecond\nthird\nfourth\n").unwrap();
-        let said = stopped_by_itself(&context, &machine(), 1).unwrap();
-        assert!(said.contains("My VM stopped"), "{said}");
+        note_if_stopped_by_itself(&context, &machine(), 1);
+        assert_eq!(read_task(&context, Some(slots::number(1))).error, STOPPED_BY_ITSELF);
         assert!(crate::log::read_log(&context).contains("second third fourth"));
+    }
+
+    #[test]
+    fn the_row_says_so_until_the_next_start() {
+        let scratch = Scratch::new();
+        let context = scratch_context(&scratch);
+        after_action(&context, "start");
+        note_if_stopped_by_itself(&context, &machine(), 1);
+        assert_eq!(crate::tasks::status(&context, &machine()).error, STOPPED_BY_ITSELF);
     }
 
     #[test]
@@ -71,7 +84,8 @@ mod tests {
         let context = scratch_context(&scratch);
         for action in ["stop", "force"] {
             after_action(&context, action);
-            assert_eq!(stopped_by_itself(&context, &machine(), 1), None);
+            note_if_stopped_by_itself(&context, &machine(), 1);
+            assert_eq!(read_task(&context, Some(slots::number(1))).error, "");
         }
     }
 }

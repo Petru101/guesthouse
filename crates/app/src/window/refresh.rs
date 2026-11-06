@@ -9,7 +9,7 @@ use guesthouse_app_core::context::Context;
 use guesthouse_app_core::machine::{Machine, load_all};
 use guesthouse_app_core::processes::all_leftovers;
 use guesthouse_app_core::slots;
-use guesthouse_app_core::stopped::stopped_by_itself;
+use guesthouse_app_core::stopped::note_if_stopped_by_itself;
 use guesthouse_app_core::tasks::{State, Status, free_slot, is_paused, status};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -179,10 +179,8 @@ impl Window {
         for (id, slot) in before {
             let gone = report.statuses.get(&id).is_some_and(|found| found.state == State::Off && !found.busy);
             let machine = self.0.rows.borrow().get(&id).map(|row| row.machine().borrow().clone());
-            if let Some(machine) = machine.filter(|_| gone)
-                && let Some(text) = stopped_by_itself(&self.0.context, &machine, slot)
-            {
-                self.toast(&text, adw::ToastPriority::High);
+            if let Some(machine) = machine.filter(|_| gone) {
+                note_if_stopped_by_itself(&self.0.context, &machine, slot);
             }
         }
     }
