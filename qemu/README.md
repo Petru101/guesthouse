@@ -20,6 +20,6 @@ ninja qemu-system-x86_64 hw/misc/nvfwd/nvfwd-sensord
 cp hw/misc/nvfwd/nvfwd-sensord .
 ```
 
-You'll need QEMU's usual build dependencies. The installer will do all this for you once there is one.
+You'll need QEMU's usual build dependencies. A release comes with QEMU built, so this is only for building it yourself.
 
 The patch is GPL-2.0-or-later, apart from the tables in `hw/misc/nvfwd`, which come from NVIDIA's open modules and keep NVIDIA's MIT notice.

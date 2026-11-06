@@ -6,7 +6,7 @@
 
 That's Godot's full Forward+ renderer on Vulkan, in Windows, in a VM on Fedora. Nothing is passed through. The host never gives up the card, so my GNOME desktop keeps running on it the whole time.
 
-> **Status:** there's no installer yet. The app and the Linux GPU route are here if you're happy to build them yourself. The Windows GPU part isn't in this repo yet. All of it has only run on my PC. See [where this is at](#where-this-is-at).
+> **Status:** early. Everything is here now, the Windows GPU part included, but there's no release to install yet, so for now you build it yourself. All of it has only run on my PC, on one RTX 5090. See [where this is at](#where-this-is-at).
 
 ## Why I'm building this
 
@@ -18,29 +18,34 @@ So this project teaches KVM to speak Hyper-V's GPU protocol. Windows boots, find
 
 ## Where this is at
 
-The GPU backend is still private while I sort out licensing and clean it up. It's been rewritten in Rust too, and it now runs Windows through the new app on my PC, so the Python prototype is on its way out.
+It's all in Rust now, and the Python prototype is gone. On my PC, from a fresh clone, this repo builds QEMU from its patch, takes a Windows ISO through the app, installs Windows with nobody touching it, and boots it with the GPU working.
 
-This repo is where it's all heading. So far it has:
+This repo has:
 
 - the QEMU patch, in `qemu/`
+- the NVIDIA backend, in `crates/backend-nvidia`
 - the files that go into a Windows guest, in `guest/`
 - the code that reads and answers the guest's messages
 - the tracking of processes, allocations, fences and GPU addresses
 - the line a GPU vendor's backend plugs in at, so AMD and Intel can fit in later
 - a tool that replays a recorded session and compares every reply with the prototype's
 - the socket that hands frames to a viewer as dmabufs
-- the desktop app, in `crates/app`, which runs plain VMs today
+- the desktop app, in `crates/app`
 - the Linux GPU route, in `linux/`, with its QEMU device in the patch
+- a display driver for Windows guests, in `drivers/windows-display/`, which isn't in the app yet
+- an installer, `install.sh`, with nothing to install until there's a release
 
-There's no Windows GPU backend here yet, so the daemon starts, tells you that, and stops. The app still works: it makes and runs plain VMs and Linux GPU guests, and says why Windows GPU machines aren't there. A plain VM needs QEMU with its D-Bus display, which Fedora calls `qemu-ui-dbus`, plus `qemu-img`, `swtpm`, `genisoimage` and `7z` for installs. A QEMU built as `qemu/README.md` says has no `qemu-img` of its own, so install the system's. There are no recordings in the repo, so the replay tool only runs on a recording you make yourself. The next big step is moving the NVIDIA part over, and after that an installer.
+A Windows GPU machine needs NVIDIA's kernel module loaded, with `/dev/nvidiactl` and `/dev/nvidia0`, and `nvidia-smi` on your PATH. It has run on one RTX 5090, with NVIDIA 615.78.08 on the host and 617.42 in Windows 11 Pro, build 26300, and on nothing else. It has never run on another card, or on a PC with two NVIDIA cards.
+
+A plain VM needs QEMU with its D-Bus display, which Fedora calls `qemu-ui-dbus`, plus `qemu-img`, `swtpm`, `genisoimage` and `7z` for installs. A QEMU built as `qemu/README.md` says has no `qemu-img` of its own, so install the system's. There are no recordings in the repo, so the replay tool only runs on a recording you make yourself.
 
 ![The app's library, with a Windows machine and an Ubuntu machine](docs/images/app-library.jpg)
 
 ![Windows on the real GPU in the app's viewer](docs/images/app-viewer.jpg)
 
-That's the new app. Windows there is on the real GPU, on my PC, with the private backend behind it.
+That's the app. Windows there is on the real GPU, on my PC.
 
-## What the prototype does
+## What it does
 
 The Windows numbers here are from the Python prototype unless I say otherwise. The Linux numbers are from the device in this repo.
 
@@ -48,7 +53,7 @@ Everything here was measured on one machine: Ryzen 9 9950X3D, RTX 5090, Fedora 4
 
 ### Windows guests
 
-Direct3D 12, Direct3D 11, Vulkan and OpenGL all run on the real card, along with the desktop and normal apps. A fresh install takes about 9 minutes from picking the ISO to the GPU working.
+Direct3D 12, Direct3D 11, Vulkan and OpenGL all run on the real card, along with the desktop and normal apps. So do CUDA, NVENC and NVDEC, on the real video engines, which ffmpeg uses with H.264, HEVC and AV1. `nvidia-smi` finds the card. A fresh install takes about 9 minutes from picking the ISO to the GPU working.
 
 **Is it really the GPU, at full speed?** Yes. This is my own benchmark, run on Linux and then inside the VM:
 
@@ -61,7 +66,7 @@ Direct3D 12, Direct3D 11, Vulkan and OpenGL all run on the real card, along with
 
 Once work reaches the card it runs at full speed. Getting it there is what costs extra.
 
-**How fast is a real program?** Superposition at 1080p Extreme in Direct3D 11 scores about **21,000** on a fresh boot, averaging around 157 fps. That's with no viewer open. The lowest 5090 I could find on Unigine's leaderboard is around 31,000, so call it two thirds of what the card can do. Something is still eating the rest, and I don't know what yet.
+**How fast is a real program?** Superposition at 1080p Extreme in Direct3D 11 scores about **20,000** to **21,000** with no viewer open, but not every time. I've seen 18,400, and five runs back to back in one boot fell from 21,354 to 15,332, and I don't know why yet. In OpenGL it's about 11,800. The lowest 5090 I could find on Unigine's leaderboard is around 31,000, so call it two thirds of what the card can do. Something is still eating the rest, and I don't know what yet.
 
 ![Superposition's result in the VM: 20,912 at 1080p Extreme](docs/images/superposition-result.jpg)
 
@@ -78,6 +83,10 @@ A heavy Godot test scene at 1280x720 does about 690 fps natively. In the VM the 
 | Direct3D 12 frames | 0 of 300 |
 | Vulkan through a real swapchain | 0 of 256,000 pixels |
 | OpenGL through a real window | 0 of 256,000 pixels |
+| CUDA vector add | 0 of 4,194,304 values |
+| H.264 decoded through ffmpeg, against a software decode | 0 of 120 frames |
+
+Encoding through ffmpeg comes out clean too: 300 frames each of H.264, HEVC and AV1, with 0 errors, and the worst frame around 43 dB against the source. NVENC stops at the card's session limit, the same as it does natively.
 
 ### Linux guests
 
@@ -85,7 +94,7 @@ This route is in this repo, in [`linux/`](linux/README.md), with how to try it.
 
 Linux takes a different route. The guest runs NVIDIA's real Linux driver and its calls get forwarded to the host's driver. So far that's Ubuntu 26.04.1.
 
-`nvidia-smi`, CUDA and Vulkan work, and speed is about the same as the host. With the guest's desktop off, my compute test gets about 120 TFLOPS on Vulkan in both, and an empty CUDA launch takes about 5 µs in both. The one real gap is an empty Vulkan submit, about 54 µs against 28. GNOME runs on it through Zink, with Firefox, Files and Settings all opening and a terminal doing real work. Godot's Windows build even runs in there through Wine on Wayland.
+`nvidia-smi`, CUDA and Vulkan work, and speed is about the same as the host. With the guest's desktop off, my compute test gets about 120 TFLOPS on Vulkan in both, and an empty CUDA launch takes about 5 µs in both. The one real gap is an empty Vulkan submit, about 54 µs against 28. NVENC and NVDEC work too, and NVIDIA's session limit holds across the host and its guests. GNOME runs on it through Zink, with Firefox, Files and Settings all opening and a terminal doing real work. Godot's Windows build even runs in there through Wine on Wayland.
 
 ![nvidia-smi and a small CUDA test in a terminal on the Ubuntu guest's desktop](docs/images/nvidia-smi-in-ubuntu.jpg)
 
@@ -109,9 +118,9 @@ Windows guest                              Linux host
 
 There are three pieces:
 
-- **A QEMU patch.** The Windows part is about 500 lines, and gives the guest the devices and the VMBus channels it expects to find on Hyper-V. The Linux device in the same patch is about 4,300 lines more.
+- **A QEMU patch.** The Windows part is about 900 lines, and gives the guest the devices and the VMBus channels it expects to find on Hyper-V. The Linux device in the same patch is about 4,800 lines more.
 - **A daemon**, which answers everything Windows asks, sets up real GPU channels through the Linux driver, and rings their doorbells when the guest has work.
-- **A desktop app**, Guesthouse, so that none of this needs a terminal. The prototype's app took a Windows ISO, installed Windows unattended and brought up the GPU. The Rust one has that code too, but I haven't proven it yet. From this repo alone it runs plain VMs and Linux GPU guests.
+- **A desktop app**, Guesthouse, so that none of this needs a terminal. It takes a Windows ISO, installs Windows unattended and brings up the GPU.
 
 Apart from one small workaround, the guest's commands aren't translated. The Windows driver writes them, and the GPU runs them. Finished frames stay in video memory and reach the viewer as dmabufs.
 
@@ -121,10 +130,17 @@ A VM is only worth having if what's in it stays in it, so here's where that stan
 
 What's in place for Windows guests:
 
-- **Programs in a VM can't see each other on the GPU.** Each process gets its own GPU page tables, like on real Windows. My test has one process hold a secret and another try to read it by its GPU address. With one shared space it read all 16,384 words. With its own space it read none. That test ran on the prototype. The Rust backend keeps the same per-process spaces, and I haven't run the test on it yet. The one thing they still share is a block of fences, which only holds counters.
+- **Programs in a VM can't see each other on the GPU.** Each process gets its own GPU page tables, like on real Windows. My test has one process hold a secret and another try to read and overwrite it by its GPU address. On the Rust backend it read none of the 16,384 words, in every try, and its writes left the secret whole. The same read got all 16,384 words of a process's own secret, and of one it was properly given through a shared handle, and the same write overwrote a process's own buffer, so the test does reach memory when it's allowed to. The one thing they still share is a block of fences, which only holds counters.
 - **Windows never talks to the host's driver.** It talks to my daemon, and the daemon makes the calls. Sizes and ranges in every message get checked, and the parsers and handlers are fuzz tested.
-- **You can cap a VM's video memory.** With a limit set, anything over it gets refused. Without one, the VM is told to leave a share of the card for the host, but that's a budget and not a wall.
+- **You can cap a VM's video memory.** With a limit set, a program that goes over it loses its device. Without one, the VM is told to leave a share of the card for the host, but that's a budget and not a wall. A second GPU VM won't start until the first one has a cap.
 - **The daemon's sockets are for its owner alone.** The guest agent's port is on loopback with a token per machine, so other users on the PC can reach the port but not the agent.
+- **A failing program only costs itself.** A program that keeps failing on the GPU loses its own device, and the rest of the VM carries on.
+
+What a guest can still do:
+
+- **Get in the way.** A program can't read or change its neighbours, but trying faults the GPU, and in the one try I timed, that froze other work on the card for about four seconds, the host's included. If too many programs fault in a minute, that VM's GPU stops until Windows restarts, and the app says so.
+- **See some of your hardware.** Windows sees your card's real UUID and ECID, your CPU and how much RAM you have.
+- **Reach your user account, if there's a bug.** The daemon runs as you with the card open, so a bug in it or in NVIDIA's driver is a bug in your user account. Only run a Windows guest you'd trust with that.
 
 What's still coming:
 
@@ -147,31 +163,30 @@ What's still coming:
 
 I'd rather you hear this from me:
 
-- **You can't install it.** See above.
+- **There's nothing to install yet.** There's no release, so for now you build it yourself.
 - **It has only ever run on my PC, on an RTX 5090.** A clean clone does set itself up and pass its tests now, but that's still my machine and my card.
 - **Drivers are tied together.** Linux and Windows have to come from the same NVIDIA branch, and a new branch means new work.
-- **CUDA, NVENC and NVDEC don't work in Windows yet.** `nvidia-smi` can't open the card there either, and Task Manager doesn't show the GPU. That holds up Sunshine too. The new display driver keeps a frame channel made for Sunshine Foundation, so it should be able to take frames straight from the driver once NVENC works, but I haven't tried it.
-- **No HDR yet.** It's a must for me. The app's viewer has the code for it, but I haven't checked it on a real HDR screen, and the display driver that sends it isn't in this repo yet. In tests that driver gets every frame to the host at up to 4K 240 Hz, in SDR and HDR, with none lost. That's a simple test picture reaching a test client, so a real game and a real viewer still have to prove it.
+- **`nvidia-smi` shows a nonsense number for memory in Windows.** The last time I looked, Task Manager didn't show the GPU either.
+- **Sunshine doesn't work in a guest yet.** Windows' Desktop Duplication fails here, because my daemon doesn't answer one of its questions yet, and Sunshine won't start capturing without it. With that answered in a test build, the frames come out scrambled, so it needs more work. The new display driver keeps a frame channel made for Sunshine Foundation, and that works with my own test client, but Sunshine itself has never captured a usable frame here. For now, don't do a default Sunshine install in a guest.
+- **No HDR yet.** It's a must for me. The app's viewer has the code for it, but I haven't checked it on a real HDR screen, and the display driver that sends it isn't in the app yet. In tests that driver gets every frame to the host at up to 4K 240 Hz, in SDR and HDR, with none lost. That's a simple test picture reaching a test client, so a real game and a real viewer still have to prove it.
 - **The viewer drops frames.** With the old viewer, at 144 Hz about 116 frames a second reached it, and about 90 at 4K. I haven't measured the new one yet. It also costs speed: Superposition scored 16,240 with it open, in one run.
-- **Several GPU VMs at once is early.** Several Windows VMs have been up on one card at the same time during my testing, but I haven't tested them together on purpose, and I haven't tried it through the app. They share the card's speed.
-- **Heavy OpenGL in Windows is slow and looks wrong.** My OpenGL test window is exact, but Superposition in OpenGL scores about a third of its Direct3D 11 score, with a washed-out picture. See #6.
-- **Windows runs at about 64 Hz.** It thinks it has a basic display. Higher rates need a hack in the guest that I'm replacing with the new display driver. See #7.
+- **Several GPU VMs at once is early.** I've tested three Windows VMs together on one card, started by the app's own task program. Each one needs a video memory cap, and each sees only its own cap. They all stayed exact with Direct3D 12, Vulkan and OpenGL running at once, and when I killed one VM's QEMU, the others carried on and its memory came back. They share the card's speed fairly: a long test ran at about 4,000 frames a second alone and about 1,500 each with three. I haven't tested what a GPU fault in one VM does to the others, and I haven't tried it from the app's window.
+- **Long OpenGL lists break.** Superposition in OpenGL now scores about 11,800, with the right picture, but OpenGL lists past 2,048 entries lose their oldest entries. I can bring them back when a list follows on from the one before it. When it doesn't, the queue stops rather than fault the GPU, so Godot's OpenGL renderer doesn't get through its heavy scene. See #6.
+- **Windows runs at about 64 Hz.** It thinks it has a basic display, and the machine's row shows the rate you asked for, not the one you got. Higher rates need a hack in the guest that I'm replacing with the new display driver. See #7.
 
 ## What's next
 
 The full list, with what's already done, is in the [roadmap](https://github.com/xnixy/guesthouse/issues/2). The short version:
 
-1. Move the NVIDIA backend here, so this repo can boot a guest
-2. An installer, so you can try it
-3. The new display driver, for real refresh rates and HDR
-4. CUDA and video in Windows
-5. Find the missing third of the speed
-6. Proper jails around the daemon and QEMU
-7. Several GPU VMs at once through the app, tested properly
+1. A first release, so you can install it
+2. The new display driver in the app, for real refresh rates and HDR
+3. Find the missing third of the speed
+4. Lock down Linux guests, and put jails around the daemon and QEMU
+5. Several GPU VMs at once from the app itself
 
 ## Trying the code
 
-You need Rust 1.88 or newer, and no GPU or VM.
+You need Rust 1.88 or newer, or 1.92 for the app, and no GPU or VM.
 
 ```sh
 cargo test                       # everything but the app
@@ -179,7 +194,7 @@ cargo bench -p guesthouse-core   # the message path, in nanoseconds
 cargo run -p guesthouse-app       # the app, which needs GTK 4.16 and libadwaita 1.5 development files
 ```
 
-With GTK 4.14, add `--no-default-features`: that leaves out HDR and nothing else.
+With GTK 4.14, add `--no-default-features`: that leaves out HDR and nothing else. A plain `cargo build` leaves the NVIDIA backend out too: add `--features guesthouse-daemon/nvidia` to build it in.
 
 [ARCHITECTURE.md](ARCHITECTURE.md) explains how the pieces fit, and [CONTRIBUTING.md](CONTRIBUTING.md) how to work on them.
 
@@ -210,7 +225,7 @@ I run this on Fedora. The oldest systems it's meant for are Ubuntu 24.04 and Deb
 
 ## Bring your own
 
-This repo has no NVIDIA or Microsoft files in it. You supply your own Windows ISO and NVIDIA's driver. This is a personal project, and it has nothing to do with NVIDIA or Microsoft.
+This repo has no NVIDIA or Microsoft binaries or ISOs in it. You supply your own Windows ISO and NVIDIA's driver. A few tables and some sample code come from what they've published as open source, and [THIRD-PARTY.md](THIRD-PARTY.md) lists those. This is a personal project, and it has nothing to do with NVIDIA or Microsoft.
 
 ## Thanks
 
@@ -221,12 +236,14 @@ None of this would exist without other people's work:
 - NVIDIA's open GPU kernel modules
 - gVisor's nvproxy, the closest thing to the Linux route I've seen
 - Mesa's Zink, which GNOME runs on in Linux guests
+- zako-vdd, which the display driver is a fork of
+- Microsoft's OpenVMM, for how Hyper-V's time sync talks
 - GTK, libadwaita and the Rust crates the app is built on
 
 ## Licence
 
 Copyright (C) 2026 xnixy
 
-GPL-2.0-or-later, the QEMU patch included. See [LICENSE](LICENSE). A few things in here come from elsewhere, and [THIRD-PARTY.md](THIRD-PARTY.md) lists them.
+GPL-2.0-or-later, the QEMU patch included, apart from the few things [THIRD-PARTY.md](THIRD-PARTY.md) lists. See [LICENSE](LICENSE).
 
 NVIDIA, GeForce and Windows are trademarks of their owners.

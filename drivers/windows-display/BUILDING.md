@@ -27,7 +27,7 @@ After that, so that the screen comes up by itself:
 
     powershell -ExecutionPolicy Bypass -File setup\install-take-over.ps1 C:\where\take-over-display.ps1\is 1920 1080 60 YourUserName
 
-That runs `take-over-display.ps1` when you log on, with your size and refresh rate. Copy it somewhere it'll stay first.
+That runs `take-over-display.ps1` when you log on, with your size and refresh rate. Copy it somewhere it'll stay first. Only do this in a Guesthouse guest: on a real PC it would switch off your real monitors, and Windows remembers that.
 
 ## What the certificate means
 
