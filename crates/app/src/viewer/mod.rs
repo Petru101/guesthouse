@@ -34,6 +34,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Duration;
 
+pub use socket_frames::takes_hdr_frames;
+
 pub const RELEASE_KEYS: &str = "Ctrl+Alt+G";
 pub const FULLSCREEN_KEYS: &str = "Ctrl+Alt+Return";
 pub const CAPTURE_KEYS: &str = "Ctrl+Alt+M";

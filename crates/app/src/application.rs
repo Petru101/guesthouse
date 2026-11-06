@@ -45,6 +45,7 @@ pub fn application(context: Arc<Context>, started: impl Fn(&Window) + 'static) -
         let window = slot.get_or_insert_with(|| {
             let window = Window::new(application, context.clone());
             window.present();
+            window.note_screen_hdr();
             window.offer_setup();
             window.say_if_there_is_an_update();
             started(&window);
