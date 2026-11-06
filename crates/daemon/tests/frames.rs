@@ -531,7 +531,9 @@ mod display_driver {
     use super::*;
     use guesthouse_backend_nvidia::fake_guest;
     use guesthouse_messages::indirect::as_the_driver_sends as driver;
-    use guesthouse_messages::indirect::{FrameDone, Look, Mastering, Register, RingName, Stamp};
+    use guesthouse_messages::indirect::{
+        CursorMove, CursorPiece, FrameDone, Look, Mastering, Register, RingName, Stamp,
+    };
     use guesthouse_messages::wire::{set_u32, u64_at};
 
     const GENERATION: u32 = 1;
@@ -605,6 +607,56 @@ mod display_driver {
             }
         }
         panic!("no frame came");
+    }
+
+    #[test]
+    fn a_viewer_that_asks_gets_the_cursor_with_its_picture_in_a_sealed_file() {
+        let mut rig = Rig::new();
+        rig.stamped_buffers();
+        let first = rig.say(&driver::register(&ring(Look::SDR))).1.expect("a slot");
+        let viewer = rig.connect();
+        viewer.hello(vec![XRGB8888]);
+        rig.say(&driver::frame(&done(first)));
+        let viewer = rig.next_ring(viewer);
+        viewer.socket.send(&Message::CursorWanted, &[]).unwrap();
+        rig.step();
+
+        let pixels = [5; 64];
+        let piece = CursorPiece {
+            monitor: 0,
+            shape: 1,
+            width: 4,
+            height: 4,
+            pitch: 16,
+            hot_x: 0,
+            hot_y: 0,
+            total: 64,
+            offset: 0,
+            pixels: &pixels,
+        };
+        rig.say(&driver::cursor_piece(&piece));
+        let position = CursorMove { monitor: 0, x: 3, y: 4, visible: true, sdr_white_nits: 80 };
+        rig.say(&driver::cursor_move(&position));
+
+        let (mut shape, mut moved) = (None, None);
+        for _ in 0..MOST_STEPS {
+            rig.step();
+            match viewer.socket.receive().unwrap() {
+                Some(Packet { message: Message::CursorShape(sent), fds }) => shape = Some((sent, fds)),
+                Some(Packet { message: Message::CursorMove(sent), .. }) => moved = Some(sent),
+                _ => {}
+            }
+            if shape.is_some() && moved.is_some() {
+                break;
+            }
+        }
+        let (shape, mut fds) = shape.expect("a shape");
+        assert!(shape.fits());
+        let mut read = [0; 64];
+        File::from(fds.remove(0)).read_exact_at(&mut read, 0).unwrap();
+        assert_eq!(read, pixels);
+        let moved = moved.expect("a position");
+        assert_eq!((moved.x, moved.y), (3, 4));
     }
 
     #[test]

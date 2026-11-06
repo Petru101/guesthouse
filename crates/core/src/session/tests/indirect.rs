@@ -450,3 +450,127 @@ fn a_ring_that_ends_gives_the_screen_back_to_copies() {
     assert!(session.frames.indirect.is_none());
     assert!(session.frames.ring.is_none(), "the next copy to the screen brings a ring of its own");
 }
+
+mod cursor {
+    use super::*;
+    use crate::CursorShape;
+    use guesthouse_messages::indirect::{CursorMove, CursorPiece};
+
+    const STATUS_NOT_WANTED: u32 = 3;
+    const PIXELS: [u8; 64] = [7; 64];
+    const PIECE: CursorPiece<'static> = CursorPiece {
+        monitor: 0,
+        shape: 2,
+        width: 4,
+        height: 4,
+        pitch: 16,
+        hot_x: 1,
+        hot_y: 1,
+        total: 64,
+        offset: 0,
+        pixels: &PIXELS,
+    };
+    const MOVE: CursorMove = CursorMove { monitor: 0, x: 10, y: 20, visible: true, sdr_white_nits: 80 };
+
+    #[derive(Default)]
+    struct CursorSink {
+        shapes: Vec<CursorShape>,
+        moves: Vec<CursorMove>,
+    }
+
+    impl FrameSink for CursorSink {
+        fn ring_opened(&mut self, _ring: &FrameRing, _buffers: &[BorrowedFd<'_>]) -> Delivery {
+            Delivery::Sent
+        }
+
+        fn frame_ready(&mut self, _frame: &Frame) -> Delivery {
+            Delivery::Sent
+        }
+
+        fn cursor_shape(&mut self, shape: &CursorShape) -> Delivery {
+            self.shapes.push(shape.clone());
+            Delivery::Sent
+        }
+
+        fn cursor_moved(&mut self, position: &CursorMove) -> Delivery {
+            self.moves.push(*position);
+            Delivery::Sent
+        }
+    }
+
+    #[test]
+    fn with_no_viewer_drawing_it_the_driver_is_told_to_keep_it_in_the_frames() {
+        let (mut session, _) = registered();
+        assert_eq!(say(&mut session, PROCESS, &driver::cursor_move(&MOVE)).0, STATUS_NOT_WANTED);
+        session.viewer_arrived();
+        assert_eq!(say(&mut session, PROCESS, &driver::cursor_move(&MOVE)).0, STATUS_NOT_WANTED);
+    }
+
+    #[test]
+    fn a_viewer_that_asks_gets_what_is_already_known_shape_first() {
+        let (mut session, _) = registered();
+        say(&mut session, PROCESS, &driver::cursor_piece(&PIECE));
+        say(&mut session, PROCESS, &driver::cursor_move(&MOVE));
+        session.viewer_arrived();
+        session.viewer_wants_cursor();
+        let mut sink = CursorSink::default();
+        session.offer_frames(&mut sink);
+        assert_eq!(sink.shapes.len(), 1);
+        assert_eq!(sink.shapes[0].pixels, PIXELS);
+        assert_eq!(sink.moves, [MOVE]);
+        session.offer_frames(&mut sink);
+        assert_eq!((sink.shapes.len(), sink.moves.len()), (1, 1), "once each");
+        assert_eq!(say(&mut session, PROCESS, &driver::cursor_move(&MOVE)).0, STATUS_OK);
+    }
+
+    #[test]
+    fn a_viewer_that_is_behind_only_gets_the_newest_position() {
+        let (mut session, _) = registered();
+        session.viewer_arrived();
+        session.viewer_wants_cursor();
+        for x in 0..5 {
+            say(&mut session, PROCESS, &driver::cursor_move(&CursorMove { x, ..MOVE }));
+        }
+        let mut sink = CursorSink::default();
+        session.offer_frames(&mut sink);
+        assert_eq!(sink.moves.len(), 1);
+        assert_eq!(sink.moves[0].x, 4);
+    }
+
+    #[test]
+    fn a_viewer_that_never_asked_hears_nothing() {
+        let (mut session, _) = registered();
+        session.viewer_arrived();
+        say(&mut session, PROCESS, &driver::cursor_move(&MOVE));
+        let mut sink = CursorSink::default();
+        session.offer_frames(&mut sink);
+        assert!(sink.moves.is_empty());
+    }
+
+    #[test]
+    fn the_first_shape_can_come_before_the_ring() {
+        let mut session = session();
+        say(&mut session, PROCESS, &driver::cursor_piece(&PIECE));
+        assert!(session.frames.cursor.shape.is_some());
+    }
+
+    #[test]
+    fn once_there_is_a_ring_only_its_owner_speaks_for_the_cursor() {
+        let (mut session, _) = registered();
+        session.viewer_arrived();
+        session.viewer_wants_cursor();
+        let data = driver::cursor_move(&MOVE);
+        assert_eq!(say(&mut session, OTHER_PROCESS, &data).0, STATUS_NOT_WANTED);
+        assert!(session.frames.cursor.position.is_none());
+    }
+
+    #[test]
+    fn a_new_viewer_has_to_ask_for_itself() {
+        let (mut session, _) = registered();
+        session.viewer_arrived();
+        session.viewer_wants_cursor();
+        session.viewer_left();
+        session.viewer_arrived();
+        assert_eq!(say(&mut session, PROCESS, &driver::cursor_move(&MOVE)).0, STATUS_NOT_WANTED);
+    }
+}
