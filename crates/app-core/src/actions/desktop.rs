@@ -61,7 +61,7 @@ pub(super) fn note_boot(task: &Task) -> Result<()> {
 
 /// Copies a file that ships with the app into the guest.
 fn put_guest_file(task: &Task, local: &str, guest: &str) -> Result<()> {
-    let data = base64_encode(&fs::read(task.context.paths.helper(local))?);
+    let data = base64_encode(&fs::read(task.context.paths.guest_files().join(local))?);
     let script = format!("[IO.File]::WriteAllBytes('{guest}', [Convert]::FromBase64String('{data}'))");
     task.ask_guest(&script, UPLOAD_SECONDS);
     Ok(())
@@ -72,7 +72,7 @@ fn put_guest_file(task: &Task, local: &str, guest: &str) -> Result<()> {
 fn run_in_session(task: &Task, script: SessionScript) -> Result<String> {
     let SessionScript { name, patience, answer_seconds } = script;
     let (file, result) = (format!("{GUEST_FOLDER}\\{name}.ps1"), format!("{GUEST_FOLDER}\\cap\\{name}.txt"));
-    put_guest_file(task, &format!("capture/{name}.ps1"), &file)?;
+    put_guest_file(task, &format!("{name}.ps1"), &file)?;
     let arguments = format!("-NoProfile -ExecutionPolicy Bypass -File {file}");
     let run = format!(
         "Remove-Item {result} -ea 0; \

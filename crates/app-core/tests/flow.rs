@@ -184,12 +184,10 @@ fn outer() {
     let folder = env::temp_dir().join(format!("gh-flow-{}", process::id()));
     let bin = folder.join("bin");
     let program = folder.join("program");
-    for path in
-        [&bin, &program.join("guest"), &program.join("capture"), &folder.join("shm"), &folder.join("run")]
-    {
+    for path in [&bin, &program.join("guest"), &folder.join("shm"), &folder.join("run")] {
         fs::create_dir_all(path).unwrap();
     }
-    fs::write(program.join("capture/display.ps1"), "what the session sees").unwrap();
+    fs::write(program.join("guest/display.ps1"), "what the session sees").unwrap();
     fs::write(folder.join("meminfo"), PLENTY_OF_MEMORY).unwrap();
     copy_program(&this, bin.join("guesthouse-task"));
     copy_program(&this, bin.join("qemu"));

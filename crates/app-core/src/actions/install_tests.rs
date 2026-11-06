@@ -107,7 +107,7 @@ fn with_install_files(scratch: &Scratch, context: &Context) {
     for name in INSTALL_FILES {
         scratch.write(&format!("program/guest/{name}"), "<TimeZone>UTC</TimeZone>");
     }
-    scratch.write("program/capture/setmode.ps1", "mode");
+    scratch.write("program/guest/setmode.ps1", "mode");
     let driver = crate::settings::driver_folder(context);
     fs::create_dir_all(driver.join("sub")).unwrap();
     fs::write(driver.join("nv_dispi.inf"), "driver").unwrap();

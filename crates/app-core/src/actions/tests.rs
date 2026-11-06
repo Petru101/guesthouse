@@ -101,7 +101,7 @@ fn a_plain_machine_starts_through_the_host_with_its_iso() {
 fn a_gpu_machine_starts_through_the_same_host_and_sets_up_its_desktop() {
     let scratch = Scratch::new();
     let mut context = plain_task_context(&scratch);
-    scratch.write("program/capture/display.ps1", "what the session sees");
+    scratch.write("program/guest/display.ps1", "what the session sees");
     let agent = Arc::new(ScriptedAgent::answering(&[
         "3
 ",
@@ -127,8 +127,8 @@ fn a_gpu_machine_starts_through_the_same_host_and_sets_up_its_desktop() {
 fn a_desktop_at_the_wrong_size_is_set_and_checked_again() {
     let scratch = Scratch::new();
     let mut context = plain_task_context(&scratch);
-    scratch.write("program/capture/display.ps1", "what the session sees");
-    scratch.write("program/capture/setmode.ps1", "set the mode");
+    scratch.write("program/guest/display.ps1", "what the session sees");
+    scratch.write("program/guest/setmode.ps1", "set the mode");
     let answers = [
         "3
 ",

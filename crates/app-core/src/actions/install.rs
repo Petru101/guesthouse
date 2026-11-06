@@ -45,7 +45,7 @@ const SHORT_POLL: Duration = Duration::from_millis(200);
 /// The agent's file and the time zone both go through these.
 const ANSWER_DISC: &str = "answer.iso";
 const ANSWER_LABEL: &str = "GPUPV_SETUP";
-const SETMODE_FILE: &str = "capture/setmode.ps1";
+const SETMODE_FILE: &str = "setmode.ps1";
 const TOKEN_ON_DISC: &str = "token.txt";
 
 /// The answer file for a host in this IANA zone. The template says UTC.
@@ -74,7 +74,7 @@ fn fill_answer_disc(context: &Context, machine: &Machine, files: &Path) -> Resul
     for name in INSTALL_FILES {
         fs::copy(context.paths.guest_files().join(name), files.join(name))?;
     }
-    fs::copy(context.paths.helper(SETMODE_FILE), files.join("setmode.ps1"))?;
+    fs::copy(context.paths.guest_files().join(SETMODE_FILE), files.join(SETMODE_FILE))?;
     fs::write(
         files.join("autounattend.xml"),
         answer_file(context, &zones::host_zone(zones::HOST_ZONE_LINK))?,
