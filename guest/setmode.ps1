@@ -1,6 +1,7 @@
 # Sets the desktop to the largest mode the screen offers.
 # Windows keeps the desktop size it last used for a monitor and scales it up when the screen is
 # bigger, and a monitor with no EDID always counts as the same monitor. Runs in the user's session.
+# This is only for the basic display: the display driver's screen is set by the app.
 $src = @'
 using System; using System.Runtime.InteropServices;
 public class Mode {
@@ -9,11 +10,23 @@ public class Mode {
     public int Fields, x, y, Orient, Fixed; public short c1, c2, c3, c4, c5;
     [MarshalAs(UnmanagedType.ByValTStr, SizeConst=32)] public string Form; public short LogPix, Bits;
     public int W, H, DFlags, Freq, i1, i2, i3, i4, i5, i6, i7, i8; }
+  [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)] public struct DD {
+    public int cb; [MarshalAs(UnmanagedType.ByValTStr, SizeConst=32)] public string Name;
+    [MarshalAs(UnmanagedType.ByValTStr, SizeConst=128)] public string Str; public int Flags;
+    [MarshalAs(UnmanagedType.ByValTStr, SizeConst=128)] public string Id;
+    [MarshalAs(UnmanagedType.ByValTStr, SizeConst=128)] public string Key; }
+  [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern bool EnumDisplayDevices(string d, uint i, ref DD dd, uint f);
   [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern bool EnumDisplaySettings(string d, int mode, ref DM dm);
   [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int ChangeDisplaySettingsEx(string d, ref DM dm, IntPtr w, uint flags, IntPtr p);
 }
 '@
 Add-Type $src
+$ourName = 'RDPUDD Chained DD'
+for ($i = 0; $i -lt 16; $i++) {
+  $d = New-Object Mode+DD; $d.cb = [Runtime.InteropServices.Marshal]::SizeOf($d)
+  if (-not [Mode]::EnumDisplayDevices([NullString]::Value, $i, [ref]$d, 0)) { break }
+  if ($d.Str -eq $ourName) { "left alone: $($d.Name) is the display driver's" | Out-File C:\gpupv\cap\setmode.txt -Encoding ascii; return }
+}
 $modes = @()
 for ($i = 0; ; $i++) {
   $m = New-Object Mode+DM; $m.Size = [Runtime.InteropServices.Marshal]::SizeOf($m)
