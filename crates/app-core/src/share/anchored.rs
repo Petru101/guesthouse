@@ -16,6 +16,9 @@ const IN_ROOT: ResolveFlags = ResolveFlags::IN_ROOT.union(ResolveFlags::NO_MAGIC
 const NEW_FILE: Mode = Mode::from_raw_mode(0o666);
 const NEW_FOLDER: Mode = Mode::from_raw_mode(0o777);
 const THIS_FOLDER: &str = ".";
+/// A walk inside the root comes back with "try again" if anything on the PC was renamed while it ran.
+/// That passes at once, so this only stops a rename storm holding a request for ever.
+const MOST_WALKS: u32 = 64;
 
 /// What a listing or a reply needs to know about an entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,6 +37,17 @@ pub struct Root {
 /// `path` with an empty one as this folder, which is how the root is written.
 fn named(path: &Path) -> &Path {
     if path.as_os_str().is_empty() { Path::new(THIS_FOLDER) } else { path }
+}
+
+/// Walks again if the kernel couldn't be sure of the walk.
+fn walk<T>(mut attempt: impl FnMut() -> rustix::io::Result<T>) -> rustix::io::Result<T> {
+    for _ in 1..MOST_WALKS {
+        match attempt() {
+            Err(rustix::io::Errno::AGAIN) => {}
+            other => return other,
+        }
+    }
+    attempt()
 }
 
 fn is_dots(name: &OsStr) -> bool {
@@ -108,7 +122,7 @@ impl Root {
     }
 
     fn open(&self, path: &Path, flags: OFlags, mode: Mode) -> io::Result<OwnedFd> {
-        Ok(openat2(&self.handle, named(path), flags | OFlags::CLOEXEC, mode, IN_ROOT)?)
+        Ok(walk(|| openat2(&self.handle, named(path), flags | OFlags::CLOEXEC, mode, IN_ROOT))?)
     }
 
     /// The folder an entry is in, and its name there. The root has neither.
@@ -168,5 +182,37 @@ impl Root {
     pub fn copy(&self, from: &Path, to: &Path) -> io::Result<()> {
         let ((source, name), (target, new_name)) = (self.parent_of(from)?, self.parent_of(to)?);
         copy_at(&source, name, &target, new_name)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rustix::io::Errno;
+
+    #[test]
+    fn a_walk_a_rename_got_in_the_way_of_goes_again() {
+        let mut left = 2;
+        let walked = walk(|| {
+            left -= 1;
+            if left >= 0 { Err(Errno::AGAIN) } else { Ok(7) }
+        });
+        assert_eq!(walked, Ok(7));
+    }
+
+    #[test]
+    fn a_walk_gives_up_in_the_end_and_other_errors_come_straight_back() {
+        let mut walks = 0;
+        let walked: rustix::io::Result<()> = walk(|| {
+            walks += 1;
+            Err(Errno::AGAIN)
+        });
+        assert_eq!((walked, walks), (Err(Errno::AGAIN), MOST_WALKS));
+        let mut walks = 0;
+        let walked: rustix::io::Result<()> = walk(|| {
+            walks += 1;
+            Err(Errno::NOENT)
+        });
+        assert_eq!((walked, walks), (Err(Errno::NOENT), 1));
     }
 }
