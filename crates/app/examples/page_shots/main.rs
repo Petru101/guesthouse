@@ -4,6 +4,7 @@
 //! Usage: `page_shots FOLDER`, with the store and the XDG folders already pointing somewhere harmless.
 
 mod fake_display;
+mod fake_forwarded;
 mod fake_frames;
 mod fake_qemu;
 
@@ -297,6 +298,44 @@ async fn viewer_page(
     check(&failures, window.open_screen().is_none(), "leaving the page closes it");
 }
 
+/// An Ubuntu machine: its settings say its GPU is a preview, and its own frames reach the viewer.
+async fn ubuntu_pages(window: Window, context: Arc<Context>, folder: PathBuf, failures: Rc<Cell<u32>>) {
+    let disk = folder.join("ubuntu.qcow2").display().to_string();
+    fs::copy(folder.join("win.qcow2"), &disk).unwrap();
+    let ubuntu = Machine { kind: Kind::Linux, ..Machine::new("ubuntu", "Ubuntu", &disk, "") };
+    ubuntu.save(&context).unwrap();
+    let machine = window.add_machine(ubuntu.clone());
+    glib::timeout_future(LONG).await;
+    check(&failures, text_of(&window).contains("GPU preview"), "the library marks Ubuntu's GPU as a preview");
+    window.show_settings(machine.clone());
+    glib::timeout_future(LONG).await;
+    check(&failures, text_of(&window).contains("hasn't been proven"), "its settings say so plainly");
+    check(&failures, !text_of(&window).contains("Port Forwards"), "what it doesn't have isn't shown");
+    scroll_to(&window, "Ubuntu");
+    shot_after_paint(&window, &folder, "24-ubuntu-settings").await;
+    close_dialogs(&window).await;
+    fake_forwarded::serve(&context.run_folder(None));
+    let mut vm = pretend_vm(&context, &ubuntu);
+    glib::timeout_future(LONG).await;
+    window.show_screen(machine);
+    glib::timeout_future(LONG).await;
+    glib::timeout_future(LONG).await;
+    let page = window.open_screen().unwrap();
+    let before = page.frames_shown();
+    glib::timeout_future(LONG).await;
+    let after = page.frames_shown();
+    check(
+        &failures,
+        after > before && before > 0,
+        &format!("the guest's own frames show: {before} then {after}"),
+    );
+    shot_after_paint(&window, &folder, "25-ubuntu-frames").await;
+    window.pages().pop_to_tag("library");
+    let _ = vm.kill();
+    let _ = vm.wait();
+    glib::timeout_future(LONG).await;
+}
+
 /// What the owner will do: start a machine, look at it, and stop it, through the same buttons. A plain
 /// machine shows QEMU's display, as firmware and an install do.
 async fn whole_flow(window: Window, folder: PathBuf, failures: Rc<Cell<u32>>) {
@@ -322,7 +361,7 @@ async fn whole_flow(window: Window, folder: PathBuf, failures: Rc<Cell<u32>>) {
     glib::timeout_future(LONG).await;
     glib::timeout_future(LONG).await;
     let off = text_of(&window);
-    check(&failures, off.matches("Off.").count() == 2, "both machines are off again");
+    check(&failures, off.matches("Off.").count() == 3, "every machine is off again");
     shot_after_paint(&window, &folder, "23-stopped").await;
 }
 
@@ -346,6 +385,7 @@ async fn walk_pages(window: Window, context: Arc<Context>, folder: PathBuf) {
     viewer_page(window.clone(), folder.clone(), failures.clone(), machines[1].clone(), released).await;
     let _ = vm.kill();
     let _ = vm.wait();
+    ubuntu_pages(window.clone(), context.clone(), folder.clone(), failures.clone()).await;
     whole_flow(window.clone(), folder, failures.clone()).await;
     println!("failures: {}", failures.get());
     std::process::exit(i32::try_from(failures.get()).unwrap_or(1));
