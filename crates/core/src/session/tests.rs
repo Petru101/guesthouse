@@ -1336,6 +1336,147 @@ mod held_replies {
         let _ = send_with_ticket(&mut session, &submission(queue, 1));
         assert_eq!(session.poll(Instant::now()), Waiting::Background);
     }
+
+    fn surfaces(session: &mut TestSession) -> (u32, u32, u32, u32) {
+        let (source_resource, source) = allocate(session, surface_private(640, 480));
+        let (target_resource, target) = allocate(session, surface_private(640, 480));
+        (source_resource, source, target_resource, target)
+    }
+
+    fn copy(context: u32, source: u32, target: u32) -> Vec<u8> {
+        let mut request = message(Command::CopyToStaging, 0x50);
+        set_u32(&mut request, 0x1C, context);
+        set_u32(&mut request, 0x20, source);
+        set_u32(&mut request, 0x24, target);
+        request
+    }
+
+    #[test]
+    fn a_copy_that_takes_time_holds_its_reply() {
+        let mut session = session();
+        session.backend_mut().slow_copies = true;
+        let (_, source, _, target) = surfaces(&mut session);
+        assert_eq!(send_with_ticket(&mut session, &copy(0, source, target)).0, Answer::Held);
+        assert_eq!(session.poll(Instant::now()), Waiting::Urgent);
+        session.backend_mut().copy_done = true;
+        let _ = session.poll(Instant::now());
+        assert_eq!(session.take_replies().count(), 1);
+    }
+
+    #[test]
+    fn a_copy_waits_for_its_frame_without_stopping_anything() {
+        let mut session = session();
+        session.backend_mut().run_work = true;
+        session.config.frame_wait = Duration::from_secs(1);
+        let context = create_context(&mut session, 0);
+        let (queue, _, fence) = create_queue(&mut session, context);
+        let (_, source, _, target) = surfaces(&mut session);
+        submit(&mut session, queue, 1);
+        assert_eq!(send_with_ticket(&mut session, &copy(context, source, target)).0, Answer::Held);
+        assert!(session.backend().copies.is_empty());
+        let _ = session.poll(Instant::now());
+        assert!(session.backend().copies.is_empty(), "the frame is not done");
+        session.memory_mut().write_u64(fence, 1);
+        let _ = session.poll(Instant::now());
+        assert_eq!(session.backend().copies.len(), 1);
+        assert_eq!(session.take_replies().count(), 1);
+    }
+
+    #[test]
+    fn a_frame_that_never_finishes_is_copied_anyway() {
+        let mut session = session();
+        session.backend_mut().run_work = true;
+        session.config.frame_wait = Duration::from_millis(1);
+        let context = create_context(&mut session, 0);
+        let (queue, _, _) = create_queue(&mut session, context);
+        let (_, source, _, target) = surfaces(&mut session);
+        submit(&mut session, queue, 1);
+        let _ = send_with_ticket(&mut session, &copy(context, source, target));
+        let _ = session.poll(Instant::now() + Duration::from_secs(1));
+        assert_eq!(session.backend().copies.len(), 1);
+    }
+
+    #[test]
+    fn the_next_frame_waits_behind_a_copy_of_the_last() {
+        let mut session = session();
+        session.backend_mut().run_work = true;
+        session.backend_mut().slow_copies = true;
+        let context = create_context(&mut session, 0);
+        let (queue, _, fence) = create_queue(&mut session, context);
+        let (_, source, _, target) = surfaces(&mut session);
+        submit(&mut session, queue, 1);
+        session.memory_mut().write_u64(fence, 1);
+        let _ = send_with_ticket(&mut session, &copy(context, source, target));
+        submit(&mut session, queue, 2);
+        assert_eq!(session.backend().doorbells.len(), 1, "the gate holds the second");
+        session.backend_mut().copy_done = true;
+        let _ = session.poll(Instant::now());
+        let _ = session.poll(Instant::now());
+        assert_eq!(session.backend().doorbells.len(), 2);
+    }
+
+    #[test]
+    fn a_surface_in_use_is_freed_only_after_its_copy() {
+        let mut session = session();
+        session.backend_mut().slow_copies = true;
+        let (resource, source, _, target) = surfaces(&mut session);
+        let _ = send_with_ticket(&mut session, &copy(0, source, target));
+        let mut destroy = message(Command::DestroyAllocation, 0x28);
+        set_u32(&mut destroy, 0x1C, resource);
+        assert_eq!(send_with_ticket(&mut session, &destroy).0, Answer::Held);
+        assert!(session.allocations.contains_key(&source));
+        session.backend_mut().copy_done = true;
+        let _ = session.poll(Instant::now());
+        assert!(!session.allocations.contains_key(&source));
+        assert_eq!(session.take_replies().count(), 2, "the copy's and the destroy's");
+    }
+
+    #[test]
+    fn locking_a_surface_in_use_waits_for_its_copy() {
+        let mut session = session();
+        session.backend_mut().slow_copies = true;
+        let (_, source, _, target) = surfaces(&mut session);
+        let _ = send_with_ticket(&mut session, &copy(0, source, target));
+        let mut lock = message(Command::LockForCpu, 0x20);
+        set_u32(&mut lock, 0x1C, target);
+        assert_eq!(send_with_ticket(&mut session, &lock).0, Answer::Held);
+        session.backend_mut().copy_done = true;
+        let _ = session.poll(Instant::now());
+        let replies: Vec<_> = session.take_replies().collect();
+        assert_eq!(replies.len(), 2);
+        assert_eq!(replies[1].bytes.len(), 16, "the lock's own answer");
+    }
+
+    #[derive(Default)]
+    struct Frames(std::rc::Rc<std::cell::RefCell<Vec<&'static str>>>);
+
+    impl crate::FrameSink for Frames {
+        fn ring_opened(&mut self, _: &crate::FrameRing) {
+            self.0.borrow_mut().push("opened");
+        }
+
+        fn frame_ready(&mut self, _: &crate::Frame) {
+            self.0.borrow_mut().push("ready");
+        }
+
+        fn ring_closed(&mut self, _: u32) {
+            self.0.borrow_mut().push("closed");
+        }
+    }
+
+    #[test]
+    fn the_sink_hears_of_the_screens_frames_only() {
+        let mut session = session();
+        let frames = Frames::default();
+        let seen = frames.0.clone();
+        session.set_frame_sink(Box::new(frames));
+        let (_, source, _, target) = surfaces(&mut session);
+        send(&mut session, &copy(0, source, target));
+        assert!(seen.borrow().is_empty(), "the target is not in the shared window");
+        lock(&mut session, target);
+        send(&mut session, &copy(0, source, target));
+        assert_eq!(*seen.borrow(), ["opened", "ready"]);
+    }
 }
 
 mod address_reuse {
