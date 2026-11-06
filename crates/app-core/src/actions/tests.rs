@@ -163,7 +163,34 @@ fn a_failed_gpu_start_gives_back_what_it_took() {
     // A GPU machine needs real shared memory facts, so this goes straight to the part that matters.
     let booted = boot(&mut task);
     assert!(booted.is_err());
-    assert_eq!(host.said(), ["start gpu"]);
+    assert_eq!(host.said(), ["start gpu", "release"]);
+}
+
+#[test]
+fn a_gpu_start_that_fails_after_the_vm_is_up_turns_it_off() {
+    let scratch = Scratch::new();
+    let mut context = plain_task_context(&scratch);
+    context.clock = Arc::new(FakeClock::default());
+    let vm = machine(&context);
+    let host = RecordingHost::default();
+    let mut task = Task::new(&context, &host, "start", vm);
+    let booted = boot(&mut task);
+    assert!(booted.unwrap_err().0.contains("desktop never came up"));
+    assert_eq!(host.said(), ["start gpu", "stop 30"]);
+}
+
+#[test]
+fn a_vm_that_will_not_stop_after_a_failed_start_is_forced_and_keeps_the_first_reason() {
+    let scratch = Scratch::new();
+    let mut context = plain_task_context(&scratch);
+    context.clock = Arc::new(FakeClock::default());
+    let vm = machine(&context);
+    let host = RecordingHost::default();
+    *host.stop_answer.lock().unwrap() = Some(Err(Failure::new("it would not go")));
+    let mut task = Task::new(&context, &host, "start", vm);
+    let booted = boot(&mut task);
+    assert!(booted.unwrap_err().0.contains("desktop never came up"));
+    assert_eq!(host.said(), ["start gpu", "stop 30", "release"]);
 }
 
 #[test]
