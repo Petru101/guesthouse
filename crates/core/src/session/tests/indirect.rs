@@ -459,6 +459,26 @@ fn copies_to_the_old_screen_leave_the_ring_alone() {
 }
 
 #[test]
+fn a_mode_change_doesnt_bring_back_the_old_screen() {
+    let (mut session, _) = stamped(1);
+    let (_, image) = allocate(&mut session, private(0x200000));
+    let (_, staging) = allocate(&mut session, private(0x200000));
+    lock(&mut session, staging);
+    let mut copy = message(Command::CopyToStaging, 0x50);
+    set_u32(&mut copy, 0x20, image);
+    set_u32(&mut copy, 0x24, staging);
+    let mut out = Vec::new();
+    let _ = session.handle_message(&copy, Some(ReplyTicket::default()), &mut out);
+    session.viewer_arrived();
+    let _ = session.poll(Instant::now());
+
+    register(&mut session, &ring(Look::SDR));
+    say(&mut session, PROCESS, &driver::close(NAME));
+    let _ = session.poll(Instant::now());
+    assert!(session.frames.ring.is_none(), "nothing has been copied to that screen since");
+}
+
+#[test]
 fn a_ring_that_ends_gives_the_screen_back_to_copies() {
     let (mut session, _) = registered();
     session.viewer_arrived();

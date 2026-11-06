@@ -175,8 +175,10 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         let Some(picture) = Picture::sized(ring.width, ring.height) else {
             return self.reply(Outcome::Refused, None);
         };
-        // Whatever the screen's copies were doing, this is the screen now.
+        // Whatever the screen's copies were doing, this is the screen now. Forgetting that screen matters
+        // too: each mode change closes this ring, and a viewer would be shown the old screen meanwhile.
         self.frames.retire_ring();
+        self.frames.screen = None;
         let Ok(space) = self.own_space() else { return self.reply(Outcome::Refused, None) };
         self.frames.generation = self.frames.generation.wrapping_add(1);
         let count = slots.len();
