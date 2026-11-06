@@ -11,6 +11,7 @@ pub mod log;
 pub mod machine;
 pub mod monitor;
 pub mod network;
+pub mod network_settings;
 pub mod paths;
 pub mod processes;
 pub mod random;
