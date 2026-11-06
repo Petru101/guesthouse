@@ -1,12 +1,13 @@
 //! The guest's memory, as files QEMU shares.
 
 use guesthouse_backend::{GuestMemory, PagesView};
+use std::cell::OnceCell;
 use std::fs::{File, OpenOptions};
 use std::io;
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::ptr;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 /// Where QEMU places the shared window in guest physical memory.
 pub const WINDOW_BASE: u64 = 1 << 40;
@@ -97,6 +98,25 @@ impl GuestMemory for SharedMemory {
         self.word(address).store(value, Ordering::Release);
     }
 
+    fn write_u32(&mut self, address: u64, value: u32) {
+        let offset = address - WINDOW_BASE;
+        assert!(
+            offset + 4 <= self.window_size && offset.is_multiple_of(4),
+            "{address:#x} is not a word in the window"
+        );
+        // SAFETY: the assert keeps it inside the mapping and aligned, and the mapping outlives self.
+        let word = unsafe { AtomicU32::from_ptr(self.window.add(offset as usize).cast()) };
+        word.store(value, Ordering::Release);
+    }
+
+    fn read_bytes(&self, address: u64, out: &mut [u8]) -> usize {
+        let offset = address.saturating_sub(WINDOW_BASE).min(self.window_size);
+        let length = out.len().min((self.window_size - offset) as usize);
+        // SAFETY: `length` stops at the end of the mapping, and `out` is not part of it.
+        unsafe { ptr::copy_nonoverlapping(self.window.add(offset as usize), out.as_mut_ptr(), length) };
+        length
+    }
+
     fn zero(&mut self, address: u64, length: u64) {
         let offset = address - WINDOW_BASE;
         assert!(offset + length <= self.window_size, "{address:#x} is not in the window");
@@ -137,6 +157,70 @@ impl GuestMemory for SharedMemory {
     fn unmap_pages(&mut self, view: PagesView) {
         // SAFETY: the view came from `map_pages`, and the caller has stopped using it.
         unsafe { libc::munmap(view.host_address as *mut libc::c_void, view.size as usize) };
+    }
+}
+
+/// QEMU makes the shared files after this daemon has started, so they open at the first use, which
+/// comes with the first message.
+pub struct LazySharedMemory {
+    window_path: PathBuf,
+    ram_path: PathBuf,
+    opened: OnceCell<SharedMemory>,
+}
+
+impl LazySharedMemory {
+    pub fn new(window_path: PathBuf, ram_path: PathBuf) -> Self {
+        Self { window_path, ram_path, opened: OnceCell::new() }
+    }
+
+    fn memory(&self) -> &SharedMemory {
+        self.opened.get_or_init(|| {
+            let opened = SharedMemory::open(&self.window_path, self.ram_path.clone());
+            opened.unwrap_or_else(|error| panic!("{}: {error}", self.window_path.display()))
+        })
+    }
+
+    fn memory_mut(&mut self) -> &mut SharedMemory {
+        self.memory();
+        self.opened.get_mut().expect("opened just above")
+    }
+}
+
+impl GuestMemory for LazySharedMemory {
+    fn window_end(&self) -> u64 {
+        self.memory().window_end()
+    }
+
+    fn read_u64(&self, address: u64) -> u64 {
+        self.memory().read_u64(address)
+    }
+
+    fn write_u64(&mut self, address: u64, value: u64) {
+        self.memory_mut().write_u64(address, value);
+    }
+
+    fn write_u32(&mut self, address: u64, value: u32) {
+        self.memory_mut().write_u32(address, value);
+    }
+
+    fn read_bytes(&self, address: u64, out: &mut [u8]) -> usize {
+        self.memory().read_bytes(address, out)
+    }
+
+    fn zero(&mut self, address: u64, length: u64) {
+        self.memory_mut().zero(address, length);
+    }
+
+    fn host_address(&self, address: u64) -> u64 {
+        self.memory().host_address(address)
+    }
+
+    fn map_pages(&mut self, pages: &[u64]) -> io::Result<PagesView> {
+        self.memory_mut().map_pages(pages)
+    }
+
+    fn unmap_pages(&mut self, view: PagesView) {
+        self.memory_mut().unmap_pages(view);
     }
 }
 

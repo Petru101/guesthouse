@@ -21,6 +21,12 @@ pub trait GuestMemory {
 
     fn write_u64(&mut self, address: u64, value: u64);
 
+    /// A 32-bit field, which the GPU may read while it changes, so this is a single store too.
+    fn write_u32(&mut self, address: u64, value: u32);
+
+    /// Copies bytes out of the window, as far as `out` goes or the window does. Returns how many.
+    fn read_bytes(&self, address: u64, out: &mut [u8]) -> usize;
+
     fn zero(&mut self, address: u64, length: u64);
 
     /// Where a window address is in this process.

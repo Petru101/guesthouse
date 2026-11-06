@@ -37,6 +37,10 @@ impl GuestMemory for FlatMemory {
     fn write_u64(&mut self, address: u64, value: u64) {
         self.0[Self::index(address)] = value;
     }
+    fn write_u32(&mut self, _address: u64, _value: u32) {}
+    fn read_bytes(&self, _address: u64, _out: &mut [u8]) -> usize {
+        0
+    }
     fn zero(&mut self, address: u64, length: u64) {
         self.0[Self::index(address)..Self::index(address + length)].fill(0);
     }

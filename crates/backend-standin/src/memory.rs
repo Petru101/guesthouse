@@ -36,6 +36,21 @@ impl GuestMemory for SparseMemory {
         self.words.insert(address, value);
     }
 
+    fn write_u32(&mut self, address: u64, value: u32) {
+        let word = address & !7;
+        let shift = (address & 4) * 8;
+        let old = self.read_u64(word) & !(0xFFFF_FFFF << shift);
+        self.write_u64(word, old | u64::from(value) << shift);
+    }
+
+    fn read_bytes(&self, address: u64, out: &mut [u8]) -> usize {
+        for (index, byte) in out.iter_mut().enumerate() {
+            let at = address + index as u64;
+            *byte = self.read_u64(at & !7).to_le_bytes()[(at & 7) as usize];
+        }
+        out.len()
+    }
+
     fn zero(&mut self, address: u64, length: u64) {
         let doomed: Vec<u64> = self.words.range(address..address + length).map(|(&at, _)| at).collect();
         doomed.iter().for_each(|at| {
