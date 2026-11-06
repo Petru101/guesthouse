@@ -15,7 +15,7 @@ use guesthouse_core::{Config, CopyOrder, MemoryLimits, Session};
 use guesthouse_daemon::router::{Channel, Router};
 use guesthouse_daemon::server::Server;
 use guesthouse_frame_socket::{
-    Format, Frame, FrameSocket, Hello, Message, Packet, Release, Ring, SOCKET_NAME,
+    Colour, Format, Frame, FrameSocket, Hello, Light, Message, Packet, Release, Ring, SOCKET_NAME,
 };
 use guesthouse_messages::{Command, HEADER_SIZE, Status};
 use guesthouse_transport::{FrameFlags, FrameHeader, FrameKind, HEADER_SIZE as FRAME_HEADER_SIZE};
@@ -525,4 +525,153 @@ fn frames_keep_going_when_the_export_is_refused() {
     }
     rig.step();
     assert!(viewer.socket.receive().unwrap().is_none(), "it's still connected, with nothing to see");
+}
+
+mod display_driver {
+    use super::*;
+    use guesthouse_backend_nvidia::fake_guest;
+    use guesthouse_messages::indirect::as_the_driver_sends as driver;
+    use guesthouse_messages::indirect::{FrameDone, Look, Mastering, Register, RingName, Stamp};
+    use guesthouse_messages::wire::{set_u32, u64_at};
+
+    const GENERATION: u32 = 1;
+    const NAME: RingName = RingName { generation: GENERATION, monitor: 0 };
+    const RING_SLOTS: u32 = 3;
+    const ESCAPE_SIZE_AT: usize = HEADER_SIZE + 16;
+    const ESCAPE_HEADER: usize = HEADER_SIZE + 24;
+    const MAP_ALLOCATION_AT: usize = 0x38;
+    const STATUS_OK: u32 = 0;
+    const XBGR2101010: Format = Format { fourcc: u32::from_le_bytes(*b"XB30"), modifier: 0 };
+
+    fn escape(data: &[u8]) -> Vec<u8> {
+        let mut request = fake_guest::message(Command::DriverEscape, ESCAPE_HEADER);
+        set_u32(&mut request, ESCAPE_SIZE_AT, data.len() as u32);
+        request.extend_from_slice(data);
+        request
+    }
+
+    fn ring(look: Look) -> Register {
+        Register {
+            name: NAME,
+            slots: RING_SLOTS,
+            width: WIDTH,
+            height: HEIGHT,
+            pitch: PITCH,
+            slot_size: u64::from(PITCH) * u64::from(HEIGHT),
+            look,
+        }
+    }
+
+    fn done(slot: u32) -> FrameDone {
+        FrameDone {
+            name: NAME,
+            slot: Some(slot),
+            present_time: 1,
+            windows_frame: 1,
+            sdr_white_nits: 203,
+            mastering: None,
+        }
+    }
+
+    impl Rig {
+        /// Makes the slots as the driver does: buffers it has mapped, each stamped with its slot.
+        fn stamped_buffers(&mut self) {
+            for slot in 0..RING_SLOTS {
+                // Twice as wide, as a slot's rows are longer than a surface's here.
+                let (buffer, _) = self.new_surfaces(WIDTH * 2, HEIGHT);
+                let mut map = fake_guest::message(Command::MapGpuAddresses, 0x50);
+                set_u32(&mut map, MAP_ALLOCATION_AT, buffer);
+                let address = u64_at(&self.call(&map), 0).unwrap();
+                let memory = self.rm().memory_at(address).expect("it was just mapped");
+                let stamp = driver::stamp(Stamp { generation: GENERATION, slot });
+                self.rm().memory_starts.insert(memory, stamp);
+            }
+        }
+
+        fn say(&mut self, data: &[u8]) -> (u32, Option<u32>) {
+            driver::reply(&self.call(&escape(data))).expect("a reply")
+        }
+    }
+
+    fn next_light_and_frame(rig: &mut Rig, viewer: &TestViewer) -> (Option<Light>, Frame) {
+        let mut light = None;
+        for _ in 0..MOST_STEPS {
+            rig.step();
+            match viewer.socket.receive().unwrap().map(|packet| packet.message) {
+                Some(Message::Light(sent)) => light = Some(sent),
+                Some(Message::Frame(frame)) => return (light, frame),
+                Some(other) => panic!("expected a frame, not {other:?}"),
+                None => {}
+            }
+        }
+        panic!("no frame came");
+    }
+
+    #[test]
+    fn an_sdr_ring_of_the_guests_buffers_reaches_a_viewer() {
+        let mut rig = Rig::new();
+        rig.stamped_buffers();
+        let (status, first) = rig.say(&driver::register(&ring(Look::SDR)));
+        assert_eq!(status, STATUS_OK);
+        let first = first.expect("a slot");
+
+        let viewer = rig.connect();
+        viewer.hello(vec![XRGB8888]);
+        let (status, next) = rig.say(&driver::frame(&done(first)));
+        assert_eq!((status, next.is_some()), (STATUS_OK, true));
+        let viewer = rig.next_ring(viewer);
+        assert_eq!(viewer.buffers.len(), RING_SLOTS as usize);
+
+        let (light, frame) = next_light_and_frame(&mut rig, &viewer);
+        assert_eq!(light, None, "SDR has no use for it");
+        assert_eq!(frame.slot, first);
+        assert_eq!(frame.descriptor.format, XRGB8888);
+        assert_eq!(frame.descriptor.stride, PITCH);
+        assert_eq!(frame.descriptor.colour, Colour::SRGB);
+        assert!(frame.descriptor.fits(viewer.ring.size));
+        rig.assert_no_faults();
+    }
+
+    #[test]
+    fn an_hdr_frame_says_what_it_is_and_brings_its_light() {
+        let mut rig = Rig::new();
+        rig.stamped_buffers();
+        let first = rig.say(&driver::register(&ring(Look::HDR))).1.expect("a slot");
+
+        let viewer = rig.connect();
+        viewer.hello(vec![XRGB8888, XBGR2101010]);
+        let mastering = Mastering { max_nits: 1000, max_content_nits: 900, ..Mastering::default() };
+        rig.say(&driver::frame(&FrameDone { mastering: Some(mastering), ..done(first) }));
+        let viewer = rig.next_ring(viewer);
+
+        let (light, frame) = next_light_and_frame(&mut rig, &viewer);
+        assert_eq!(frame.descriptor.format, XBGR2101010);
+        let colour = frame.descriptor.colour;
+        assert_eq!((colour.primaries, colour.transfer, colour.matrix), (9, 16, 0));
+        let light = light.expect("an HDR frame's light comes first");
+        assert_eq!((light.generation, light.slot), (frame.generation, frame.slot));
+        assert_eq!(light.sdr_white_nits, 203);
+        assert_eq!(light.mastering.unwrap().max_content_nits, 900);
+    }
+
+    #[test]
+    fn a_viewer_that_leaves_doesnt_end_the_ring_and_the_next_one_sees_the_last_picture() {
+        let mut rig = Rig::new();
+        rig.stamped_buffers();
+        let first = rig.say(&driver::register(&ring(Look::SDR))).1.expect("a slot");
+        let viewer = rig.connect();
+        viewer.hello(vec![XRGB8888]);
+        rig.say(&driver::frame(&done(first)));
+        let viewer = rig.next_ring(viewer);
+        let (_, frame) = next_light_and_frame(&mut rig, &viewer);
+        drop(viewer);
+        rig.step();
+
+        let next = rig.connect();
+        next.hello(vec![XRGB8888]);
+        let next = rig.next_ring(next);
+        assert!(next.ring.generation > frame.generation);
+        let (_, again) = next_light_and_frame(&mut rig, &next);
+        assert_eq!(again.slot, frame.slot);
+    }
 }
