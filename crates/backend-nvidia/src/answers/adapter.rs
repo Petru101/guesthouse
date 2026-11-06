@@ -169,13 +169,13 @@ impl AdapterAnswers {
 mod tests {
     use super::*;
     use crate::answers::nodes::node_list;
-    use crate::profile::GUEST_617;
+    use crate::profile::{BLACKWELL, GUEST_617};
 
     fn answers() -> AdapterAnswers {
         let inputs = Inputs {
             record: vec![7; 16],
             engines: Vec::new(),
-            nodes: node_list(&[0x01, 0x09, 0x0D, 0x13], None),
+            nodes: node_list(&[0x01, 0x09, 0x0D, 0x13], None, &BLACKWELL.nodes),
             registry: AdapterRegistry::default(),
             guid_seed: "seed".into(),
             graphics_hertz: 1_000,

@@ -78,12 +78,12 @@ fn the_list_of_nodes_for_the_video_runtime_has_not_changed() {
 #[test]
 fn the_nodes_of_the_tested_card_have_not_changed() {
     let mut all = Vec::new();
-    let nodes = node_list(&TESTED_ENGINES, Some(TESTED_GRAPHICS_COPY));
+    let nodes = node_list(&TESTED_ENGINES, Some(TESTED_GRAPHICS_COPY), &BLACKWELL.nodes);
     assert_eq!(nodes.len(), 17);
     for (ordinal, node) in (0u32..).zip(&nodes) {
         all.extend(node_metadata(ordinal, node));
         all.extend(node_entry(node));
-        all.extend(copy_record_flags(node).to_le_bytes());
+        all.extend(copy_record_flags(node, BLACKWELL.copy_node_flags).to_le_bytes());
     }
     assert_eq!(digest(&all), 0xf027_c5d6_0242_e90e);
 }

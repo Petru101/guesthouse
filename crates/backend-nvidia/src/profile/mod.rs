@@ -8,7 +8,7 @@ mod generation;
 mod guest;
 mod host;
 
-pub use generation::{BLACKWELL, Generation, generation_for, guest_channel_classes};
+pub use generation::{BLACKWELL, EngineNodes, Generation, generation_for, guest_channel_classes};
 pub use guest::{AllocationLayout, ChannelObject, GUEST_617, GuestBranch, RecordLayout, guest_branch};
 pub use host::{HOST_615, HostBranch, host_branch, host_branch_of_version};
 

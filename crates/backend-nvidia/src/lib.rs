@@ -150,7 +150,7 @@ impl<R: Rm> NvidiaBackend<R> {
         })?;
         let engines = card.engines().map_err(failed)?;
         let graphics_copy = card.graphics_copy().map_err(failed)?;
-        let nodes = node_list(&engines, graphics_copy);
+        let nodes = node_list(&engines, graphics_copy, &generation.nodes);
         let record = build(&guest.record, generation, &mut card, host, &nodes)?;
         let node_count = nodes.len() as u32;
 

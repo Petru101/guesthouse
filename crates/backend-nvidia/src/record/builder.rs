@@ -80,17 +80,6 @@ const ECID_HIGH: u32 = 2;
 const FB_CLEARED_ON_ALLOCATION: (usize, u8) = (2, 0x02);
 const FIFO_NO_PIPELINED_PAGE_TABLE_BLIT: (usize, u8) = (0, 0x80);
 
-/// Measured: with this bit clear, Direct3D 11 offers no video decoders at all.
-const FLAG_VIDEO_DECODE: u32 = 1 << 20;
-
-/// The next word, as a real install's record has it. Measured: without it, a Direct3D 11 decoder
-/// can be made but its first frame fails as out of memory.
-const FLAGS_VIDEO_FRAMES: u32 = 0x40_0030;
-
-/// As a real install's record has it. Measured: either bit alone is enough, and with the byte at
-/// zero, making a Direct3D 11 decoder fails as out of memory.
-const DECODER_FLAGS: u8 = 0x48;
-
 /// The identifiers the guest's adapter goes by, which the core's identity answer repeats.
 const ADAPTER_ID: [u32; 2] = [0xABC, 1];
 
@@ -173,6 +162,7 @@ fn put_engines<R: Rm>(
     layout: &RecordLayout,
     card: &mut CardReader<'_, R>,
     nodes: &[Node],
+    copy_node_flags: u32,
 ) -> Result<(), RmError> {
     for instance in 0..VIDEO_DECODE_INSTANCES {
         let at = layout.video_decode_caps + instance as usize * VIDEO_DECODE_CAPS_SIZE;
@@ -191,7 +181,7 @@ fn put_engines<R: Rm>(
         if node.copy_engine != 0 {
             let at = layout.node_records + ordinal * RECORD_NODE_STRIDE;
             let physical = card.copy_engine_mask(node.copy_engine)?;
-            record.word(at, copy_record_flags(node));
+            record.word(at, copy_record_flags(node, copy_node_flags));
             record.word(at + NODE_ENGINE_COUNT_FIELD, physical.count_ones());
             record.word(at + NODE_COPY_ENGINE_FIELD, node.copy_engine);
         }
@@ -282,7 +272,7 @@ pub fn build<R: Rm>(
     let mut record = Record { data: vec![0; layout.size] };
     put_fixed_fields(&mut record, layout);
     record.put(layout.system_ram, &(host.total_ram_kib << 10).to_le_bytes());
-    put_engines(&mut record, layout, card, nodes).map_err(card_failed)?;
+    put_engines(&mut record, layout, card, nodes, generation.copy_node_flags).map_err(card_failed)?;
 
     record.word(layout.gpu_id, card.gpu_id().map_err(card_failed)?);
     let pci = card.read(PCI_INFO, &[]).map_err(card_failed)?;
@@ -329,8 +319,8 @@ pub fn build<R: Rm>(
         record.word(layout.memory_low + index * 4, size as u32);
     }
 
-    record.words(layout.flags, &[FLAG_VIDEO_DECODE, FLAGS_VIDEO_FRAMES]);
-    record.put(layout.decoder_flags, &[DECODER_FLAGS]);
+    record.words(layout.flags, &generation.video_record_flags.words);
+    record.put(layout.decoder_flags, &[generation.video_record_flags.decoder]);
     record.counted_words(layout.classes, &card.classes().map_err(card_failed)?)?;
 
     let (graphics_hertz, memory_hertz) = host.rated_clocks;
