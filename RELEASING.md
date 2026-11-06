@@ -4,7 +4,7 @@ I do this by hand on my own PC. Nothing is automated yet, and `SHA256SUMS` isn't
 
 The order matters. `install.sh` on `main` is what points people at a release, so it changes last, once everything it names is really there.
 
-Below, `VERSION` is the version with no `v`, like `0.2.0`, and the build folder is anywhere with about 10 GB free.
+Below, `VERSION` is the version with no `v`, like `0.2.0`, and `BUILD_FOLDER` is a new folder with about 10 GB free. Use a neutral one like `/var/tmp/guesthouse-release`, and never one under my home folder. Its path ends up in the binaries, as the compilers write down where each source file was. It has to be new because an old one keeps its QEMU tree, and the patch wouldn't get applied again.
 
 1. **Set the version.** Change `version` in `Cargo.toml`, run `cargo check` so `Cargo.lock` follows, and commit that to `main`.
 
@@ -16,7 +16,9 @@ Below, `VERSION` is the version with no `v`, like `0.2.0`, and the build folder 
 
 3. **Build the display driver.** This one step is in Windows, as [drivers/windows-display/BUILDING.md](drivers/windows-display/BUILDING.md) says, from the tagged commit. Copy `GuesthouseDisplay.dll` and `GuesthouseDisplay.inf` to a folder on this PC, outside the repo. They never go in git.
 
-4. **Build it in the images.** It needs podman or docker and no root, and takes a commit with nothing uncommitted. It stops if the release needs a glibc above 2.39, if the bundled source is missing, or if it has no display driver. The driver's licences go in beside it.
+   If nothing compiled in `drivers/windows-display` has changed since my last build, I reuse that build and skip Windows. `git diff LAST_BUILD vVERSION -- drivers/windows-display` shows it. The docs, the licences, `vdd_settings.xml` and the scripts in `setup/` don't count, as step 4 takes those from the tree.
+
+4. **Build it in the images.** It needs podman or docker and no root, and takes a commit with nothing uncommitted. It stops if the release needs a glibc above 2.39, if the bundled source is missing, if it has no display driver, or if an archive has a link that points nowhere. The driver's licences go in beside it.
 
    ```sh
    packaging/build-in-images.sh --out BUILD_FOLDER --display-driver DRIVER_FOLDER
