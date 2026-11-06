@@ -3,11 +3,13 @@
 //! One thread does everything. That is what keeps the message path free of locks, and it gives the
 //! session one order for the messages of both channels.
 
+use crate::display_note::{self, ScreenNote};
 use crate::gpu_note::write_note;
 use crate::router::{Channel, FrameSink, Router};
 use crate::viewer::ViewerPort;
 use guesthouse_backend::{Backend, GuestMemory};
 use guesthouse_core::Waiting;
+use guesthouse_messages::indirect::Look;
 use guesthouse_transport::{FrameHeader, FrameStream};
 use std::fs::{self, Permissions};
 use std::io::{self, ErrorKind, Write};
@@ -88,6 +90,8 @@ pub struct Server<B, M> {
     run_folder: PathBuf,
     /// What the app has been told about the guest's GPU work.
     said_stopped: bool,
+    /// What the app has been told about the display driver's screen.
+    said_screen: Option<ScreenNote>,
 }
 
 impl<B: Backend, M: GuestMemory> Server<B, M> {
@@ -107,6 +111,7 @@ impl<B: Backend, M: GuestMemory> Server<B, M> {
         }
         let viewers = ViewerPort::bind(run_folder)?;
         write_note(run_folder, false)?;
+        display_note::write_note(run_folder, None)?;
         Ok(Self {
             router,
             ports,
@@ -119,6 +124,7 @@ impl<B: Backend, M: GuestMemory> Server<B, M> {
             qemu_gone_after: QEMU_GONE_AFTER,
             run_folder: run_folder.to_owned(),
             said_stopped: false,
+            said_screen: None,
         })
     }
 
@@ -247,6 +253,17 @@ impl<B: Backend, M: GuestMemory> Server<B, M> {
             self.said_stopped = stopped;
             if let Err(error) = write_note(&self.run_folder, stopped) {
                 log::warn!("writing the GPU note for the app: {error}");
+            }
+        }
+        let screen = self.router.session().indirect_screen().map(|(picture, look)| ScreenNote {
+            width: picture.width,
+            height: picture.height,
+            hdr: look == Look::HDR,
+        });
+        if screen != self.said_screen {
+            self.said_screen = screen;
+            if let Err(error) = display_note::write_note(&self.run_folder, screen) {
+                log::warn!("writing the display note for the app: {error}");
             }
         }
     }

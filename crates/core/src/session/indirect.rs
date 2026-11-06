@@ -10,7 +10,7 @@ use crate::frames::{
     Cursor, FrameLight, GuestSlot, IndirectRing, Landing, LiveRing, Picture, Registering, ReplyWaiting, Slots,
 };
 use guesthouse_backend::{Backend, BackendError, GuestMemory, SpaceId};
-use guesthouse_messages::indirect::{FrameDone, Outcome, Register, Reply, Request, STAMP_SIZE, Stamp};
+use guesthouse_messages::indirect::{FrameDone, Look, Outcome, Register, Reply, Request, STAMP_SIZE, Stamp};
 use std::collections::VecDeque;
 use std::os::fd::OwnedFd;
 use std::time::{Duration, Instant};
@@ -273,6 +273,12 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             self.frames.ring = None;
             self.frames.behind = true;
         }
+    }
+
+    /// What the display driver's ring shows, if it has one. The app reads this to say what's running.
+    pub fn indirect_screen(&self) -> Option<(Picture, Look)> {
+        self.frames.indirect.as_ref()?;
+        self.frames.ring.as_ref().map(|ring| (ring.picture, ring.look))
     }
 
     /// The guest has restarted. Its old processes never said goodbye, so without this the ring would

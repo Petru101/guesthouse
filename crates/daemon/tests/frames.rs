@@ -538,6 +538,7 @@ fn frames_keep_going_when_the_export_is_refused() {
 mod display_driver {
     use super::*;
     use guesthouse_backend_nvidia::fake_guest;
+    use guesthouse_daemon::display_note::{ScreenNote, read_note};
     use guesthouse_messages::indirect::as_the_driver_sends as driver;
     use guesthouse_messages::indirect::{
         CursorMove, CursorPiece, FrameDone, Look, Mastering, Register, RingName, Stamp,
@@ -615,6 +616,22 @@ mod display_driver {
             }
         }
         panic!("no frame came");
+    }
+
+    #[test]
+    fn the_app_is_told_of_the_drivers_screen_and_when_it_goes() {
+        let mut rig = Rig::new();
+        assert_eq!(read_note(&rig.folder), None);
+        rig.stamped_buffers();
+        rig.say(&driver::register(&ring(Look::HDR)));
+        for _ in 0..MOST_STEPS {
+            rig.step();
+        }
+        let note = ScreenNote { width: WIDTH, height: HEIGHT, hdr: true };
+        assert_eq!(read_note(&rig.folder), Some(note));
+        rig.say(&driver::close(NAME));
+        rig.step();
+        assert_eq!(read_note(&rig.folder), None);
     }
 
     #[test]
