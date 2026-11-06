@@ -59,8 +59,9 @@ fn private(size: u64) -> Vec<u8> {
     data
 }
 
+/// As much memory as the surface needs.
 fn surface_private(width: u32, height: u32) -> Vec<u8> {
-    let mut data = private(0x10000);
+    let mut data = private((u64::from(width) * u64::from(height) * 4).max(0x10000));
     set_u32(&mut data, 8, width);
     set_u32(&mut data, 12, height);
     data
@@ -159,6 +160,7 @@ fn signal_message(objects: &[u32], contexts: &[u32], values: &[u64]) -> Vec<u8> 
     request
 }
 
+mod copy_bounds;
 mod failing;
 mod frame_ring;
 mod indirect;

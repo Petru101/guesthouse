@@ -4,6 +4,7 @@ mod adapter;
 mod allocation;
 mod context;
 mod copies;
+mod copy_bounds;
 mod frame_ring;
 mod indirect;
 mod mapping;

@@ -153,6 +153,9 @@ impl Default for StandIn {
     }
 }
 
+/// Where private data can state a pitch. Zero means rows with no padding.
+const PITCH_FIELD: usize = 20;
+
 fn field(private: &[u8], at: usize) -> u32 {
     private.get(at..at + 4).map_or(0, |bytes| u32::from_le_bytes(bytes.try_into().expect("four bytes")))
 }
@@ -257,11 +260,15 @@ impl Backend for StandIn {
             .map_or(DEFAULT_SIZE, |bytes| u64::from_le_bytes(*bytes))
             .max(DEFAULT_SIZE);
         let (width, height) = (field(private, 8), field(private, 12));
-        let surface = (width != 0).then_some(SurfaceShape {
+        let pitch = match field(private, PITCH_FIELD) {
+            0 => width.saturating_mul(BYTES_PER_PIXEL),
+            pitch => pitch,
+        };
+        let surface = (pitch != 0).then_some(SurfaceShape {
             width,
             height,
             format: FORMAT_32_BIT,
-            pitch: width.saturating_mul(BYTES_PER_PIXEL),
+            pitch,
             tiling: None,
             refresh: (60, 1),
             samples: (1, 0),
