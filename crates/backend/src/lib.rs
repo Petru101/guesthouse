@@ -92,6 +92,10 @@ pub trait Backend: Sized {
         &[]
     }
 
+    /// The guest has restarted, with its bus reset. Most of what a backend holds goes with its
+    /// messages, so this is only for what has to follow the guest's own start.
+    fn guest_restarted(&mut self) {}
+
     /// `memory` adds up the guest's allocations, so it's only for the escapes that ask.
     fn escape(&mut self, data: &mut [u8], memory: &dyn Fn() -> VideoMemoryUse);
 

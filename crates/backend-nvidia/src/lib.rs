@@ -11,6 +11,7 @@ pub mod channel;
 pub mod escape;
 #[cfg(any(test, feature = "fake-rm"))]
 pub mod fake_guest;
+mod guest_clock;
 pub mod inf;
 mod list_repair;
 pub mod private_data;
@@ -332,6 +333,10 @@ impl<R: Rm + OpenRm> Backend for NvidiaBackend<R> {
 
     fn kept_gpu_ranges(&self) -> &'static [GpuRange] {
         &[escape::RUNTIME_GPU_RANGE]
+    }
+
+    fn guest_restarted(&mut self) {
+        self.device.guest_clock.restart();
     }
 
     fn escape(&mut self, data: &mut [u8], memory: &dyn Fn() -> VideoMemoryUse) {

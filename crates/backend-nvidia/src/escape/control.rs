@@ -130,7 +130,7 @@ pub(super) fn run<R: Rm>(
         put(data, CONTROL_STATUS, 0);
         return Ok(());
     }
-    if command == time_pairs::CONTROL && time_pairs::answer(&device.rm, params) {
+    if command == time_pairs::CONTROL && time_pairs::answer(&device.rm, &mut device.guest_clock, params) {
         put(data, CONTROL_STATUS, 0);
         return Ok(());
     }

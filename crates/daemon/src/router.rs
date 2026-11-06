@@ -66,6 +66,9 @@ impl<B: Backend, M: GuestMemory> Router<B, M> {
         let header = frame.header;
         if header.kind.is_lifecycle_event() {
             log::info!("{channel:?}: {:?}", header.kind);
+            if header.kind == FrameKind::Reset {
+                self.session.guest_restarted();
+            }
             return Ok(());
         }
         let message = if header.flags.has_ranges() { split_ranges(frame.payload)?.1 } else { frame.payload };
