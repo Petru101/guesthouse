@@ -1,16 +1,15 @@
 //! The guest's memory, as files QEMU shares.
 
-use guesthouse_backend::{GuestMemory, PagesView};
+pub use guesthouse_backend::WINDOW_BASE;
+use guesthouse_backend::{GuestMemory, PagesView, in_window};
 use std::cell::OnceCell;
 use std::fs::{File, OpenOptions};
 use std::io;
+use std::ops::Range;
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::ptr;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-
-/// Where QEMU places the shared window in guest physical memory.
-pub const WINDOW_BASE: u64 = 1 << 40;
 
 /// With this much RAM, QEMU's machine keeps the first part below 4 GiB, and the rest above it.
 const RAM_BELOW_HOLE: u64 = 0x8000_0000;
@@ -86,8 +85,8 @@ impl Drop for SharedMemory {
 }
 
 impl GuestMemory for SharedMemory {
-    fn window_end(&self) -> u64 {
-        WINDOW_BASE + self.window_size
+    fn window(&self) -> Range<u64> {
+        WINDOW_BASE..WINDOW_BASE + self.window_size
     }
 
     fn read_u64(&self, address: u64) -> u64 {
@@ -125,8 +124,8 @@ impl GuestMemory for SharedMemory {
         unsafe { ptr::write_bytes(self.window.add(offset as usize), 0, length as usize) };
     }
 
-    fn host_address(&self, address: u64) -> u64 {
-        self.window as u64 + (address - WINDOW_BASE)
+    fn host_address(&self, address: u64, length: u64) -> Option<u64> {
+        in_window(&self.window(), address, length).then(|| self.window as u64 + (address - WINDOW_BASE))
     }
 
     fn map_pages(&mut self, pages: &[u64]) -> io::Result<PagesView> {
@@ -187,8 +186,8 @@ impl LazySharedMemory {
 }
 
 impl GuestMemory for LazySharedMemory {
-    fn window_end(&self) -> u64 {
-        self.memory().window_end()
+    fn window(&self) -> Range<u64> {
+        self.memory().window()
     }
 
     fn read_u64(&self, address: u64) -> u64 {
@@ -211,8 +210,8 @@ impl GuestMemory for LazySharedMemory {
         self.memory_mut().zero(address, length);
     }
 
-    fn host_address(&self, address: u64) -> u64 {
-        self.memory().host_address(address)
+    fn host_address(&self, address: u64, length: u64) -> Option<u64> {
+        self.memory().host_address(address, length)
     }
 
     fn map_pages(&mut self, pages: &[u64]) -> io::Result<PagesView> {
@@ -260,11 +259,24 @@ mod tests {
     fn the_window_reads_and_writes_the_file() {
         let window = temporary_file("window", &[0; 0x2000]);
         let mut memory = SharedMemory::open(&window, PathBuf::new()).unwrap();
-        assert_eq!(memory.window_end(), WINDOW_BASE + 0x2000);
+        assert_eq!(memory.window(), WINDOW_BASE..WINDOW_BASE + 0x2000);
         memory.write_u64(WINDOW_BASE + 0x1000, 0x1122);
         assert_eq!(memory.read_u64(WINDOW_BASE + 0x1000), 0x1122);
         drop(memory);
         assert_eq!(fs::read(&window).unwrap()[0x1000..0x1002], [0x22, 0x11]);
+        fs::remove_file(window).unwrap();
+    }
+
+    #[test]
+    fn a_host_address_is_only_ever_inside_the_mapping() {
+        let window = temporary_file("host-address", &[0; 0x2000]);
+        let memory = SharedMemory::open(&window, PathBuf::new()).unwrap();
+        let base = memory.window as u64;
+        assert_eq!(memory.host_address(WINDOW_BASE, 0x2000), Some(base));
+        assert_eq!(memory.host_address(WINDOW_BASE + 0x1000, 0x1000), Some(base + 0x1000));
+        assert_eq!(memory.host_address(WINDOW_BASE + 0x1000, 0x1001), None);
+        assert_eq!(memory.host_address(WINDOW_BASE - 0x1000, 0x1000), None);
+        assert_eq!(memory.host_address(u64::MAX, 2), None);
         fs::remove_file(window).unwrap();
     }
 

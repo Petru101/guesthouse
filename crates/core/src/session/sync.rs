@@ -1,6 +1,6 @@
 //! Handlers for sync objects and fences.
 
-use super::{Handled, Session, answer_status};
+use super::{Handled, OUTSIDE_WINDOW, Session, answer_status};
 use crate::deferred::DeferredAction;
 use crate::fences::{FENCE_PAGE, Fence, FenceBlock};
 use guesthouse_backend::{Backend, BackendError, GuestMemory};
@@ -18,7 +18,8 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         if let Some(block) = self.fences.block {
             return Ok(block);
         }
-        let host_address = self.memory.host_address(self.io_space_start);
+        let start = self.placed_io_space()?.start();
+        let host_address = self.memory.host_address(start, crate::FENCE_AREA).ok_or(OUTSIDE_WINDOW)?;
         let memory = self.backend.adopt_host_pages(host_address, crate::FENCE_AREA)?;
         let gpu_address = self.take_gpu_addresses(crate::FENCE_AREA, crate::ALLOCATION_ALIGN)?;
         let block = FenceBlock { memory, gpu_address };
@@ -27,7 +28,8 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
     }
 
     fn fresh_fence_page(&mut self) -> Result<u64, BackendError> {
-        Ok(self.io_space_start + self.fences.fresh_page()?)
+        let start = self.placed_io_space()?.start();
+        Ok(start + self.fences.fresh_page()?)
     }
 
     /// A zeroed fence page, reusing freed ones.
@@ -38,7 +40,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         }
         let fence = self.fresh_fence_page()?;
         let block = self.fence_block()?;
-        Ok((fence, block.gpu_address + fence - self.io_space_start))
+        Ok((fence, block.gpu_address + fence - self.placed_io_space()?.start()))
     }
 
     pub(super) fn create_paging_queue(&mut self, out: &mut Vec<u8>) -> Handled {

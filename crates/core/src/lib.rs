@@ -16,6 +16,7 @@ mod frames;
 mod gpu_addresses;
 mod guest_ranges;
 mod handles;
+mod io_space;
 mod pending;
 mod session;
 mod sync_table;

@@ -18,6 +18,7 @@ use crate::frames::ScreenFrames;
 use crate::gpu_addresses::{AddressUse, GpuAddresses};
 use crate::guest_ranges::GuestRanges;
 use crate::handles::HandleCounter;
+use crate::io_space::IoSpace;
 use crate::pending::{Gate, Pending};
 use crate::sync_table::SyncTable;
 use crate::tables::{Allocation, Mapping, Queue, ReservedRange};
@@ -95,6 +96,9 @@ pub struct TableSizes {
     pub deferred: usize,
 }
 
+pub(crate) const OUTSIDE_WINDOW: BackendError =
+    BackendError(std::borrow::Cow::Borrowed("not in the shared window"));
+
 /// Everything the host knows about one guest. See the crate documentation.
 pub struct Session<B, M> {
     pub(crate) backend: B,
@@ -106,7 +110,8 @@ pub struct Session<B, M> {
     pub(crate) gpu_addresses: GpuAddresses,
     pub(crate) guest_ranges: GuestRanges,
     pub(crate) fences: FencePool,
-    pub(crate) io_space_start: u64,
+    /// Where the fence pages are, once the guest has said and the place has passed.
+    pub(crate) io_space: Option<IoSpace>,
 
     pub(crate) processes_32_bit: HashSet<u32>,
     pub(crate) spaces: HashMap<u32, SpaceId>,
@@ -165,7 +170,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             gpu_addresses: GpuAddresses::new(),
             guest_ranges: GuestRanges::new(),
             fences: FencePool::new(),
-            io_space_start: 0,
+            io_space: None,
             processes_32_bit: HashSet::new(),
             spaces: HashMap::new(),
             closed_spaces: HashSet::new(),

@@ -11,6 +11,7 @@ use guesthouse_messages::wire::{set_u32, set_u64, u32_at};
 use guesthouse_messages::{Command, HEADER_SIZE};
 use std::hint::black_box;
 use std::io;
+use std::ops::Range;
 use std::time::{Duration, Instant};
 
 const TICKET: Option<ReplyTicket> = Some(ReplyTicket { channel: 1, transaction: 1 });
@@ -29,8 +30,8 @@ impl FlatMemory {
 }
 
 impl GuestMemory for FlatMemory {
-    fn window_end(&self) -> u64 {
-        IO_SPACE + WINDOW
+    fn window(&self) -> Range<u64> {
+        IO_SPACE..IO_SPACE + WINDOW
     }
     fn read_u64(&self, address: u64) -> u64 {
         self.0[Self::index(address)]
@@ -45,8 +46,8 @@ impl GuestMemory for FlatMemory {
     fn zero(&mut self, address: u64, length: u64) {
         self.0[Self::index(address)..Self::index(address + length)].fill(0);
     }
-    fn host_address(&self, address: u64) -> u64 {
-        address
+    fn host_address(&self, address: u64, _length: u64) -> Option<u64> {
+        Some(address)
     }
     fn map_pages(&mut self, _pages: &[u64]) -> io::Result<PagesView> {
         Err(io::ErrorKind::Unsupported.into())

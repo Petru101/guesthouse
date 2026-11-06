@@ -17,7 +17,7 @@ pub use driver::{
 };
 pub use guesthouse_messages::Status;
 pub use guesthouse_messages::registry::RegistryName;
-pub use memory::{GuestMemory, PagesView};
+pub use memory::{GuestMemory, PagesView, WINDOW_BASE, in_window};
 pub use types::*;
 
 use std::os::fd::OwnedFd;

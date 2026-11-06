@@ -1,8 +1,9 @@
 //! A guest memory that stores only what was written to it.
 
-use guesthouse_backend::{GuestMemory, PagesView};
+use guesthouse_backend::{GuestMemory, PagesView, WINDOW_BASE, in_window};
 use std::collections::BTreeMap;
 use std::io;
+use std::ops::Range;
 
 /// Stands in for a window of many gigabytes without taking the memory.
 #[derive(Debug)]
@@ -24,8 +25,8 @@ impl SparseMemory {
 }
 
 impl GuestMemory for SparseMemory {
-    fn window_end(&self) -> u64 {
-        self.window_end
+    fn window(&self) -> Range<u64> {
+        WINDOW_BASE..self.window_end
     }
 
     fn read_u64(&self, address: u64) -> u64 {
@@ -58,8 +59,8 @@ impl GuestMemory for SparseMemory {
         });
     }
 
-    fn host_address(&self, address: u64) -> u64 {
-        address
+    fn host_address(&self, address: u64, length: u64) -> Option<u64> {
+        in_window(&self.window(), address, length).then_some(address)
     }
 
     fn map_pages(&mut self, pages: &[u64]) -> io::Result<PagesView> {
@@ -81,11 +82,19 @@ mod tests {
 
     #[test]
     fn zero_clears_only_its_range() {
-        let mut memory = SparseMemory::new(1 << 40);
-        memory.write_u64(0x1000, 5);
-        memory.write_u64(0x2000, 6);
-        memory.zero(0x1000, 0x1000);
-        assert_eq!(memory.read_u64(0x1000), 0);
-        assert_eq!(memory.read_u64(0x2000), 6);
+        let mut memory = SparseMemory::new(WINDOW_BASE + 0x3000);
+        memory.write_u64(WINDOW_BASE + 0x1000, 5);
+        memory.write_u64(WINDOW_BASE + 0x2000, 6);
+        memory.zero(WINDOW_BASE + 0x1000, 0x1000);
+        assert_eq!(memory.read_u64(WINDOW_BASE + 0x1000), 0);
+        assert_eq!(memory.read_u64(WINDOW_BASE + 0x2000), 6);
+    }
+
+    #[test]
+    fn host_addresses_stop_at_the_window() {
+        let memory = SparseMemory::new(WINDOW_BASE + 0x1000);
+        assert_eq!(memory.host_address(WINDOW_BASE, 0x1000), Some(WINDOW_BASE));
+        assert_eq!(memory.host_address(WINDOW_BASE, 0x1001), None);
+        assert_eq!(memory.host_address(WINDOW_BASE - 1, 1), None);
     }
 }

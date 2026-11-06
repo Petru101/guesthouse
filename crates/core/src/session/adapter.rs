@@ -1,8 +1,8 @@
 //! Handlers for what the guest asks about the adapter, and for escapes.
 
 use super::{Handled, Session, answer_status};
-use crate::fences::FENCE_AREA;
-use guesthouse_backend::{Backend, GuestMemory, RegistryName, VendorQuery};
+use crate::io_space::IoSpace;
+use guesthouse_backend::{Backend, BackendError, GuestMemory, RegistryName, VendorQuery};
 use guesthouse_messages::adapter::{
     ASYNC_MESSAGES, AdapterQuery, CapsQuery, DRIVER_MODEL_NUMBER, IdentityAnswer, SetIoSpace,
     adapter_identity, description_answer, driver_caps, node_description, node_of, physical_adapter_ids,
@@ -26,6 +26,8 @@ const STATUS_SIZE: usize = 4;
 /// caps, a unique id, performance data, cross-adapter support.
 const ZERO_ANSWERS: [u32; 8] = [11, 17, 22, 55, 60, 61, 62, 76];
 
+const NO_IO_SPACE: BackendError = BackendError(std::borrow::Cow::Borrowed("no IO space yet"));
+
 impl<B: Backend, M: GuestMemory> Session<B, M> {
     pub(super) fn adapter_identity(&self, out: &mut Vec<u8>) {
         let facts = self.backend.facts();
@@ -40,15 +42,23 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
 
     pub(super) fn set_io_space(&mut self, message: &[u8], out: &mut Vec<u8>) -> Handled {
         let request = SetIoSpace::parse(message)?;
-        self.io_space_start = request.start;
+        let placed = IoSpace::place(request.start, &self.memory.window());
+        // Fence pages already live where the GPU was told, so moving them now would split the two.
+        let moved = self.fences.block.is_some() && placed != self.io_space;
+        let Some(placed) = placed.filter(|_| !moved) else {
+            log::warn!("refused an IO space at {:#x}, {:#x} bytes", request.start, request.length);
+            answer_status(Status::INVALID_PARAMETER, out);
+            return Ok(());
+        };
+        self.io_space = Some(placed);
         log::debug!("IO space at {:#x}, {:#x} bytes", request.start, request.length);
         answer_status(Status::SUCCESS, out);
         Ok(())
     }
 
-    /// Where memory after the fence pages starts.
-    pub(super) fn fresh_guest_memory(&self) -> u64 {
-        self.io_space_start + FENCE_AREA
+    /// The IO space, or a failure for a guest that hasn't placed one.
+    pub(crate) fn placed_io_space(&self) -> Result<IoSpace, BackendError> {
+        self.io_space.ok_or(NO_IO_SPACE)
     }
 
     pub(super) fn driver_escape(&mut self, message: &[u8], out: &mut Vec<u8>) -> Handled {

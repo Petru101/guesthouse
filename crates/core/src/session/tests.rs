@@ -815,6 +815,68 @@ mod mappings {
     }
 }
 
+mod io_space {
+    use super::*;
+    use crate::FENCE_PAGE;
+
+    fn set_io_space(session: &mut TestSession, start: u64) -> u32 {
+        let mut request = message(Command::SetIoSpace, HEADER_SIZE + 16);
+        set_u64(&mut request, HEADER_SIZE, start);
+        status_of(&send(session, &request))
+    }
+
+    fn monitored_fence(session: &mut TestSession) -> Vec<u8> {
+        let mut request = message(Command::CreateSyncObject, 0x30);
+        set_u32(&mut request, 0x20, 5);
+        send(session, &request)
+    }
+
+    #[test]
+    fn the_fence_area_must_lie_inside_the_window_on_a_page() {
+        let bad = [
+            0,
+            FENCE_PAGE,
+            IO_SPACE - FENCE_PAGE,
+            IO_SPACE + 8,
+            WINDOW_END - FENCE_AREA + FENCE_PAGE,
+            WINDOW_END,
+            u64::MAX - FENCE_PAGE + 1,
+        ];
+        for start in bad {
+            let mut session = session();
+            assert_eq!(set_io_space(&mut session, start), Status::INVALID_PARAMETER.0, "{start:#x}");
+            assert_eq!(u64_at(&monitored_fence(&mut session), 16), Ok(IO_SPACE), "{start:#x}");
+        }
+    }
+
+    #[test]
+    fn the_fence_area_may_end_where_the_window_does() {
+        let mut session = session();
+        assert_eq!(set_io_space(&mut session, WINDOW_END - FENCE_AREA), SUCCESS);
+        assert_eq!(u64_at(&monitored_fence(&mut session), 16), Ok(WINDOW_END - FENCE_AREA));
+    }
+
+    #[test]
+    fn nothing_reaches_the_gpu_before_the_guest_places_its_io_space() {
+        let backend = StandIn::new();
+        let limits = MemoryLimits::new(backend.facts(), None, 1 << 30);
+        let memory = SparseMemory::new(WINDOW_END);
+        let mut session = Session::new(backend, memory, Config::new(limits));
+        let reply = monitored_fence(&mut session);
+        assert_eq!(status_of(&reply), Status::UNSUCCESSFUL.0);
+        assert_eq!(reply.len(), 4);
+        assert_eq!(session.backend.live_memory_blocks(), 0);
+    }
+
+    #[test]
+    fn a_repeat_of_the_same_place_is_fine_but_a_move_comes_too_late_once_fences_exist() {
+        let mut session = session();
+        monitored_fence(&mut session);
+        assert_eq!(set_io_space(&mut session, IO_SPACE), SUCCESS);
+        assert_eq!(set_io_space(&mut session, IO_SPACE + FENCE_AREA), Status::INVALID_PARAMETER.0);
+    }
+}
+
 mod fences {
     use super::*;
 

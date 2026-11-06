@@ -1,6 +1,6 @@
 //! Handlers for allocations and resources.
 
-use super::{Handled, Session, answer_status};
+use super::{Handled, OUTSIDE_WINDOW, Session, answer_status};
 use crate::deferred::{DeferredAction, FreedAllocation};
 use crate::tables::Allocation;
 use guesthouse_backend::{AllocationShape, Backend, GuestMemory, MapRequest, SurfaceShape, UnmapRequest};
@@ -218,7 +218,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             self.park(message);
             return Ok(());
         }
-        let (fresh, limit) = (self.fresh_guest_memory(), self.memory.window_end());
+        let (fresh, limit) = (self.placed_io_space()?.after_fences(), self.memory.window().end);
         let Some((address, used_before)) = self.guest_ranges.take(size, fresh, limit) else {
             lock_answer(Status::NO_MEMORY, 0, out);
             return Ok(());
@@ -227,8 +227,9 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             // Another allocation's data must not reach this one.
             self.memory.zero(address, size);
         }
-        let host_address = self.memory.host_address(address);
-        let shared = self.backend.adopt_host_pages(host_address, align_up(size, PAGE_SIZE))?;
+        let pages_size = align_up(size, PAGE_SIZE);
+        let host_address = self.memory.host_address(address, pages_size).ok_or(OUTSIDE_WINDOW)?;
+        let shared = self.backend.adopt_host_pages(host_address, pages_size)?;
         let has_mappings = !self.allocations[&handle].mappings.is_empty();
         let own = if has_mappings { Some(self.own_space()?) } else { None };
         if let (true, Some(own)) = (preserve, own) {
