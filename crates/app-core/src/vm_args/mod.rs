@@ -4,6 +4,7 @@
 //! to run. The order of devices is what the guest has already seen, so it must not change.
 
 mod arguments;
+mod jail;
 mod nic;
 mod ubuntu;
 
