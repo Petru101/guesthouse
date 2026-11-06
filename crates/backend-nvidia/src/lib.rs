@@ -6,9 +6,6 @@
 //! Three things vary, and each has its own place. The [`profile`] module holds a generation's classes
 //! and a driver branch's layouts, and cards themselves are read live. See `ARCHITECTURE.md`.
 
-// Parts wait for what uses them. This goes when the backend is joined up, later in this series.
-#![allow(dead_code, unused_imports)]
-
 pub mod answers;
 pub mod channel;
 pub mod escape;
@@ -213,5 +210,185 @@ impl<R: Rm> NvidiaBackend<R> {
 
     fn space(spaces: &HashMap<SpaceId, AddressSpace>, space: SpaceId) -> Result<&AddressSpace, BackendError> {
         spaces.get(&space).ok_or_else(|| BackendError::new("this address space is closed"))
+    }
+}
+
+impl<R: Rm + OpenRm> Backend for NvidiaBackend<R> {
+    fn supports(card: &PciCard) -> bool {
+        card.vendor == NVIDIA_VENDOR
+    }
+
+    fn survey(setup: &Setup) -> Result<DriverSurvey, Refusal> {
+        startup::survey(setup)
+    }
+
+    fn open(setup: &Setup, survey: &DriverSurvey) -> Result<Self, Refusal> {
+        let no_profile = || Refusal("The start decision passed a branch with no profile.".to_owned());
+        let host_profile = host_branch(&survey.host.branch).ok_or_else(no_profile)?;
+        let guest_profile = guest_branch(&setup.guest_branch).ok_or_else(no_profile)?;
+        let inf_path = setup.driver_folder.join(INF_NAME);
+        let inf = fs::read(&inf_path).map_err(|error| Refusal(format!("{}: {error}", inf_path.display())))?;
+        let host = read_host_facts().map_err(Refusal)?;
+        let opened = |error: RmError| Refusal(format!("Opening the card failed: {error}"));
+        let rm = R::open_rm(&survey.host.version, host_profile).map_err(opened)?;
+        let device = Device::open(rm, host_profile).map_err(opened)?;
+        let mut backend = Self::start(device, host_profile, guest_profile, setup, &host, &inf)?;
+        // Readings are a bonus, so a failure here only means going without.
+        match sensors::start(&backend.card_uuid) {
+            Ok(snapshot) => backend.set_sensors(Box::new(snapshot)),
+            Err(error) => log::info!("no host sensors: {error}"),
+        }
+        Ok(backend)
+    }
+
+    fn facts(&self) -> &AdapterFacts {
+        &self.facts
+    }
+
+    fn allocate_video_memory(&mut self, size: u64) -> Result<(MemoryId, u64), BackendError> {
+        let (handle, given) = self.device.alloc_video_memory(size).map_err(memory_error)?;
+        Ok((MemoryId(u64::from(handle)), given))
+    }
+
+    fn adopt_host_pages(&mut self, host_address: u64, size: u64) -> Result<MemoryId, BackendError> {
+        let handle = self.device.alloc_host_pages(host_address, size).map_err(memory_error)?;
+        Ok(MemoryId(u64::from(handle)))
+    }
+
+    fn release_memory(&mut self, memory: MemoryId) {
+        if let Err(error) = self.device.free(handle_of(memory)) {
+            log::warn!("freeing memory: {error}");
+        }
+    }
+
+    fn preserve_contents(
+        &mut self,
+        host: &mut dyn HostServices,
+        own_space: SpaceId,
+        from: MemoryId,
+        to: MemoryId,
+        size: u64,
+    ) -> Result<(), BackendError> {
+        self.move_contents(host, own_space, handle_of(from), handle_of(to), size)
+    }
+
+    fn create_address_space(&mut self, ranges: &[GpuRange]) -> Result<SpaceId, BackendError> {
+        let pairs: Vec<(u64, u64)> = ranges.iter().map(|range| (range.start, range.end)).collect();
+        let space = self.device.create_address_space(&pairs).map_err(memory_error)?;
+        let id = SpaceId(self.next_space);
+        self.next_space += 1;
+        self.spaces.insert(id, space);
+        Ok(id)
+    }
+
+    fn destroy_address_space(&mut self, space: SpaceId) {
+        if let Some(space) = self.spaces.remove(&space)
+            && let Err(error) = self.device.destroy_address_space(&space)
+        {
+            log::warn!("closing an address space: {error}");
+        }
+    }
+
+    fn map(&mut self, request: &MapRequest) -> Result<(), BackendError> {
+        let space = Self::space(&self.spaces, request.space)?;
+        let map = rm::device::Mapping {
+            memory: handle_of(request.memory),
+            offset: request.offset,
+            length: request.length,
+            address: request.address,
+            small_pages: request.small_pages,
+            gpu_cached: request.gpu_cached,
+        };
+        self.device.map(space, &map).map_err(memory_error)
+    }
+
+    fn unmap(&mut self, unmap: &UnmapRequest) -> Result<(), BackendError> {
+        let space = Self::space(&self.spaces, unmap.space)?;
+        self.device.unmap(space, handle_of(unmap.memory), unmap.address, unmap.length).map_err(memory_error)
+    }
+
+    fn describe_allocation(&mut self, private: &[u8]) -> AllocationShape {
+        private_data::shape(&self.guest.allocation, private)
+    }
+
+    fn finish_allocation_data(&mut self, private: &mut [u8], size: u64) {
+        private_data::finish(&self.guest.allocation, private, size);
+    }
+
+    /// Each queue gets a number of its own, which can't be zero, and the guest needs a heap size.
+    fn finish_queue_data(&mut self, queue: u32, private: &mut [u8], serial: u32) -> Result<(), BackendError> {
+        let too_short = || BackendError::new("a queue's private data is too short");
+        if let Some(ring) = GuestRing::of_queue(private) {
+            self.guest_rings.insert(queue, ring);
+        }
+        let token = serial.wrapping_add(1).max(1);
+        let field = private.get_mut(RECORD_QUEUE_TOKEN..RECORD_QUEUE_TOKEN + 4).ok_or_else(too_short)?;
+        field.copy_from_slice(&token.to_le_bytes());
+        let field = private.get_mut(RECORD_QUEUE_HEAP..RECORD_QUEUE_HEAP + 8).ok_or_else(too_short)?;
+        field.copy_from_slice(&QUEUE_HEAP_SIZE.to_le_bytes());
+        Ok(())
+    }
+
+    fn kept_gpu_ranges(&self) -> &'static [GpuRange] {
+        &[escape::RUNTIME_GPU_RANGE]
+    }
+
+    fn escape(&mut self, data: &mut [u8]) {
+        if let Err(error) = escape::answer(&mut self.device, &self.channel_classes, data) {
+            log::warn!("an escape failed: {error}");
+        }
+    }
+
+    fn adapter_answer(&mut self, query: &VendorQuery<'_>, out: &mut Vec<u8>) -> Option<Status> {
+        let live = self.sensors.as_ref().and_then(|sensors| sensors.latest());
+        live.and_then(|live| perf_data::answer(query, &live, out)).or_else(|| self.answers.answer(query, out))
+    }
+
+    fn registry_value(&mut self, name: &RegistryName) -> Option<RegistryValue> {
+        self.answers.registry().lookup(name)
+    }
+
+    fn gpu_clock(&mut self) -> Result<u64, BackendError> {
+        self.device.gpu_time().map_err(memory_error)
+    }
+
+    fn export_memory(&mut self, memory: MemoryId, size: u64) -> Result<OwnedFd, BackendError> {
+        self.device.export_dmabuf(handle_of(memory), size).map_err(memory_error)
+    }
+
+    /// Vulkan is let through on video nodes: its video queue families can also transfer, it uses
+    /// them for plain copies, and its driver crashes if the context is refused. It has no family on
+    /// the other engines without a channel, so there the hint changes nothing.
+    fn context_allowed(&mut self, node: u32, client_hint: u32) -> bool {
+        let vulkan_copies = client_hint == CLIENT_HINT_VULKAN && self.answers.node_is_video(node);
+        self.answers.node_has_channel(node) || vulkan_copies
+    }
+
+    fn unfinished_work_limit(&self) -> Option<u64> {
+        Some(UNFINISHED_ENTRIES_LIMIT)
+    }
+
+    fn start_work(&mut self, host: &mut dyn HostServices, work: &Work<'_>) -> WorkStart {
+        self.start_work_on_gpu(host, work)
+    }
+
+    fn ring_doorbell(&mut self, queue: u32, doorbell: u64) {
+        self.ring(queue, doorbell);
+    }
+
+    fn close_queue(&mut self, queue: u32) {
+        self.close(queue);
+    }
+
+    fn start_staging_copy(&mut self, host: &mut dyn HostServices, copy: &StagingCopy) -> StagingStart {
+        self.start_copy(host, copy)
+    }
+
+    fn poll_staging_copy(&mut self, host: &mut dyn HostServices, now: Instant) -> Option<Status> {
+        self.poll_copy(host, now)
+    }
+
+    fn start_slot_copy(&mut self, host: &mut dyn HostServices, copy: &SlotCopy) -> StagingStart {
+        self.start_frame_copy(host, copy)
     }
 }
