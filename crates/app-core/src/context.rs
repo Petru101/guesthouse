@@ -1,5 +1,6 @@
 //! What the code needs from the PC, in one value that a test can fill with stand-ins.
 
+use crate::agent::{GuestAgent, TcpAgent};
 use crate::bridge::BridgeHost;
 use crate::clock::{Clock, RealClock};
 use crate::monitor::{Monitor, QmpMonitor};
@@ -27,6 +28,7 @@ pub struct Context {
     pub meminfo: PathBuf,
     pub bridge: BridgeHost,
     pub monitor: Arc<dyn Monitor>,
+    pub agent: Arc<dyn GuestAgent>,
     pub clock: Arc<dyn Clock>,
     /// Replaces the room an install needs, for a test on a small disk.
     pub install_room: Option<u64>,
@@ -48,6 +50,7 @@ impl Context {
             meminfo: "/proc/meminfo".into(),
             bridge: BridgeHost::default(),
             monitor: Arc::new(QmpMonitor),
+            agent: Arc::new(TcpAgent),
             clock: Arc::new(RealClock::default()),
             install_room: None,
         }

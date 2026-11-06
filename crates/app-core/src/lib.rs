@@ -1,5 +1,6 @@
 //! Everything Guesthouse's desktop app does that needs no display.
 
+pub mod agent;
 pub mod bridge;
 pub mod clock;
 pub mod context;
