@@ -21,8 +21,6 @@ pub const FAKE_RAM_KIB: u32 = 20 << 20;
 pub const FAKE_ENGINES: [u32; 9] = [0x01, 0x0B, 0x0C, 0x0F, 0x13, 0x1C, 0x1D, 0x26, 0x2E];
 pub const FAKE_CLASSES: [u32; 4] = [0xCA6F, 0xC96F, 0xCE97, 0xCAB5];
 pub const FAKE_GRAPHICS_COPY: u32 = 0x0C;
-const FAKE_ARCHITECTURE: u32 = 0x1B0;
-const FAKE_SM_VERSION: u32 = 0xA04;
 const FAKE_GPC_COUNT: u32 = 4;
 const JPEG_ENGINES_PRESENT: u32 = 2;
 
@@ -31,6 +29,38 @@ const FB_BAR1: u32 = 5;
 const GRAPHICS_GPC_COUNT: u32 = 0x14;
 const GRAPHICS_SM_VERSION: u32 = 0x0C;
 const STATUS_NO_SUCH_ENGINE: u32 = 0x1F;
+const ARCHITECTURE_IMPLEMENTATION_FIELD: usize = 4;
+/// Classes past the named ones start here, below any class this backend looks for.
+const FIRST_FILLER_CLASS: u32 = 0x1000;
+
+/// What makes one pretend card differ from another.
+#[derive(Debug, Clone, Copy)]
+pub struct FakeCard {
+    pub name: &'static str,
+    pub device: u32,
+    pub architecture: u32,
+    /// `None` leaves it as made-up bytes.
+    pub implementation: Option<u32>,
+    pub sm_version: u32,
+    pub engines: &'static [u32],
+    pub graphics_copy: u32,
+    pub classes: &'static [u32],
+    /// How many classes the card lists. Filler classes make up what `classes` doesn't name.
+    pub class_count: usize,
+}
+
+/// The pretend card most tests use.
+pub const FAKE_BLACKWELL: FakeCard = FakeCard {
+    name: FAKE_NAME,
+    device: FAKE_DEVICE,
+    architecture: 0x1B0,
+    implementation: None,
+    sm_version: 0xA04,
+    engines: &FAKE_ENGINES,
+    graphics_copy: FAKE_GRAPHICS_COPY,
+    classes: &FAKE_CLASSES,
+    class_count: FAKE_CLASSES.len(),
+};
 
 // A real RM copes with parameters of the wrong size, so these do too.
 fn word(params: &[u8], at: usize) -> u32 {
@@ -55,7 +85,7 @@ fn entry_value(command: u32, index: u32) -> u32 {
     command.wrapping_mul(2_654_435_761).wrapping_add(index.wrapping_mul(40503)) >> 4
 }
 
-fn table(rm: &mut FakeRm, control: Control, special: fn(u32) -> Option<u32>) {
+fn table(rm: &mut FakeRm, control: Control, special: impl Fn(u32) -> Option<u32> + Send + 'static) {
     let command = control.0;
     rm.answer(command, move |params| {
         let index = word(params, 4);
@@ -72,8 +102,8 @@ fn plain(rm: &mut FakeRm, control: Control) {
     });
 }
 
-fn list(rm: &mut FakeRm, control: Control, items: &'static [u32]) {
-    rm.answer(control.0, |params| {
+fn list(rm: &mut FakeRm, control: Control, items: Vec<u32>) {
+    rm.answer(control.0, move |params| {
         put(params, 0, items.len() as u32);
         items.iter().enumerate().for_each(|(index, &item)| put(params, 4 + index * 4, item));
         0
@@ -89,8 +119,20 @@ fn text(rm: &mut FakeRm, control: Control, at: usize, text: &'static str) {
     });
 }
 
-/// Gives a fake RM a card's answers.
+/// The card's class list, at the length it says.
+fn class_list(card: &FakeCard) -> Vec<u32> {
+    let fillers = (FIRST_FILLER_CLASS..).take(card.class_count.saturating_sub(card.classes.len()));
+    card.classes.iter().copied().chain(fillers).collect()
+}
+
+/// Gives a fake RM the usual pretend card's answers.
 pub fn install(rm: &mut FakeRm) {
+    install_card(rm, &FAKE_BLACKWELL);
+}
+
+/// Gives a fake RM a card's answers.
+pub fn install_card(rm: &mut FakeRm, card: &FakeCard) {
+    let card = *card;
     for control in [
         CPU_INFO,
         CHIPSET_INFO,
@@ -106,9 +148,9 @@ pub fn install(rm: &mut FakeRm) {
     ] {
         plain(rm, control);
     }
-    list(rm, ENGINES, &FAKE_ENGINES);
-    list(rm, CLASS_LIST, &FAKE_CLASSES);
-    text(rm, NAME, 4, FAKE_NAME);
+    list(rm, ENGINES, card.engines.to_vec());
+    list(rm, CLASS_LIST, class_list(&card));
+    text(rm, NAME, 4, card.name);
     text(rm, SHORT_NAME, 0, FAKE_SHORT_NAME);
     table(rm, GPU_INFO, |_| None);
     table(rm, BUS_INFO, |_| None);
@@ -117,26 +159,29 @@ pub fn install(rm: &mut FakeRm) {
         FB_BAR1 => Some(FAKE_RAM_KIB / 2),
         _ => None,
     });
-    table(rm, GRAPHICS_INFO, |index| match index {
-        GRAPHICS_SM_VERSION => Some(FAKE_SM_VERSION),
+    table(rm, GRAPHICS_INFO, move |index| match index {
+        GRAPHICS_SM_VERSION => Some(card.sm_version),
         GRAPHICS_GPC_COUNT => Some(FAKE_GPC_COUNT),
         _ => None,
     });
-    rm.answer(PCI_INFO.0, |params| {
-        put(params, 0, FAKE_DEVICE << 16 | FAKE_VENDOR);
+    rm.answer(PCI_INFO.0, move |params| {
+        put(params, 0, card.device << 16 | FAKE_VENDOR);
         put(params, 4, 0x5555_0001);
         put(params, 8, 0xA1);
         put(params, 12, 0x77);
         0
     });
-    rm.answer(ARCHITECTURE_INFO.0, |params| {
+    rm.answer(ARCHITECTURE_INFO.0, move |params| {
         fill(ARCHITECTURE_INFO.0, params);
-        put(params, 0, FAKE_ARCHITECTURE);
+        put(params, 0, card.architecture);
+        if let Some(implementation) = card.implementation {
+            put(params, ARCHITECTURE_IMPLEMENTATION_FIELD, implementation);
+        }
         0
     });
-    rm.answer(ENGINE_PARTNERS.0, |params| {
+    rm.answer(ENGINE_PARTNERS.0, move |params| {
         put(params, 12, 1);
-        put(params, 16, FAKE_GRAPHICS_COPY);
+        put(params, 16, card.graphics_copy);
         0
     });
     rm.answer(JPEG_CAPS.0, |params| {
