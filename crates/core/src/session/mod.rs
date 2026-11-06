@@ -140,6 +140,8 @@ pub struct Session<B, M> {
     pub(crate) context_nodes: HashMap<u32, u32>,
     pub(crate) gates: HashMap<u32, Gate>,
     pub(crate) queues_made: u32,
+    /// Statistics have been refused once, which is worth saying once.
+    pub(crate) statistics_refused: bool,
     pub(crate) work_started: u64,
     pub(crate) queue_failures: u32,
 
@@ -193,6 +195,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             context_nodes: HashMap::new(),
             gates: HashMap::new(),
             queues_made: 0,
+            statistics_refused: false,
             work_started: 0,
             queue_failures: 0,
             mapped_addresses: HashMap::new(),
@@ -309,6 +312,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             Some(C::QueryVideoMemory) => self.query_video_memory(message, out)?,
             Some(C::QueryClockCalibration) => self.query_clock(out)?,
             Some(C::GetRegistryKeys) => answer_no_registry_keys(out),
+            Some(C::QueryStatistics) => self.refuse_statistics(out),
             Some(C::MarkDeviceFailed) => self.mark_device_failed(message, out)?,
 
             Some(C::CreateProcess) => self.create_process(message, out)?,

@@ -1718,6 +1718,20 @@ mod address_reuse {
     }
 }
 
+mod statistics {
+    use super::*;
+
+    #[test]
+    fn asking_for_statistics_is_refused_each_time_and_noted_once() {
+        let mut session = session();
+        for _ in 0..2 {
+            let reply = send(&mut session, &message(Command::QueryStatistics, HEADER_SIZE));
+            assert_eq!(status_of(&reply), Status::NOT_SUPPORTED.0);
+        }
+        assert!(session.statistics_refused);
+    }
+}
+
 mod reservations {
     use super::*;
 

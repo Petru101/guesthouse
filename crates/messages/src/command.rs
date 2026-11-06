@@ -72,6 +72,7 @@ commands! {
     FlushAdapter = 43,
     DescribeNode = 44,
     IsSyncObjectSignaled = 46,
+    QueryStatistics = 48,
     CreateHardwareQueue = 50,
     DestroyHardwareQueue = 51,
     SubmitToHardwareQueue = 52,

@@ -69,6 +69,15 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         Ok(())
     }
 
+    /// The guest's graphics kernel keeps these numbers itself on real hardware, and nothing here
+    /// keeps them, so saying no is the honest answer. A tool that polls would fill the log.
+    pub(super) fn refuse_statistics(&mut self, out: &mut Vec<u8>) {
+        if !std::mem::replace(&mut self.statistics_refused, true) {
+            log::warn!("the guest asked for statistics, which aren't kept here, and was refused");
+        }
+        put_u32(out, Status::NOT_SUPPORTED.0);
+    }
+
     pub(super) fn query_driver_caps(&mut self, message: &[u8], out: &mut Vec<u8>) -> Handled {
         let query = CapsQuery::parse(message)?;
         driver_caps(query, self.backend.facts().node_count, out)?;
