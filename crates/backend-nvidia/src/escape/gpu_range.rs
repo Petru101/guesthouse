@@ -9,6 +9,10 @@ use guesthouse_backend::GpuRange;
 /// Everything from 512 MiB up to the 4 GiB line.
 pub const RUNTIME_GPU_RANGE: GpuRange = GpuRange { start: 0x2000_0000, end: 0x1_0000_0000 };
 
+/// Where the compute runtime places its own big reservations. It picks addresses that are free on
+/// the CPU, from 8 GiB up, and wants the same numbers on the GPU, so nothing of ours can be there.
+pub const RUNTIME_PLACED_RANGE: GpuRange = GpuRange { start: 0x2_0000_0000, end: 0x40_0000_0000 };
+
 // The answer is packed, so these fields aren't aligned.
 const PRESENT: usize = 0x30;
 const UNEXPLAINED: usize = 0x31;

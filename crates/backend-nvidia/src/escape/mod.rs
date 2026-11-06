@@ -8,7 +8,7 @@ mod control;
 mod gpu_groups;
 mod gpu_range;
 
-pub use gpu_range::RUNTIME_GPU_RANGE;
+pub use gpu_range::{RUNTIME_GPU_RANGE, RUNTIME_PLACED_RANGE};
 
 use crate::rm::device::Device;
 use crate::rm::{Rm, RmError};

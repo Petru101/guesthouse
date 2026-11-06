@@ -330,7 +330,7 @@ impl<R: Rm + OpenRm> Backend for NvidiaBackend<R> {
     }
 
     fn kept_gpu_ranges(&self) -> &'static [GpuRange] {
-        &[escape::RUNTIME_GPU_RANGE]
+        &[escape::RUNTIME_GPU_RANGE, escape::RUNTIME_PLACED_RANGE]
     }
 
     fn escape(&mut self, data: &mut [u8]) {
