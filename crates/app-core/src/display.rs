@@ -91,6 +91,9 @@ pub struct DisplayState {
     /// Boots in a row with no picture, from a build that has sent one before.
     #[serde(default)]
     pub blank_boots: u32,
+    /// The build went in but Windows wants a restart, so the old one is still what's running.
+    #[serde(default)]
+    pub restart_owed: bool,
 }
 
 impl DisplayState {
@@ -129,7 +132,9 @@ pub fn screen_text(state: &DisplayState, ring: Option<ScreenNote>) -> String {
     if !screen.on_driver {
         return format!("{}x{} at {} Hz on the basic display", screen.width, screen.height, screen.hz);
     }
-    let Some(ring) = ring else { return "no picture from the display driver".to_owned() };
+    let Some(ring) = ring.filter(|ring| ring.frames) else {
+        return "no picture from the display driver".to_owned();
+    };
     let hdr = if ring.hdr { ", HDR" } else { "" };
     format!("{}x{} at {} Hz{hdr}", ring.width, ring.height, screen.hz)
 }
@@ -259,6 +264,8 @@ mod tests {
         let ring = ScreenNote { width: 3840, height: 2160, hdr: true, daemon: 7, frames: true };
         assert_eq!(screen_text(&state, Some(ring)), "3840x2160 at 240 Hz, HDR");
         assert_eq!(screen_text(&state, None), "no picture from the display driver");
+        let empty = ScreenNote { frames: false, ..ring };
+        assert_eq!(screen_text(&state, Some(empty)), "no picture from the display driver");
     }
 
     #[test]

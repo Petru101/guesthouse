@@ -20,6 +20,8 @@ use std::sync::{Arc, Mutex};
 const DAEMON_PID: u32 = 77;
 const INSTALLED: &str = "Added driver packages:  1\nupdate True error 0 reboot False\n\
                          OK CM_PROB_NONE RDPUDD Chained DD ROOT\\DISPLAY\\0000\n";
+const NEEDS_A_RESTART: &str = "Added driver packages:  1\nupdate True error 0 reboot True\n\
+                               OK CM_PROB_NONE RDPUDD Chained DD ROOT\\DISPLAY\\0000\n";
 const REFUSED: &str = "Added driver packages:  0\nupdate False error 5 reboot False\n";
 const ON_DRIVER: &str = "screen ours 1920x1080 144 hdr 0\n";
 const ON_BASIC: &str = "screen basic 1920x1080 64 hdr 0\n";
@@ -32,6 +34,8 @@ struct Guest {
     screen: Mutex<&'static str>,
     /// Whether frames come once the driver has been told to take over.
     sends_frames: AtomicBool,
+    /// Whether a frame lands on the ring, which is open either way.
+    lands_frames: AtomicBool,
     /// Files sent to the guest get lost on the way.
     loses_uploads: AtomicBool,
     asked: Mutex<Vec<String>>,
@@ -45,6 +49,7 @@ impl Guest {
             install,
             screen: Mutex::new(if device == "working" { ON_DRIVER } else { ON_BASIC }),
             sends_frames: AtomicBool::new(sends_frames),
+            lands_frames: AtomicBool::new(true),
             loses_uploads: AtomicBool::new(false),
             asked: Mutex::default(),
         })
@@ -55,7 +60,8 @@ impl Guest {
     }
 
     fn show_frames(&self) {
-        let note = ScreenNote { width: 1920, height: 1080, hdr: false, daemon: DAEMON_PID, frames: true };
+        let note = ScreenNote { width: 1920, height: 1080, hdr: false, daemon: DAEMON_PID, frames: false };
+        let note = ScreenNote { frames: self.lands_frames.load(Ordering::Relaxed), ..note };
         let shown = self.sends_frames.load(Ordering::Relaxed).then_some(note);
         write_note(&self.run_folder, shown).unwrap();
     }
@@ -76,7 +82,7 @@ impl GuestAgent for Guest {
         } else if script.contains("DEVPKEY") {
             format!("device {}", self.device.lock().unwrap())
         } else if script.contains("sign-and-install") {
-            if self.install == INSTALLED {
+            if self.install != REFUSED {
                 *self.device.lock().unwrap() = "working";
             }
             self.install.to_owned()
@@ -382,4 +388,116 @@ fn a_note_about_the_settings_goes_when_the_vm_is_off() {
     let state = DisplayState { reason: "why".into(), ..DisplayState::default() };
     write_state(&rig.context, &rig.machine, &state).unwrap();
     assert_eq!(crate::tasks::status(&rig.context, &rig.machine).display_problem, "why");
+}
+
+#[test]
+fn a_ring_no_frame_ever_lands_on_is_no_picture() {
+    let (rig, guest) = Rig::new().with(|context| Guest::new(context, "missing", INSTALLED, true));
+    fake_package(&rig.scratch, "build 1");
+    guest.lands_frames.store(false, Ordering::Relaxed);
+    let state = rig.run(boot_display);
+    assert_eq!(state.driver, Driver::Failed);
+    assert!(!state.shown_frames);
+    assert_eq!(guest.asked_for("take it out"), 1);
+}
+
+#[test]
+fn a_driver_that_only_opens_its_ring_goes_after_two_boots_and_never_counts_as_good() {
+    let (rig, guest) = Rig::new().with(|context| Guest::new(context, "working", INSTALLED, true));
+    assert!(rig.run(boot_display).shown_frames);
+    guest.lands_frames.store(false, Ordering::Relaxed);
+    assert_eq!(rig.run(boot_display).blank_boots, 1);
+    assert_eq!(guest.asked_for("take it out"), 0);
+    rig.run(boot_display);
+    assert_eq!(guest.asked_for("take it out"), 1, "a black machine has to have a way back");
+}
+
+#[test]
+fn a_settings_change_on_a_ring_with_no_frame_is_not_confirmed() {
+    let (rig, guest) = Rig::new().with(|context| Guest::new(context, "working", INSTALLED, true));
+    guest.lands_frames.store(false, Ordering::Relaxed);
+    let state = rig.run(apply_settings);
+    assert!(!state.shown_frames);
+    assert!(state.note.contains("hasn't confirmed"), "{}", state.note);
+    assert_eq!(guest.asked_for("take it out"), 0);
+}
+
+#[test]
+fn with_no_word_from_the_session_frames_still_say_the_driver_is_good() {
+    let (rig, guest) = Rig::new().with(|context| Guest::new(context, "working", INSTALLED, true));
+    *guest.screen.lock().unwrap() = "";
+    guest.show_frames();
+    for _ in 0..3 {
+        let state = rig.run(boot_display);
+        assert_eq!((state.driver, state.shown_frames, state.blank_boots), (Driver::Installed, true, 0));
+    }
+    assert_eq!(guest.asked_for("take it out"), 0, "a machine at a password logon keeps its driver");
+}
+
+#[test]
+fn no_word_from_the_session_and_no_frames_is_a_blank_boot() {
+    let (rig, guest) = Rig::new().with(|context| Guest::new(context, "working", INSTALLED, true));
+    rig.run(boot_display);
+    guest.sends_frames.store(false, Ordering::Relaxed);
+    guest.show_frames();
+    *guest.screen.lock().unwrap() = "";
+    assert_eq!(rig.run(boot_display).blank_boots, 1);
+    assert_eq!(guest.asked_for("take it out"), 0);
+    rig.run(boot_display);
+    assert_eq!(guest.asked_for("take it out"), 1);
+}
+
+#[test]
+fn a_silent_session_on_a_new_driver_gets_a_second_boot_too() {
+    let (rig, guest) = Rig::new().with(|context| Guest::new(context, "working", INSTALLED, false));
+    *guest.screen.lock().unwrap() = "";
+    rig.run(boot_display);
+    assert_eq!(guest.asked_for("take it out"), 0, "nothing says the driver is at fault yet");
+    rig.run(boot_display);
+    assert_eq!(guest.asked_for("take it out"), 1);
+}
+
+#[test]
+fn a_build_waiting_for_a_restart_isnt_credited_with_the_old_ones_frames() {
+    let (rig, guest) = Rig::new().with(|context| Guest::new(context, "working", NEEDS_A_RESTART, true));
+    let was = DisplayState {
+        driver: Driver::Installed,
+        package: "build 1".into(),
+        shown_frames: true,
+        ..DisplayState::default()
+    };
+    write_state(&rig.context, &rig.machine, &was).unwrap();
+    fake_package(&rig.scratch, "build 2");
+    let state = rig.run(boot_display);
+    assert_eq!(state.package, "build 2");
+    assert!(!state.shown_frames, "those frames are the old build's");
+    assert!(state.note.contains("restart"), "{}", state.note);
+    guest.sends_frames.store(false, Ordering::Relaxed);
+    guest.show_frames();
+    rig.run(boot_display);
+    assert_eq!(
+        guest.asked_for("take it out"),
+        1,
+        "after the restart it's a build that has never shown a picture"
+    );
+}
+
+#[test]
+fn a_build_that_restarted_is_credited_with_its_own_frames() {
+    let (rig, _guest) = Rig::new().with(|context| Guest::new(context, "working", NEEDS_A_RESTART, true));
+    rig.say_this_build_is_in("build 1");
+    fake_package(&rig.scratch, "build 2");
+    rig.run(boot_display);
+    let state = rig.run(boot_display);
+    assert!(state.shown_frames);
+    assert_eq!(state.note, "");
+}
+
+#[test]
+fn a_change_made_while_a_restart_is_owed_credits_nothing_either() {
+    let (rig, _guest) = Rig::new().with(|context| Guest::new(context, "working", NEEDS_A_RESTART, true));
+    rig.say_this_build_is_in("build 1");
+    fake_package(&rig.scratch, "build 2");
+    rig.run(boot_display);
+    assert!(!rig.run(apply_settings).shown_frames);
 }

@@ -41,6 +41,7 @@ const PLACED_MARK: &str = "placed";
 const INSTALLED_LINE_START: &str = "OK ";
 const INSTALLED_LINE_END: &str = r"ROOT\DISPLAY\";
 const UPDATED_MARK: &str = "update True";
+const RESTART_MARK: &str = "reboot True";
 
 const NO_PACKAGE: &str = "This build has no display driver, so Windows stays on its basic display, at about 64 Hz \
                           with no HDR.";
@@ -52,7 +53,9 @@ const NO_FRAMES: &str = "The display driver installed but sent no picture, so it
 const NOT_UP: &str =
     "The display driver did not come up, so it was taken out and Windows is on its basic display.";
 const NOT_CONFIRMED: &str = "Windows hasn't confirmed this change with a picture yet.";
-const BLANK_BOOT: &str = "The display driver sent no picture on this boot. If that happens again on the next one,                           it's taken out.";
+const BLANK_BOOT: &str = "The display driver sent no picture on this boot. If that happens again on the next one, \
+                          it's taken out.";
+const RESTART_OWED: &str = "Windows needs a restart to finish updating the display driver.";
 
 /// Why the screen is being set. A boot can give up on the driver, and a change to a running machine
 /// never does: a late picture is no reason to take the driver from under it.
@@ -183,6 +186,7 @@ fn install(task: &Task, package: &DriverPackage, state: &mut DisplayState, found
     state.reason.clear();
     state.shown_frames = false;
     state.blank_boots = 0;
+    state.restart_owed = said.contains(RESTART_MARK);
     Ok(())
 }
 
@@ -247,16 +251,24 @@ fn ring(task: &Task) -> Option<ScreenNote> {
     ring_in(task.context, None)
 }
 
-/// Waits for the frames to say what Windows says, and returns what's there at the end of the wait.
-fn wait_for_ring(task: &Task, wanted: &Wanted) -> Option<ScreenNote> {
+/// Waits for a frame to land on a ring that fits, and returns any ring with a frame on it at the end
+/// of the wait. An open ring alone is no picture.
+fn wait_for_frames(task: &Task, fits: impl Fn(ScreenNote) -> bool) -> Option<ScreenNote> {
+    let landed = || ring(task).filter(|found| found.frames);
     let end = task.now() + RING_WAIT;
     while task.now() < end {
-        if ring(task).is_some_and(|found| wanted.matches(found)) {
+        if landed().is_some_and(&fits) {
             break;
         }
         task.sleep(RING_POLL);
     }
-    ring(task)
+    landed()
+}
+
+/// A frame has landed. Until a restart is over they're the old build's, which says nothing of this one.
+fn credit_frames(state: &mut DisplayState) {
+    state.shown_frames |= !state.restart_owed;
+    state.blank_boots = 0;
 }
 
 /// Windows has gone back to the basic display, or never left it.
@@ -287,6 +299,10 @@ fn no_picture(
         state.note = NOT_CONFIRMED.to_owned();
         return Ok(());
     }
+    if state.restart_owed {
+        state.note = RESTART_OWED.to_owned();
+        return Ok(());
+    }
     // Nothing can reach the host then, however good the driver is, and the row already says so.
     if read_gpu_note(&task.context.run_folder(None)).is_some() {
         state.note.clear();
@@ -303,26 +319,55 @@ fn no_picture(
     Ok(())
 }
 
+/// The session gave no answer, as it does at a password logon. Frames are the truth then too. With none
+/// a boot counts as blank, but as the take-over may simply not have run, nothing yet says the driver is
+/// at fault, so even a new one gets its second boot.
+fn no_word_from_windows(
+    task: &mut Task,
+    state: &mut DisplayState,
+    wanted: &Wanted,
+    occasion: Occasion,
+) -> Result<()> {
+    write_log(task.context, "display: Windows did not say what its screen is")?;
+    state.running = None;
+    if state.driver != Driver::Installed {
+        return Ok(());
+    }
+    if let Some(found) = wait_for_frames(task, |_| true) {
+        write_log(task.context, &format!("display: frames are {found:?}"))?;
+        credit_frames(state);
+        state.note.clear();
+        return Ok(());
+    }
+    let gpu_stopped = read_gpu_note(&task.context.run_folder(None)).is_some();
+    if occasion == Occasion::SettingsChange || state.restart_owed || gpu_stopped {
+        return Ok(());
+    }
+    state.blank_boots += 1;
+    if state.blank_boots >= BLANK_BOOTS_ALLOWED {
+        return give_up(task, state, wanted, NOT_UP);
+    }
+    state.note = BLANK_BOOT.to_owned();
+    Ok(())
+}
+
 fn apply(task: &mut Task, state: &mut DisplayState, occasion: Occasion) -> Result<()> {
     let wanted = Wanted::of(task);
     let Wanted { width, height, hz, .. } = wanted;
     task.step(&format!("Setting the display to {width}x{height} at {hz} Hz"));
     let expected = state.driver == Driver::Installed;
     let Some(screen) = tell_windows(task, &wanted, expected)? else {
-        write_log(task.context, "display: Windows did not say what its screen is")?;
-        state.running = None;
-        return Ok(());
+        return no_word_from_windows(task, state, &wanted, occasion);
     };
     if !screen.on_driver && !expected {
         return settle_on_basic(task, state, &wanted);
     }
-    let found = if screen.on_driver { wait_for_ring(task, &wanted) } else { None };
+    let found = if screen.on_driver { wait_for_frames(task, |ring| wanted.matches(ring)) } else { None };
     let Some(found) = found else { return no_picture(task, state, &wanted, screen, occasion) };
     write_log(task.context, &format!("display: frames are {found:?}"))?;
     state.running = Some(screen);
-    state.shown_frames = true;
-    state.blank_boots = 0;
-    state.note = wanted.shortfall(task, screen);
+    credit_frames(state);
+    state.note = if state.restart_owed { RESTART_OWED.to_owned() } else { wanted.shortfall(task, screen) };
     Ok(())
 }
 
@@ -345,6 +390,7 @@ pub(super) fn set_up_display(task: &mut Task) {
     keep_going(task, |task| {
         let mut state = read_state(task.context, &task.machine);
         state.running = None;
+        state.restart_owed = false;
         save(task, &state)?;
         make_sure_of_driver(task, &mut state, false)?;
         save(task, &state)?;
