@@ -20,6 +20,7 @@ SOURCE_SHA256=""
 
 REPO_URL=https://github.com/xnixy/guesthouse
 RELEASE_URL=$REPO_URL/releases/download
+LATEST_SCRIPT_URL=https://raw.githubusercontent.com/xnixy/guesthouse/main/install.sh
 
 APP_ID=net.gpupv.Guesthouse
 ARCH=x86_64
@@ -29,9 +30,13 @@ FIRMWARE_DESCRIPTORS=/usr/share/qemu/firmware
 # Room for the download, the unpacked files and the version being replaced.
 ROOM_NEEDED_MIB=1024
 CURL_SECONDS=20
+# What --check-update exits with when there's something newer, so the app can tell it from a failure.
+UPDATE_AVAILABLE_EXIT=10
 TAB=$(printf '\t')
 
 DRY_RUN=no
+UPDATE=no
+CHECK_UPDATE=no
 
 STAGING=""
 CREATED_DIRS=""
@@ -64,6 +69,8 @@ Usage: install.sh [OPTION]
 With nothing installed this installs the release it names, and with an older release installed it
 updates to that one.
 
+  --update        Bring an install to the latest release, whichever copy of this script you run
+  --check-update  Say whether a newer release exists, and change nothing
   --dry-run       Check everything, download and verify, show the plan, and stop
   --help          Show this
 EOF
@@ -73,6 +80,8 @@ parse_arguments() {
     for argument in "$@"; do
         case $argument in
             --dry-run) DRY_RUN=yes ;;
+            --update) UPDATE=yes ;;
+            --check-update) CHECK_UPDATE=yes ;;
             --help)
                 usage
                 exit 0
@@ -221,6 +230,38 @@ require_tools() {
     done
 }
 
+# The real name of a folder: /home is a link on Silverblue, and /proc only ever shows real names.
+real_folder() {
+    (cd "$1" 2>/dev/null && pwd -P) || printf '%s' "$1"
+}
+
+# Processes of this install, and any QEMU with one of its sockets, as a VM may run on the system's QEMU.
+list_running() {
+    real_root=$(real_folder "$LIB_ROOT")
+    for folder in /proc/[0-9]*; do
+        exe=$(readlink "$folder/exe" 2>/dev/null) || continue
+        case $exe in
+            "$real_root"/*)
+                say "${folder#/proc/} ${exe##*/}"
+                continue
+                ;;
+        esac
+        case ${exe##*/} in
+            qemu-system-*) ;;
+            *) continue ;;
+        esac
+        if tr '\0' '\n' <"$folder/cmdline" 2>/dev/null | grep -qF "$RUN_BASE/"; then
+            say "${folder#/proc/} ${exe##*/}"
+        fi
+    done
+}
+
+refuse_while_running() {
+    running=$(list_running)
+    [ -z "$running" ] || die "Guesthouse is running, so nothing changes yet. Shut its VMs down and close it first:
+$running"
+}
+
 manifest_value() {
     [ -f "$MANIFEST" ] || return 0
     awk -F "$TAB" -v key="$1" '$1 == key { print $3; exit }' "$MANIFEST"
@@ -234,8 +275,50 @@ fetch() {
     curl --proto '=https' --tlsv1.2 -fL --retry 3 --connect-timeout "$CURL_SECONDS" "$@"
 }
 
+is_version() {
+    printf '%s' "$1" | grep -Eq '^[0-9]+\.[0-9]+[0-9A-Za-z.+-]*$'
+}
+
+is_sha256() {
+    printf '%s' "$1" | grep -Eq '^[0-9a-f]{64}$'
+}
+
+# Read as data, and never run: a --check-update must not run what it downloads.
+script_constant() {
+    sed -n "s/^$1=\"\(.*\)\"\$/\1/p" | head -n 1
+}
+
+# The script on main names the latest release, as a release sets it last of all. That also means an old
+# copy of this file finds the right version and its hash without asking anything else.
+read_latest_release() {
+    text=$(fetch -s --max-time "$CURL_SECONDS" "$LATEST_SCRIPT_URL") || return 1
+    RELEASE_VERSION=$(printf '%s\n' "$text" | script_constant RELEASE_VERSION)
+    PAYLOAD_SHA256=$(printf '%s\n' "$text" | script_constant PAYLOAD_SHA256)
+    SOURCE_SHA256=$(printf '%s\n' "$text" | script_constant SOURCE_SHA256)
+    is_version "$RELEASE_VERSION" && is_sha256 "$PAYLOAD_SHA256" && is_sha256 "$SOURCE_SHA256"
+}
+
 newer_than() {
     [ "$1" != "$2" ] && [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -n 1)" = "$1" ]
+}
+
+# One line for a program to read, and an exit code. Nothing here touches the install.
+check_for_update() {
+    installed=$(manifest_value version)
+    if [ -z "$installed" ]; then
+        say "not-installed"
+        exit 1
+    fi
+    if ! read_latest_release 2>/dev/null; then
+        say "unknown $installed"
+        exit 1
+    fi
+    if newer_than "$RELEASE_VERSION" "$installed"; then
+        say "update-available $installed $RELEASE_VERSION"
+        exit "$UPDATE_AVAILABLE_EXIT"
+    fi
+    say "up-to-date $installed"
+    exit 0
 }
 
 ensure_dir() {
@@ -505,10 +588,35 @@ refuse_strangers() {
     done
 }
 
+# How the new version differs from the old, counted from the manifest and the download.
+describe_changes() {
+    installed=$1
+    old_prefix=$LIB_ROOT/$installed/
+    (cd "$TREE" && find . -type f -exec sha256sum {} +) | sed 's/^\([0-9a-f]*\)  \.\//\1 /' >"$STAGING/new-files"
+    awk -F "$TAB" -v prefix="$old_prefix" '$1 == "file" && index($3, prefix) == 1 {
+        print $2, substr($3, length(prefix) + 1)
+    }' "$MANIFEST" >"$STAGING/old-files"
+    awk 'NR == FNR { old[$2] = $1; next }
+        { if (!($2 in old)) added++; else if (old[$2] != $1) changed++; seen[$2] = 1 }
+        END {
+            for (name in old) if (!(name in seen)) removed++
+            printf "%d changed, %d new, %d gone", changed, added, removed
+        }' "$STAGING/old-files" "$STAGING/new-files"
+}
+
 print_plan() {
     installed=$(manifest_value version)
     say ""
-    say "The plan: install Guesthouse $RELEASE_VERSION."
+    if [ -z "$installed" ]; then
+        say "The plan: install Guesthouse $RELEASE_VERSION."
+    elif [ "$installed" = "$RELEASE_VERSION" ]; then
+        say "The plan: put Guesthouse $RELEASE_VERSION in again."
+    else
+        say "The plan: update Guesthouse from $installed to $RELEASE_VERSION."
+        say "  Files: $(describe_changes "$installed")"
+        say "  What's new: $REPO_URL/releases/tag/v$RELEASE_VERSION"
+        say "  The old version stays until the new one is in place. Your machines, disks and settings stay as they are."
+    fi
     say "  Program: $LIB_ROOT/$RELEASE_VERSION, reached through $CURRENT_LINK"
     say "  Launcher: $LAUNCHER"
     say "  Icons: $ICON_FOLDER/hicolor"
@@ -795,6 +903,12 @@ install_files() {
     KEEP_CREATED_DIRS=yes
 }
 
+# It can only fail to tidy up here, and then the new version still works and the old one is still listed.
+remove_old_versions() {
+    sh "$CURRENT_LINK/uninstall.sh" --old-versions ||
+        warn "the old version couldn't be removed. It's harmless, and uninstall.sh knows about it."
+}
+
 say_done() {
     say ""
     say "Guesthouse $RELEASE_VERSION is installed. It's in your apps, or run it with:"
@@ -807,12 +921,16 @@ say_done() {
 # Which release this run is about, and whether there's anything to do.
 choose_release() {
     installed=$(manifest_value version)
+    if [ "$UPDATE" = yes ]; then
+        [ -n "$installed" ] || die "there's nothing to update. Run this without --update to install."
+        read_latest_release || die "couldn't find out the latest release from $LATEST_SCRIPT_URL"
+    fi
     [ -n "$RELEASE_VERSION" ] || die "there's no release yet, so there's nothing to install."
     if [ -n "$installed" ] && newer_than "$installed" "$RELEASE_VERSION"; then
         die "you have $installed, which is newer than $RELEASE_VERSION. I won't go backwards."
     fi
     # A plain install of this version goes on, as the GPU may be able to run now.
-    if [ "$installed" = "$RELEASE_VERSION" ] && [ "$(manifest_value mode)" = gpu ]; then
+    if [ "$installed" = "$RELEASE_VERSION" ] && { [ "$UPDATE" = yes ] || [ "$(manifest_value mode)" = gpu ]; }; then
         say "Guesthouse $installed is the latest release."
         exit 0
     fi
@@ -833,9 +951,13 @@ main() {
     find_family
     find_immutable
     refuse_unsupported
+    if [ "$CHECK_UPDATE" = yes ]; then
+        check_for_update
+    fi
     report_host
     require_tools
     choose_release
+    [ -z "$(manifest_value version)" ] || refuse_while_running
 
     trap on_exit EXIT
     trap 'exit 129' HUP
@@ -865,6 +987,7 @@ main() {
     run_root_work
     check_after_root
     install_files
+    remove_old_versions
     say_done
 }
 
