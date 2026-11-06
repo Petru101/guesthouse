@@ -12,6 +12,7 @@ pub mod address;
 pub mod allocation;
 mod command;
 mod header;
+pub mod indirect;
 pub mod notice;
 pub mod queue;
 pub mod registry;
