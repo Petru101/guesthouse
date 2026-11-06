@@ -15,6 +15,7 @@ mod pending;
 mod session;
 mod sync_table;
 mod tables;
+mod timing;
 
 pub use config::{Config, MemoryLimits, video_budget};
 pub use fences::{FENCE_AREA, FENCE_PAGE};
@@ -22,3 +23,4 @@ pub use gpu_addresses::{ALLOCATION_ALIGN, GPU_RANGES, GpuAddresses, LARGE_ALIGN}
 pub use guest_ranges::{GUEST_RANGE_GRAIN, GuestRanges};
 pub use handles::HandleCounter;
 pub use session::Session;
+pub use timing::{Stage, Timings};
