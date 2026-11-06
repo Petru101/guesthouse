@@ -4,7 +4,7 @@ This is the indirect display driver for Windows guests. It gives Windows a real 
 
 It's a fork of [zako-vdd](https://github.com/qiin2333/zako-vdd), by qiin2333 and its other authors, at v0.18.2, commit abadb3a. Nearly all of it is their work, and the original copyright is in [LICENSE](LICENSE). Their README is [README-upstream.md](README-upstream.md). I gave the driver its own name so that nobody mistakes this for their driver or blames them for mine, and left their folder layout alone so that their fixes stay easy to take.
 
-This folder is under the MIT licence, in [LICENSE](LICENSE), and it stays that way, unlike the rest of this repo. Building it uses Microsoft's kit, and I don't want a question over those terms and the GPL.
+This folder is under the MIT licence, in [LICENSE](LICENSE), and it stays that way, unlike the rest of this repo. Building it uses Microsoft's kit, and I don't want a question over those terms and the GPL. The driver started from Microsoft's [indirect display sample](https://github.com/microsoft/Windows-driver-samples/tree/main/video/IndirectDisplay), so what's left of that stays under the Microsoft Public License, in [LICENSE-MS-PL](LICENSE-MS-PL).
 
 To build and install it, see [BUILDING.md](BUILDING.md).
 
