@@ -26,6 +26,8 @@ pub struct Context {
     pub kvm: PathBuf,
     pub driver_version_file: PathBuf,
     pub meminfo: PathBuf,
+    /// Stands in for what this PC can give a GPU machine, which depends on everything else running.
+    pub ram_limit: Option<u64>,
     pub bridge: BridgeHost,
     pub monitor: Arc<dyn Monitor>,
     pub agent: Arc<dyn GuestAgent>,
@@ -48,6 +50,7 @@ impl Context {
             kvm: "/dev/kvm".into(),
             driver_version_file: "/sys/module/nvidia/version".into(),
             meminfo: "/proc/meminfo".into(),
+            ram_limit: None,
             bridge: BridgeHost::default(),
             monitor: Arc::new(QmpMonitor),
             agent: Arc::new(TcpAgent),

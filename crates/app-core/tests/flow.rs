@@ -178,6 +178,7 @@ fn copy_program(from: &Path, to: PathBuf) {
 const MEMINFO_VARIABLE: &str = "FLOW_MEMINFO";
 /// Enough for the test's machine however busy the PC is.
 const PLENTY_OF_MEMORY: &str = "MemAvailable: 67108864 kB\n";
+const PLENTY_OF_GIB: u64 = 64;
 
 fn outer() {
     let this = env::current_exe().unwrap();
@@ -215,6 +216,7 @@ fn task_with_room(arguments: &[String]) {
     let [action, machine, rest @ ..] = arguments else { panic!("a task needs an action and a machine") };
     let mut context = Context::from_process().unwrap();
     context.meminfo = env::var_os(MEMINFO_VARIABLE).unwrap().into();
+    context.ram_limit = Some(PLENTY_OF_GIB);
     run_task(&context, &LocalHost { context: &context }, action, machine, rest);
 }
 
