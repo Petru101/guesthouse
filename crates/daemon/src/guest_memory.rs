@@ -153,10 +153,9 @@ impl GuestMemory for SharedMemory {
         let view = PagesView { host_address: base as u64, size };
         let mut index = 0;
         while index < pages.len() {
-            let run = 1 + pages[index + 1..]
-                .iter()
-                .zip(pages[index]..)
-                .take_while(|&(&next, previous)| next == previous + 1)
+            let run = 1 + pages[index..]
+                .windows(2)
+                .take_while(|pair| pair[0].checked_add(1) == Some(pair[1]))
                 .count();
             let result = map_run(base, index, run, fd, pages[index]);
             if let Err(error) = result {
@@ -248,7 +247,8 @@ impl GuestMemory for LazySharedMemory {
 
 /// Maps `run` consecutive guest pages over part of a reservation.
 fn map_run(base: *mut libc::c_void, index: usize, run: usize, fd: i32, page: u64) -> io::Result<()> {
-    let offset = ram_offset(page * PAGE_SIZE)
+    let offset = page.checked_mul(PAGE_SIZE).and_then(ram_offset);
+    let offset = offset
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, format!("page {page:#x} is not RAM")))?;
     let at = base.wrapping_byte_add(index * PAGE_SIZE as usize);
     let protection = libc::PROT_READ | libc::PROT_WRITE;
@@ -374,6 +374,7 @@ mod tests {
         let ram = temporary_file("hole-ram", &[0; 4096]);
         let mut memory = SharedMemory::open(&window, ram.clone()).unwrap();
         assert!(memory.map_pages(&[RAM_BELOW_HOLE / PAGE_SIZE]).is_err());
+        assert!(memory.map_pages(&[u64::MAX - 1, u64::MAX]).is_err());
         fs::remove_file(window).unwrap();
         fs::remove_file(ram).unwrap();
     }

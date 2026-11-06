@@ -2,7 +2,7 @@
 
 use super::{Handled, Session, answer_status};
 use crate::deferred::{DeferredAction, FreedAllocation};
-use crate::gpu_addresses::GPU_RANGES;
+use crate::gpu_addresses::ADDRESSES_END;
 use crate::tables::Allocation;
 use guesthouse_backend::{AllocationShape, Backend, GuestMemory, MapRequest, SurfaceShape, UnmapRequest};
 use guesthouse_messages::Status;
@@ -20,9 +20,6 @@ const FORMAT_32_BIT: u32 = 21;
 const STANDARD_GRAIN: u64 = 64 << 10;
 /// The colour word of a standard surface, which is never a vendor's special case.
 const STANDARD_COLOUR: u32 = 0;
-
-/// The most video memory one allocation can have, as a larger one could never get GPU addresses.
-const LARGEST_VIDEO_ALLOCATION: u64 = GPU_RANGES[1].end;
 
 fn standard_shape(record: &StandardRecord) -> AllocationShape {
     AllocationShape {
@@ -78,7 +75,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             return self.over_guest_memory(wanted).then_some(Status::NO_MEMORY);
         }
         let wanted = shapes.iter().map(|shape| shape.size).fold(0, u64::saturating_add);
-        let too_large = shapes.iter().any(|shape| shape.size > LARGEST_VIDEO_ALLOCATION);
+        let too_large = shapes.iter().any(|shape| shape.size > ADDRESSES_END);
         let over_cap = self.config.limits.video_cap.is_some_and(|cap| self.over_video_cap(cap, wanted));
         (too_large || over_cap).then_some(Status::NO_VIDEO_MEMORY)
     }

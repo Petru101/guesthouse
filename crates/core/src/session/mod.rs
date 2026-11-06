@@ -451,7 +451,7 @@ impl<M: GuestMemory> HostServices for Services<'_, M> {
         let (base, mapping) = self.shared_mapping(address)?;
         let offset_in_mapping = address - mapping.address;
         Some(SharedSpan {
-            guest_address: base + mapping.first + offset_in_mapping,
+            guest_address: base.checked_add(mapping.first)?.checked_add(offset_in_mapping)?,
             offset_in_mapping,
             mapping_length: mapping.length,
         })

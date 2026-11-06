@@ -2,7 +2,7 @@
 
 use super::{Handled, Session, answer_status};
 use crate::deferred::{DeferredAction, FreedAllocation};
-use crate::gpu_addresses::{ALLOCATION_ALIGN, AddressUse, GpuAddresses, LARGE_ALIGN};
+use crate::gpu_addresses::{ADDRESSES_END, ALLOCATION_ALIGN, AddressUse, GpuAddresses, LARGE_ALIGN};
 use crate::pending::Pending;
 use crate::tables::{Mapping, ReservedRange};
 use guesthouse_backend::{Backend, BackendError, GuestMemory, MapRequest, MemoryId, SpaceId, UnmapRequest};
@@ -10,7 +10,7 @@ use guesthouse_messages::address::{
     MapRequest as GuestMap, PAGE_SIZE, UpdateOperation, UpdateRequest, freed_address, reserve_size,
     two_values_and_status,
 };
-use guesthouse_messages::wire::{Malformed, align_up, put_u64};
+use guesthouse_messages::wire::{Malformed, align_up, checked_align_up, put_u64};
 use guesthouse_messages::{MessageHeader, Status};
 
 /// From this size an allocation can use 2 MiB pages.
@@ -18,6 +18,20 @@ const LARGE_PAGES_FROM: u64 = 2 << 20;
 
 fn map_answer(address: u64, status: Status, out: &mut Vec<u8>) {
     two_values_and_status(address, 0, status, out);
+}
+
+/// Where a mapping starts in its allocation, how long it is, and where it ends, in bytes. `None` if
+/// it couldn't fit in any address space, which keeps later sums on these well inside 64 bits.
+fn mapped_span(request: &GuestMap, allocation_size: u64) -> Option<(u64, u64, u64)> {
+    let first = request.first_page.checked_mul(PAGE_SIZE)?;
+    let length = if request.pages != 0 { request.pages.checked_mul(PAGE_SIZE)? } else { allocation_size };
+    let end = first.checked_add(length).filter(|&end| end <= ADDRESSES_END)?;
+    Some((first, length, end))
+}
+
+/// The end of a range from an address update.
+fn range_end(address: u64, size: u64) -> Result<u64, BackendError> {
+    address.checked_add(size).ok_or(RANGE_TOO_LONG)
 }
 
 impl<B: Backend, M: GuestMemory> Session<B, M> {
@@ -34,15 +48,17 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         };
         let space = self.space_for(MessageHeader::process_of(message)?)?;
         let allocation = &self.allocations[&handle];
-        let first = request.first_page * PAGE_SIZE;
-        let length = if request.pages != 0 { request.pages * PAGE_SIZE } else { allocation.size };
-        let needed = first + length;
+        let Some((first, length, needed)) = mapped_span(&request, allocation.size) else {
+            map_answer(0, Status::INVALID_PARAMETER, out);
+            return Ok(());
+        };
         let mut memory = memory;
         if needed > allocation.size && allocation.guest_address.is_none() && allocation.mappings.is_empty() {
             // A vendor's size can be too small, and nothing is stored here yet.
             self.backend.release_memory(memory);
-            let (grown, size) = self.backend.allocate_video_memory(needed)?;
             let allocation = self.allocations.get_mut(&handle).expect("read above");
+            allocation.memory = None;
+            let (grown, size) = self.backend.allocate_video_memory(needed)?;
             allocation.memory = Some(grown);
             allocation.size = size;
             memory = grown;
@@ -95,7 +111,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
     }
 
     pub(super) fn reserve_gpu_addresses(&mut self, message: &[u8], out: &mut Vec<u8>) -> Handled {
-        let size = align_up(reserve_size(message)?, ALLOCATION_ALIGN);
+        let size = checked_align_up(reserve_size(message)?, ALLOCATION_ALIGN).ok_or(RANGE_TOO_LONG)?;
         let address = self.gpu_addresses.take(size, ALLOCATION_ALIGN, AddressUse::Reserved)?;
         let space = self.space_for(MessageHeader::process_of(message)?)?;
         self.reserved_addresses.push(ReservedRange { address, size, space });
@@ -191,7 +207,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
 
     /// Unmaps a range. Only whole mappings can be removed, so any part outside is mapped again.
     fn unmap_gpu_addresses(&mut self, address: u64, size: u64, space: SpaceId) -> Result<(), BackendError> {
-        let end = address + size;
+        let end = range_end(address, size)?;
         while let Some((handle, found)) = self.overlapping(address, size, space) {
             self.log_unmap_in_flight("an address change", found.address, found.length);
             let allocation = self.allocations.get_mut(&handle).expect("just found");
@@ -208,7 +224,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             }
             let found_end = found.address + found.length;
             if end < found_end {
-                self.map_piece(end, found_end - end, handle, found.first + end - found.address, space)?;
+                self.map_piece(end, found_end - end, handle, found.first + (end - found.address), space)?;
             }
         }
         Ok(())
@@ -238,13 +254,55 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         })
     }
 
+    /// The first mapping that starts in a range, for walking past the gaps in it.
+    fn next_mapping_start(&self, address: u64, end: u64, space: SpaceId) -> Option<u64> {
+        let mappings = self.allocations.values().flat_map(|allocation| &allocation.mappings);
+        let in_space = mappings.filter(|mapping| mapping.space == space);
+        in_space.map(|mapping| mapping.address).filter(|start| (address..end).contains(start)).min()
+    }
+
+    /// Maps at `destination` what's mapped at `source`, leaving the gaps as they are.
+    fn copy_mappings(
+        &mut self,
+        source: u64,
+        size: u64,
+        destination: u64,
+        space: SpaceId,
+    ) -> Result<(), BackendError> {
+        let source_end = range_end(source, size)?;
+        let destination_end = range_end(destination, size)?;
+        if source < destination_end && destination < source_end {
+            // Each piece would be something more to copy, and clearing the way first loses the source.
+            return Err(OVERLAPPING_COPY);
+        }
+        self.unmap_gpu_addresses(destination, size, space)?;
+        let mut done = 0;
+        while done < size {
+            let Some((handle, found)) = self.mapping_at(source + done, space) else {
+                // Whole pages at a time, as the pages of a gap can't hold a piece of anything.
+                let Some(next) = self.next_mapping_start(source + done, source_end, space) else {
+                    return Ok(());
+                };
+                done = checked_align_up(next - source, PAGE_SIZE).ok_or(RANGE_TOO_LONG)?;
+                continue;
+            };
+            let piece = (size - done).min(found.address + found.length - source - done);
+            let offset = found.first + (source + done - found.address);
+            self.map_piece(destination + done, piece, handle, offset, space)?;
+            done += piece;
+        }
+        Ok(())
+    }
+
     fn apply_update(&mut self, operation: UpdateOperation, space: SpaceId) -> Result<(), BackendError> {
         match operation {
             UpdateOperation::Map { address, size, allocation, offset } => {
+                let end = range_end(address, size)?;
+                range_end(offset, size)?;
                 if let Some((handle, current)) = self.mapping_at(address, space)
                     && handle == allocation
-                    && current.first + address - current.address == offset
-                    && address + size <= current.address + current.length
+                    && current.first + (address - current.address) == offset
+                    && end <= current.address + current.length
                 {
                     // Already there. Only page attributes could differ, and those stay at the default.
                     return Ok(());
@@ -254,19 +312,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             }
             UpdateOperation::Unmap { address, size } => self.unmap_gpu_addresses(address, size, space),
             UpdateOperation::Copy { source, size, destination } => {
-                self.unmap_gpu_addresses(destination, size, space)?;
-                let mut done = 0;
-                while done < size {
-                    let Some((handle, found)) = self.mapping_at(source + done, space) else {
-                        done += PAGE_SIZE;
-                        continue;
-                    };
-                    let piece = (size - done).min(found.address + found.length - source - done);
-                    let offset = found.first + source + done - found.address;
-                    self.map_piece(destination + done, piece, handle, offset, space)?;
-                    done += piece;
-                }
-                Ok(())
+                self.copy_mappings(source, size, destination, space)
             }
             UpdateOperation::Unknown(kind) => {
                 log::warn!("unknown address update {kind}");
@@ -288,7 +334,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             log::warn!("a waiting address update failed: {failure}");
             return;
         }
-        self.write_fence(fence, value + 1);
+        self.write_fence(fence, value.saturating_add(1));
     }
 
     /// Updates on a fence run in turn, each raising it for the next. The guest's driver has the queue
@@ -302,7 +348,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             if !request.is_complete() {
                 return Err(Malformed.into());
             }
-            self.write_fence(fence, value + 1);
+            self.write_fence(fence, value.saturating_add(1));
         } else {
             let operations = request.raw_operations().to_vec();
             self.pending.push(Pending::Update { fence, value, space, operations });
@@ -316,7 +362,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         let space = self.own_space()?;
         let allocation = self.allocations.get(&handle).ok_or(UNKNOWN_ALLOCATION)?;
         if let Some(mapping) = allocation.mappings.iter().find(|mapping| mapping.space == space) {
-            return Ok(mapping.address - mapping.first);
+            return mapping.address.checked_sub(mapping.first).ok_or(RANGE_TOO_LONG);
         }
         let (size, memory) = (allocation.size, allocation.memory);
         let whole = align_up(size, ALLOCATION_ALIGN);
@@ -338,3 +384,5 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
 }
 
 const UNKNOWN_ALLOCATION: BackendError = BackendError(std::borrow::Cow::Borrowed("no such allocation"));
+const OVERLAPPING_COPY: BackendError = BackendError(std::borrow::Cow::Borrowed("a copy over its own source"));
+const RANGE_TOO_LONG: BackendError = BackendError(std::borrow::Cow::Borrowed("a range too long for 64 bits"));

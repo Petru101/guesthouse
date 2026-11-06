@@ -1,6 +1,6 @@
 //! Handing out stretches of the shared window.
 
-use guesthouse_messages::wire::align_up;
+use guesthouse_messages::wire::{align_up, checked_align_up};
 
 /// Ranges are made and joined in these units.
 pub const GUEST_RANGE_GRAIN: u64 = 64 << 10;
@@ -21,7 +21,7 @@ impl GuestRanges {
     /// Finds room for `size` bytes. `fresh_start` is where never-used space starts and `limit`
     /// where it ends. The second value says the range held someone else's data before.
     pub fn take(&mut self, size: u64, fresh_start: u64, limit: u64) -> Option<(u64, bool)> {
-        let size = align_up(size, GUEST_RANGE_GRAIN);
+        let size = checked_align_up(size, GUEST_RANGE_GRAIN)?;
         if let Some(index) = self.free.iter().position(|&(_, length)| length >= size) {
             let (start, length) = self.free[index];
             if length == size {
@@ -31,10 +31,8 @@ impl GuestRanges {
             }
             return Some((start, true));
         }
-        let address = fresh_start + self.used;
-        if address + size > limit {
-            return None;
-        }
+        let address = fresh_start.checked_add(self.used)?;
+        address.checked_add(size).filter(|&end| end <= limit)?;
         self.used += size;
         Some((address, false))
     }
@@ -109,5 +107,10 @@ mod tests {
         assert_eq!(ranges.take(LIMIT, START, LIMIT), None);
         assert_eq!(ranges.take(LIMIT - START, START, LIMIT), Some((START, false)));
         assert_eq!(ranges.take(1, START, LIMIT), None);
+    }
+
+    #[test]
+    fn a_size_too_large_to_round_up_is_no_room_at_all() {
+        assert_eq!(GuestRanges::new().take(u64::MAX, START, LIMIT), None);
     }
 }

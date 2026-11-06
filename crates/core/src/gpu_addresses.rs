@@ -11,6 +11,9 @@ pub const GPU_RANGES: [GpuRange; 2] = [
     GpuRange { start: 0x1_4000_0000, end: 0x80_0000_0000 },
 ];
 
+/// Past the last address any mapping can have, which also makes it more than any size can be.
+pub const ADDRESSES_END: u64 = GPU_RANGES[1].end;
+
 /// The alignment of ordinary mappings.
 pub const ALLOCATION_ALIGN: u64 = 64 << 10;
 
@@ -55,8 +58,8 @@ impl GpuAddresses {
         }
         for range in GPU_RANGES {
             let base = align_up(self.next.max(range.start), align);
-            if base + size <= range.end {
-                self.next = base + size;
+            if let Some(end) = base.checked_add(size).filter(|&end| end <= range.end) {
+                self.next = end;
                 return Ok(base);
             }
         }
@@ -114,6 +117,7 @@ mod tests {
     #[test]
     fn running_out_is_an_error() {
         assert!(GpuAddresses::new().take(1 << 50, ALLOCATION_ALIGN, HOST).is_err());
+        assert!(GpuAddresses::new().take(u64::MAX, ALLOCATION_ALIGN, HOST).is_err());
     }
 
     #[test]
