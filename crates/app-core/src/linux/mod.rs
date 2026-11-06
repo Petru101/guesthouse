@@ -19,7 +19,7 @@ pub fn sensor_daemon(context: &Context) -> PathBuf {
     context.paths.qemu.with_file_name(SENSOR_DAEMON)
 }
 
-/// The guests' sources, inside the program folder.
+/// The guests' sources: the program folder's, or else the repo's in a build of it.
 pub fn guest_sources(context: &Context) -> PathBuf {
-    context.paths.helper(layout::SOURCES_FOLDER)
+    context.paths.linux_sources()
 }

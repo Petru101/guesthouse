@@ -3,6 +3,8 @@
 
 /// The sources' own folder, inside the program folder.
 pub const SOURCES_FOLDER: &str = "linux";
+/// A file that tells the repo's folder from any other folder of that name.
+pub const SOURCES_MARK: &str = "allow.txt";
 /// What the guest's first boot runs.
 pub const GUEST_SETUP: &str = "setup/guest";
 /// What the unattended install reads.

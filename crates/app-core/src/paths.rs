@@ -4,6 +4,7 @@
 //! disk. A VM's sockets go in the runtime folder, the log in the state folder, and QEMU and the
 //! guest's files in the program folder.
 
+use crate::linux::layout::{SOURCES_FOLDER, SOURCES_MARK};
 use guesthouse_daemon::slot::Slot;
 use std::collections::HashMap;
 use std::env;
@@ -25,7 +26,7 @@ const INSTALLED_PROGRAM: &str = "/usr/libexec/guesthouse";
 const USER_PROGRAM: &str = ".local/lib/guesthouse/current";
 /// What the program folder holds besides the binaries, which tells it from any other folder.
 const PROGRAM_MARK: &str = "guest";
-/// What tells the repo's guest folder from any other folder of that name.
+/// A file that tells the repo's guest folder from any other folder of that name.
 const REPO_GUEST_MARK: &str = "setup.ps1";
 const SHARED_MEMORY: &str = "/dev/shm";
 const QEMU_PROGRAM: &str = "qemu/build/qemu-system-x86_64";
@@ -73,8 +74,10 @@ pub struct Paths {
     pub state: PathBuf,
     /// The folder that holds each slot's run folder, and what the daemon is given as its base.
     pub runtime: PathBuf,
-    /// The files that go into a Windows guest. See [`guest_folder`].
+    /// The files that go into a Windows guest. See [`shipped_folder`].
     guest: PathBuf,
+    /// The sources of a Linux guest. See [`shipped_folder`].
+    linux: PathBuf,
     /// The program folder: QEMU and the guest's files. It isn't in this repo, and the app runs plain
     /// VMs without it.
     pub program: PathBuf,
@@ -135,7 +138,8 @@ impl Paths {
             .map_or_else(|| state.join("runtime"), |folder| folder.join(APP_FOLDER));
         let program = program_folder(variables, running_from);
         Self {
-            guest: guest_folder(&program, running_from),
+            guest: shipped_folder(&program, running_from, PROGRAM_MARK, REPO_GUEST_MARK),
+            linux: shipped_folder(&program, running_from, SOURCES_FOLDER, SOURCES_MARK),
             qemu: variables.folder(QEMU_VARIABLE).unwrap_or_else(|| qemu_program(variables, &program)),
             binaries: running_from.map_or_else(|| program.clone(), Path::to_owned),
             store,
@@ -195,6 +199,11 @@ impl Paths {
         self.guest.clone()
     }
 
+    /// The sources of a Linux guest.
+    pub fn linux_sources(&self) -> PathBuf {
+        self.linux.clone()
+    }
+
     /// Whether the program folder brought the guest's files, rather than a build of the repo. A
     /// program folder comes with the rest of what a GPU needs, and the repo doesn't.
     pub fn guest_files_in_program(&self) -> bool {
@@ -233,16 +242,16 @@ fn qemu_program(variables: &Variables, program: &Path) -> PathBuf {
     system.unwrap_or(own)
 }
 
-/// The program folder's guest files, or else the repo's if this is a build of it, which is found by
-/// going up from the running program.
-fn guest_folder(program: &Path, running_from: Option<&Path>) -> PathBuf {
-    let own = program.join(PROGRAM_MARK);
+/// The program folder's `name`, or else the repo's if this is a build of it, which is found by going
+/// up from the running program. `mark` is a file that says it's the repo's folder of that name.
+fn shipped_folder(program: &Path, running_from: Option<&Path>, name: &str, mark: &str) -> PathBuf {
+    let own = program.join(name);
     if own.is_dir() {
         return own;
     }
-    let is_repo = |folder: &&Path| folder.join(PROGRAM_MARK).join(REPO_GUEST_MARK).is_file();
+    let is_repo = |folder: &&Path| folder.join(name).join(mark).is_file();
     let repo = running_from.and_then(|start| start.ancestors().find(is_repo));
-    repo.map_or(own, |folder| folder.join(PROGRAM_MARK))
+    repo.map_or(own, |folder| folder.join(name))
 }
 
 fn program_folder(variables: &Variables, running_from: Option<&Path>) -> PathBuf {
@@ -333,6 +342,39 @@ mod tests {
         let paths = Paths::new(&variables, Some(&release));
         assert_eq!(paths.guest_files(), scratch.path("repo/guest"));
         assert!(!paths.guest_files_in_program());
+    }
+
+    #[test]
+    fn a_build_of_the_repo_finds_its_linux_sources() {
+        let scratch = Scratch::new();
+        let release = scratch.path("repo/target/release");
+        fs::create_dir_all(&release).unwrap();
+        scratch.write("repo/linux/allow.txt", "ioctl 1 NAME\n");
+        let paths = Paths::new(&Variables::of(&[("HOME", "/h")]), Some(&release));
+        assert_eq!(paths.linux_sources(), scratch.path("repo/linux"));
+    }
+
+    #[test]
+    fn a_folder_called_linux_that_isnt_ours_doesnt_count() {
+        let scratch = Scratch::new();
+        let release = scratch.path("repo/target/release");
+        fs::create_dir_all(&release).unwrap();
+        fs::create_dir_all(scratch.path("repo/linux")).unwrap();
+        let paths = Paths::new(&Variables::of(&[("HOME", "/h")]), Some(&release));
+        assert!(!paths.linux_sources().starts_with(scratch.path("repo")));
+    }
+
+    #[test]
+    fn a_program_folders_sources_win_over_the_repos() {
+        let scratch = Scratch::new();
+        let release = scratch.path("repo/target/release");
+        fs::create_dir_all(&release).unwrap();
+        scratch.write("repo/linux/allow.txt", "ioctl 1 NAME\n");
+        scratch.write("program/linux/allow.txt", "ioctl 2 NAME\n");
+        let program = scratch.path("program").display().to_string();
+        let variables = Variables::of(&[("HOME", "/h"), ("GUESTHOUSE_PROGRAM", &program)]);
+        let paths = Paths::new(&variables, Some(&release));
+        assert_eq!(paths.linux_sources(), scratch.path("program/linux"));
     }
 
     #[test]

@@ -14,8 +14,7 @@ use std::sync::OnceLock;
 pub const NO_GPU_YET: &str = "GPU machines aren't available yet. The part that talks to the card isn't public, so this build runs plain VMs.";
 
 /// Said when an Ubuntu disc can't install by itself here.
-pub const NO_UBUNTU_INSTALL_YET: &str =
-    "The files that install Ubuntu by itself aren't public yet, so this build treats it like any other disc.";
+pub const NO_UBUNTU_INSTALL_YET: &str = "The files that install Ubuntu by itself aren't here, so this is like any other disc. A build of the repo has them.";
 const UBUNTU_WITH_GPU: &str =
     "Installs by itself. Its GPU is a preview, and if the GPU can't start it boots with a plain screen.";
 const UBUNTU_WITHOUT_GPU: &str =
