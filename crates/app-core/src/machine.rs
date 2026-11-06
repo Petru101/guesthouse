@@ -26,6 +26,7 @@ pub const MIN_RAM_GIB: u32 = 4;
 const MACHINE_FILE: &str = "machine.json";
 const THUMBNAIL_FILE: &str = "thumbnail.png";
 const TOKEN_FILE: &str = "guest.token";
+const PASSWORD_FILE: &str = "windows-password";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -178,6 +179,11 @@ impl Machine {
     /// The token the guest's agent wants. Each machine has its own.
     pub fn token_file(&self, context: &Context) -> PathBuf {
         self.folder(context).join(TOKEN_FILE)
+    }
+
+    /// The Windows account's password, which the app makes for each machine.
+    pub fn password_file(&self, context: &Context) -> PathBuf {
+        self.folder(context).join(PASSWORD_FILE)
     }
 
     pub fn has_gpu(&self) -> bool {

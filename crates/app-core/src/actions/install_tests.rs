@@ -97,10 +97,24 @@ fn the_answer_file_gets_the_hosts_zone() {
     let context = scratch_context(&scratch);
     scratch.write("program/guest/autounattend.xml", "<a><TimeZone>UTC</TimeZone></a>");
     assert_eq!(
-        answer_file(&context, "Asia/Tokyo").unwrap(),
+        answer_file(&context, "Asia/Tokyo", "secret").unwrap(),
         "<a><TimeZone>Tokyo Standard Time</TimeZone></a>"
     );
-    assert_eq!(answer_file(&context, "Mars/Olympus_Mons").unwrap(), "<a><TimeZone>UTC</TimeZone></a>");
+    assert_eq!(
+        answer_file(&context, "Mars/Olympus_Mons", "secret").unwrap(),
+        "<a><TimeZone>UTC</TimeZone></a>"
+    );
+}
+
+#[test]
+fn the_answer_file_gets_the_machines_password() {
+    let scratch = Scratch::new();
+    let context = scratch_context(&scratch);
+    scratch.write("program/guest/autounattend.xml", "<Value>@PASSWORD@</Value><Value>@PASSWORD@</Value>");
+    assert_eq!(
+        answer_file(&context, "Asia/Tokyo", "secret").unwrap(),
+        "<Value>secret</Value><Value>secret</Value>"
+    );
 }
 
 fn with_install_files(scratch: &Scratch, context: &Context) {
