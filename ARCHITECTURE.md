@@ -27,7 +27,7 @@ They're in `crates/`, listed here from the bottom up. Each depends only on crate
 | `backend` | The `Backend` trait: what a GPU vendor must provide. Also the decision on whether to start. |
 | `backend-standin` | A pretend GPU, for tests only. |
 | `core` | `Session`: the tables for one guest, and the answer to each message. Vendor-neutral. |
-| `frame-socket` | The four messages that bring frames to a viewer, on their own so a producer can use them as they are. |
+| `frame-socket` | The messages that bring frames and the cursor to a viewer, on their own so a producer can use them as they are. |
 | `daemon` | Slots, shared memory, sockets, the viewer's socket, and the main loop. |
 | `replay` | Replays a recording and compares every reply. |
 | `app-core` | The desktop app's work with no UI: machines, tasks, setup, a VM's start, and `guesthouse-task` and `guesthouse-share`. |
@@ -151,7 +151,7 @@ The host hands out addresses from `GPU_RANGES`, less anything a backend keeps cl
 
 `Context` holds what the code needs from the PC, and tests swap its parts for stand-ins. A VM's QEMU arguments are built as data in `vm_args`. How a VM and the daemon come up is behind `VmHost`, and everything that knows the daemon's start-up is in `daemon.rs`, so a change there stays there.
 
-Nothing is relative to a project folder. Machines are in the data store, which `~/.config/guesthouse/store` can move, sockets are in the XDG runtime folder, the log is in the state folder, and QEMU and the guest's files are in a program folder found from where it runs. Each machine has its own token for the guest's agent. That folder isn't in this repo, and without it the app runs plain VMs on the system's QEMU.
+Nothing is relative to a project folder. Machines are in the data store, which `~/.config/guesthouse/store` can move, sockets are in the XDG runtime folder, the log is in the state folder, and QEMU is in a program folder found from where it runs. Each machine has its own token for the guest's agent. That folder isn't in this repo. Without it the app uses the system's QEMU, and it finds what goes into a guest in the repo it was built from, if there is one.
 
 Ubuntu guests take a route of their own, in `crates/app-core/src/linux/` and `actions/ubuntu.rs`, with what goes into a guest in `linux/` at the top of the repo. Ubuntu's installer runs with no hands from a seed disc, and the host's driver reaches the guest on a read-only image, made from the files of the driver that's loaded. An unknown driver branch turns the GPU off and the VM still boots, and another point release warns. That GPU is a preview so far, and the app says so.
 

@@ -31,7 +31,7 @@ This repo is where it's all heading. So far it has:
 - the desktop app, in `crates/app`, which runs plain VMs today
 - the Linux GPU route, in `linux/`, with its QEMU device in the patch
 
-There's no Windows GPU backend here yet, so the daemon starts, tells you that, and stops. The app still works: it makes and runs plain VMs, and says why GPU machines aren't there. A plain VM needs QEMU with its D-Bus display, which Fedora calls `qemu-ui-dbus`, plus `qemu-img`, `swtpm`, `genisoimage` and `7z` for installs. A QEMU built as `qemu/README.md` says has no `qemu-img` of its own, so install the system's. There are no recordings in the repo, so the replay tool only runs on a recording you make yourself. The next big step is moving the NVIDIA part over, and after that an installer.
+There's no Windows GPU backend here yet, so the daemon starts, tells you that, and stops. The app still works: it makes and runs plain VMs and Linux GPU guests, and says why Windows GPU machines aren't there. A plain VM needs QEMU with its D-Bus display, which Fedora calls `qemu-ui-dbus`, plus `qemu-img`, `swtpm`, `genisoimage` and `7z` for installs. A QEMU built as `qemu/README.md` says has no `qemu-img` of its own, so install the system's. There are no recordings in the repo, so the replay tool only runs on a recording you make yourself. The next big step is moving the NVIDIA part over, and after that an installer.
 
 ![The app's library, with a Windows machine and an Ubuntu machine](docs/images/app-library.jpg)
 
@@ -110,7 +110,7 @@ There are three pieces:
 
 - **A QEMU patch.** The Windows part is about 500 lines, and gives the guest the devices and the VMBus channels it expects to find on Hyper-V. The Linux device in the same patch is about 4,300 lines more.
 - **A daemon**, which answers everything Windows asks, sets up real GPU channels through the Linux driver, and rings their doorbells when the guest has work.
-- **A desktop app**, Guesthouse, so that none of this needs a terminal. The prototype's app took a Windows ISO, installed Windows unattended and brought up the GPU. The Rust one has that code too, but I haven't proven it yet. From this repo alone it runs plain VMs.
+- **A desktop app**, Guesthouse, so that none of this needs a terminal. The prototype's app took a Windows ISO, installed Windows unattended and brought up the GPU. The Rust one has that code too, but I haven't proven it yet. From this repo alone it runs plain VMs and Linux GPU guests.
 
 Apart from one small workaround, the guest's commands aren't translated. The Windows driver writes them, and the GPU runs them. Finished frames stay in video memory and reach the viewer as dmabufs.
 
@@ -150,7 +150,7 @@ I'd rather you hear this from me:
 - **It has only ever run on my PC, on an RTX 5090.** A clean clone does set itself up and pass its tests now, but that's still my machine and my card.
 - **Drivers are tied together.** Linux and Windows have to come from the same NVIDIA branch, and a new branch means new work.
 - **CUDA, NVENC and NVDEC don't work in Windows yet.** `nvidia-smi` can't open the card there either, and Task Manager doesn't show the GPU. That holds up Sunshine too. The new display driver keeps a frame channel made for Sunshine Foundation, so it should be able to take frames straight from the driver once NVENC works, but I haven't tried it.
-- **No HDR in the app yet.** It's a must for me. The new display driver isn't in the app, but in tests it gets every frame to the host at up to 4K 240 Hz, in SDR and HDR, with none lost. That's a simple test picture reaching a test client, so a real game and a real viewer still have to prove it.
+- **No HDR yet.** It's a must for me. The app's viewer has the code for it, but I haven't checked it on a real HDR screen, and the display driver that sends it isn't in this repo yet. In tests that driver gets every frame to the host at up to 4K 240 Hz, in SDR and HDR, with none lost. That's a simple test picture reaching a test client, so a real game and a real viewer still have to prove it.
 - **The viewer drops frames.** With the old viewer, at 144 Hz about 116 frames a second reached it, and about 90 at 4K. I haven't measured the new one yet. It also costs speed: Superposition scored 16,240 with it open, in one run.
 - **Several GPU VMs at once is early.** Several Windows VMs have been up on one card at the same time during my testing, but I haven't tested them together on purpose, and I haven't tried it through the app. They share the card's speed.
 - **Heavy OpenGL in Windows is slow and looks wrong.** My OpenGL test window is exact, but Superposition in OpenGL scores about a third of its Direct3D 11 score, with a washed-out picture. See #6.
@@ -175,8 +175,10 @@ You need Rust 1.88 or newer, and no GPU or VM.
 ```sh
 cargo test                       # everything but the app
 cargo bench -p guesthouse-core   # the message path, in nanoseconds
-cargo run -p guesthouse-app       # the app, which needs GTK 4.20 and libadwaita 1.8 development files
+cargo run -p guesthouse-app       # the app, which needs GTK 4.16 and libadwaita 1.5 development files
 ```
+
+With GTK 4.14, add `--no-default-features`: that leaves out HDR and nothing else.
 
 [ARCHITECTURE.md](ARCHITECTURE.md) explains how the pieces fit, and [CONTRIBUTING.md](CONTRIBUTING.md) how to work on them.
 

@@ -7,6 +7,7 @@ here=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 kernel=$(uname -r)
 target=$root/lib/modules/$kernel/updates/nvfwd
 build_log=$log_folder/build.log
+first_check_seconds=60
 mkdir -p "$state_folder" "$log_folder" "$driver"
 
 gpu_off() {
@@ -43,6 +44,16 @@ mount_image() {
     mount -t iso9660 -o ro,nodev,nosuid "$disk" "$driver"
 }
 
+# The version only says the host's driver is the one we built for. On a version nobody has tried, the
+# allow list or the device may refuse what it needs, and that only shows when something uses the GPU.
+first_check() {
+    local name=$1 program=$2 output
+    output=$(timeout -k 5 "$first_check_seconds" "$built/$program" 2>&1)
+    if [ $? != 0 ] || ! echo "$output" | grep -q ' 0 wrong'; then
+        gpu_off "$name failed its first check on driver $version (tested: $tested): $(echo "$output" | tail -n 1). The host's calls.log says what the device refused"
+    fi
+}
+
 # Mutter would take the plain card as a second screen and drive both. It is only for a boot with no GPU.
 hide_plain_cards() {
     local card rules=$root/run/udev/rules.d/71-nvfwd-plain-card.rules
@@ -74,6 +85,7 @@ mount_image || gpu_off "the host offered no driver image"
 
 version=$(value_of "$driver/manifest" version)
 image_id=$(value_of "$driver/manifest" id)
+tested=$(value_of "$driver/manifest" tested)
 [ -n "$version" ] && [ -n "$image_id" ] || gpu_off "the driver image has no usable manifest"
 
 built_for="$image_id $kernel"
@@ -91,12 +103,16 @@ host_version=$("$here/driver-version.py" 2>&1) || gpu_off "the host's driver did
 [ "$host_version" = "$version" ] ||
     gpu_off "the image holds driver $version, but the host has $host_version loaded"
 
+"$here/link-driver.sh" link || gpu_off "the driver could not be linked in"
+# Before nvidia-drm: if these fail the plain desktop has to come up, and that module can't unload.
+first_check CUDA cudavec
+first_check Vulkan vkcompute
+
 # What nvidia-drm leans on. nvidia-drm's options are in /etc/modprobe.d/nvfwd.conf.
 modprobe -a drm_kms_helper drm_ttm_helper video drm_display_helper
 modprobe nvidia-drm || gpu_off "nvidia-drm would not load"
 
-"$here/link-driver.sh" link || gpu_off "the driver could not be linked in"
 hide_plain_cards
 probe_connectors
-printf 'gpu=on\nversion=%s\ntested=%s\n' "$version" "$(value_of "$driver/manifest" tested)" > "$state_file"
+printf 'gpu=on\nversion=%s\ntested=%s\n' "$version" "$tested" > "$state_file"
 echo "GPU on: driver $version"

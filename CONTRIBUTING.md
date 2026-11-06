@@ -2,7 +2,7 @@
 
 ## Getting going
 
-You need a recent stable Rust, and nothing else. No GPU and no VM are needed for any of this:
+You need Rust 1.88 or newer, and the app's development files below for `cargo clippy`. No GPU and no VM are needed for any of this:
 
 ```sh
 cargo test
@@ -13,7 +13,7 @@ cargo bench -p guesthouse-core
 
 `linux/README.md` says how to test what goes into a Linux guest, and the device in the QEMU patch.
 
-The desktop app in `crates/app` also needs GTK 4 and libadwaita's development files, so it's left out of those commands. Build it with `cargo build -p guesthouse-app`. That needs GTK 4.16 for HDR. On GTK 4.14 and libadwaita 1.5, as Ubuntu 24.04 has, use `--no-default-features`, and the viewer shows SDR only. `crates/app/page-shots.sh` walks its pages on GTK's Broadway backend and saves a picture of each, with no desktop and no GPU.
+The desktop app in `crates/app` also needs GTK 4 and libadwaita's development files, so `cargo test` leaves it out. Build it with `cargo build -p guesthouse-app`. That needs GTK 4.16 for HDR. On GTK 4.14 and libadwaita 1.5, as Ubuntu 24.04 has, use `--no-default-features`, and the viewer shows SDR only. `crates/app/page-shots.sh` walks its pages on GTK's Broadway backend and saves a picture of each, with no desktop and no GPU.
 
 To try the sockets by hand, `cargo run -p guesthouse-daemon --features stand-in` answers messages with a pretend GPU behind them. It's for poking at, and it won't run a guest.
 

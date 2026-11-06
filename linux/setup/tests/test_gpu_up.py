@@ -39,12 +39,17 @@ class Guest:
         self.set_image(V)
         self.script("build-parts.sh", 'echo built >> "$CALLS"; mkdir -p "$NVFWD_ROOT/lib/modules/' + KERNEL + '/updates/nvfwd"')
         self.script("driver-version.py", f"echo {V}")
+        for program in ("cudavec", "vkcompute"):
+            self.program(program, "echo checked 16 values, 0 wrong")
 
     def fake(self, name, body):
         write(os.path.join(self.bin, name), f'#!/bin/bash\necho "{name} $*" >> "$CALLS"\n{body}\n', True)
 
     def script(self, name, body):
         write(os.path.join(self.scripts, name), f"#!/bin/bash\n{body}\n", True)
+
+    def program(self, name, body):
+        write(os.path.join(self.root, "opt/nv/built", name), f"#!/bin/bash\n{body}\n", True)
 
     def set_image(self, version, image_id=None):
         image_id = image_id or f"{version}-abc"
@@ -130,6 +135,25 @@ class GpuUp(unittest.TestCase):
         self.guest.add_device()
         self.guest.fake("modprobe", "exit 1")
         self.assert_off("would not load")
+
+    def test_a_cuda_that_fails_turns_the_gpu_off_and_says_how(self):
+        self.guest.add_device()
+        self.guest.program("cudavec", "echo 'cuInit(0) = 100'; exit 1")
+        state = self.assert_off("CUDA failed its first check")
+        self.assertIn("cuInit(0) = 100", state["reason"])
+        self.assertIn("calls.log", state["reason"])
+        self.assertEqual(self.guest.called("modprobe nvidia-drm"), 0)
+
+    def test_wrong_values_count_as_a_failure(self):
+        self.guest.add_device()
+        self.guest.program("vkcompute", "echo checked 16 values, 3 wrong")
+        self.assert_off("Vulkan failed its first check")
+        self.assertEqual(self.guest.called("modprobe nvidia-drm"), 0)
+
+    def test_a_check_that_hangs_turns_the_gpu_off(self):
+        self.guest.add_device()
+        self.guest.fake("timeout", "exit 124")
+        self.assert_off("first check")
 
     def test_host_runs_another_driver_than_the_image_holds(self):
         self.guest.add_device()

@@ -3,6 +3,7 @@
 use super::cards::{Support, find_cards};
 use crate::context::Context;
 use crate::host::{GIB, IO_SPACE_GIB, TMPFS_SPARE_GIB, free_gib};
+use crate::iso::any_iso_maker;
 use crate::library::INSTALL_ROOM_GIB;
 use crate::linux::driver_versions::{branch_refusal, untested_warning};
 use crate::machine::MIN_RAM_GIB;
@@ -16,9 +17,17 @@ use std::process::{Command, Stdio};
 const TOOLS: [&str; 5] = ["7z", "genisoimage", "qemu-img", "swtpm", "nvidia-smi"];
 /// What an Ubuntu guest's install takes, beyond what any machine does.
 const UBUNTU_TOOLS: [&str; 6] = ["isoinfo", "genisoimage", "openssl", "ssh-keygen", "setarch", "bwrap"];
-const TOOLS_FIX: &str = "On Fedora: sudo dnf install 7zip genisoimage qemu-img swtpm edk2-ovmf, and nvidia-smi from NVIDIA's driver";
+const ISO_TOOL: &str = "genisoimage";
+const TOOLS_FIX: &str = "On Fedora: sudo dnf install 7zip genisoimage qemu-img swtpm edk2-ovmf. On Debian or \
+                         Ubuntu: sudo apt install 7zip genisoimage qemu-utils swtpm ovmf. On Arch: sudo pacman -S \
+                         7zip cdrtools qemu-img swtpm edk2-ovmf. nvidia-smi comes with NVIDIA's driver.";
+const UBUNTU_TOOLS_FIX: &str = "On Fedora: sudo dnf install genisoimage openssl openssh-clients bubblewrap. On \
+                                Debian or Ubuntu: sudo apt install genisoimage openssl openssh-client bubblewrap. \
+                                On Arch: sudo pacman -S cdrtools openssl openssh bubblewrap.";
 const BUILD_FIX: &str = "qemu/README.md in Guesthouse's source says how to build it.";
-const QEMU_LIBRARIES_FIX: &str = "On Fedora: sudo dnf install pixman libslirp libfdt libusb1 pipewire-libs";
+const QEMU_LIBRARIES_FIX: &str = "On Fedora: sudo dnf install pixman libslirp libfdt libusb1 pipewire-libs. On \
+                                  Debian or Ubuntu: sudo apt install libpixman-1-0 libslirp0 libfdt1 libusb-1.0-0 \
+                                  libpipewire-0.3-0. On Arch: sudo pacman -S pixman libslirp dtc libusb pipewire.";
 const CARD_FIX: &str = "GPU-PV needs an RTX 5090, or another consumer RTX 50-series card.";
 /// The Linux driver this has been run on. The guest's graphics depend on the exact version.
 pub const TESTED_DRIVER: &str = "615.78.08";
@@ -156,7 +165,7 @@ fn check_qemu(context: &Context) -> Check {
 
 fn check_tools(context: &Context, tools: &[&str]) -> Check {
     const TITLE: &str = "Tools";
-    let mut missing: Vec<&str> = tools.iter().copied().filter(|tool| !on_path(tool)).collect();
+    let mut missing: Vec<&str> = tools.iter().copied().filter(|tool| !tool_here(tool)).collect();
     let firmware = &context.paths.firmware;
     if ![&firmware.vars, &firmware.vars_secure, &firmware.code, &firmware.code_secure]
         .iter()
@@ -170,18 +179,18 @@ fn check_tools(context: &Context, tools: &[&str]) -> Check {
     Check::ok(TITLE, format!("{} and the OVMF firmware are here.", tools.join(", ")))
 }
 
+/// Arch has no `genisoimage`, and its `mkisofs` takes the same words.
+fn tool_here(tool: &str) -> bool {
+    if tool == ISO_TOOL { any_iso_maker() } else { on_path(tool) }
+}
+
 /// An Ubuntu guest boots whatever this says, so nothing here is a failure: at worst its GPU stays off.
 fn check_ubuntu(context: &Context, tools: &[&str]) -> Check {
     const TITLE: &str = "Ubuntu guests";
-    let missing: Vec<&str> = tools.iter().copied().filter(|tool| !on_path(tool)).collect();
+    let missing: Vec<&str> = tools.iter().copied().filter(|tool| !tool_here(tool)).collect();
     if !missing.is_empty() {
         let text = format!("Missing: {}.", missing.join(", "));
-        return Check::new(
-            TITLE,
-            CheckState::Warning,
-            text,
-            "On Fedora: sudo dnf install genisoimage openssl openssh-clients",
-        );
+        return Check::new(TITLE, CheckState::Warning, text, UBUNTU_TOOLS_FIX);
     }
     let version = sysfs_text(&context.driver_version_file);
     let refused = if version.is_empty() {
@@ -353,7 +362,7 @@ mod tests {
                 && found.text.contains("libslirp.so.0")
                 && found.fix.contains("dnf install")
         );
-        fs::write(&context.paths.qemu, "#!/bin/sh\necho QEMU\n").unwrap();
+        scratch.program("qemu", "#!/bin/sh\necho QEMU\n");
         assert_eq!(check_qemu(&context).state, CheckState::Ok);
     }
 
