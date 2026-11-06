@@ -138,6 +138,7 @@ pub struct Session<B, M> {
     pub(crate) queues: HashMap<u32, Queue>,
     pub(crate) context_queues: HashMap<u32, Vec<u32>>,
     pub(crate) context_nodes: HashMap<u32, u32>,
+    pub(crate) context_hints: HashMap<u32, u32>,
     pub(crate) gates: HashMap<u32, Gate>,
     pub(crate) queues_made: u32,
     /// Statistics have been refused once, which is worth saying once.
@@ -193,6 +194,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             queues: HashMap::new(),
             context_queues: HashMap::new(),
             context_nodes: HashMap::new(),
+            context_hints: HashMap::new(),
             gates: HashMap::new(),
             queues_made: 0,
             statistics_refused: false,

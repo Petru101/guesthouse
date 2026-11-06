@@ -115,6 +115,9 @@ pub trait Backend: Sized {
     /// engine it would be a fault on a card the host is using.
     fn context_allowed(&mut self, node: u32, client_hint: u32) -> bool;
 
+    /// A last look at a new context's private data, which goes back to the guest. Most need nothing.
+    fn finish_context_data(&mut self, _node: u32, _private: &mut [u8]) {}
+
     /// How much of a queue may be unfinished before the guest's next submission is held back. In the
     /// vendor's own units, the ones [`WorkStart::Started`] counts in. `None` means no limit.
     fn unfinished_work_limit(&self) -> Option<u64> {

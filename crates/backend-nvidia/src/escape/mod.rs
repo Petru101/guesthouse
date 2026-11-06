@@ -38,6 +38,10 @@ const FUNCTION_RUNTIME_GPU_RANGE: u32 = 0x0100_0113;
 const FUNCTION_RM_ALLOC: u32 = 0x0500_002A;
 /// Which node is which engine, for the video runtime.
 const FUNCTION_LIST_NODES: u32 = 0x0100_000F;
+/// Asked before an encoding session opens, and the session is refused unless the answer is yes.
+const FUNCTION_ENCODE_ASK: u32 = 0x0100_0128;
+const ENCODE_ANSWER: usize = 0x30;
+const ENCODE_YES: u8 = 1;
 
 const GPU_LIST_COUNT: usize = 0x34;
 const GPU_LIST_HANDLES: usize = 0x38;
@@ -81,6 +85,11 @@ pub fn answer<R: Rm>(device: &mut Device<R>, facts: EscapeFacts<'_>, data: &mut 
         FUNCTION_CHECK_DISPLAY => {}
         FUNCTION_RUNTIME_GPU_RANGE => gpu_range::answer(data),
         FUNCTION_LIST_NODES => node_list::answer(facts.nodes, data),
+        FUNCTION_ENCODE_ASK => {
+            if let Some(answer) = data.get_mut(ENCODE_ANSWER) {
+                *answer = ENCODE_YES;
+            }
+        }
         FUNCTION_RM_ALLOC => {
             put(data, HEADER_SIZE_FIELD, HEADER_SIZE);
             client_alloc::answer(data);
@@ -147,6 +156,13 @@ pub(super) mod tests {
         answer(&mut device(), NO_FACTS, &mut data).unwrap();
         assert_eq!(get(&data, GPU_LIST_COUNT), Some(1));
         assert_eq!(get(&data, GPU_LIST_HANDLES), Some(0x300));
+    }
+
+    #[test]
+    fn the_encoders_question_gets_a_yes() {
+        let mut data = escape(FUNCTION_ENCODE_ASK, ENCODE_ANSWER + 1);
+        answer(&mut device(), NO_FACTS, &mut data).unwrap();
+        assert_eq!(data[ENCODE_ANSWER], ENCODE_YES);
     }
 
     #[test]

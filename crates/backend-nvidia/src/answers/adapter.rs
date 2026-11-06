@@ -79,7 +79,7 @@ impl AdapterAnswers {
         &self.registry
     }
 
-    /// Only graphics and copy engines have channels here, and a node beyond the list has neither.
+    /// Graphics and copy engines. Video engines have channels too, of their own kind.
     pub fn node_has_channel(&self, node: u32) -> bool {
         let engine = self.engines.get(node as usize);
         engine.is_some_and(|&engine| engine == ENGINE_3D || engine == ENGINE_COPY)

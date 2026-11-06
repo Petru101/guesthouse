@@ -1,9 +1,9 @@
 //! The engine nodes the guest sees, from the list of engines the RM reports.
 //!
 //! Each engine the card has gets a node, and names go by the engine's real index, so a card with only
-//! the fourth JPEG engine says so. Video, JPEG and optical flow engines have no channels here and the
-//! guest doesn't mind which numbers their nodes have, so only engines that have been run get a node.
-//! A card with others shows fewer nodes.
+//! the fourth JPEG engine says so. JPEG and optical flow engines have no channels here and the guest
+//! doesn't mind which numbers their nodes have, so only engines that have been run get a node. A card
+//! with others shows fewer nodes.
 
 // The guest's engine kinds.
 pub const ENGINE_OTHER: u32 = 0;
@@ -65,6 +65,8 @@ pub struct Node {
     pub in_flight: u32,
     /// The RM's copy engine, for nodes that copy.
     pub copy_engine: u32,
+    /// The RM's engine and which of its kind it is, for nodes that decode or encode.
+    pub video: Option<(u32, u32)>,
 }
 
 impl Node {
@@ -76,7 +78,12 @@ impl Node {
             scheduled: false,
             in_flight: DEFAULT_IN_FLIGHT,
             copy_engine: 0,
+            video: None,
         }
+    }
+
+    fn video(kind: u32, engine: u32, rm_engine: u32, instance: usize) -> Self {
+        Self { video: Some((rm_engine, instance as u32)), ..Self::new(kind, engine) }
     }
 
     fn named(kind: u32, name: impl Into<String>) -> Self {
@@ -107,8 +114,8 @@ pub fn node_list(engines: &[u32], graphics_copy: Option<u32>) -> Vec<Node> {
         copy_engine: graphics_copy,
         ..Node::new(NODE_GRAPHICS, ENGINE_3D)
     }];
-    for (_, kind) in known(engines, &RM_DECODE, &NODE_DECODE) {
-        nodes.push(Node::new(kind, ENGINE_VIDEO_DECODE));
+    for (index, kind) in known(engines, &RM_DECODE, &NODE_DECODE) {
+        nodes.push(Node::video(kind, ENGINE_VIDEO_DECODE, RM_DECODE[index], index));
     }
     for (&kind, &engine) in NODE_COPY.iter().zip(&real) {
         let scheduled = NODE_COPY_SCHEDULED.contains(&kind);
@@ -119,8 +126,8 @@ pub fn node_list(engines: &[u32], graphics_copy: Option<u32>) -> Vec<Node> {
     if security {
         nodes.push(Node::named(NODE_SECURITY, SECURITY_NAME));
     }
-    for (_, kind) in known(engines, &RM_ENCODE, &NODE_ENCODE) {
-        nodes.push(Node::new(kind, ENGINE_VIDEO_ENCODE));
+    for (index, kind) in known(engines, &RM_ENCODE, &NODE_ENCODE) {
+        nodes.push(Node::video(kind, ENGINE_VIDEO_ENCODE, RM_ENCODE[index], index));
     }
     for (index, kind) in known(engines, &RM_OPTICAL_FLOW, &NODE_OPTICAL_FLOW) {
         nodes.push(Node::named(kind, format!("OFA_{index}")));
