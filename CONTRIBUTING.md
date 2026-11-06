@@ -56,6 +56,8 @@ Each handler has tests in `core/src/session/tests.rs`, which send whole messages
 
 `core/tests/handler_fuzz.rs` sends random messages and fails on any panic. `FUZZ_ROUNDS=20000000 FUZZ_SEED=7 cargo test --release -p guesthouse-core --test handler_fuzz` runs one for longer.
 
+`tests/install/run.sh` tests `install.sh` and `uninstall.sh` with stand-ins for sudo, curl and the package manager. It needs bubblewrap, as each test runs with everything but its own folder read-only. `tests/install/real-run.sh` does a whole install and uninstall with a real release's files, in a fake HOME, and `tests/install/in-containers.sh` runs one on each distro image you already have.
+
 ## Commits
 
 Small steps, each of which builds and passes its tests. Say what changed and why, in a line a stranger can follow.
