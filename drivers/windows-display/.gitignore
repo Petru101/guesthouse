@@ -1,0 +1,8 @@
+tests/build/
+x64/
+GuesthouseDisplay/x64/
+*.exe
+*.dll
+*.cat
+*.pdb
+GuesthouseDisplay/Guesthouse/Shaders/*.generated.h

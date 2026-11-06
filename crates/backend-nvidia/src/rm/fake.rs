@@ -2,7 +2,7 @@
 //! opens a device.
 
 use super::classes::ENGINE_COPY_0;
-use super::fake_engine::{ChannelArea, FakeEngine, Mapped};
+use super::fake_engine::{ChannelArea, FakeEngine, Mapped, mapping_at};
 use super::{DmaMap, Handle, Rm, RmError, STATUS_NOT_SUPPORTED, STATUS_OK};
 use crate::channel::{
     CHANNEL_PARAM_CONTROL_MEMORY, CHANNEL_PARAM_ENGINE, CHANNEL_PARAM_RING, CHANNEL_PARAM_RING_ENTRIES,
@@ -39,6 +39,10 @@ pub struct FakeRm {
     pub refuse_exports: bool,
     /// What each export handed out, so a test can look at what a viewer would see.
     pub exports: HashMap<Handle, File>,
+    /// What video memory starts with, for a copy out to host pages to find.
+    pub memory_starts: HashMap<Handle, Vec<u8>>,
+    /// How many of the engine's copies have had that done.
+    copies_looked_at: usize,
     pub engine: FakeEngine,
     answers: HashMap<u32, Answer>,
     /// Each range's mappings, address to length, to refuse a map over a map.
@@ -62,6 +66,8 @@ impl FakeRm {
             refuse_class: None,
             refuse_exports: false,
             exports: HashMap::new(),
+            memory_starts: HashMap::new(),
+            copies_looked_at: 0,
             engine: FakeEngine::default(),
             answers: HashMap::new(),
             mappings: BTreeMap::new(),
@@ -91,6 +97,26 @@ impl FakeRm {
             _ => None,
         });
         rung.collect()
+    }
+
+    /// The memory mapped at a GPU address.
+    pub fn memory_at(&self, address: u64) -> Option<Handle> {
+        mapping_at(&self.mapped, address).map(|(_, memory, _)| memory)
+    }
+
+    /// Does what the engine's new copies mean for host pages, which only this can reach.
+    fn copy_starts_to_host_pages(&mut self) {
+        for copy in &self.engine.copies[self.copies_looked_at..] {
+            let source = mapping_at(&self.mapped, copy.source).map(|(_, memory, _)| memory);
+            let target = mapping_at(&self.mapped, copy.target).map(|(_, memory, _)| memory);
+            let start = source.and_then(|memory| self.memory_starts.get(&memory));
+            let page = target.and_then(|memory| self.host_pages.get(&memory));
+            if let (Some(start), Some(&page)) = (start, page) {
+                // SAFETY: a test keeps the page mapped while its copy runs, and a start is smaller.
+                unsafe { std::ptr::copy_nonoverlapping(start.as_ptr(), page as *mut u8, start.len()) };
+            }
+        }
+        self.copies_looked_at = self.engine.copies.len();
     }
 
     /// Runs what every copy channel has been given, as a card that was stuck and has come back.
@@ -243,6 +269,7 @@ impl Rm for FakeRm {
         self.calls.push(Call::Doorbell { token });
         if self.engine.running {
             self.engine.run(token, &self.mapped, &self.exports);
+            self.copy_starts_to_host_pages();
         }
     }
 }

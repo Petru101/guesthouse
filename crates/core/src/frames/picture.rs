@@ -22,7 +22,11 @@ pub struct Picture {
 impl Picture {
     /// The picture for a screen of this shape, if it's a size the ring can hold.
     pub fn of(surface: &SurfaceShape) -> Option<Self> {
-        let (width, height) = (surface.width, surface.height);
+        Self::sized(surface.width, surface.height)
+    }
+
+    /// The picture of this size, if it's one the ring can hold.
+    pub fn sized(width: u32, height: u32) -> Option<Self> {
         if !(1..=MOST_SIDE).contains(&width) || !(1..=MOST_SIDE).contains(&height) {
             return None;
         }

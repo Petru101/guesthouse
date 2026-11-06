@@ -12,6 +12,7 @@ pub mod escape;
 #[cfg(any(test, feature = "fake-rm"))]
 pub mod fake_guest;
 pub mod inf;
+mod peek;
 pub mod private_data;
 pub mod profile;
 pub mod pushbuffer;
@@ -104,6 +105,7 @@ pub struct NvidiaBackend<R> {
     next_space: u64,
     pub(crate) queues: HashMap<u32, LiveQueue>,
     pub(crate) copier: Option<Copier>,
+    pub(crate) peek_page: Option<peek::PeekPage>,
     /// Rings named in queues' private data, by queue.
     pub(crate) guest_rings: HashMap<u32, GuestRing>,
     /// The host's live readings, if it has any.
@@ -185,6 +187,7 @@ impl<R: Rm> NvidiaBackend<R> {
             next_space: 1,
             queues: HashMap::new(),
             copier: None,
+            peek_page: None,
             guest_rings: HashMap::new(),
             sensors: None,
             card_uuid,
@@ -270,6 +273,16 @@ impl<R: Rm + OpenRm> Backend for NvidiaBackend<R> {
         size: u64,
     ) -> Result<(), BackendError> {
         self.move_contents(host, own_space, handle_of(from), handle_of(to), size)
+    }
+
+    fn read_memory_start(
+        &mut self,
+        host: &mut dyn HostServices,
+        own_space: SpaceId,
+        memory: MemoryId,
+        out: &mut [u8],
+    ) -> Result<(), BackendError> {
+        self.peek(host, own_space, handle_of(memory), out)
     }
 
     fn create_address_space(&mut self, ranges: &[GpuRange]) -> Result<SpaceId, BackendError> {

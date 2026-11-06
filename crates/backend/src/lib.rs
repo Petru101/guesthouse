@@ -65,6 +65,19 @@ pub trait Backend: Sized {
         size: u64,
     ) -> Result<(), BackendError>;
 
+    /// Reads the first bytes of memory the GPU may have written, for telling one buffer from
+    /// another. It may wait a moment, like [`Backend::preserve_contents`], and nothing else needing
+    /// the copy engine is running. At most one small page.
+    fn read_memory_start(
+        &mut self,
+        _host: &mut dyn HostServices,
+        _own_space: SpaceId,
+        _memory: MemoryId,
+        _out: &mut [u8],
+    ) -> Result<(), BackendError> {
+        Err(BackendError::new("this backend can't read video memory"))
+    }
+
     /// Makes a GPU address space covering `ranges`.
     fn create_address_space(&mut self, ranges: &[GpuRange]) -> Result<SpaceId, BackendError>;
 

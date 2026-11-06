@@ -83,7 +83,7 @@ pub struct FakeEngine {
 /// What's mapped at each GPU address, as (memory, length).
 pub type Mapped = BTreeMap<u64, (Handle, u64)>;
 
-fn mapping_at(mapped: &Mapped, address: u64) -> Option<(u64, Handle, u64)> {
+pub(super) fn mapping_at(mapped: &Mapped, address: u64) -> Option<(u64, Handle, u64)> {
     let (&start, &(memory, length)) = mapped.range(..=address).next_back()?;
     (address < start + length).then_some((start, memory, length))
 }

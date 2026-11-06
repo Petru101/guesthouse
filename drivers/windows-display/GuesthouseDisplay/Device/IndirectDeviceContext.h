@@ -1,0 +1,98 @@
+#pragma once
+
+#include "..\Driver.h"
+#include "..\Guesthouse\MonitorColour.h"
+#include "..\Rendering\SwapChainProcessor.h"
+
+#include <cstddef>
+#include <map>
+#include <memory>
+#include <mutex>
+#include <set>
+#include <tuple>
+#include <vector>
+
+namespace Microsoft
+{
+	namespace IndirectDisp
+	{
+		class IndirectDeviceContext
+		{
+		public:
+			struct MonitorRecreationResult
+			{
+				std::size_t expected = 0;
+				std::size_t recreated = 0;
+			};
+
+			IndirectDeviceContext(_In_ WDFDEVICE WdfDevice);
+			virtual ~IndirectDeviceContext();
+
+			void InitAdapter();
+			void FinishInit();
+
+			void CreateMonitor(unsigned int index, const GUID *pClientGuid = nullptr, float maxNits = 1000.0f, float minNits = 0.0001f, float maxFALL = 0.0f, float widthCm = 0.0f, float heightCm = 0.0f);
+			bool DestroyMonitor(unsigned int index);
+
+			void AssignSwapChain(IDDCX_MONITOR Monitor, IDDCX_SWAPCHAIN SwapChain, LUID RenderAdapter, HANDLE NewFrameEvent);
+			void UnassignSwapChain(IDDCX_MONITOR Monitor);
+			void CommitModes(const IDARG_IN_COMMITMODES *pInArgs);
+			void CommitModes2(const IDARG_IN_COMMITMODES2 *pInArgs);
+			void UpdateMonitorHdrLuminanceMetadata(IDDCX_MONITOR Monitor, float maxNits, float minNits, float maxFALL);
+			// One for each monitor, made on first use. It outlives the monitor's swap chains.
+			std::shared_ptr<Guesthouse::MonitorColour> ColourOf(IDDCX_MONITOR Monitor);
+			NTSTATUS OpenFrameChannel(const VDD_FRAME_CHANNEL_OPEN_REQUEST& request,
+			                          HANDLE targetProcess,
+			                          VDD_FRAME_CHANNEL_OPEN_RESPONSE& response);
+
+			bool HasActiveSwapChain() const { std::lock_guard<std::recursive_mutex> lock(m_monitorsMutex); return !m_ProcessingThreads.empty(); }
+			bool HasActiveMonitor() const { std::lock_guard<std::recursive_mutex> lock(m_monitorsMutex); return !m_Monitors.empty(); }
+			bool HasMonitor(unsigned int index) const { std::lock_guard<std::recursive_mutex> lock(m_monitorsMutex); return m_Monitors.count(index) > 0; }
+			void UnassignAllSwapChains();
+			void DestroyAllMonitors();
+			MonitorRecreationResult RecreateAllMonitors();
+
+			int RefreshMonitorModes(bool refreshMonitorDescription, bool reuseLiveDescriptions = false);
+
+		protected:
+			struct MonitorCreationParams
+			{
+				bool hasClientGuid = false;
+				GUID clientGuid{};
+				float maxNits = 1000.0f;
+				float minNits = 0.0001f;
+				float maxFALL = 0.0f;
+				float widthCm = 0.0f;
+				float heightCm = 0.0f;
+			};
+
+			bool RecreateMonitor(unsigned int index);
+			bool UpdateTargetModesWithinDescription(unsigned int index, const std::vector<std::tuple<int, int, int, int>> &modes);
+
+			WDFDEVICE m_WdfDevice;
+			IDDCX_ADAPTER m_Adapter;
+			mutable std::recursive_mutex m_monitorsMutex;
+			std::map<unsigned int, IDDCX_MONITOR> m_Monitors;
+			std::map<unsigned int, GUID> m_MonitorGuids;
+			std::map<unsigned int, MonitorCreationParams> m_MonitorCreationParams;
+			// Mode list each live monitor was created with, i.e. the monitor
+			// description Windows parsed on arrival.
+			std::map<unsigned int, std::vector<std::tuple<int, int, int, int>>> m_MonitorDescriptionModes;
+			// A failed recreation must be retried even if SETMODES repeats the
+			// staged list. The old monitor may already have been quiesced.
+			std::set<unsigned int> m_PendingMonitorModeRecreation;
+
+			std::map<IDDCX_MONITOR, DISPLAYCONFIG_VIDEO_SIGNAL_INFO> m_CommittedTargetModes;
+			// Presence in this map means CommitModes2 supplied an authoritative
+			// target color space. The bool is true for HDR10 and false for SDR/WCG.
+			std::map<IDDCX_MONITOR, bool> m_CommittedTargetHdrStates;
+			std::map<IDDCX_MONITOR, std::unique_ptr<SwapChainProcessor>> m_ProcessingThreads;
+			std::map<IDDCX_MONITOR, HANDLE> m_MouseEvents;
+			std::map<IDDCX_MONITOR, std::shared_ptr<Guesthouse::MonitorColour>> m_MonitorColours;
+
+		public:
+			static const DISPLAYCONFIG_VIDEO_SIGNAL_INFO s_KnownMonitorModes[];
+			static std::vector<BYTE> s_KnownMonitorEdid;
+		};
+	}
+}

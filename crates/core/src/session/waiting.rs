@@ -383,7 +383,8 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
     }
 
     fn how_soon(&self) -> Waiting {
-        let waiting = Waiting::of(self.pending.iter(), !self.copies.is_empty());
+        let copies_or_frames = !self.copies.is_empty() || self.frames.is_urgent();
+        let waiting = Waiting::of(self.pending.iter(), copies_or_frames);
         if waiting == Waiting::Nothing && self.frames.wants_a_look() { Waiting::Background } else { waiting }
     }
 
