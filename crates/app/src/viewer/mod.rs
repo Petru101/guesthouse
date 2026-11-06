@@ -2,6 +2,7 @@
 //! thumbnail, around a [`frames::FrameSource`] that for now only draws a stand-in pattern.
 
 mod capture;
+mod clipboard;
 pub mod frames;
 mod input;
 mod monitors;
@@ -12,6 +13,7 @@ mod screen;
 use crate::common::in_background;
 use crate::window::{MachineHandle, Window};
 use adw::prelude::*;
+use clipboard::SharedClipboard;
 use gtk::glib;
 use guesthouse_app_core::library::save_thumbnail;
 use guesthouse_app_core::log::write_log;
@@ -42,6 +44,7 @@ struct Parts {
     fullscreen_button: adw::SplitButton,
     capture_button: gtk::Button,
     screen: RefCell<Option<Screen>>,
+    clipboard: RefCell<Option<SharedClipboard>>,
     monitors: RefCell<Option<Rc<Monitors>>>,
     fullscreen_handler: RefCell<Option<glib::SignalHandlerId>>,
     thumbnail_source: RefCell<Option<glib::SourceId>>,
@@ -81,6 +84,7 @@ impl ScreenPage {
             fullscreen_button,
             capture_button,
             screen: RefCell::default(),
+            clipboard: RefCell::default(),
             monitors: RefCell::default(),
             fullscreen_handler: RefCell::default(),
             thumbnail_source: RefCell::default(),
@@ -246,6 +250,13 @@ impl ScreenPage {
 
     fn on_shown(&self) {
         self.show_hint(None);
+        let machine = self.0.machine.borrow().clone();
+        if machine.clipboard {
+            let context = self.0.window.context();
+            let slot = slot_of(&context, &machine);
+            let shared = SharedClipboard::new(self.0.window.widget(), context, machine, slot);
+            *self.0.clipboard.borrow_mut() = Some(shared);
+        }
         let this = self.clone();
         let source = glib::timeout_add_local(THUMBNAIL_EVERY, move || {
             this.save_thumbnail();
@@ -298,6 +309,7 @@ impl ScreenPage {
 
     fn on_hidden(&self) {
         let parts = &self.0;
+        parts.clipboard.borrow_mut().take();
         parts.window.widget().unfullscreen();
         if let Some(handler) = parts.fullscreen_handler.borrow_mut().take() {
             parts.window.widget().disconnect(handler);
