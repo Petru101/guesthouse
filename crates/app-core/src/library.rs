@@ -2,6 +2,7 @@
 
 use crate::context::Context;
 use crate::failure::{Failure, Result};
+use crate::gpu_support::{NO_GPU_YET, gpu_ready};
 use crate::host::free_gib;
 use crate::machine::{Kind, Machine, load_all, sorted_names};
 use crate::monitor::{Command, failed};
@@ -91,6 +92,9 @@ pub fn create_problems(context: &Context, machine: &Machine, disk_gib: u32) -> R
         found.push("Choose an ISO first.".to_owned());
     }
     fs::create_dir_all(&context.paths.machines)?;
+    if machine.kind == Kind::Windows && !gpu_ready(context) {
+        found.push(NO_GPU_YET.to_owned());
+    }
     if machine.kind == Kind::Windows {
         let room = free_gib(&context.paths.machines)?;
         if room < context.install_room_gib() as f64 {

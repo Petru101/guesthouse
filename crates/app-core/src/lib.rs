@@ -15,6 +15,7 @@ pub mod disk_image;
 pub mod failure;
 pub mod forwarded_input;
 pub mod gpu_sample;
+pub mod gpu_support;
 pub mod host;
 pub mod input;
 pub mod iso;

@@ -53,6 +53,8 @@ impl Drop for Scratch {
 pub fn scratch_paths(scratch: &Scratch) -> Paths {
     let folder = |name: &str| scratch.path(name).to_str().unwrap().to_owned();
     let (home, shm, program) = (folder("home"), folder("shm"), folder("program"));
+    // As a real program folder does, this means GPU machines are possible.
+    fs::create_dir_all(scratch.path("program/guest")).unwrap();
     let runtime = folder("xdg-run");
     let mut paths = Paths::new(
         &Variables::of(&[

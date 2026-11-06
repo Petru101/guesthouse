@@ -1,0 +1,57 @@
+//! What this install can do with the GPU. The app runs without the program folder, and then plain VMs
+//! are what it has. A daemon alone says nothing, as every build of this repo makes one.
+
+use crate::context::Context;
+use crate::linux::guest_sources;
+use crate::machine::Kind;
+
+/// Said wherever a GPU machine would have been offered.
+pub const NO_GPU_YET: &str = "GPU machines aren't available yet. The part that talks to the card isn't public, so this build runs plain VMs.";
+const UBUNTU_SETUP: &str = "setup/seed";
+
+pub fn gpu_ready(context: &Context) -> bool {
+    context.paths.guest_files().is_dir()
+}
+
+fn ubuntu_install_ready(context: &Context) -> bool {
+    guest_sources(context).join(UBUNTU_SETUP).is_dir()
+}
+
+/// What a disc can become here. Without the files that install it by itself, it's a plain VM that the
+/// user installs by hand.
+pub fn kind_offered(context: &Context, kind: Kind) -> Kind {
+    match kind {
+        Kind::Windows if !gpu_ready(context) => Kind::Plain,
+        Kind::Linux if !ubuntu_install_ready(context) => Kind::Plain,
+        kind => kind,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testing::{Scratch, scratch_context};
+    use std::fs;
+
+    #[test]
+    fn with_no_program_folder_everything_is_a_plain_vm() {
+        let scratch = Scratch::new();
+        let context = scratch_context(&scratch);
+        fs::remove_dir_all(context.paths.guest_files()).unwrap();
+        assert!(!gpu_ready(&context));
+        assert_eq!(kind_offered(&context, Kind::Windows), Kind::Plain);
+        assert_eq!(kind_offered(&context, Kind::Linux), Kind::Plain);
+        assert_eq!(kind_offered(&context, Kind::Plain), Kind::Plain);
+    }
+
+    #[test]
+    fn the_program_folder_brings_what_it_holds() {
+        let scratch = Scratch::new();
+        let context = scratch_context(&scratch);
+        assert!(gpu_ready(&context));
+        assert_eq!(kind_offered(&context, Kind::Windows), Kind::Windows);
+        assert_eq!(kind_offered(&context, Kind::Linux), Kind::Plain, "Ubuntu's setup files aren't here");
+        fs::create_dir_all(guest_sources(&context).join(UBUNTU_SETUP)).unwrap();
+        assert_eq!(kind_offered(&context, Kind::Linux), Kind::Linux);
+    }
+}

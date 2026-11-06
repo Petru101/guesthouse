@@ -3,8 +3,9 @@
 
 use crate::context::Context;
 use crate::failure::Result;
+use crate::gpu_support::{NO_GPU_YET, gpu_ready};
 use crate::host::{self, GIB, QEMU_FILES, physical_cores, ram_limit_for, shared_memory_used, vcache_cpus};
-use crate::machine::Machine;
+use crate::machine::{Kind, Machine};
 use crate::network_settings::{network_start_problems, other_machines};
 use crate::processes::{memory_taken, qemu_pid, running_slots};
 use crate::settings::max_vram_gib;
@@ -104,6 +105,9 @@ pub fn start_problems(context: &Context, machine: &Machine) -> Result<Vec<String
     }
     if !machine.share.is_empty() && !Path::new(&machine.share).is_dir() {
         found.push(format!("{} is missing. Choose another shared folder in the settings.", machine.share));
+    }
+    if machine.kind == Kind::Windows && !gpu_ready(context) {
+        found.push(NO_GPU_YET.to_owned());
     }
     if machine.has_gpu() && context.second_instance() {
         found.push(SECOND_INSTANCE_REFUSAL.to_owned());
