@@ -13,6 +13,7 @@ pub const ENGINE_3D: u32 = 1;
 pub const ENGINE_VIDEO_DECODE: u32 = 2;
 pub const ENGINE_VIDEO_ENCODE: u32 = 3;
 pub const ENGINE_COPY: u32 = 6;
+pub const ENGINE_OVERLAY: u32 = 7;
 
 const CONTEXT_SCHEDULING_SUPPORTED: u32 = 1 << 0;
 const MAX_IN_FLIGHT_SHIFT: u32 = 16;
@@ -95,6 +96,11 @@ fn known(engines: &[u32], rm_table: &[u32], nodes: &[(usize, u32)]) -> Vec<(usiz
     nodes.iter().copied().filter(|&(index, _)| engines.contains(&rm_table[index])).collect()
 }
 
+/// A node for a video engine, which is only listed if this generation's video doesn't run.
+fn video_node(types: &EngineNodes, kind: u32, engine: u32, rm_engine: u32, instance: usize) -> Node {
+    if types.video_runs { Node::video(kind, engine, rm_engine, instance) } else { Node::new(kind, engine) }
+}
+
 /// The nodes from the RM's engine list. `graphics_copy` is the engine the RM pairs with graphics,
 /// which gets no node of its own. The stand-in copy nodes are made from the first real one.
 pub fn node_list(engines: &[u32], graphics_copy: Option<u32>, types: &EngineNodes) -> Vec<Node> {
@@ -108,8 +114,11 @@ pub fn node_list(engines: &[u32], graphics_copy: Option<u32>, types: &EngineNode
         copy_engine: graphics_copy,
         ..Node::new(NODE_GRAPHICS, ENGINE_3D)
     }];
+    if let Some(kind) = types.overlay {
+        nodes.push(Node::new(kind, ENGINE_OVERLAY));
+    }
     for (index, kind) in known(engines, &RM_DECODE, types.decode) {
-        nodes.push(Node::video(kind, ENGINE_VIDEO_DECODE, RM_DECODE[index], index));
+        nodes.push(video_node(types, kind, ENGINE_VIDEO_DECODE, RM_DECODE[index], index));
     }
     for (&kind, &engine) in NODE_COPY.iter().zip(&real) {
         let scheduled = NODE_COPY_SCHEDULED.contains(&kind);
@@ -121,7 +130,7 @@ pub fn node_list(engines: &[u32], graphics_copy: Option<u32>, types: &EngineNode
         nodes.push(Node::named(NODE_SECURITY, SECURITY_NAME));
     }
     for (index, kind) in known(engines, &RM_ENCODE, types.encode) {
-        nodes.push(Node::video(kind, ENGINE_VIDEO_ENCODE, RM_ENCODE[index], index));
+        nodes.push(video_node(types, kind, ENGINE_VIDEO_ENCODE, RM_ENCODE[index], index));
     }
     for (index, kind) in known(engines, &RM_OPTICAL_FLOW, types.optical_flow) {
         nodes.push(Node::named(kind, format!("OFA_{index}")));

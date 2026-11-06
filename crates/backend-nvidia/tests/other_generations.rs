@@ -40,6 +40,7 @@ const AREA_ADDRESS: u64 = 0x800_0000;
 const LIST_OFFSET_FIELD: usize = 0x0C;
 const ENTRIES_FIELD: usize = 0x14;
 const LIST_AT: usize = 0x84;
+const VULKAN_CLIENT: u32 = 4;
 
 /// What card-report gives for a card.
 struct Report {
@@ -108,9 +109,6 @@ const GTX_1660_SUPER: Report = Report {
     ],
 };
 
-/// What Windows lists and the guest isn't given: the display's node, and engines with no node here.
-const LEFT_OUT: [&str; 4] = ["overlay", "decode", "encode", "OFA_0"];
-
 const CARDS: [(&FakeCard, &Generation, &Report); 2] =
     [(&FAKE_ADA, &ADA, &RTX_4080), (&FAKE_TURING, &TURING, &GTX_1660_SUPER)];
 
@@ -148,6 +146,7 @@ fn node_label(answer: &[u8]) -> String {
         2 => "decode".to_owned(),
         3 => "encode".to_owned(),
         6 => "copy".to_owned(),
+        7 => "overlay".to_owned(),
         _ => name.trim_end_matches('\0').to_owned(),
     }
 }
@@ -188,25 +187,37 @@ fn the_class_list_fits_and_holds_every_class_the_backend_makes() {
 }
 
 #[test]
-fn the_nodes_are_the_reports_in_its_order_less_those_left_out() {
+fn the_nodes_are_the_reports_in_its_order_and_its_number() {
     for (card, _, report) in CARDS {
         let backend = started(card);
         let told: Vec<String> = (0..MOST_NODES)
             .filter_map(|node| answer(&backend, NODE_QUERY, NODE_ANSWER_SIZE, &node.to_le_bytes()))
             .map(|answer| node_label(&answer))
             .collect();
-        let wanted: Vec<&str> =
-            report.nodes.iter().copied().filter(|node| !LEFT_OUT.contains(node)).collect();
-        assert_eq!(told, wanted);
-        assert_eq!(backend.facts().node_count as usize, wanted.len());
+        assert_eq!(told, report.nodes);
+        assert_eq!(backend.facts().node_count as usize, report.nodes.len());
+        let record = record(&backend);
+        assert_eq!(word(&record, LAYOUT.node_count) as usize, report.nodes.len());
     }
 }
 
 #[test]
-fn no_video_node_means_the_record_offers_no_video() {
+fn only_graphics_and_copy_nodes_take_a_context() {
+    for (card, _, report) in CARDS {
+        let mut backend = started(card);
+        for (node, label) in (0u32..).zip(report.nodes) {
+            let wanted = ["3D", "copy"].contains(label);
+            assert_eq!(backend.context_allowed(node, 0), wanted, "{label}");
+            assert_eq!(backend.context_allowed(node, VULKAN_CLIENT), wanted, "{label} for Vulkan");
+        }
+    }
+}
+
+#[test]
+fn no_video_runs_and_the_record_offers_none() {
     for (card, generation, _) in CARDS {
         let record = record(&started(card));
-        assert_eq!(generation.nodes.decode.len() + generation.nodes.encode.len(), 0);
+        assert!(!generation.nodes.video_runs);
         assert_eq!([word(&record, LAYOUT.flags), word(&record, LAYOUT.flags + 4)], [0, 0]);
         assert_eq!(record[LAYOUT.decoder_flags], 0);
     }

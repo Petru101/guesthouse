@@ -8,14 +8,22 @@ pub type ChannelClass = (u32, usize);
 /// An engine's index in the RM's list of its kind, and the node type the guest's driver knows it by.
 pub type IndexedNode = (usize, u32);
 
+/// A node listed with no type in the record. The field stays at zero.
+pub const NODE_TYPE_NOT_SET: u32 = 0;
+
 /// The node type of each engine that gets a node, by engine. An engine that isn't here gets no node,
 /// so the guest doesn't see it and nothing reaches it.
 #[derive(Debug, PartialEq, Eq)]
 pub struct EngineNodes {
+    /// The display's node, straight after graphics, if the guest gets one. It takes no work here.
+    pub overlay: Option<u32>,
     pub decode: &'static [IndexedNode],
     pub encode: &'static [IndexedNode],
     pub optical_flow: &'static [IndexedNode],
     pub jpeg: &'static [IndexedNode],
+    /// Whether contexts and channels can be made on the video nodes. If not, they're only listed,
+    /// and none of their commands reach the card.
+    pub video_runs: bool,
 }
 
 /// The record's flags for video. All zero, the guest's video runtimes offer no decoders.
@@ -49,7 +57,7 @@ pub struct Generation {
     pub copy_node_flags: u32,
     pub video_record_flags: VideoRecordFlags,
     /// Guest branches this generation has been run with. On any other the backend still starts, and
-    /// says so in the log, as a shader set or class list could differ from branch to branch.
+    /// says so in the log.
     pub run_on_guest_branches: &'static [&'static str],
 }
 
@@ -100,10 +108,12 @@ pub const BLACKWELL: Generation = Generation {
     ],
     shader_sets: &[(0xA04, 0x9004)],
     nodes: EngineNodes {
+        overlay: None,
         decode: &[(0, 0x1A), (3, 0x22)],
         encode: &[(1, 0x14), (2, 0x15), (3, 0x36)],
         optical_flow: &[(0, 0x21)],
         jpeg: &[(3, 0x27)],
+        video_runs: true,
     },
     copy_node_flags: COPY_NODE_FLAGS,
     video_record_flags: VideoRecordFlags {
@@ -113,10 +123,25 @@ pub const BLACKWELL: Generation = Generation {
     run_on_guest_branches: &["617"],
 };
 
-/// Video engines get no node here, so none of their commands reach a card of these generations, and
-/// the record's flags tell the guest's runtimes not to offer them. Optical flow and JPEG engines get
-/// none either.
-const NO_VIDEO_NODES: EngineNodes = EngineNodes { decode: &[], encode: &[], optical_flow: &[], jpeg: &[] };
+/// The nodes these generations list go in the order of the card's own list, overlay included. Video
+/// nodes take no context, so none of their commands reach the card, and the record's flags tell the
+/// guest's runtimes not to offer them.
+const ADA_NODES: EngineNodes = EngineNodes {
+    overlay: Some(NODE_TYPE_NOT_SET),
+    decode: &[(0, NODE_TYPE_NOT_SET)],
+    encode: &[(0, NODE_TYPE_NOT_SET), (1, NODE_TYPE_NOT_SET)],
+    optical_flow: &[(0, NODE_TYPE_NOT_SET)],
+    jpeg: &[],
+    video_runs: false,
+};
+const TURING_NODES: EngineNodes = EngineNodes {
+    overlay: Some(NODE_TYPE_NOT_SET),
+    decode: &[(0, NODE_TYPE_NOT_SET)],
+    encode: &[(0, NODE_TYPE_NOT_SET)],
+    optical_flow: &[],
+    jpeg: &[],
+    video_runs: false,
+};
 const NO_VIDEO_FLAGS: VideoRecordFlags = VideoRecordFlags { words: [0, 0], decoder: 0 };
 
 /// Ada, which keeps Ampere's channel, copy and doorbell classes. Experimental.
@@ -142,7 +167,7 @@ pub const ADA: Generation = Generation {
         (ChannelObject::TwoD, FERMI_TWOD_A),
     ],
     shader_sets: &[(0x809, 0x7005)],
-    nodes: NO_VIDEO_NODES,
+    nodes: ADA_NODES,
     copy_node_flags: COPY_NODE_FLAGS,
     video_record_flags: NO_VIDEO_FLAGS,
     run_on_guest_branches: &[],
@@ -150,7 +175,7 @@ pub const ADA: Generation = Generation {
 
 /// Turing, the 20 and 16 series. Experimental. Each SM version needs its own row in `shader_sets`, so
 /// a chip that reports another one is refused. The TU117's encoder has another class, 0xB4B7, which
-/// makes no difference while encoders get no node.
+/// makes no difference while encoders take no context.
 pub const TURING: Generation = Generation {
     name: "Turing",
     architectures: &[0x160],
@@ -173,7 +198,7 @@ pub const TURING: Generation = Generation {
         (ChannelObject::TwoD, FERMI_TWOD_A),
     ],
     shader_sets: &[(0x703, 0x6000)],
-    nodes: NO_VIDEO_NODES,
+    nodes: TURING_NODES,
     copy_node_flags: COPY_NODE_FLAGS,
     video_record_flags: NO_VIDEO_FLAGS,
     run_on_guest_branches: &[],
