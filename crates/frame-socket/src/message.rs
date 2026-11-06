@@ -1,4 +1,4 @@
-//! The four messages and their bytes, which are little-endian. Every packet starts with the magic
+//! The five messages and their bytes, which are little-endian. Every packet starts with the magic
 //! number, the protocol's version and what kind of message follows.
 
 use std::fmt;
@@ -13,6 +13,7 @@ const HELLO: u16 = 1;
 const RING: u16 = 2;
 const FRAME: u16 = 3;
 const RELEASE: u16 = 4;
+const LIGHT: u16 = 5;
 
 /// A pixel format and memory layout, as DRM names them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -86,6 +87,29 @@ pub struct Frame {
     pub descriptor: Descriptor,
 }
 
+/// How the display a picture was graded on behaved. The numbers are as Windows' HDR10 metadata has them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Mastering {
+    /// Red, green, blue and white, x then y, in units of 0.00002.
+    pub chromaticity: [u16; 8],
+    pub max_nits: u16,
+    /// In units of 0.0001 nits.
+    pub min: u16,
+    pub max_content_nits: u16,
+    pub max_frame_average_nits: u16,
+}
+
+/// Producer to viewer, just before the [`Frame`] it's about, and only for an HDR picture. A viewer
+/// that offered an HDR format knows this kind. Nothing else ever meets it, so the version stays.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Light {
+    pub generation: u32,
+    pub slot: u32,
+    /// How bright the guest wants SDR white to be.
+    pub sdr_white_nits: u32,
+    pub mastering: Option<Mastering>,
+}
+
 /// Viewer to producer: the slot can be written again.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Release {
@@ -99,6 +123,7 @@ pub enum Message {
     Ring(Ring),
     Frame(Frame),
     Release(Release),
+    Light(Light),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -222,6 +247,33 @@ fn read_frame(reader: &mut Reader) -> Result<Frame, DecodeError> {
     })
 }
 
+fn write_light(writer: &mut Writer, light: &Light) {
+    writer.u32(light.generation);
+    writer.u32(light.slot);
+    writer.u32(light.sdr_white_nits);
+    writer.u8(light.mastering.is_some().into());
+    let mastering = light.mastering.unwrap_or_default();
+    mastering.chromaticity.iter().for_each(|&value| writer.u16(value));
+    writer.u16(mastering.max_nits);
+    writer.u16(mastering.min);
+    writer.u16(mastering.max_content_nits);
+    writer.u16(mastering.max_frame_average_nits);
+}
+
+fn read_light(reader: &mut Reader) -> Result<Light, DecodeError> {
+    let (generation, slot, sdr_white_nits) = (reader.u32()?, reader.u32()?, reader.u32()?);
+    let present = reader.u8()? != 0;
+    let mut mastering = Mastering::default();
+    for value in &mut mastering.chromaticity {
+        *value = reader.u16()?;
+    }
+    mastering.max_nits = reader.u16()?;
+    mastering.min = reader.u16()?;
+    mastering.max_content_nits = reader.u16()?;
+    mastering.max_frame_average_nits = reader.u16()?;
+    Ok(Light { generation, slot, sdr_white_nits, mastering: present.then_some(mastering) })
+}
+
 fn read_hello(reader: &mut Reader) -> Result<Hello, DecodeError> {
     let refresh_millihertz = reader.u32()?;
     let peak_nits = reader.u32()?;
@@ -248,6 +300,7 @@ impl Message {
             Self::Ring(_) => RING,
             Self::Frame(_) => FRAME,
             Self::Release(_) => RELEASE,
+            Self::Light(_) => LIGHT,
         }
     }
 
@@ -269,6 +322,7 @@ impl Message {
                 writer.u64(ring.size);
             }
             Self::Frame(frame) => write_frame(&mut writer, frame),
+            Self::Light(light) => write_light(&mut writer, light),
             Self::Release(release) => {
                 writer.u32(release.generation);
                 writer.u32(release.slot);
@@ -290,6 +344,7 @@ impl Message {
             HELLO => Self::Hello(read_hello(&mut reader)?),
             RING => Self::Ring(read_ring(&mut reader)?),
             FRAME => Self::Frame(read_frame(&mut reader)?),
+            LIGHT => Self::Light(read_light(&mut reader)?),
             RELEASE => Self::Release(Release { generation: reader.u32()?, slot: reader.u32()? }),
             kind => return Err(DecodeError::UnknownKind(kind)),
         };
@@ -308,11 +363,24 @@ mod tests {
         Descriptor { width: 1920, height: 1080, stride: 7680, offset: 0, format: XRGB, colour: Colour::SRGB }
     }
 
-    fn all() -> [Message; 4] {
+    fn all() -> [Message; 6] {
         [
             Message::Hello(Hello { formats: vec![XRGB], refresh_millihertz: 144_000, peak_nits: 400 }),
             Message::Ring(Ring { generation: 7, slots: 3, size: 1 << 23 }),
             Message::Frame(Frame { generation: 7, slot: 2, sequence: 9, descriptor: descriptor() }),
+            Message::Light(Light { generation: 7, slot: 2, sdr_white_nits: 240, mastering: None }),
+            Message::Light(Light {
+                generation: 7,
+                slot: 2,
+                sdr_white_nits: 203,
+                mastering: Some(Mastering {
+                    chromaticity: [1, 2, 3, 4, 5, 6, 7, 8],
+                    max_nits: 1000,
+                    min: 1,
+                    max_content_nits: 900,
+                    max_frame_average_nits: 400,
+                }),
+            }),
             Message::Release(Release { generation: 7, slot: 2 }),
         ]
     }

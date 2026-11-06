@@ -3,7 +3,7 @@
 //! The producer owns a ring of buffers and the viewer shows them. The viewer says what it can show
 //! with [`Hello`]. The producer shares its buffers with [`Ring`], one file descriptor for each slot,
 //! and announces each finished picture with [`Frame`]. A slot is the viewer's from then until its
-//! [`Release`], and the producer leaves it alone meanwhile. A new ring has a new generation, and
+//! [`Release`], and the producer leaves it alone meanwhile. An HDR picture's [`Frame`] follows a [`Light`]. A new ring has a new generation, and
 //! anything naming an older one is about buffers that have gone.
 //!
 //! Each message is one SEQPACKET packet, so nothing here has to find where a message ends. Nothing
@@ -14,7 +14,7 @@ mod message;
 mod socket;
 
 pub use message::{
-    Colour, DecodeError, Descriptor, Format, Frame, Hello, MOST_FORMATS, MOST_SLOTS, Message, Release, Ring,
-    VERSION,
+    Colour, DecodeError, Descriptor, Format, Frame, Hello, Light, MOST_FORMATS, MOST_SLOTS, Mastering,
+    Message, Release, Ring, VERSION,
 };
 pub use socket::{FrameListener, FrameSocket, Packet, SOCKET_NAME};
