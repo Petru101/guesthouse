@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Firefox
+Exec=/opt/ff/firefox/firefox %u
+Icon=/opt/ff/firefox/browser/chrome/icons/default/default128.png
+Categories=Network;WebBrowser;
+StartupWMClass=firefox

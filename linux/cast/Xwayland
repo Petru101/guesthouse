@@ -1,0 +1,5 @@
+#!/bin/sh
+# Xwayland's glamor loads Zink, which loads NVIDIA's Vulkan driver, and that opens DISPLAY as it loads. That display is this
+# very server, which cannot answer yet, so it would wait on itself for ever, and every X client behind it. It needs no DISPLAY.
+unset DISPLAY
+exec /usr/bin/Xwayland.real "$@"
