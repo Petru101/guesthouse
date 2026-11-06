@@ -7,6 +7,7 @@ Everything in this repo is under GPL-2.0-or-later, apart from what's listed here
 - `drivers/windows-display/` is a fork of [zako-vdd](https://github.com/qiin2333/zako-vdd), and the whole folder, my part included, is under the MIT licence in its own `LICENSE` file.
 - The tables and class numbers in the NVIDIA backend come from NVIDIA's open GPU kernel modules, under the MIT licence. Its notice is below.
 - The tables in the `nvfwd` device in `qemu/qemu-gpupv.patch` (`nv_tables.h`, `nv_tables_extra.h`, `fd_controls.h`, `class_tables.h`, `uvm_tables.h`), and `linux/guest/fd_controls.h` and `linux/guest/nv_tables_extra.h`, are made from those same modules, and each carries that notice. The offsets in `rm_layout.h` and `rusd.c` are from their public headers, and so are the numbers in `linux/allow.txt`, apart from a few control numbers those headers don't have.
+- The Time Synchronization channel in `qemu/qemu-gpupv.patch` follows Linux's `hv_util.c`. Its instance ID and message layout come from Microsoft's [OpenVMM](https://github.com/microsoft/openvmm), under the MIT licence.
 - `linux/layer/zink_on_nvidia.c` and `linux/cast/glx_dri3.c` are mine, under the MIT licence, so that their fixes can go to Mesa.
 
 The guest's modules build against NVIDIA's headers and `nvidia-drm` from NVIDIA's own source, which you get yourself. A driver image carries the host's own driver files into a VM on your machine. None of that is in this repo.
