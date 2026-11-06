@@ -29,6 +29,7 @@ They're in `crates/`, listed here from the bottom up. Each depends only on crate
 | `core` | `Session`: the tables for one guest, and the answer to each message. Vendor-neutral. |
 | `daemon` | Slots, shared memory, sockets, and the main loop. |
 | `replay` | Replays a recording and compares every reply. |
+| `frame-socket` | The four messages that bring frames to a viewer, on their own so a producer can use them as they are. |
 | `app-core` | The desktop app's work with no UI: machines, tasks, setup, a VM's start, and `guesthouse-task` and `guesthouse-share`. |
 | `app` | The desktop app's GTK 4 and libadwaita pages. |
 
@@ -108,13 +109,13 @@ The host's own clock in the clock answer is masked, since it can never repeat. M
 
 Nothing is relative to a project folder. Machines are in the data store, which `~/.config/guesthouse/store` can move, sockets are in the XDG runtime folder, the log is in the state folder, and what ships with the app is in a program folder found from where it runs. Each machine has its own token for the guest's agent. Files for the guest aren't in this repo: they ship with the app.
 
-The viewer is a shell so far. It only knows `FrameSource`, and a pattern stands in for the guest's screen.
+The viewer only knows `FrameSource`, which has two kinds. `SocketFrames` takes a guest's frames from the frame socket, with a new texture for each frame, and gives a slot back when GTK lets go of its texture. `DbusFrames` listens to QEMU's D-Bus display, which is all that firmware, an install and a plain VM have, and a GPU guest has it too until its first frame and again after a reset.
 
 ## Not here yet
 
 Left out for now, because they're still changing in the prototype:
 
 - the NVIDIA backend, and with it real submissions
-- the frame path to the viewer
+- the daemon's end of the frame socket
 
 Also not ported: the arena (video memory the guest's CPU can reach), the experiment switches in the prototype's run folder, and copies to the screen running off the message thread.

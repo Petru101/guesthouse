@@ -38,7 +38,7 @@ Recordings hold guest data. They never go in git. Keep them in `/captures/`, whi
 - Comments say why. If a comment says what the next line does, delete it.
 - The message path shouldn't allocate or lock. Measure first, though: `core/tests/no_allocation.rs` and the benchmark will tell you, and a clever change needs a number behind it.
 - Dependencies are few, and each one has a comment saying why it's there.
-- `unsafe` lives in `daemon` where the operating system needs it, with a `SAFETY` comment on each block.
+- `unsafe` lives in `daemon` where the operating system needs it, with a `SAFETY` comment on each block. The one exception is `viewer/import.rs` in `app`, as GTK's call for a texture on a dmabuf is `unsafe`.
 
 ## Keeping the layers apart
 
