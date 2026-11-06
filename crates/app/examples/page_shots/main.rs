@@ -5,6 +5,7 @@
 
 mod fake_display;
 mod fake_frames;
+mod fake_qemu;
 
 use adw::prelude::*;
 use gtk::glib;
@@ -56,6 +57,16 @@ fn click(window: &Window, label: &str) -> bool {
     let buttons = all_of::<gtk::Button>(window);
     let button =
         buttons.iter().rev().find(|button| button.label().as_deref() == Some(label) && button.is_mapped());
+    if let Some(button) = button {
+        button.emit_clicked();
+    }
+    button.is_some()
+}
+
+/// The first machine's button, where `click` takes the newest dialog's.
+fn click_first(window: &Window, label: &str) -> bool {
+    let buttons = all_of::<gtk::Button>(window);
+    let button = buttons.iter().find(|button| button.label().as_deref() == Some(label) && button.is_mapped());
     if let Some(button) = button {
         button.emit_clicked();
     }
@@ -286,10 +297,16 @@ async fn viewer_page(
     check(&failures, window.open_screen().is_none(), "leaving the page closes it");
 }
 
-/// A machine with no GPU shows QEMU's display, as firmware and an install do.
-async fn plain_viewer(window: Window, folder: PathBuf, failures: Rc<Cell<u32>>, machine: MachineHandle) {
+/// What the owner will do: start a machine, look at it, and stop it, through the same buttons. A plain
+/// machine shows QEMU's display, as firmware and an install do.
+async fn whole_flow(window: Window, folder: PathBuf, failures: Rc<Cell<u32>>) {
     glib::timeout_future(LONG).await;
-    window.show_screen(machine);
+    check(&failures, click_first(&window, "Start"), "Start can be pressed");
+    glib::timeout_future(LONG).await;
+    glib::timeout_future(LONG).await;
+    check(&failures, text_of(&window).contains("Running."), "the machine runs");
+    shot_after_paint(&window, &folder, "21-started").await;
+    check(&failures, click(&window, "Show Screen"), "Show Screen can be pressed");
     glib::timeout_future(LONG).await;
     glib::timeout_future(LONG).await;
     let page = window.open_screen().unwrap();
@@ -297,9 +314,16 @@ async fn plain_viewer(window: Window, folder: PathBuf, failures: Rc<Cell<u32>>, 
     glib::timeout_future(LONG).await;
     let after = page.frames_shown();
     check(&failures, after > before && before > 0, &format!("QEMU's display shows: {before} then {after}"));
-    shot_after_paint(&window, &folder, "21-viewer-qemu-display").await;
+    check(&failures, page.has_input(), "the guest takes input");
+    shot_after_paint(&window, &folder, "22-viewer-qemu-display").await;
     window.pages().pop_to_tag("library");
-    glib::timeout_future(SETTLE).await;
+    glib::timeout_future(LONG).await;
+    check(&failures, click(&window, "Shut Down"), "Shut Down can be pressed");
+    glib::timeout_future(LONG).await;
+    glib::timeout_future(LONG).await;
+    let off = text_of(&window);
+    check(&failures, off.matches("Off.").count() == 2, "both machines are off again");
+    shot_after_paint(&window, &folder, "23-stopped").await;
 }
 
 async fn walk_pages(window: Window, context: Arc<Context>, folder: PathBuf) {
@@ -322,23 +346,27 @@ async fn walk_pages(window: Window, context: Arc<Context>, folder: PathBuf) {
     viewer_page(window.clone(), folder.clone(), failures.clone(), machines[1].clone(), released).await;
     let _ = vm.kill();
     let _ = vm.wait();
-    fake_display::serve(&context.run_folder(None));
-    let mut vm = pretend_vm(&context, &machines[0].borrow());
-    plain_viewer(window.clone(), folder, failures.clone(), machines[0].clone()).await;
-    let _ = vm.kill();
-    let _ = vm.wait();
+    whole_flow(window.clone(), folder, failures.clone()).await;
     println!("failures: {}", failures.get());
     std::process::exit(i32::try_from(failures.get()).unwrap_or(1));
 }
 
 fn main() -> glib::ExitCode {
-    if env::args().nth(1).as_deref() == Some("-qmp") {
+    let arguments: Vec<String> = env::args().skip(1).collect();
+    if arguments.first().is_some_and(|word| word == "-qmp") {
         thread::sleep(PRETEND_VM_LIFE);
         return glib::ExitCode::SUCCESS;
     }
+    if arguments.first().is_some_and(|word| word == "-L") {
+        fake_qemu::run(&arguments);
+    }
     let folder = PathBuf::from(env::args().nth(1).expect("a folder for the pictures"));
     fs::create_dir_all(&folder).unwrap();
-    let context = Arc::new(Context::from_process().unwrap());
+    let mut context = Context::from_process().unwrap();
+    // This program lives in `examples`, one folder below the app's own.
+    let examples = env::current_exe().unwrap().parent().unwrap().to_owned();
+    context.paths.binaries = examples.parent().unwrap().to_owned();
+    let context = Arc::new(context);
     let walking = context.clone();
     application(context, move |window| {
         // With no browser on the other end, Broadway's frames hardly tick, and a dialog could take

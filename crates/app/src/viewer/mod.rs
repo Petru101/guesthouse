@@ -157,6 +157,11 @@ impl ScreenPage {
         self.screen().map_or(0, |screen| screen.frames_shown())
     }
 
+    /// Whether the guest is taking input, for the page checks.
+    pub fn has_input(&self) -> bool {
+        self.screen().is_some_and(|screen| screen.has_input())
+    }
+
     pub fn machine_id(&self) -> String {
         self.0.machine.borrow().id.clone()
     }

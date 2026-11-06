@@ -125,11 +125,9 @@ fn serve_client(mut stream: UnixStream) {
         .unwrap();
 }
 
-/// Serves one viewer from a thread.
-pub fn serve(run_folder: &Path) {
-    std::fs::create_dir_all(run_folder).unwrap();
-    let monitor = run_folder.join("display.sock");
-    let _ = std::fs::remove_file(&monitor);
+/// Serves one viewer from a thread, on this monitor socket.
+pub fn serve(monitor: &Path) {
+    let _ = std::fs::remove_file(monitor);
     let listener = UnixListener::bind(monitor).unwrap();
     thread::spawn(move || serve_client(listener.accept().unwrap().0));
 }
