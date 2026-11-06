@@ -2,6 +2,7 @@
 
 use super::Window;
 use crate::application::APP_ID;
+use crate::rows::name_for_readers;
 use adw::prelude::*;
 use gtk::gio;
 
@@ -67,6 +68,7 @@ impl LibraryPage {
         stack.add_named(&empty, Some("empty"));
         let add = gtk::Button::builder().icon_name("list-add-symbolic").tooltip_text("New Machine").build();
         let header = adw::HeaderBar::new();
+        name_for_readers(&add, "New Machine");
         header.pack_start(&add);
         let menu = gtk::MenuButton::builder()
             .icon_name("open-menu-symbolic")
@@ -74,6 +76,7 @@ impl LibraryPage {
             .tooltip_text("Main Menu")
             .menu_model(&main_menu())
             .build();
+        name_for_readers(&menu, "Main Menu");
         header.pack_end(&menu);
         let toolbar = adw::ToolbarView::new();
         toolbar.set_content(Some(&stack));

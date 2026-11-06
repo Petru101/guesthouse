@@ -28,10 +28,16 @@ pub fn row_button(label: &str) -> gtk::Button {
     gtk::Button::builder().label(label).valign(gtk::Align::Center).build()
 }
 
+/// Gives a widget with no text of its own a name for screen readers.
+pub fn name_for_readers(widget: &impl IsA<gtk::Widget>, name: &str) {
+    widget.upcast_ref::<gtk::Widget>().update_property(&[gtk::accessible::Property::Label(name)]);
+}
+
 pub fn icon_button(icon: &str, tooltip: &str) -> gtk::Button {
     let button =
         gtk::Button::builder().icon_name(icon).tooltip_text(tooltip).valign(gtk::Align::Center).build();
     button.add_css_class("flat");
+    name_for_readers(&button, tooltip);
     button
 }
 
@@ -39,6 +45,11 @@ pub fn number_row(title: &str, value: f64, lowest: f64, highest: f64) -> adw::Sp
     let row = adw::SpinRow::with_range(lowest, highest, 1.0);
     row.set_title(title);
     row.set_value(value);
+    // The row's field has the focus, so that's what a screen reader lands on.
+    name_for_readers(&row, title);
+    if let Ok(field) = row.delegate().and_dynamic_cast::<gtk::Widget>() {
+        name_for_readers(&field, title);
+    }
     row
 }
 
