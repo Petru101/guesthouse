@@ -8,7 +8,7 @@
 static const uint GROUP_SIZE = 8;
 static const uint LUT_ENTRIES = 4096;
 
-cbuffer Pass : register(b0)
+cbuffer PassInputs : register(b0)
 {
 	uint width;
 	uint height;

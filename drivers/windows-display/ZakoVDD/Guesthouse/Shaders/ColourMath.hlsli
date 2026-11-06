@@ -35,7 +35,7 @@ float SrgbToLinear1(float encoded)
 	{
 		return encoded / 12.92f;
 	}
-	return pow((encoded + 0.055f) / 1.055f, 2.4f);
+	return pow(max((encoded + 0.055f) / 1.055f, 0.0f), 2.4f);
 }
 
 float LinearToSrgb1(float linearLight)
@@ -51,7 +51,7 @@ float PqToNits1(float encoded)
 {
 	float e = pow(max(encoded, 0.0f), 1.0f / PQ_M2);
 	float above = max(e - PQ_C1, 0.0f);
-	return PQ_PEAK_NITS * pow(above / (PQ_C2 - PQ_C3 * e), 1.0f / PQ_M1);
+	return PQ_PEAK_NITS * pow(max(above / (PQ_C2 - PQ_C3 * e), 0.0f), 1.0f / PQ_M1);
 }
 
 float NitsToPq1(float nits)
@@ -77,13 +77,18 @@ float3 DecodeSource(uint source, float3 texel, float sdrWhite)
 
 float3 EncodeWire(uint wire, float3 linearLight, float sdrWhite)
 {
+	float3 encoded;
 	if (wire == WIRE_HDR)
 	{
 		float3 nits = linearLight * SCRGB_NITS;
-		return float3(NitsToPq1(nits.x), NitsToPq1(nits.y), NitsToPq1(nits.z));
+		encoded = float3(NitsToPq1(nits.x), NitsToPq1(nits.y), NitsToPq1(nits.z));
 	}
-	float3 relative = saturate(linearLight / sdrWhite);
-	return float3(LinearToSrgb1(relative.x), LinearToSrgb1(relative.y), LinearToSrgb1(relative.z));
+	else
+	{
+		float3 relative = saturate(linearLight / sdrWhite);
+		encoded = float3(LinearToSrgb1(relative.x), LinearToSrgb1(relative.y), LinearToSrgb1(relative.z));
+	}
+	return encoded;
 }
 
 float3 ApplyRows(float4 row0, float4 row1, float4 row2, float3 colour)
