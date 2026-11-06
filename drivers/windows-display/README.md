@@ -22,7 +22,7 @@ Everything of mine is in `GuesthouseDisplay/Guesthouse/`, plus a few lines in th
 | `CursorLink`, `CursorImage` | The hardware cursor, for a viewer to draw |
 | `HostExporter` | The steps of each frame, in order |
 
-The driver makes its monitor when it starts. `setup/take-over-display.ps1` makes that the only display at logon, as only a user's session can do that. Windows then remembers it.
+The driver makes its monitor when it starts. It keeps it until the guest stops, and ignores `DESTROYMONITOR`, as Sunshine sends that whenever it exits. `setup/take-over-display.ps1` makes that the only display at logon, as only a user's session can do that. Windows then remembers it.
 
 The hardware cursor is off in `vdd_settings.xml` for now, so Windows draws it into the frames.
 
