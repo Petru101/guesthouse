@@ -80,7 +80,7 @@ pub struct Status {
     pub slot: Option<u8>,
 }
 
-fn task_path(context: &Context, slot: Option<Slot>) -> PathBuf {
+pub fn task_path(context: &Context, slot: Option<Slot>) -> PathBuf {
     context.run_folder(slot).join(TASK_FILE)
 }
 

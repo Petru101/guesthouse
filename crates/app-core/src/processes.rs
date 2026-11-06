@@ -6,6 +6,7 @@ use crate::host::QEMU_FILES;
 use crate::machine::{Machine, sorted_names};
 use crate::monitor::MAIN_SOCKET;
 use crate::slots;
+use crate::tasks::task_path;
 use crate::text::qemu_value;
 use guesthouse_daemon::slot::Slot;
 use std::collections::BTreeMap;
@@ -106,9 +107,11 @@ pub fn leftovers(context: &Context, slot: Option<Slot>) -> Option<u64> {
     fs::metadata(path).ok().map(|found| found.ino())
 }
 
-/// Each slot's leftovers, by slot number.
+/// Each slot's leftovers, by slot number, for this install to clear up. Another install's VM can be in
+/// a slot too, so only the slots this one has run something in count.
 pub fn all_leftovers(context: &Context) -> BTreeMap<u8, u64> {
-    slots::all().filter_map(|slot| Some((slot.number(), leftovers(context, Some(slot))?))).collect()
+    let ours = slots::all().filter(|slot| task_path(context, Some(*slot)).exists());
+    ours.filter_map(|slot| Some((slot.number(), leftovers(context, Some(slot))?))).collect()
 }
 
 #[cfg(test)]
@@ -186,6 +189,10 @@ mod tests {
         fs::remove_dir_all(context.processes.join("202")).unwrap();
         fake_process(&context, 300, &["/else/qemu", "-name", "gpupv"], &[], &format!("{text} (deleted)"));
         assert_eq!(leftovers(&context, Some(first)), None, "deleted or not, the name counts");
+        assert!(all_leftovers(&context).is_empty(), "a slot this install never used is left alone");
+        let task = task_path(&context, Some(second));
+        fs::create_dir_all(task.parent().unwrap()).unwrap();
+        fs::write(task, "{}").unwrap();
         let found = all_leftovers(&context);
         assert_eq!(
             found,
