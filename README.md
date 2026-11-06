@@ -179,4 +179,8 @@ This repo has no NVIDIA or Microsoft files in it. You supply your own Windows IS
 
 ## Licence
 
-GPL-2.0-or-later, the QEMU patch included. See [LICENSE](LICENSE).
+Copyright (C) 2026 xnixy
+
+GPL-2.0-or-later, the QEMU patch included. See [LICENSE](LICENSE). A few things in here come from elsewhere, and [THIRD-PARTY.md](THIRD-PARTY.md) lists them.
+
+NVIDIA, GeForce and Windows are trademarks of their owners.
