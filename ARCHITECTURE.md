@@ -139,6 +139,10 @@ There's a catch to keep in mind. With no vendor backend, `RecordedAnswers` plays
 
 The host's own clock in the clock answer is masked, since it can never repeat. Messages the host sends by itself are compared as a set and not in order, because in a real session their order depends on the GPU's timing.
 
+## GPU addresses
+
+The host hands out addresses from `GPU_RANGES`, less anything a backend keeps clear with `Backend::kept_gpu_ranges`. A guest's reservation either takes the next hand-out or, if it names an address or a window the next one doesn't fit, is placed. Placed ranges are per process, so the same address can mean different memory in two processes, and every lookup by GPU address names its space. Hand-outs step over placed ranges in all processes.
+
 ## Not here yet
 
 Left out for now, because they're still changing in the prototype:
