@@ -2,12 +2,14 @@
 //! the app watches the small file it leaves.
 
 mod desktop;
+mod gpu_check;
 mod guest_files;
 mod install;
 mod ubuntu;
 
 pub use desktop::{apply_share, boots, rebooted};
 use desktop::{note_boot, set_up_desktop, wait_for_desktop};
+use gpu_check::check_gpu;
 use guest_files::place_driver_files;
 pub use install::{
     INSTALL_STEPS, answer_disc_path, answer_file, install, install_step, make_answer_disc, wait_for_setup,
@@ -19,7 +21,7 @@ use crate::failure::{Failure, Result};
 use crate::guest_memory::is_no_room;
 use crate::host::{cpu_list, host_ram_limit, ram_limit_for, vcache_cpus};
 use crate::library::MAX_DISK_GIB;
-use crate::log::clock_text;
+use crate::log::{clock_text, write_log};
 use crate::machine::{Kind, Machine, load};
 use crate::monitor::Command as Qmp;
 use crate::network_settings::other_machines;
@@ -42,6 +44,8 @@ use std::time::Duration;
 const MEMORY_WAIT: Duration = Duration::from_secs(20);
 const LOCK_FILE: &str = "guesthouse.lock";
 const STOP_WAIT_SECONDS: u64 = 100;
+/// A guest that failed to start gets less time than one being shut down by choice.
+const FAILED_START_STOP_SECONDS: u64 = 30;
 const SIGTERM_WAIT_SECONDS: u64 = 20;
 const SIGKILL_WAIT_SECONDS: u64 = 10;
 const FORCE_POLL: Duration = Duration::from_millis(200);
@@ -139,24 +143,49 @@ pub fn start(task: &mut Task) -> Result<()> {
         let plan = plan_for(task.context, &machine, Boot::Plain { iso: machine.iso.clone() });
         return task.host.start(&plan, &machine);
     }
-    let booted = boot(task);
-    if booted.is_err() && task.pid().is_none() {
-        // The daemon and shared memory are still there.
-        task.host.release()?;
-    }
-    booted
+    boot(task)
 }
 
+/// Starts a GPU machine. One that fails leaves nothing running, and says why.
 fn boot(task: &mut Task) -> Result<()> {
     task.step("Starting the VM");
     let plan = plan_for(task.context, &task.machine, Boot::Gpu);
-    task.host.start(&plan, &task.machine)?;
+    let started = task.host.start(&plan, &task.machine);
+    if started.is_err() {
+        if task.pid().is_none() {
+            // The daemon and shared memory are still there.
+            task.host.release()?;
+        }
+        return started;
+    }
+    let ready = get_ready(task);
+    if ready.is_err() {
+        turn_off_after_failed_start(task);
+    }
+    ready
+}
+
+/// The guest has answered, so this takes it from there to a desktop someone can use.
+fn get_ready(task: &mut Task) -> Result<()> {
     task.step("Waiting for the desktop");
     if !wait_for_desktop(task) {
         return Err(Failure::new("Windows started, but its desktop never came up."));
     }
+    check_gpu(task)?;
     set_up_desktop(task)?;
     place_driver_files(task)
+}
+
+/// Asks Windows to go, then makes sure it does. The start has already failed, and this can only add to
+/// that, so what goes wrong here is logged and the first reason stays.
+fn turn_off_after_failed_start(task: &mut Task) {
+    task.step("Turning off the VM");
+    if task.host.stop(&task.machine, FAILED_START_STOP_SECONDS).is_ok() {
+        return;
+    }
+    if let Err(failure) = force(task, None) {
+        let _ = write_log(task.context, &format!("after a failed start: {}", failure.0));
+    }
 }
 
 /// Starts what has just been installed, if it fits. An install that worked is good news, and a full
@@ -282,6 +311,8 @@ fn run_action(task: &mut Task, arguments: &[String]) -> Result<()> {
 }
 
 fn take_lock(context: &Context) -> Result<File> {
+    // A task can be the first thing to run on a new install, with no run folder yet.
+    context.make_run_folder(None)?;
     let lock = File::create(context.run_folder(None).join(LOCK_FILE))?;
     flock(&lock, FlockOperation::NonBlockingLockExclusive)
         .map_err(|_| Failure::new("Something else is still in progress."))?;

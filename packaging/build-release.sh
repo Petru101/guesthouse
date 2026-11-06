@@ -10,8 +10,9 @@
 #   payload   guesthouse-VERSION-x86_64.tar.xz
 #   source    guesthouse-VERSION-source.tar.xz, and SHA256SUMS
 #
-# Run it inside the image from packaging/Containerfile, because what it builds only runs on systems
-# with that image's glibc or a newer one. QEMU_UPSTREAM can name a local clone of QEMU.
+# Everything built here only runs on this system's glibc or a newer one, so a release doesn't run this
+# directly: packaging/build-in-images.sh runs each stage in its own image. On its own it builds for
+# this PC, which is what install.sh --from-source wants. QEMU_UPSTREAM can name a local clone of QEMU.
 set -eu
 
 QEMU_TAG=v11.1.3
@@ -87,10 +88,21 @@ build_qemu() {
     ninja -C "$OUT/qemu-build" $targets
 }
 
-# Libraries are copied under their sonames, which is what the loader asks for.
+# Which package a library came from, as whoever receives a copy can ask for its source.
+library_package() {
+    if command -v dpkg-query >/dev/null 2>&1; then
+        package=$(dpkg-query -S "$(readlink -f "$1")" 2>/dev/null | head -n 1 | cut -d : -f 1)
+        [ -z "$package" ] || dpkg-query -W -f '${Package} ${Version}' "$package"
+    elif command -v rpm >/dev/null 2>&1; then
+        rpm -qf "$1"
+    fi
+}
+
+# Libraries are copied under their sonames, which is what the loader asks for. This reads the program
+# where it was built, as a staged one finds the libraries of the last run through its rpath.
 bundle_libraries() {
     program=$1
-    folder=$(dirname "$program")/lib
+    folder=$2
     list=$OUT/stage/LIBRARIES.txt
     mkdir -p "$folder"
     : >"$list"
@@ -100,7 +112,7 @@ bundle_libraries() {
         fi
         cp -L "$path" "$folder/$name"
         chmod u+w "$folder/$name"
-        printf '%s %s\n' "$name" "$(rpm -qf "$path" 2>/dev/null || echo unknown)" >>"$list"
+        printf '%s %s\n' "$name" "$(library_package "$path" || echo unknown)" >>"$list"
     done
 }
 
@@ -113,7 +125,7 @@ stage_qemu() {
     cp "$OUT/qemu-build/qemu-system-$ARCH" "$target/"
     [ ! -f "$OUT/qemu-build/hw/misc/nvfwd/nvfwd-sensord" ] ||
         cp "$OUT/qemu-build/hw/misc/nvfwd/nvfwd-sensord" "$target/"
-    bundle_libraries "$target/qemu-system-$ARCH"
+    bundle_libraries "$OUT/qemu-build/qemu-system-$ARCH" "$target/lib"
     # The build folder holds what was generated, like the keymaps, and the source the rest.
     cp -R "$QEMU_TREE/pc-bios/." "$OUT/stage/qemu/pc-bios/"
     cp -RL "$OUT/qemu-build/pc-bios/." "$OUT/stage/qemu/pc-bios/"
@@ -141,7 +153,11 @@ stage_app() {
     for program in guesthouse guesthouse-check guesthouse-daemon guesthouse-share guesthouse-task; do
         cp "$target_folder/release/$program" "$OUT/stage/"
     done
-    write_symbol_needs "$OUT/stage/guesthouse"
+    # A build with HDR won't load on GTK older than 4.16, so a second one goes along for those, and
+    # install.sh keeps the one that fits. It's the lower floor, so it's what the symbols are read from.
+    (cd "$REPO" && cargo build --release --locked -p guesthouse-app --no-default-features)
+    cp "$target_folder/release/guesthouse" "$OUT/stage/guesthouse-no-hdr"
+    write_symbol_needs "$OUT/stage/guesthouse-no-hdr"
     mkdir -p "$OUT/stage/share"
     cp "$REPO/crates/app/data/$APP_ID.desktop" "$OUT/stage/share/"
     cp -R "$REPO/crates/app/data/icons" "$OUT/stage/share/"

@@ -159,6 +159,7 @@ fn signal_message(objects: &[u32], contexts: &[u32], values: &[u64]) -> Vec<u8> 
     request
 }
 
+mod failing;
 mod frame_ring;
 mod indirect;
 
@@ -777,12 +778,80 @@ mod mappings {
     }
 
     #[test]
-    fn an_update_of_an_unknown_allocation_fails_without_raising_the_fence() {
+    fn an_update_of_an_unknown_allocation_fails_and_frees_the_guest() {
         let mut session = session();
         let (sync, _, fence) = create_fence(&mut session, 0);
         let reply = update(&mut session, sync, 0, &[operation(0, 0x5000_0000, 0x1000, 0x999, 0)]);
         assert_eq!(reply, Status::UNSUCCESSFUL.0.to_le_bytes());
-        assert_eq!(session.memory().read_u64(fence).unwrap(), 0);
+        assert_eq!(session.memory().read_u64(fence).unwrap(), 1);
+    }
+
+    /// A queue with work on the GPU, and an update that will run once its fence gets to 3.
+    fn queue_behind_an_update(session: &mut TestSession) -> (u32, u64, u64) {
+        session.backend_mut().run_work = true;
+        let (_, handle) = allocate(session, private(0x1000));
+        let context = create_context(session, 0);
+        let (queue, _, queue_fence) = create_queue(session, context);
+        submit(session, queue, 7);
+        let (sync, _, fence) = create_fence(session, 1);
+        let operations = [operation(0, 0x5000_0000, 0x1000, u64::from(handle), 0)];
+        assert_eq!(status_of(&update(session, sync, 3, &operations)), SUCCESS);
+        (queue, queue_fence, fence)
+    }
+
+    #[test]
+    fn a_waiting_update_that_fails_takes_the_process_off_the_gpu_before_freeing_it() {
+        let mut session = session();
+        let (queue, queue_fence, fence) = queue_behind_an_update(&mut session);
+        session.backend_mut().fail_next_map = true;
+        session.memory_mut().write_u64(fence, 3).unwrap();
+        session.poll(Instant::now());
+        assert_eq!(session.backend().closed_queues, [queue]);
+        assert!(session.queues[&queue].failed);
+        assert_eq!(session.memory().read_u64(fence).unwrap(), 4);
+        assert_eq!(session.memory().read_u64(queue_fence).unwrap(), 7);
+    }
+
+    #[test]
+    fn nothing_reaches_the_gpu_after_a_failed_update() {
+        let mut session = session();
+        let (queue, queue_fence, fence) = queue_behind_an_update(&mut session);
+        session.backend_mut().fail_next_map = true;
+        session.memory_mut().write_u64(fence, 3).unwrap();
+        session.poll(Instant::now());
+        let rung = session.backend().doorbells.len();
+        let mut request = message(Command::SubmitToHardwareQueue, 0x50);
+        set_u32(&mut request, 0x18, queue);
+        set_u64(&mut request, 0x20, 8);
+        assert_eq!(status_of(&send(&mut session, &request)), Status::UNSUCCESSFUL.0);
+        assert_eq!(session.backend().doorbells.len(), rung);
+        assert_eq!(session.memory().read_u64(queue_fence).unwrap(), 8);
+    }
+
+    #[test]
+    fn a_failed_update_does_not_count_towards_stopping_all_work() {
+        let mut session = session();
+        let (_, _, fence) = queue_behind_an_update(&mut session);
+        session.backend_mut().fail_next_map = true;
+        session.memory_mut().write_u64(fence, 3).unwrap();
+        session.poll(Instant::now());
+        assert!(session.failed_queues.is_empty());
+        assert!(session.work_allowed());
+    }
+
+    #[test]
+    fn an_update_that_fails_at_once_stops_the_queues_too() {
+        let mut session = session();
+        session.backend_mut().run_work = true;
+        let (_, handle) = allocate(&mut session, private(0x1000));
+        let context = create_context(&mut session, 0);
+        let (queue, _, _) = create_queue(&mut session, context);
+        let (sync, _, fence) = create_fence(&mut session, 0);
+        session.backend_mut().fail_next_map = true;
+        let reply = update(&mut session, sync, 0, &[operation(0, 0x5000_0000, 0x1000, u64::from(handle), 0)]);
+        assert_eq!(reply, Status::UNSUCCESSFUL.0.to_le_bytes());
+        assert!(session.queues[&queue].failed);
+        assert_eq!(session.memory().read_u64(fence).unwrap(), 1);
     }
 
     #[test]
@@ -1322,18 +1391,6 @@ mod queues {
         assert!(!session.poll(Instant::now() + crate::pending::QUEUE_TIMEOUT + Duration::from_secs(1)).any());
         assert_eq!(session.memory().read_u64(fence).unwrap(), 3);
         assert!(session.queues[&queue].failed);
-    }
-
-    #[test]
-    fn too_many_failed_queues_stop_all_work() {
-        let mut session = session();
-        session.queue_failures = crate::pending::MOST_QUEUE_FAILURES;
-        session.backend_mut().run_work = true;
-        let context = create_context(&mut session, 0);
-        let (queue, _, fence) = create_queue(&mut session, context);
-        submit(&mut session, queue, 1);
-        assert!(session.backend().doorbells.is_empty());
-        assert_eq!(session.memory().read_u64(fence).unwrap(), 1);
     }
 
     #[test]

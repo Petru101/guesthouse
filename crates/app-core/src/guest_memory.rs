@@ -31,7 +31,8 @@ fn no_room(file: &Path, bytes: u64) -> Failure {
 
 /// Makes the file and claims all of it. A failure leaves no file behind.
 pub fn reserve(file: &Path, bytes: u64) -> Result<()> {
-    let opened = OpenOptions::new().write(true).create(true).truncate(true).mode(PRIVATE_FILE).open(file)?;
+    // The slot's old file has just gone, so anything here now isn't ours to touch.
+    let opened = OpenOptions::new().write(true).create_new(true).mode(PRIVATE_FILE).open(file)?;
     let claimed = fallocate(&opened, FallocateFlags::empty(), 0, bytes);
     drop(opened);
     claimed.map_err(|error| {
@@ -51,6 +52,14 @@ mod tests {
     use std::os::unix::fs::MetadataExt;
 
     const BLOCK: u64 = 512;
+
+    #[test]
+    fn a_file_already_there_is_left_alone() {
+        let scratch = Scratch::new();
+        let file = scratch.write("ram", "someone else's");
+        assert!(reserve(&file, 4096).is_err());
+        assert_eq!(fs::read_to_string(&file).unwrap(), "someone else's");
+    }
 
     #[test]
     fn the_whole_file_is_claimed_at_once() {

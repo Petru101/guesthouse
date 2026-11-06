@@ -1,8 +1,6 @@
-# Where a release is built. A program built here runs on this glibc or a newer one, so this stays the
-# oldest system that can run the app at all. libadwaita 1.8 is the app's floor today, and Fedora 44 has
-# it, with glibc 2.43, the same as Ubuntu 26.04.
+# Where the app and its helpers are built. They call so little of glibc that they run on far older
+# ones than this. GTK is what the build needs to be recent, and its programs load the host's anyway.
 FROM registry.fedoraproject.org/fedora:44
-RUN dnf -y install gcc gcc-c++ make ninja-build meson python3 git bzip2 diffutils findutils which xz \
-      glib2-devel pixman-devel zlib-devel libfdt-devel libslirp-devel pipewire-devel libusb1-devel \
-      rust cargo gtk4-devel libadwaita-devel binutils \
+RUN dnf -y install gcc git xz findutils which binutils pkgconf-pkg-config rust cargo gtk4-devel \
+      libadwaita-devel \
     && dnf clean all

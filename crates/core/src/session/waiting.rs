@@ -2,14 +2,15 @@
 
 use super::{Handled, Session, answer_status, services};
 use crate::deferred::{Deferred, DeferredAction, FreedAllocation};
+use crate::fault_rate::{FAULT_WINDOW, MOST_FAULTS};
 use crate::pending::{
-    GATE_TIMEOUT, GateStep, MOST_QUEUE_FAILURES, Pending, QUEUE_TIMEOUT, QueueAction, RING_ROOM_TIMEOUT,
+    GATE_TIMEOUT, GateStep, MOST_FAILED_QUEUES, Pending, QUEUE_TIMEOUT, QueueAction, RING_ROOM_TIMEOUT,
     Signal, Target, Waiting,
 };
 use crate::session::{Answer, HeldReply, ReplyTicket};
 use crate::tables::Queue;
 use crate::timing::{HeldFor, Stage};
-use guesthouse_backend::{Backend, GuestMemory, UnmapRequest, WorkStart};
+use guesthouse_backend::{Backend, GuestMemory, SpaceId, UnmapRequest, WorkStart};
 use guesthouse_messages::Status;
 use guesthouse_messages::notice::Notice;
 use guesthouse_messages::queue::PresentToken;
@@ -20,8 +21,22 @@ use std::time::Instant;
 /// What became of a submission.
 pub(crate) enum GpuTook {
     Nothing,
+    /// The work can't run, as its queue or the whole guest has stopped.
+    Dropped,
     NoRoom,
     Work(u32),
+}
+
+impl GpuTook {
+    /// What the guest hears. A failed submission is the only way the host has of telling a program
+    /// that its work didn't run: the guest's driver marks that device as lost, and the program sees
+    /// that as it would on real Windows. Nothing the host sends unasked can say it.
+    pub(crate) fn status(&self) -> Status {
+        match self {
+            Self::Dropped => Status::UNSUCCESSFUL,
+            _ => Status::SUCCESS,
+        }
+    }
 }
 
 impl<B: Backend, M: GuestMemory> Session<B, M> {
@@ -302,22 +317,45 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
 
     /// Whether queues may still be given work.
     pub(crate) fn work_allowed(&self) -> bool {
-        self.queue_failures < MOST_QUEUE_FAILURES
+        !self.faults.stopped()
+    }
+
+    /// Whether faults have stopped all of this guest's GPU work.
+    pub fn gpu_work_stopped(&self) -> bool {
+        self.faults.stopped()
     }
 
     /// Gives up on a queue the GPU has stopped answering, and frees the guest to carry on.
-    fn queue_timed_out(&mut self, handle: u32, fence: u64, value: u64) {
+    fn queue_timed_out(&mut self, handle: u32, fence: u64, value: u64, now: Instant) {
         log::error!("queue {handle:#x} did not reach fence value {value:#x} in time");
         if let Some(queue) = self.queues.get_mut(&handle)
             && !queue.failed
         {
             queue.failed = true;
-            self.queue_failures += 1;
-            if self.queue_failures == MOST_QUEUE_FAILURES {
-                log::error!("too many queues have failed, so no more work goes to the GPU");
-            }
+            let space = queue.space;
+            self.count_failed_queue(space, now);
         }
         self.store_fence(fence, value);
+    }
+
+    /// A process counts as one fault however many of its queues go with it, as a healthy app can have
+    /// more queues than a guest gets faults.
+    fn count_failed_queue(&mut self, space: SpaceId, now: Instant) {
+        let failed = self.failed_queues.entry(space).or_default();
+        *failed += 1;
+        let failed = *failed;
+        if failed == 1 && self.faults.note(now) {
+            log::error!(
+                "{MOST_FAULTS} processes faulted within {} seconds, so this guest's GPU work has stopped \
+                 until it restarts, and what programs in it submit from now on will fail",
+                FAULT_WINDOW.as_secs()
+            );
+        }
+        if failed >= MOST_FAILED_QUEUES {
+            log::error!("{failed} queues of process {space:?} have failed, so it comes off the GPU");
+            self.failed_queues.remove(&space);
+            self.stop_space(space);
+        }
     }
 
     /// Adds to a queue's backlog, and holds the reply if too much of it is unfinished.
@@ -442,7 +480,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
                     self.timings.fence_seen(now.saturating_duration_since(rung));
                     None
                 } else if now.saturating_duration_since(rung) > QUEUE_TIMEOUT {
-                    self.queue_timed_out(queue, fence, value);
+                    self.queue_timed_out(queue, fence, value, now);
                     None
                 } else {
                     Some(Pending::Watch { queue, fence, value, rung })
@@ -481,14 +519,16 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             queue_failed: record.failed,
         };
         self.timings.mark(Stage::Started);
+        let dropped = !work.may_run || work.queue_failed;
         let start = self.backend.start_work(&mut services!(self), &work);
         self.timings.mark(Stage::Prepared);
         match start {
+            WorkStart::Finished if dropped => GpuTook::Dropped,
             WorkStart::Finished => GpuTook::Nothing,
             WorkStart::Busy => GpuTook::NoRoom,
             WorkStart::QueueFailed => {
                 self.queues.get_mut(&queue).expect("read above").failed = true;
-                GpuTook::Nothing
+                GpuTook::Dropped
             }
             WorkStart::Started { doorbell, work } => {
                 self.work_started += 1;

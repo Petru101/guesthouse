@@ -10,7 +10,7 @@ use crate::monitor::Command as Qmp;
 use crate::processes::{memory_taken, qemu_pid};
 use crate::start_checks::SECOND_INSTANCE_REFUSAL;
 use crate::vm_args::{OUTPUT_FILE, Sound, VmPlan};
-use rustix::process::{Pid, Signal, kill_process};
+use rustix::process::{Pid, Signal, kill_process, kill_process_group};
 use std::fs::{self, File};
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
@@ -25,6 +25,7 @@ const STOP_POLL: Duration = Duration::from_millis(500);
 const MONITOR_WAIT: Duration = Duration::from_secs(20);
 const POLL: Duration = Duration::from_millis(200);
 const AFTER_SIGTERM_SECONDS: u64 = 20;
+const AFTER_SIGKILL_SECONDS: u64 = 10;
 const LEFT_OVER_STOP_SECONDS: u64 = 100;
 const AGENT_ATTEMPTS: u32 = 120;
 const AGENT_ANSWER_SECONDS: u64 = 4;
@@ -105,11 +106,19 @@ impl LocalHost<'_> {
         if !plan.qemu.exists() {
             return Err(Failure::new(NO_QEMU_HELP));
         }
-        let mut process = self.spawn_qemu(plan)?;
+        let mut qemu = self.spawn_qemu(plan)?;
+        let answered = self.wait_for_monitor(&mut qemu);
+        if answered.is_err() {
+            self.end_qemu(&mut qemu);
+        }
+        answered
+    }
+
+    fn wait_for_monitor(&self, qemu: &mut Child) -> Result<()> {
         let clock = &self.context.clock;
         let end = clock.now() + MONITOR_WAIT;
         while clock.now() < end {
-            if process.try_wait()?.is_some() {
+            if qemu.try_wait()?.is_some() {
                 return Err(Failure(start_failure(&self.last_words())));
             }
             if self.context.run_state(None).is_some() {
@@ -118,6 +127,25 @@ impl LocalHost<'_> {
             clock.sleep(POLL);
         }
         Err(Failure::new("QEMU started, but its monitor never answered."))
+    }
+
+    /// Ends a QEMU this task started and has given up on. It leads a process group of its own, so
+    /// whatever launched it goes too.
+    fn end_qemu(&self, qemu: &mut Child) {
+        let Some(group) = Pid::from_raw(qemu.id() as i32) else { return };
+        let clock = &self.context.clock;
+        for (signal, seconds) in
+            [(Signal::TERM, AFTER_SIGTERM_SECONDS), (Signal::KILL, AFTER_SIGKILL_SECONDS)]
+        {
+            if !matches!(qemu.try_wait(), Ok(None)) {
+                return;
+            }
+            let _ = kill_process_group(group, signal);
+            let end = clock.now() + Duration::from_secs(seconds);
+            while matches!(qemu.try_wait(), Ok(None)) && clock.now() < end {
+                clock.sleep(POLL);
+            }
+        }
     }
 
     fn clear_run_folder(&self) -> Result<()> {
@@ -144,23 +172,32 @@ impl LocalHost<'_> {
         let ready = || daemon::SOCKETS.iter().all(|name| self.run_file(name).exists());
         while !ready() {
             if daemon.try_wait()?.is_some() {
-                let said = fs::read_to_string(self.run_file(daemon::OUTPUT_FILE)).unwrap_or_default();
-                let last = said.lines().last().unwrap_or("it gave no reason");
-                return Err(Failure(format!("The VM did not start: the daemon stopped: {last}")));
+                return Err(Failure(format!("The VM did not start: {}", self.daemons_last_words())));
             }
             self.context.clock.sleep(POLL);
         }
         Ok(())
     }
 
-    fn wait_for_agent(&self, machine: &Machine) -> Result<()> {
+    fn daemons_last_words(&self) -> String {
+        let said = fs::read_to_string(self.run_file(daemon::OUTPUT_FILE)).unwrap_or_default();
+        let last = said.lines().last().unwrap_or("it gave no reason");
+        format!("the daemon stopped: {last}")
+    }
+
+    /// Asks the processes themselves, and not `/proc`. Just after a spawn returns, `/proc` can show a
+    /// new QEMU with no words at all, and on a busy PC that lasts long enough to look like it's gone.
+    fn wait_for_agent(&self, machine: &Machine, qemu: &mut Child, daemon: &mut Child) -> Result<()> {
         for _ in 0..AGENT_ATTEMPTS {
             if self.context.ask_guest(machine, AGENT_UP_SCRIPT, AGENT_ANSWER_SECONDS, None).contains("up") {
                 return Ok(());
             }
-            if qemu_pid(self.context, None).is_none() {
+            if qemu.try_wait()?.is_some() {
                 let words = self.last_words();
                 return Err(Failure(format!("The VM stopped unexpectedly. {words}").trim().to_owned()));
+            }
+            if daemon.try_wait()?.is_some() {
+                return Err(Failure(format!("The VM did not start: {}", self.daemons_last_words())));
             }
             self.context.clock.sleep(AGENT_RETRY);
         }
@@ -192,8 +229,12 @@ impl LocalHost<'_> {
         let mut daemon = start.spawn(&plan.run_folder)?;
         self.wait_for_daemon(&mut daemon)?;
         let with_sound = VmPlan { sound: sound_on_this_host(), ..plan.clone() };
-        self.spawn_qemu(&with_sound)?;
-        self.wait_for_agent(machine)
+        let mut qemu = self.spawn_qemu(&with_sound)?;
+        let answered = self.wait_for_agent(machine, &mut qemu, &mut daemon);
+        if answered.is_err() {
+            self.end_qemu(&mut qemu);
+        }
+        answered
     }
 }
 

@@ -11,6 +11,7 @@
 
 mod config;
 mod deferred;
+mod fault_rate;
 mod fences;
 mod frames;
 mod gpu_addresses;
@@ -24,6 +25,7 @@ mod tables;
 mod timing;
 
 pub use config::{Config, CopyOrder, MemoryLimits, video_budget};
+pub use fault_rate::{FAULT_WINDOW, MOST_FAULTS};
 pub use fences::{FENCE_AREA, FENCE_PAGE};
 pub use frames::{
     CursorShape, Delivery, Frame, FrameCounts, FrameLight, FrameRing, FrameSink, NotTheViewers, Picture,

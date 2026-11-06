@@ -6,6 +6,7 @@
 //! frame socket from that same thread.
 
 pub mod environment;
+pub mod gpu_note;
 pub mod guest_memory;
 pub mod logger;
 pub mod router;
