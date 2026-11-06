@@ -17,6 +17,7 @@ static RingShape Shape(WireFormat format)
 	shape.height = 2160;
 	shape.slotSize = static_cast<std::uint64_t>(PitchFor(3840)) * 2160;
 	shape.format = format;
+	shape.refreshMillihertz = 143856;
 	shape.monitor = 2;
 	return shape;
 }
@@ -38,6 +39,7 @@ static void Registers_the_ring_and_gets_its_first_slot()
 	CHECK(ring.cicp_transfer == GH_CICP_TRANSFER_PQ);
 	CHECK(ring.pitch == 15360);
 	CHECK(ring.slot_size == 15360ull * 2160);
+	CHECK(ring.refresh_millihertz == 143856);
 	CHECK(link.PeakNits() == 1000);
 }
 

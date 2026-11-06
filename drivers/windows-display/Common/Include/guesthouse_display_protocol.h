@@ -71,7 +71,7 @@ typedef struct gh_register {
 	uint32_t pitch; /* Bytes from one row to the next. */
 	uint64_t slot_size; /* What the buffer was created with, for finding it among the guest's allocations. */
 	uint32_t fourcc;
-	uint32_t reserved0;
+	uint32_t refresh_millihertz; /* The rate Windows committed for this mode, 0 if not known. */
 	uint8_t cicp_primaries;
 	uint8_t cicp_transfer;
 	uint8_t cicp_matrix;
