@@ -40,6 +40,8 @@ pub struct FakeRm {
     /// What each export handed out, so a test can look at what a viewer would see.
     pub exports: HashMap<Handle, File>,
     pub engine: FakeEngine,
+    /// What [`Rm::read_gpu_timer`] says. `None` plays a page that isn't mapped yet.
+    pub gpu_timer: Option<u64>,
     answers: HashMap<u32, Answer>,
     /// Each range's mappings, address to length, to refuse a map over a map.
     mappings: BTreeMap<(Handle, u64), u64>,
@@ -63,6 +65,7 @@ impl FakeRm {
             refuse_exports: false,
             exports: HashMap::new(),
             engine: FakeEngine::default(),
+            gpu_timer: None,
             answers: HashMap::new(),
             mappings: BTreeMap::new(),
             mapped: Mapped::new(),
@@ -244,5 +247,9 @@ impl Rm for FakeRm {
         if self.engine.running {
             self.engine.run(token, &self.mapped, &self.exports);
         }
+    }
+
+    fn read_gpu_timer(&self) -> Option<u64> {
+        self.gpu_timer
     }
 }

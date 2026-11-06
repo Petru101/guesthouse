@@ -7,6 +7,7 @@ mod client_alloc;
 mod control;
 mod gpu_groups;
 mod gpu_range;
+mod time_pairs;
 
 pub use gpu_range::RUNTIME_GPU_RANGE;
 
