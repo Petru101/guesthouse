@@ -6,7 +6,9 @@ use super::import::texture;
 use super::ring::Buffers;
 use gtk::gdk;
 use gtk::prelude::*;
-use guesthouse_frame_socket::{Format, Frame, FrameSocket, Hello, Message, Packet, Release, SOCKET_NAME};
+use guesthouse_frame_socket::{
+    Format, Frame, FrameSocket, Hello, Light, Message, Packet, Release, SOCKET_NAME,
+};
 use std::io;
 use std::path::Path;
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -14,6 +16,8 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 const LINEAR: u64 = 0;
 /// What a copy can show, so the producer always has something it can send.
 const COPYABLE: [u32; 2] = [u32::from_le_bytes(*b"XR24"), u32::from_le_bytes(*b"AR24")];
+/// What an HDR desktop is. A guest only sends it to a viewer that offers it.
+const HDR_FORMAT: Format = Format { fourcc: u32::from_le_bytes(*b"XB30"), modifier: LINEAR };
 
 pub struct SocketFrames {
     socket: FrameSocket,
@@ -22,6 +26,8 @@ pub struct SocketFrames {
     finished: Sender<Release>,
     releases: Receiver<Release>,
     alive: bool,
+    /// How the newest HDR picture wants to be shown. An SDR picture has none.
+    light: Option<Light>,
 }
 
 /// What this display can show, in the producer's order of preference. The message holds a limited
@@ -32,11 +38,19 @@ fn formats(display: &gdk::Display) -> Vec<Format> {
         let (fourcc, modifier) = dmabuf.format(index);
         Format { fourcc, modifier }
     });
+    in_order(offered.collect())
+}
+
+/// HDR is only offered if the display has it, and it comes early, as the list can be cut short.
+fn in_order(offered: Vec<Format>) -> Vec<Format> {
+    let hdr = offered.contains(&HDR_FORMAT).then_some(HDR_FORMAT);
     let (usual, others): (Vec<Format>, Vec<Format>) =
-        offered.partition(|format| COPYABLE.contains(&format.fourcc));
+        offered.into_iter().partition(|format| COPYABLE.contains(&format.fourcc));
     let linear = COPYABLE.map(|fourcc| Format { fourcc, modifier: LINEAR });
     let mut all = linear.to_vec();
-    all.extend(usual.into_iter().chain(others).filter(|format| !linear.contains(format)));
+    all.extend(hdr);
+    let rest = usual.into_iter().chain(others);
+    all.extend(rest.filter(|format| !linear.contains(format) && Some(*format) != hdr));
     all
 }
 
@@ -48,7 +62,15 @@ impl SocketFrames {
         socket.send(&Message::Hello(hello), &[])?;
         socket.set_nonblocking(true)?;
         let (finished, releases) = channel();
-        Ok(Self { socket, display: display.clone(), buffers: None, finished, releases, alive: true })
+        Ok(Self {
+            socket,
+            display: display.clone(),
+            buffers: None,
+            finished,
+            releases,
+            alive: true,
+            light: None,
+        })
     }
 
     fn release(&mut self, generation: u32, slot: u32) {
@@ -75,7 +97,13 @@ impl SocketFrames {
                     self.buffers = Buffers::new(&ring, fds);
                     newest = None;
                 }
+                Ok(Some(Packet { message: Message::Light(light), .. })) => {
+                    self.light = Some(light);
+                }
                 Ok(Some(Packet { message: Message::Frame(frame), .. })) => {
+                    if self.light.is_some_and(|light| light.slot != frame.slot) {
+                        self.light = None;
+                    }
                     if let Some(older) = newest.replace(frame) {
                         self.release(older.generation, older.slot);
                     }
@@ -108,5 +136,38 @@ impl FrameSource for SocketFrames {
 
     fn alive(&self) -> bool {
         self.alive
+    }
+
+    fn sdr_white_nits(&self) -> Option<u32> {
+        self.light.map(|light| light.sdr_white_nits)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn format(name: &[u8; 4], modifier: u64) -> Format {
+        Format { fourcc: u32::from_le_bytes(*name), modifier }
+    }
+
+    #[test]
+    fn what_every_guest_can_send_comes_first() {
+        let found = in_order(vec![format(b"NV12", 0), format(b"XR24", 7)]);
+        assert_eq!(found[0], format(b"XR24", LINEAR));
+        assert_eq!(found[1], format(b"AR24", LINEAR));
+    }
+
+    #[test]
+    fn hdr_is_offered_only_by_a_display_that_has_it() {
+        assert!(!in_order(vec![format(b"XR24", 0)]).contains(&HDR_FORMAT));
+        let found = in_order(vec![format(b"NV12", 0), HDR_FORMAT]);
+        assert_eq!(found[2], HDR_FORMAT);
+        assert_eq!(found.iter().filter(|format| **format == HDR_FORMAT).count(), 1);
+    }
+
+    #[test]
+    fn hdr_with_a_tiled_layout_is_not_enough() {
+        assert!(!in_order(vec![format(b"XB30", 7)]).contains(&HDR_FORMAT));
     }
 }

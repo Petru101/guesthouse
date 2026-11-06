@@ -264,6 +264,11 @@ impl Screen {
         self.0.qemu.borrow().as_ref().map(|source| source.calls()).unwrap_or_default()
     }
 
+    /// How bright the guest wants SDR white, if it's showing an HDR picture.
+    pub fn sdr_white_nits(&self) -> Option<u32> {
+        self.0.gpu.borrow().as_ref().and_then(|source| source.sdr_white_nits())
+    }
+
     pub fn frames_shown(&self) -> u64 {
         self.0.frames.get()
     }

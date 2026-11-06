@@ -39,6 +39,10 @@ pub trait FrameSource {
     fn calls(&self) -> Vec<(String, u64)> {
         Vec::new()
     }
+    /// How bright the guest wants SDR white, while it's showing an HDR picture.
+    fn sdr_white_nits(&self) -> Option<u32> {
+        None
+    }
     /// The pointer to show over the screen, when the guest has changed it.
     fn new_cursor(&mut self) -> Option<gdk::Cursor> {
         None
