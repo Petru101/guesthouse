@@ -1,9 +1,153 @@
 use super::*;
+use crate::agent::make_token;
+use crate::agent::stand_in::ScriptedAgent;
+use crate::clock::Clock;
 use crate::machine::Kind;
 use crate::slots;
 use crate::testing::{Scratch, scratch_context};
 use crate::vm_args::{Boot, OUTPUT_FILE};
 use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::thread;
+use std::time::{Duration, Instant};
+
+/// How long a test's pretend programs last if nothing stops them.
+const PRETEND_LIFE_SECONDS: u32 = 60;
+const NOTICE_WITHIN: Duration = Duration::from_secs(1);
+
+/// Time that moves when something sleeps, so a test doesn't sit out the wait for an agent. A real
+/// process still needs a moment, so each sleep gives it a little of the real thing.
+#[derive(Default)]
+struct QuickClock(AtomicU64);
+
+impl Clock for QuickClock {
+    fn now(&self) -> Duration {
+        Duration::from_millis(self.0.load(Ordering::Relaxed))
+    }
+
+    fn sleep(&self, time: Duration) {
+        self.0.fetch_add(time.as_millis() as u64, Ordering::Relaxed);
+        thread::sleep(Duration::from_millis(1));
+    }
+}
+
+/// A daemon that does nothing but make its sockets, and a QEMU that does nothing but note its pid.
+/// The context's `/proc` is empty, so neither can be found by looking there, as with a QEMU in the
+/// moment after its spawn.
+fn pretend_programs(scratch: &Scratch, context: &mut crate::context::Context) -> (PathBuf, PathBuf) {
+    context.paths.binaries = scratch.path("bin");
+    let (daemon_pid, qemu_pid) = (scratch.path("daemon-pid"), scratch.path("qemu-pid"));
+    let daemon = format!(
+        "#!/bin/sh\necho $$ > {}\ntouch \"$1/run/vgpu.sock\" \"$1/run/global.sock\"\nexec sleep {PRETEND_LIFE_SECONDS}\n",
+        daemon_pid.display()
+    );
+    scratch.program("bin/guesthouse-daemon", &daemon);
+    let qemu = format!("#!/bin/sh\necho $$ > {}\nexec sleep {PRETEND_LIFE_SECONDS}\n", qemu_pid.display());
+    context.paths.qemu = scratch.program("not-qemu", &qemu);
+    context.clock = Arc::new(QuickClock::default());
+    (daemon_pid, qemu_pid)
+}
+
+fn read_pid(file: &Path) -> Option<u32> {
+    fs::read_to_string(file).ok()?.trim().parse().ok()
+}
+
+/// The pid of a pretend QEMU that's still going. One killed early may never have written its pid.
+fn left_running(file: &Path) -> Option<u32> {
+    let end = Instant::now() + NOTICE_WITHIN;
+    while Instant::now() < end {
+        if let Some(pid) = read_pid(file) {
+            return is_running(pid).then_some(pid);
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    None
+}
+
+/// A zombie counts as gone, as only its parent can clear it.
+fn is_running(pid: u32) -> bool {
+    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default();
+    let state = stat.rsplit(')').next().and_then(|rest| rest.split_whitespace().next());
+    state.is_some_and(|state| state != "Z")
+}
+
+fn end_pretend_program(file: &Path) {
+    if let Some(pid) = read_pid(file) {
+        let _ = Command::new("kill").args(["-KILL", &pid.to_string()]).status();
+    }
+}
+
+fn windows_plan(context: &crate::context::Context) -> (Machine, VmPlan) {
+    let machine = Machine::new("vm", "VM", "/d", "/v");
+    machine.save(context).unwrap();
+    make_token(context, &machine).unwrap();
+    let plan = VmPlan::new(context, &machine, Boot::Gpu, slots::first(), 0);
+    (machine, plan)
+}
+
+#[test]
+fn a_qemu_that_proc_cannot_show_yet_is_still_a_qemu() {
+    let scratch = Scratch::new();
+    let mut context = scratch_context(&scratch);
+    let (daemon, qemu) = pretend_programs(&scratch, &mut context);
+    context.agent = Arc::new(ScriptedAgent::answering(&["", "", "up"]));
+    let (machine, plan) = windows_plan(&context);
+    let started = LocalHost { context: &context }.start(&plan, &machine);
+    end_pretend_program(&qemu);
+    end_pretend_program(&daemon);
+    assert_eq!(started, Ok(()));
+}
+
+#[test]
+fn a_start_that_gives_up_leaves_no_qemu_running() {
+    let scratch = Scratch::new();
+    let mut context = scratch_context(&scratch);
+    let (daemon, qemu) = pretend_programs(&scratch, &mut context);
+    context.agent = Arc::new(ScriptedAgent::answering(&[]));
+    let (machine, plan) = windows_plan(&context);
+    let started = LocalHost { context: &context }.start(&plan, &machine);
+    let left = left_running(&qemu);
+    end_pretend_program(&qemu);
+    end_pretend_program(&daemon);
+    assert!(started.unwrap_err().0.contains("the agent never answered"));
+    assert_eq!(left, None, "QEMU was left running");
+}
+
+#[test]
+fn a_daemon_that_stops_during_the_boot_ends_the_start_and_qemu() {
+    let scratch = Scratch::new();
+    let mut context = scratch_context(&scratch);
+    let (_, qemu) = pretend_programs(&scratch, &mut context);
+    let daemon =
+        "#!/bin/sh\ntouch \"$1/run/vgpu.sock\" \"$1/run/global.sock\"\nsleep 0.05\necho 'lost the card'\n";
+    scratch.program("bin/guesthouse-daemon", daemon);
+    context.agent = Arc::new(ScriptedAgent::answering(&[]));
+    let (machine, plan) = windows_plan(&context);
+    let started = LocalHost { context: &context }.start(&plan, &machine);
+    let left = left_running(&qemu);
+    end_pretend_program(&qemu);
+    let error = started.unwrap_err();
+    assert!(error.0.contains("the daemon stopped: lost the card"), "{error}");
+    assert_eq!(left, None, "QEMU was left running");
+}
+
+#[test]
+fn a_plain_qemu_whose_monitor_never_answers_is_not_left_running() {
+    let scratch = Scratch::new();
+    let mut context = scratch_context(&scratch);
+    let (_, qemu) = pretend_programs(&scratch, &mut context);
+    let host = LocalHost { context: &context };
+    let machine = Machine { kind: Kind::Plain, ..Machine::new("vm", "VM", "/d", "/v") };
+    let plan = VmPlan::new(&context, &machine, Boot::Plain { iso: String::new() }, slots::first(), 0);
+    let started = host.start(&plan, &machine);
+    let left = left_running(&qemu);
+    end_pretend_program(&qemu);
+    assert!(started.unwrap_err().0.contains("monitor never answered"));
+    assert_eq!(left, None, "QEMU was left running");
+}
 
 #[test]
 fn a_second_instance_never_reaches_what_finds_vms_by_program() {
