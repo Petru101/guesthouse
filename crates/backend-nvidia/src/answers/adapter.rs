@@ -75,6 +75,16 @@ impl AdapterAnswers {
         }
     }
 
+    /// The record as built, before anything a query adds.
+    pub fn record(&self) -> &[u8] {
+        &self.record
+    }
+
+    /// The RM's engine numbers on this card.
+    pub fn rm_engines(&self) -> &[u32] {
+        &self.rm_engines
+    }
+
     pub fn registry(&self) -> &AdapterRegistry {
         &self.registry
     }

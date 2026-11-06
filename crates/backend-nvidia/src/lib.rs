@@ -83,6 +83,15 @@ fn handle_of(memory: MemoryId) -> Handle {
     memory.0 as Handle
 }
 
+/// The profile for the card's architecture, or a refusal that names it. Only reads.
+pub fn card_generation<R: Rm>(card: &mut CardReader<'_, R>) -> Result<&'static Generation, Refusal> {
+    let architecture = card.read(record::ARCHITECTURE, &[]);
+    let architecture = architecture.map_err(|error| Refusal(format!("Reading the card failed: {error}")))?;
+    let architecture = u32::from_le_bytes(architecture[..4].try_into().expect("four bytes"));
+    generation_for(architecture)
+        .ok_or_else(|| Refusal(format!("This build has no profile for GPU architecture {architecture:#x}.")))
+}
+
 /// How an RM comes to be, which tests don't use.
 pub trait OpenRm: Rm + Sized {
     fn open_rm(version: &str, sizes: &'static HostBranch) -> Result<Self, RmError>;
@@ -143,11 +152,14 @@ impl<R: Rm> NvidiaBackend<R> {
     ) -> Result<Self, Refusal> {
         let failed = |error: RmError| Refusal(format!("Reading the card failed: {error}"));
         let mut card = CardReader::new(&mut device);
-        let architecture = card.read(record::ARCHITECTURE, &[]).map_err(failed)?;
-        let architecture = u32::from_le_bytes(architecture[..4].try_into().expect("four bytes"));
-        let generation = generation_for(architecture).ok_or_else(|| {
-            Refusal(format!("This build has no profile for GPU architecture {architecture:#x}."))
-        })?;
+        let generation = card_generation(&mut card)?;
+        if !generation.run_on_guest_branches.contains(&guest.name) {
+            log::warn!(
+                "{} cards have not been run with guest driver branch {}. This is a try, and it may fail.",
+                generation.name,
+                guest.name
+            );
+        }
         let engines = card.engines().map_err(failed)?;
         let graphics_copy = card.graphics_copy().map_err(failed)?;
         let nodes = node_list(&engines, graphics_copy, &generation.nodes);

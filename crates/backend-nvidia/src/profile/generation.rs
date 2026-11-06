@@ -48,12 +48,24 @@ pub struct Generation {
     /// failed its Vulkan test.
     pub copy_node_flags: u32,
     pub video_record_flags: VideoRecordFlags,
+    /// Guest branches this generation has been run with. On any other the backend still starts, and
+    /// says so in the log, as a shader set or class list could differ from branch to branch.
+    pub run_on_guest_branches: &'static [&'static str],
 }
+
+const COPY_NODE_FLAGS: u32 = 0x1A0;
 
 const BLACKWELL_DMA_COPY_B: u32 = 0xCAB5;
 const BLACKWELL_B: u32 = 0xCE97;
 const BLACKWELL_COMPUTE_B: u32 = 0xCEC0;
 const BLACKWELL_INLINE_TO_MEMORY_A: u32 = 0xCD40;
+const ADA_A: u32 = 0xC997;
+const ADA_COMPUTE_A: u32 = 0xC9C0;
+const AMPERE_DMA_COPY_B: u32 = 0xC7B5;
+const TURING_A: u32 = 0xC597;
+const TURING_COMPUTE_A: u32 = 0xC5C0;
+const TURING_DMA_COPY_A: u32 = 0xC5B5;
+const KEPLER_INLINE_TO_MEMORY_B: u32 = 0xA140;
 const FERMI_TWOD_A: u32 = 0x902D;
 const DEFERRED_API: u32 = super::super::rm::classes::DEFERRED_API;
 
@@ -93,14 +105,81 @@ pub const BLACKWELL: Generation = Generation {
         optical_flow: &[(0, 0x21)],
         jpeg: &[(3, 0x27)],
     },
-    copy_node_flags: 0x1A0,
+    copy_node_flags: COPY_NODE_FLAGS,
     video_record_flags: VideoRecordFlags {
         words: [BLACKWELL_VIDEO_FLAG, BLACKWELL_VIDEO_FRAMES],
         decoder: BLACKWELL_DECODER_FLAGS,
     },
+    run_on_guest_branches: &["617"],
 };
 
-const GENERATIONS: [&Generation; 1] = [&BLACKWELL];
+/// Video engines get no node here, so none of their commands reach a card of these generations, and
+/// the record's flags tell the guest's runtimes not to offer them. Optical flow and JPEG engines get
+/// none either.
+const NO_VIDEO_NODES: EngineNodes = EngineNodes { decode: &[], encode: &[], optical_flow: &[], jpeg: &[] };
+const NO_VIDEO_FLAGS: VideoRecordFlags = VideoRecordFlags { words: [0, 0], decoder: 0 };
+
+/// Ada, which keeps Ampere's channel, copy and doorbell classes. Experimental.
+pub const ADA: Generation = Generation {
+    name: "Ada",
+    architectures: &[0x190],
+    channel_class: 0xC56F,
+    copy_class: AMPERE_DMA_COPY_B,
+    video_decode_class: 0xC9B0,
+    video_encode_class: 0xC9B7,
+    usermode_class: 0xC561,
+    graphics_classes: &[
+        (ADA_A, 16),
+        (ADA_COMPUTE_A, 16),
+        (KEPLER_INLINE_TO_MEMORY_B, 16),
+        (FERMI_TWOD_A, 16),
+        (AMPERE_DMA_COPY_B, 8),
+        (DEFERRED_API, 1),
+    ],
+    channel_objects: &[
+        (ChannelObject::InlineToMemory, KEPLER_INLINE_TO_MEMORY_B),
+        (ChannelObject::Graphics, ADA_A),
+        (ChannelObject::TwoD, FERMI_TWOD_A),
+    ],
+    shader_sets: &[(0x809, 0x7005)],
+    nodes: NO_VIDEO_NODES,
+    copy_node_flags: COPY_NODE_FLAGS,
+    video_record_flags: NO_VIDEO_FLAGS,
+    run_on_guest_branches: &[],
+};
+
+/// Turing, the 20 and 16 series. Experimental. Each SM version needs its own row in `shader_sets`, so
+/// a chip that reports another one is refused. The TU117's encoder has another class, 0xB4B7, which
+/// makes no difference while encoders get no node.
+pub const TURING: Generation = Generation {
+    name: "Turing",
+    architectures: &[0x160],
+    channel_class: 0xC46F,
+    copy_class: TURING_DMA_COPY_A,
+    video_decode_class: 0xC4B0,
+    video_encode_class: 0xC4B7,
+    usermode_class: 0xC461,
+    graphics_classes: &[
+        (TURING_A, 16),
+        (TURING_COMPUTE_A, 16),
+        (KEPLER_INLINE_TO_MEMORY_B, 16),
+        (FERMI_TWOD_A, 16),
+        (TURING_DMA_COPY_A, 8),
+        (DEFERRED_API, 1),
+    ],
+    channel_objects: &[
+        (ChannelObject::InlineToMemory, KEPLER_INLINE_TO_MEMORY_B),
+        (ChannelObject::Graphics, TURING_A),
+        (ChannelObject::TwoD, FERMI_TWOD_A),
+    ],
+    shader_sets: &[(0x703, 0x6000)],
+    nodes: NO_VIDEO_NODES,
+    copy_node_flags: COPY_NODE_FLAGS,
+    video_record_flags: NO_VIDEO_FLAGS,
+    run_on_guest_branches: &[],
+};
+
+const GENERATIONS: [&Generation; 3] = [&BLACKWELL, &ADA, &TURING];
 
 /// The profile for an architecture number, if this build has one.
 pub fn generation_for(architecture: u32) -> Option<&'static Generation> {
