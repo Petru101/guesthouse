@@ -6954,3 +6954,68 @@ index e0ef2f2..4e3ec98 100644
 -- 
 2.56.0
 
+From 51eeb416a3ef37d7c8a0522e84488363d6134a7b Mon Sep 17 00:00:00 2001
+From: xnixy <x@ruxn.com>
+Date: Fri, 6 Nov 2026 05:42:54 -0800
+Subject: [PATCH 25/25] hw/misc/nvfwd: a size for a control nobody can read
+
+NVENC needs one control that no public source explains. Its size is the one thing
+known about it, so the device only forwards it at that size, which is too small
+for a pointer.
+---
+ hw/misc/nvfwd/rmargs.c | 25 +++++++++++++++++++++++++
+ 1 file changed, 25 insertions(+)
+
+diff --git a/hw/misc/nvfwd/rmargs.c b/hw/misc/nvfwd/rmargs.c
+index 9859a4c..bc93134 100644
+--- a/hw/misc/nvfwd/rmargs.c
++++ b/hw/misc/nvfwd/rmargs.c
+@@ -33,6 +33,17 @@ static const struct fd_control fd_controls[] = {
+ #include "fd_controls.h"
+ };
+ 
++/*
++ * Controls no public source explains. What's in them can't be checked, so a guest gets them at the one
++ * size they were seen at, and that's too small to carry a pointer.
++ */
++struct control_size {
++    uint32_t cmd, size;
++};
++static const struct control_size pinned_controls[] = {
++    { 0x20808163, 4 },
++};
++
+ struct class_size {
+     uint32_t hclass, size;
+ };
+@@ -136,6 +147,16 @@ static bool inside(Walk *w, uint64_t start, uint64_t bytes, uint32_t size)
+     return true;
+ }
+ 
++static bool size_allowed(uint32_t cmd, uint32_t size)
++{
++    for (size_t i = 0; i < ARRAY_LENGTH(pinned_controls); i++) {
++        if (pinned_controls[i].cmd == cmd) {
++            return pinned_controls[i].size == size;
++        }
++    }
++    return true;
++}
++
+ static void walk_control(Walk *w)
+ {
+     const RmCall *c = w->call;
+@@ -148,6 +169,10 @@ static void walk_control(Walk *w)
+     }
+     cmd = read32(arg + RM_CONTROL_CMD);
+     size = read32(arg + RM_CONTROL_PARAMS_SIZE);
++    if (!size_allowed(cmd, size)) {
++        w->error = -EINVAL;
++        return;
++    }
+     if (!field(w, c->arg_at + RM_CONTROL_PARAMS, NVFWD_FIX_PTR, size, &params)) {
+         return;
+     }
+-- 
+2.56.0
+

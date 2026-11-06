@@ -18,7 +18,7 @@ The card's sensor readings go through `nvfwd-sensord`, a separate program. It ke
 
 ## Trying it
 
-You need a Fedora host with RPM Fusion's NVIDIA packages, an NVIDIA card with the open kernel modules loaded, and the driver version in `TESTED_VERSIONS` in `crates/app-core/src/linux/driver_versions.rs`. The app reads the driver's files out of those packages with `rpm`, so another distribution won't work yet. You also need `bwrap`, `genisoimage`, `qemu-img` and `swtpm`. It has only been tried on an AMD CPU.
+You need an NVIDIA card with the open kernel modules loaded, and the driver version in `TESTED_VERSIONS` in `crates/app-core/src/linux/driver_versions.rs`. The host's side doesn't ask a package manager: it finds the driver through the loader. I've only run it on Fedora. Debian, Ubuntu and Arch layouts are tested with fixtures and not on real machines. You also need `bwrap`, `genisoimage`, `qemu-img` and `swtpm`. It has only been tried on an AMD CPU.
 
 1. Build QEMU as `qemu/README.md` says, and copy `hw/misc/nvfwd/nvfwd-sensord` next to `qemu-system-x86_64`.
 2. `cargo build --release`, and `cargo build --release -p guesthouse-app` for the viewer.
@@ -26,6 +26,16 @@ You need a Fedora host with RPM Fusion's NVIDIA packages, an NVIDIA card with th
 4. Set `GUESTHOUSE_PROGRAM` to this repository and `QEMU` to your build, and make an Ubuntu machine from Ubuntu's server ISO.
 
 The install takes about ten minutes with no hands, and the first boot builds everything. If anything about the driver is in doubt the GPU stays off and the VM still boots. The guest gets one plain sentence and the app has the details, as those can hold your paths. As root in the guest, `nvfwd-check` says which parts work.
+
+## Video
+
+NVENC and NVDEC work in a guest. With ffmpeg, H.264, HEVC and AV1 all encode on the card and decode on the card, and the decoded frames match a software decode exactly.
+
+NVENC needs one control with no public name, and it won't open a session without the driver's own answer. So that one call goes to the host, and the device only forwards it at its one size. `allow.txt` has a note on each entry video added.
+
+NVIDIA's limit on encode sessions still holds, because that answer is the driver's. This card stops at 12 on the host, and a guest stops at 12 too. They share the 12: with 8 starting on each side, 12 ran between them. `nvidia-smi` on the host doesn't count a guest's sessions, though.
+
+Sunshine builds from its own source in a guest. Its startup check finds H.264, HEVC and AV1 through Vulkan, capturing with KMS. I haven't streamed to a client yet. Its direct NVENC path doesn't start, as CUDA gives the host's PCI address and the guest has no such card. A client also needs Sunshine's ports, and only SSH is forwarded in NAT mode.
 
 ## On a driver I haven't tried
 

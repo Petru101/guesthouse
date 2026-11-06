@@ -15,6 +15,9 @@ all: $(TESTS:%=$(BUILD)/%) $(BUILD)/test_sensors $(BUILD)/fake_sensord
 	@echo "== test_sensors"
 	@ASAN_OPTIONS=detect_leaks=0 $(BUILD)/test_sensors $(BUILD)/fake_sensord
 
+# A change in the device has to rebuild the tests, or they'd go on testing the old one.
+$(TESTS:%=$(BUILD)/%) $(BUILD)/test_sensors $(BUILD)/fake_sensord: $(wildcard $(DEVICE)/*.c $(DEVICE)/*.h)
+
 $(BUILD)/test_runs: test_runs.c
 	@mkdir -p $(BUILD)
 	$(CC) $(CFLAGS) -I$(DEVICE) -o $@ $< $(DEVICE)/runs.c
