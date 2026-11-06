@@ -17,14 +17,36 @@ const NVIDIA_NAMES_START: &str = "\n10de  ";
 const DISPLAY_CLASS: &str = "0x03";
 /// The card this has been run on.
 const TESTED_CARDS: [u32; 1] = [0x2B85];
-/// Consumer 50-series, from pci.ids, which may be used under the 3-clause BSD licence. The workstation cards on these chips don't count, as nothing
-/// says their answers are the same.
-const CONSUMER_CARDS: [(&str, &[u32]); 5] = [
+/// Consumer 50, 40, 20 and 16 series, from pci.ids, which may be used under the 3-clause BSD licence. The workstation cards on these chips don't count, as nothing
+/// says their answers are the same. The 30 series has no profile, so it isn't here.
+const CONSUMER_CARDS: [(&str, &[u32]); 15] = [
     ("GB202", &[0x2B85, 0x2B87, 0x2B8C]),
     ("GB203", &[0x2C02, 0x2C05, 0x2C09, 0x2C18, 0x2C19, 0x2C58, 0x2C59]),
     ("GB205", &[0x2F04, 0x2F06, 0x2F18, 0x2F58]),
     ("GB206", &[0x2D04, 0x2D05, 0x2D18, 0x2D19, 0x2D58, 0x2D59]),
     ("GB207", &[0x2D83, 0x2D98, 0x2DD8]),
+    ("AD102", &[0x2684, 0x2685, 0x2689]),
+    ("AD103", &[0x2702, 0x2703, 0x2704, 0x2705, 0x2709, 0x2717, 0x2757]),
+    ("AD104", &[0x2782, 0x2783, 0x2786, 0x2788, 0x27A0, 0x27E0]),
+    ("AD106", &[0x2803, 0x2805, 0x2808, 0x2820, 0x2822, 0x2860]),
+    ("AD107", &[0x2882, 0x28A0, 0x28A1, 0x28A3, 0x28E0, 0x28E1, 0x28E3]),
+    ("TU102", &[0x1E03, 0x1E04, 0x1E07]),
+    (
+        "TU104",
+        &[
+            0x1E81, 0x1E82, 0x1E84, 0x1E87, 0x1E89, 0x1E90, 0x1E91, 0x1E93, 0x1EC2, 0x1EC7, 0x1ED0, 0x1ED1,
+            0x1ED3,
+        ],
+    ),
+    (
+        "TU106",
+        &[
+            0x1F02, 0x1F03, 0x1F06, 0x1F07, 0x1F08, 0x1F09, 0x1F0A, 0x1F10, 0x1F11, 0x1F12, 0x1F14, 0x1F15,
+            0x1F42, 0x1F47, 0x1F50, 0x1F51, 0x1F54, 0x1F55,
+        ],
+    ),
+    ("TU116", &[0x2182, 0x2184, 0x2187, 0x2188, 0x2191, 0x2192, 0x21C4, 0x21D1]),
+    ("TU117", &[0x1F82, 0x1F83, 0x1F91, 0x1F92, 0x1F94, 0x1F95, 0x1F96, 0x1F99, 0x1F9D, 0x1FD9, 0x1FDD]),
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -135,7 +157,9 @@ pub mod stand_in {
 
     pub const NAMES: &str = "10dd  Other\n\t2c02  Not this one\n10de  NVIDIA Corporation\n\
                              \t2c02  GB203 [GeForce RTX 5080]\n\t2b85  GB202 [GeForce RTX 5090]\n\
-                             \t2bb1  GB202GL [RTX PRO 6000]\n\t1b80  Plain name\n10df  Next\n";
+                             \t2bb1  GB202GL [RTX PRO 6000]\n\t1b80  Plain name\n\
+                             \t2704  AD103 [GeForce RTX 4080]\n\t21c4  TU116 [GeForce GTX 1660 SUPER]\n\
+                             \t2204  GA102 [GeForce RTX 3090]\n10df  Next\n";
 }
 
 #[cfg(test)]
@@ -191,6 +215,29 @@ mod tests {
             (cards[0].name.as_str(), cards[1].name.as_str()),
             ("NVIDIA GeForce RTX 5090", "NVIDIA GeForce RTX 5080")
         );
+    }
+
+    #[test]
+    fn the_40_and_16_series_are_experimental_and_named_as_pci_ids_has_them() {
+        let scratch = Scratch::new();
+        let context = context(&scratch);
+        fake_pci(&scratch, "0000:01:00.0", 0x2704, NVIDIA, DISPLAY);
+        fake_pci(&scratch, "0000:02:00.0", 0x21C4, NVIDIA, DISPLAY);
+        let cards = find_cards(&context);
+        let found: Vec<(Support, &str, &str)> =
+            cards.iter().map(|card| (card.support, card.chip.as_str(), card.name.as_str())).collect();
+        assert_eq!(
+            found,
+            [
+                (Support::Experimental, "AD103", "NVIDIA GeForce RTX 4080"),
+                (Support::Experimental, "TU116", "NVIDIA GeForce GTX 1660 SUPER"),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_30_series_has_no_profile_and_stays_unsupported() {
+        assert_eq!(support_of(0x2204), Support::Unsupported);
     }
 
     #[test]

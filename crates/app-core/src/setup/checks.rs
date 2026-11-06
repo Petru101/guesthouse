@@ -29,7 +29,9 @@ const QEMU_LIBRARIES_FIX: &str = "On Fedora: sudo dnf install pixman libslirp li
                                   Debian or Ubuntu: sudo apt install libpixman-1-0 libslirp0 libfdt1 libusb-1.0-0 \
                                   libpipewire-0.3-0. On Arch: sudo pacman -S pixman libslirp dtc libusb pipewire.";
 const BRANCH_FIX: &str = "GPU machines stay off until the branches match. Plain VMs still run.";
-const CARD_FIX: &str = "GPU-PV needs an RTX 5090, or another consumer RTX 50-series card.";
+const CARD_FIX: &str = "GPU-PV needs an RTX 5090. Other consumer RTX 50 and 40 series cards, and the 20 and 16 \
+                        series, are experimental. The 30 series isn't supported yet.";
+const EXPERIMENTAL_FIX: &str = "Only the RTX 5090 has been tested, so this card may not work.";
 /// The Linux driver this has been run on. The guest's graphics depend on the exact version.
 pub const TESTED_DRIVER: &str = "615.78.08";
 /// What setup keeps of the installer, and room to swap it for a new copy.
@@ -76,12 +78,26 @@ fn check_card(context: &Context) -> Check {
             TITLE,
             CheckState::Warning,
             format!("{} ({}). Experimental.", card.name, card.chip),
-            "Only the RTX 5090 has been tested, so this card may not work.",
+            EXPERIMENTAL_FIX,
         ),
         Support::Unsupported => {
             Check::new(TITLE, CheckState::Failed, format!("{}. Not supported.", card.name), CARD_FIX)
         }
     }
+}
+
+/// Says if this PC's card is only experimental.
+pub fn card_warning(context: &Context) -> Option<String> {
+    let cards = find_cards(context);
+    let card = cards.first().filter(|card| card.support == Support::Experimental)?;
+    Some(format!("{} is experimental. {EXPERIMENTAL_FIX}", card.name))
+}
+
+/// What a person should hear before a VM on the GPU starts.
+pub fn gpu_warning(context: &Context) -> Option<String> {
+    let warnings: Vec<String> =
+        [card_warning(context), driver_warning(context)].into_iter().flatten().collect();
+    (!warnings.is_empty()).then(|| warnings.join(" "))
 }
 
 /// Says if the host's driver isn't the one this was tested on.
@@ -355,6 +371,21 @@ mod tests {
         assert!(found.text.contains("Experimental") && found.text.contains("GB203") && !found.fix.is_empty());
         fake_pci(&scratch, "0000:03:00.0", 0x2B85, "0x10de", "0x030000");
         assert_eq!(check_card(&context).state, CheckState::Ok);
+    }
+
+    #[test]
+    fn an_experimental_card_is_said_before_a_vm_starts_and_a_tested_one_is_not() {
+        let scratch = Scratch::new();
+        let mut context = scratch_context(&scratch);
+        context.pci_devices = scratch.path("pci");
+        context.pci_names = scratch.write("pci.ids", NAMES);
+        context.driver_version_file = scratch.write("version", format!("{TESTED_DRIVER}\n"));
+        assert_eq!(gpu_warning(&context), None);
+        fake_pci(&scratch, "0000:01:00.0", 0x2704, "0x10de", "0x030000");
+        let said = gpu_warning(&context).unwrap();
+        assert!(said.contains("GeForce RTX 4080 is experimental"), "{said}");
+        fake_pci(&scratch, "0000:00:01.0", 0x2B85, "0x10de", "0x030000");
+        assert_eq!(gpu_warning(&context), None);
     }
 
     #[test]

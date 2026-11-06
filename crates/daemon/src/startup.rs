@@ -1,6 +1,6 @@
 //! Starting a backend, or refusing to.
 
-use guesthouse_backend::{Backend, Refusal, Setup, StartDecision, decide_start};
+use guesthouse_backend::{Backend, CardLabel, Refusal, Setup, StartDecision, decide_start};
 
 /// Surveys the installed drivers, judges what was found, and opens the card if that allows it. No
 /// request reaches the host's driver unless the survey passes.
@@ -11,6 +11,9 @@ pub fn start_backend<B: Backend>(setup: &Setup) -> Result<B, Refusal> {
         StartDecision::Run => {}
         StartDecision::RunWithWarning(warning) => log::warn!("{warning}"),
         StartDecision::Refuse(reason) => return Err(Refusal(reason)),
+    }
+    if survey.card == CardLabel::Experimental {
+        log::warn!("This card is experimental, as it hasn't been run with this project.");
     }
     B::open(setup, &survey)
 }

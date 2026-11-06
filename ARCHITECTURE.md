@@ -115,7 +115,7 @@ The rules:
 Different cards and drivers differ in different ways, and those ways shouldn't get tangled. A backend is built from these parts:
 
 - **Vendor.** The backend crate itself.
-- **Generation.** A small profile of what an architecture changes: class numbers, channel types, shader version rules. Blackwell would come first, and Ada or Ampere should only need another profile.
+- **Generation.** A small profile of what an architecture changes: class numbers, channel types, shader version rules, which engines get a node and what the record says of them. Blackwell has run, and Ada and Turing are there to try. Their video engines get no node yet. A card with no profile is refused.
 - **Driver branch.** A second profile, beside generations, of what a driver branch changes in its data layouts: control and allocation structure sizes on the host, and the layout of the guest's record.
 
 Generations and branches stay separate, so they never multiply into a matrix of every generation with every branch. `Backend::open` is where a backend picks one of each. Nothing in the trait is per-generation or per-branch, so all of this stays inside the backend. In `backend-nvidia` they're in `profile/`: `host.rs` for the host's branch, `guest.rs` for the guest's, and `generation.rs`.
