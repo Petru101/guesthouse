@@ -35,7 +35,7 @@ const GROUP_PARAM_ADDRESS_SPACE: usize = 0x08;
 const GROUP_PARAM_ENGINE: usize = 0x0C;
 const SHARE_PARAM_ADDRESS_SPACE: usize = 0x00;
 const SHARE_PARAM_FLAGS: usize = 0x04;
-/// Graphics only works on the synchronous subcontext.
+/// Graphics and video only work on the synchronous subcontext.
 const SHARE_SYNCHRONOUS: u32 = 0;
 const SHARE_ASYNCHRONOUS: u32 = 1;
 const CHANNEL_PARAM_ERROR_CONTEXT: usize = 0x00;
@@ -58,6 +58,9 @@ const MEM_OP_L2_SYSMEM_INVALIDATE: u32 = 0xE;
 
 /// A copy engine is reached through this subchannel, also on its own channel.
 pub(crate) const COPY_SUBCHANNEL: u32 = 4;
+/// So is a video engine, which is the only one on its channel.
+const VIDEO_SUBCHANNEL: u32 = 4;
+const VIDEO_CLASS_PARAMS: usize = 12;
 const SET_OBJECT: u32 = 0;
 const SCHEDULE_ENABLED: [u8; 3] = [1, 0, 0];
 
@@ -74,6 +77,25 @@ fn put64(bytes: &mut [u8], at: usize, value: u64) {
 pub enum Engine {
     Graphics,
     Copy,
+    Video(VideoEngine),
+}
+
+/// One of the card's video decoders or encoders.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VideoEngine {
+    /// The RM's engine number.
+    pub rm_engine: u32,
+    pub class: u32,
+    /// Which of its kind this is, counting from zero.
+    pub instance: u32,
+}
+
+impl VideoEngine {
+    /// The allocation parameters of the video classes: size, whether others may share, instance.
+    fn class_params(&self) -> Vec<u8> {
+        let words = [VIDEO_CLASS_PARAMS as u32, 0, self.instance];
+        words.iter().flat_map(|word| word.to_le_bytes()).collect()
+    }
 }
 
 /// Where a channel's commands and ring are.
@@ -144,9 +166,11 @@ impl Channel {
         )?;
         map_doorbell_once(device, generation)?;
 
-        let (engine_number, classes) = match engine {
-            Engine::Graphics => (ENGINE_GRAPHICS, generation.graphics_classes),
-            Engine::Copy => (ENGINE_COPY_0, &[(generation.copy_class, 8)][..]),
+        let zeros = |&(class, size): &(u32, usize)| (class, vec![0; size]);
+        let (engine_number, mut classes): (u32, Vec<(u32, Vec<u8>)>) = match engine {
+            Engine::Graphics => (ENGINE_GRAPHICS, generation.graphics_classes.iter().map(zeros).collect()),
+            Engine::Copy => (ENGINE_COPY_0, vec![(generation.copy_class, vec![0; 8])]),
+            Engine::Video(video) => (video.rm_engine, vec![(video.class, video.class_params())]),
         };
         let mut params = vec![0; sizes.channel_group_params];
         put32(&mut params, GROUP_PARAM_ERROR_CONTEXT, memory);
@@ -156,7 +180,7 @@ impl Channel {
 
         let mut params = vec![0; sizes.context_share_params];
         put32(&mut params, SHARE_PARAM_ADDRESS_SPACE, space.handle);
-        let share_flags = if engine == Engine::Graphics { SHARE_SYNCHRONOUS } else { SHARE_ASYNCHRONOUS };
+        let share_flags = if engine == Engine::Copy { SHARE_ASYNCHRONOUS } else { SHARE_SYNCHRONOUS };
         put32(&mut params, SHARE_PARAM_FLAGS, share_flags);
         let share = device.alloc(group, CONTEXT_SHARE, &mut params)?;
 
@@ -171,8 +195,8 @@ impl Channel {
         put32(&mut params, CHANNEL_PARAM_ENGINE, engine_number);
         let channel = device.alloc(group, generation.channel_class, &mut params)?;
 
-        for &(class, params_size) in classes {
-            device.alloc(channel, class, &mut vec![0; params_size])?;
+        for (class, params) in &mut classes {
+            device.alloc(channel, *class, params)?;
         }
         let mut token = [0; 4];
         device.control(channel, CONTROL_GET_WORK_SUBMIT_TOKEN, &mut token)?;
@@ -182,10 +206,14 @@ impl Channel {
             set_timeslice(device, group);
         }
 
-        let first = if engine == Engine::Graphics { 0 } else { COPY_SUBCHANNEL };
+        let first = match engine {
+            Engine::Graphics => 0,
+            Engine::Copy => COPY_SUBCHANNEL,
+            Engine::Video(_) => VIDEO_SUBCHANNEL,
+        };
         let mut words = Vec::with_capacity(classes.len() * 2);
-        for (subchannel, &(class, _)) in (first..).zip(classes) {
-            words.extend([increasing(subchannel, SET_OBJECT, 1), class]);
+        for (subchannel, (class, _)) in (first..).zip(&classes) {
+            words.extend([increasing(subchannel, SET_OBJECT, 1), *class]);
         }
         let bind_words = words.len() as u32;
         // Last in the prelude, so that a channel's first submission has it as well.

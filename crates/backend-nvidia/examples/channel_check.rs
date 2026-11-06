@@ -1,7 +1,8 @@
-//! `channel_check VERSION`: makes one graphics and one copy channel on the real card, has each release
-//! a semaphore into host memory, and frees them. Nothing from any guest is involved.
+//! `channel_check VERSION`: makes a graphics channel, a copy channel and one on each video engine the
+//! card takes on the real card, has each release a semaphore into host memory, and frees them.
+//! Nothing from any guest is involved.
 
-use guesthouse_backend_nvidia::channel::{AREA_SIZE, Channel, ChannelPlace, Engine};
+use guesthouse_backend_nvidia::channel::{AREA_SIZE, Channel, ChannelPlace, Engine, VideoEngine};
 use guesthouse_backend_nvidia::profile::{BLACKWELL, HOST_615};
 use guesthouse_backend_nvidia::pushbuffer::{increasing, ring_entry};
 use guesthouse_backend_nvidia::rm::device::{AddressSpace, Device};
@@ -16,6 +17,9 @@ const RESULT: usize = 0x14000;
 const SEMAPHORE_ADDRESS_LOW: u32 = 0x5C;
 const SEMAPHORE_RELEASE_32: u32 = 1;
 const VALUE: u32 = 0xCAFE_1234;
+/// The tested card's engines, as the RM's number and which instance that is, from its public headers.
+const RM_DECODERS: &[(u32, u32)] = &[(0x13, 0), (0x16, 3)];
+const RM_ENCODERS: &[(u32, u32)] = &[(0x1C, 1), (0x1D, 2), (0x3F, 3)];
 const WAIT: Duration = Duration::from_secs(3);
 
 fn run(device: &mut Device<LinuxRm>, space: &AddressSpace, area_address: u64, engine: Engine) -> bool {
@@ -25,7 +29,13 @@ fn run(device: &mut Device<LinuxRm>, space: &AddressSpace, area_address: u64, en
         area_address,
         area_size: AREA_SIZE,
     };
-    let channel = Channel::new(device, &BLACKWELL, &HOST_615, space, place, engine).unwrap();
+    let channel = match Channel::new(device, &BLACKWELL, &HOST_615, space, place, engine) {
+        Ok(channel) => channel,
+        Err(error) => {
+            println!("{engine:?}: no channel: {error}");
+            return false;
+        }
+    };
     println!("{engine:?}: token {:#x}", channel.token());
     let target = area_address + RESULT as u64;
     let words = [
@@ -58,6 +68,16 @@ fn main() {
     let space = device.create_address_space(&[RANGE]).unwrap();
     let graphics = run(&mut device, &space, 0x800_0000, Engine::Graphics);
     let copy = run(&mut device, &space, 0x900_0000, Engine::Copy);
+    let mut video_area = 0xA00_0000;
+    for (engines, class) in
+        [(RM_DECODERS, BLACKWELL.video_decode_class), (RM_ENCODERS, BLACKWELL.video_encode_class)]
+    {
+        for &(rm_engine, instance) in engines {
+            let engine = Engine::Video(VideoEngine { rm_engine, class, instance });
+            run(&mut device, &space, video_area, engine);
+            video_area += 0x100_0000;
+        }
+    }
     device.destroy_address_space(&space).unwrap();
     std::process::exit(if graphics && copy { 0 } else { 1 });
 }
