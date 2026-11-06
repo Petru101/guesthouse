@@ -1,0 +1,24 @@
+# Installed with recommends.
+build-essential
+kmod
+pciutils
+curl
+pkg-config
+libvulkan1
+libvulkan-dev
+vulkan-tools
+mesa-vulkan-drivers
+glslang-tools
+libglvnd0
+libegl1
+libgl1
+libgles2
+libgl1-mesa-dri
+libegl-mesa0
+libglx-mesa0
+mesa-utils
+mesa-utils-bin
+libx11-6
+libxext6
+libwayland-client0
+libwayland-dev

@@ -1,0 +1,26 @@
+[Unit]
+Description=GNOME for user desk
+# Wants and not Requires: with the GPU step dead the desktop still comes up, plain.
+After=nvfwd-gpu.service systemd-user-sessions.service
+Wants=nvfwd-gpu.service
+Conflicts=getty@tty3.service
+
+[Service]
+User=desk
+PAMName=login
+TTYPath=/dev/tty3
+TTYReset=yes
+StandardInput=tty
+StandardOutput=append:/var/log/nvfwd/desktop.log
+StandardError=append:/var/log/nvfwd/desktop.log
+UtmpIdentifier=tty3
+UtmpMode=user
+# pam_systemd gives a login CAP_WAKE_ALARM as an ambient capability. A desktop's apps normally start
+# under the user manager and never see it. Here they descend from the login, and bwrap will not run
+# with a capability it did not expect, and glycin needs bwrap to load any image.
+ExecStart=/usr/bin/setpriv --ambient-caps=-wake_alarm --inh-caps=-wake_alarm /bin/bash /usr/lib/nvfwd/desktop-session.sh
+# Mutter leaves KMS alone until logind says its session is the active one.
+ExecStartPost=+/bin/sh -c 'sleep 1; chvt 3'
+
+[Install]
+WantedBy=graphical.target

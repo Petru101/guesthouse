@@ -1,0 +1,20 @@
+[Unit]
+Description=Finish the guest's install
+# The installer's user is made by cloud-init on this same boot. cloud-final runs after multi-user.target,
+# so a unit wanted by that target and ordered after cloud-final would be a cycle, and systemd would
+# break it by dropping one. With no default dependencies the target does not wait for this unit.
+DefaultDependencies=no
+After=sysinit.target network-online.target cloud-final.service
+Wants=network-online.target
+Conflicts=shutdown.target
+Before=shutdown.target
+ConditionPathExists=!/var/lib/nvfwd/first-boot-done
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/nvfwd/first-boot.sh
+TimeoutStartSec=1h
+StandardOutput=journal+console
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,51 @@
+#cloud-config
+# Ubuntu's unattended install. It does as little as it can: the disk, the user, the kernel, and a
+# service that does the rest on first boot, where a failure can be read and retried.
+autoinstall:
+  version: 1
+  locale: C.UTF-8
+  keyboard:
+    layout: us
+  identity:
+    hostname: nvfwd
+    username: desk
+    realname: Desk
+    password: "@PASSWORD_HASH@"
+  ssh:
+    install-server: true
+    allow-pw: false
+    authorized-keys:
+      - "@SSH_KEY@"
+  storage:
+    layout:
+      name: direct
+  # The exact kernel on the ISO, and not a metapackage. A metapackage takes the archive's newest, and
+  # the archive can be caught mid-publish, with a kernel whose modules are in no index yet.
+  kernel:
+    package: "@KERNEL_PACKAGE@"
+  apt:
+    geoip: false
+    # GNOME is not on the server ISO, so without a network there is nothing worth finishing.
+    fallback: abort
+  updates: security
+  refresh-installer:
+    update: false
+  drivers:
+    install: false
+  shutdown: poweroff
+  # The installer would otherwise wait at a prompt for ever. The log goes to the serial port, which is
+  # all the host can read, and powering off hands the result to the app.
+  error-commands:
+    - grep -rh -B12 -A25 '^E:' /var/log/installer > /dev/ttyS0 2>&1 || true
+    - tail -n 80 /var/log/installer/curtin-install/*.log /var/log/installer/subiquity-server-debug.log* > /dev/ttyS0 2>&1 || true
+    - poweroff
+  late-commands:
+    - mkdir -p /target/usr/lib/nvfwd /mnt/seed
+    - mount -o ro "$(blkid -L cidata)" /mnt/seed
+    - tar -xf /mnt/seed/nvfwd-guest.tar -C /target/usr/lib/nvfwd
+    - umount /mnt/seed
+    - install -d -m 700 /target/root/.ssh
+    - echo "@SSH_KEY@" > /target/root/.ssh/authorized_keys
+    - chmod 600 /target/root/.ssh/authorized_keys
+    - curtin in-target -- systemctl enable /usr/lib/nvfwd/units/nvfwd-first-boot.service
+    - echo nvfwd-install-finished > /dev/ttyS0

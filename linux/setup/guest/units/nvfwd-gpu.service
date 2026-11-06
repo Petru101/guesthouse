@@ -1,0 +1,15 @@
+[Unit]
+Description=Set up the forwarded GPU, or turn it off
+After=local-fs.target systemd-udevd.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/lib/nvfwd/gpu-up.sh
+# Long enough for the build after a new driver or kernel. If it ever hangs past this the state file
+# never says gpu=on, so the desktop still starts, plain.
+TimeoutStartSec=20min
+StandardOutput=journal+console
+
+[Install]
+WantedBy=multi-user.target
