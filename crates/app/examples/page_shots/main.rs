@@ -159,9 +159,6 @@ async fn wizard_pages(window: Window, folder: PathBuf, failures: Rc<Cell<u32>>) 
     glib::timeout_future(SETTLE).await;
     check(&failures, text_of(&window).contains("617.42"), "the driver page names the driver");
     shot_after_paint(&window, &folder, "02-wizard-driver").await;
-    click(&window, "Next");
-    glib::timeout_future(SETTLE).await;
-    shot_after_paint(&window, &folder, "03-wizard-data").await;
     close_dialogs(&window).await;
 }
 
