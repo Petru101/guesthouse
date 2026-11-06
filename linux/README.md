@@ -18,11 +18,11 @@ The card's sensor readings go through `nvfwd-sensord`, a separate program. It ke
 
 ## Trying it
 
-You need an NVIDIA card with the open kernel modules, and the driver version in `TESTED_VERSIONS` in `crates/app-core/src/linux/driver_versions.rs`.
+You need a Fedora host with RPM Fusion's NVIDIA packages, an NVIDIA card with the open kernel modules loaded, and the driver version in `TESTED_VERSIONS` in `crates/app-core/src/linux/driver_versions.rs`. The app reads the driver's files out of those packages with `rpm`, so another distribution won't work yet. You also need `bwrap`, `genisoimage`, `qemu-img` and `swtpm`. It has only been tried on an AMD CPU.
 
 1. Build QEMU as `qemu/README.md` says, and copy `hw/misc/nvfwd/nvfwd-sensord` next to `qemu-system-x86_64`.
 2. `cargo build --release`, and `cargo build --release -p guesthouse-app` for the viewer.
-3. Get NVIDIA's source at the loaded driver's version, into `src/open-gpu-kernel-modules` in the data store, or say where it is with `NVIDIA_SOURCE`. The guest's modules build against its headers, which aren't in this repository.
+3. Get NVIDIA's source at the loaded driver's version, into `src/open-gpu-kernel-modules` in the data store, which is `~/.local/share/guesthouse`, or say where it is with `NVIDIA_SOURCE`. The guest's modules build against its headers, which aren't in this repository.
 4. Set `GUESTHOUSE_PROGRAM` to this repository and `QEMU` to your build, and make an Ubuntu machine from Ubuntu's server ISO.
 
 The install takes about ten minutes with no hands, and the first boot builds everything. If anything about the driver is in doubt the GPU stays off and the VM still boots, and the guest says why. As root in the guest, `nvfwd-check` says which parts work.

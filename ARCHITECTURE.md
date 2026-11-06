@@ -161,8 +161,6 @@ The viewer only knows `FrameSource`, which has three kinds. `SocketFrames` takes
 
 ## Not here yet
 
-Left out for now, because they're still changing in the prototype:
-
-- the NVIDIA backend, and with it real submissions
+Left out for now, while it's checked and cleaned up: the NVIDIA backend, and with it real submissions. It's in Rust and runs on my PC.
 
 Also not ported: the arena (video memory the guest's CPU can reach), the experiment switches in the prototype's run folder, and turning 10-bit frames into 8-bit ones for an app's staging surface.

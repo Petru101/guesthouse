@@ -31,7 +31,7 @@ This repo is where it's all heading. So far it has:
 - the desktop app, in `crates/app`, which runs plain VMs today
 - the Linux GPU route, in `linux/`, with its QEMU device in the patch
 
-There's no Windows GPU backend here yet, so the daemon starts, tells you that, and stops. The app still works: it makes and runs plain VMs, and says why GPU machines aren't there. A plain VM needs QEMU and its D-Bus display, which Fedora calls `qemu-ui-dbus`. The next big step is moving the NVIDIA part over, and after that an installer.
+There's no Windows GPU backend here yet, so the daemon starts, tells you that, and stops. The app still works: it makes and runs plain VMs, and says why GPU machines aren't there. A plain VM needs QEMU with its D-Bus display, which Fedora calls `qemu-ui-dbus`, plus `qemu-img`, `swtpm`, `genisoimage` and `7z` for installs. A QEMU built as `qemu/README.md` says has no `qemu-img` of its own, so install the system's. There are no recordings in the repo, so the replay tool only runs on a recording you make yourself. The next big step is moving the NVIDIA part over, and after that an installer.
 
 ![The app's library, with a Windows machine and an Ubuntu machine](docs/images/app-library.jpg)
 
@@ -40,6 +40,8 @@ There's no Windows GPU backend here yet, so the daemon starts, tells you that, a
 That's the new app. Windows there is on the real GPU, on my PC, with the private backend behind it.
 
 ## What the prototype does
+
+The Windows numbers here are from the Python prototype unless I say otherwise. The Linux numbers are from the device in this repo.
 
 Everything here was measured on one machine: Ryzen 9 9950X3D, RTX 5090, Fedora 45, NVIDIA 615.78.08 on the host and 617.42 in Windows.
 
@@ -66,7 +68,7 @@ Once work reaches the card it runs at full speed. Getting it there is what costs
 
 *Dumps of the guest's real screen, shrunk for this page. The running shot is from an earlier run at the same settings. The result screen says "GPU: NVIDIA" because the launcher can't read the card's name yet, and its RAM line is wrong: the VM had 16 GB.*
 
-A heavy Godot test scene at 1280x720 does about 690 fps natively. In the VM it's about 196 on Vulkan and 158–186 on Direct3D 12. GPU time per frame is the same as native, about 1.2 ms, so that gap isn't the GPU either.
+A heavy Godot test scene at 1280x720 does about 690 fps natively. In the VM the prototype does about 196 on Vulkan and 158–186 on Direct3D 12, and the Rust daemon about 240 and 333. GPU time per frame is the same as native, about 1.2 ms, so that gap isn't the GPU either.
 
 **Is the picture right?** I don't judge that by eye. These tests compare exact values, and the Vulkan and OpenGL ones check the final screen pixel by pixel:
 
@@ -82,7 +84,7 @@ This route is in this repo, in [`linux/`](linux/README.md), with how to try it.
 
 Linux takes a different route. The guest runs NVIDIA's real Linux driver and its calls get forwarded to the host's driver. So far that's Ubuntu 26.04.1.
 
-`nvidia-smi`, CUDA and Vulkan work, and speed is about the same as the host: 111–113 TFLOPS on Vulkan in both, and a CUDA launch takes 14.5 µs against 13.9. GNOME runs on it through Zink, with Firefox, Files, Settings and a terminal all working. Godot's Windows build even runs in there through Wine on Wayland.
+`nvidia-smi`, CUDA and Vulkan work, and speed is about the same as the host. With the guest's desktop off, my compute test gets about 120 TFLOPS on Vulkan in both, and an empty CUDA launch takes about 5 µs in both. The one real gap is an empty Vulkan submit, about 54 µs against 28. GNOME runs on it through Zink, with Firefox, Files and Settings all opening and a terminal doing real work. Godot's Windows build even runs in there through Wine on Wayland.
 
 ![nvidia-smi and a small CUDA test in a terminal on the Ubuntu guest's desktop](docs/images/nvidia-smi-in-ubuntu.jpg)
 
@@ -90,7 +92,7 @@ That's `nvidia-smi` and a small CUDA test of mine, on the guest's own desktop. T
 
 In theory this route isn't tied to the 5090 the way the Windows one is. It forwards the real driver's calls, so it should work on anything NVIDIA's open driver supports, from the 20 series up, as long as its tables get rebuilt for that driver version. That's only theory for now: it has run on my 5090, on driver 615.78.08, with an AMD CPU, and nothing else.
 
-Delay is where it's behind. A simple app takes about 20 to 30 ms from key press to picture, against about 11.5 on the host, and Godot takes 50 to 100 ms.
+Delay is where it's behind. A simple app takes about 20 to 30 ms from key press to picture, against about 11.5 on the host, and Godot takes 40 to 100 ms, more on Vulkan than OpenGL.
 
 ## How it works
 
@@ -106,7 +108,7 @@ Windows guest                              Linux host
 
 There are three pieces:
 
-- **A QEMU patch**, about 600 lines of code, which gives the guest the devices and the VMBus channels it expects to find on Hyper-V.
+- **A QEMU patch.** The Windows part is about 500 lines, and gives the guest the devices and the VMBus channels it expects to find on Hyper-V. The Linux device in the same patch is about 4,300 lines more.
 - **A daemon**, which answers everything Windows asks, sets up real GPU channels through the Linux driver, and rings their doorbells when the guest has work.
 - **A desktop app**, Guesthouse, so that none of this needs a terminal. The prototype's app took a Windows ISO, installed Windows unattended and brought up the GPU. The Rust one has that code too, but I haven't proven it yet. From this repo alone it runs plain VMs.
 
@@ -118,10 +120,10 @@ A VM is only worth having if what's in it stays in it, so here's where that stan
 
 What's in place for Windows guests:
 
-- **Programs in a VM can't see each other on the GPU.** Each process gets its own GPU page tables, like on real Windows. My test has one process hold a secret and another try to read it by its GPU address. With one shared space it read all 16,384 words. Now it reads none. The one thing they still share is a block of fences, which only holds counters.
+- **Programs in a VM can't see each other on the GPU.** Each process gets its own GPU page tables, like on real Windows. My test has one process hold a secret and another try to read it by its GPU address. With one shared space it read all 16,384 words. With its own space it read none. That test ran on the prototype. The Rust backend keeps the same per-process spaces, and I haven't run the test on it yet. The one thing they still share is a block of fences, which only holds counters.
 - **Windows never talks to the host's driver.** It talks to my daemon, and the daemon makes the calls. Sizes and ranges in every message get checked, and the parsers and handlers are fuzz tested.
 - **You can cap a VM's video memory.** With a limit set, anything over it gets refused. Without one, the VM is told to leave a share of the card for the host, but that's a budget and not a wall.
-- **The daemon's sockets are for its owner alone.**
+- **The daemon's sockets are for its owner alone.** The guest agent's port is on loopback with a token per machine, so other users on the PC can reach the port but not the agent.
 
 What's still coming:
 
@@ -149,8 +151,10 @@ I'd rather you hear this from me:
 - **Drivers are tied together.** Linux and Windows have to come from the same NVIDIA branch, and a new branch means new work.
 - **CUDA, NVENC and NVDEC don't work in Windows yet.** `nvidia-smi` can't open the card there either, and Task Manager doesn't show the GPU. That holds up Sunshine too. The new display driver keeps a frame channel made for Sunshine Foundation, so it should be able to take frames straight from the driver once NVENC works, but I haven't tried it.
 - **No HDR in the app yet.** It's a must for me. The new display driver isn't in the app, but in tests it gets every frame to the host at up to 4K 240 Hz, in SDR and HDR, with none lost. That's a simple test picture reaching a test client, so a real game and a real viewer still have to prove it.
-- **The viewer drops frames.** With the old viewer, at 144 Hz about 116 frames a second reached it, and about 90 at 4K. I haven't measured the new one yet. It also costs speed: Superposition scored 16,240 with it open.
-- **Several GPU VMs at once is early.** Three Windows VMs have run together on one card with their tests passing and no GPU faults, but that was during my testing, not a proper test of its own. I haven't tried it through the app, and they share the card's speed.
+- **The viewer drops frames.** With the old viewer, at 144 Hz about 116 frames a second reached it, and about 90 at 4K. I haven't measured the new one yet. It also costs speed: Superposition scored 16,240 with it open, in one run.
+- **Several GPU VMs at once is early.** Several Windows VMs have been up on one card at the same time during my testing, but I haven't tested them together on purpose, and I haven't tried it through the app. They share the card's speed.
+- **Heavy OpenGL in Windows is slow and looks wrong.** My OpenGL test window is exact, but Superposition in OpenGL scores about a third of its Direct3D 11 score, with a washed-out picture. See #6.
+- **Windows runs at about 64 Hz.** It thinks it has a basic display. Higher rates need a hack in the guest that I'm replacing with the new display driver. See #7.
 
 ## What's next
 
@@ -166,12 +170,12 @@ The full list, with what's already done, is in the [roadmap](https://github.com/
 
 ## Trying the code
 
-You need a recent stable Rust, and no GPU or VM.
+You need Rust 1.88 or newer, and no GPU or VM.
 
 ```sh
-cargo test                       # everything
+cargo test                       # everything but the app
 cargo bench -p guesthouse-core   # the message path, in nanoseconds
-cargo run -p guesthouse-app       # the app, which needs GTK 4 and libadwaita's development files
+cargo run -p guesthouse-app       # the app, which needs GTK 4.20 and libadwaita 1.8 development files
 ```
 
 [ARCHITECTURE.md](ARCHITECTURE.md) explains how the pieces fit, and [CONTRIBUTING.md](CONTRIBUTING.md) how to work on them.
