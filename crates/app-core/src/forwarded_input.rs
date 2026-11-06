@@ -65,6 +65,7 @@ mod tests {
     use super::*;
     use crate::testing::Scratch;
     use std::io::Read;
+    use std::net::Shutdown;
     use std::os::unix::net::UnixListener;
 
     #[test]
@@ -91,8 +92,8 @@ mod tests {
         let path = scratch.path("input.sock");
         let listener = UnixListener::bind(&path).unwrap();
         let mut input = ForwardedInput::connect(&path).unwrap();
-        drop(listener.accept().unwrap());
-        drop(listener);
+        // Not a drop: a child another test is forking can hold a copy of the socket for a moment.
+        listener.accept().unwrap().0.shutdown(Shutdown::Both).unwrap();
         input.key(1, true);
         input.key(1, false);
         assert!(!input.alive());
