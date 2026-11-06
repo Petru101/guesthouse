@@ -3,7 +3,12 @@
 //! A sink hears about rings of buffers and the frames in them, and knows nothing of how a frame came
 //! to be. Copies to the staging surface are the one producer so far, for boot and install.
 
+mod picture;
+mod slots;
+
 use guesthouse_backend::SurfaceShape;
+pub use picture::Picture;
+pub use slots::{NotTheViewers, Slots};
 
 /// A set of buffers that frames take turns in. A new generation means the old buffers are gone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
