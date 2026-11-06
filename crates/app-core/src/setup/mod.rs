@@ -7,6 +7,7 @@
 pub mod cards;
 pub mod checks;
 pub mod driver;
+pub mod guest_files;
 pub mod inf;
 
 use crate::context::Context;
