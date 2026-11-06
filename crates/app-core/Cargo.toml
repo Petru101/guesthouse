@@ -1,0 +1,37 @@
+[package]
+name = "guesthouse-app-core"
+description = "Everything the desktop app does that needs no display: machines, tasks, setup and the VM's start."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "guesthouse-task"
+path = "src/bin/task.rs"
+
+[[bin]]
+name = "guesthouse-share"
+path = "src/bin/share.rs"
+
+[dependencies]
+# Only for its slot names, so the app and the daemon can never disagree about what a VM owns.
+guesthouse-daemon.workspace = true
+# Local time for the log and for snapshot dates. The standard library has no time zones.
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+# Reading C headers for the tables a guest's modules are built with.
+regex = "1"
+# Safe calls for statvfs, flock, kill, access, getxattr and a send that never waits, which keeps `unsafe` out of this crate.
+rustix = { version = "1", features = ["fs", "net", "process"] }
+# Machine files, task files and QMP are all JSON.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# The whole flow of a VM with pretend programs, which needs a main of its own to be them.
+[[test]]
+name = "flow"
+harness = false
+
+[lints]
+workspace = true

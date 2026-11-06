@@ -11,6 +11,8 @@ cargo fmt --check
 cargo bench -p guesthouse-core
 ```
 
+The desktop app in `crates/app` also needs GTK 4 and libadwaita's development files, so it's left out of those commands. Build it with `cargo build -p guesthouse-app`. `crates/app/page-shots.sh` walks its pages on GTK's Broadway backend and saves a picture of each, with no desktop and no GPU.
+
 To try the sockets by hand, `cargo run -p guesthouse-daemon --features stand-in` answers messages with a pretend GPU behind them. It's for poking at, and it won't run a guest.
 
 ## Legal rules
@@ -36,7 +38,7 @@ Recordings hold guest data. They never go in git. Keep them in `/captures/`, whi
 - Comments say why. If a comment says what the next line does, delete it.
 - The message path shouldn't allocate or lock. Measure first, though: `core/tests/no_allocation.rs` and the benchmark will tell you, and a clever change needs a number behind it.
 - Dependencies are few, and each one has a comment saying why it's there.
-- `unsafe` lives in `daemon` where the operating system needs it, with a `SAFETY` comment on each block.
+- `unsafe` lives in `daemon` where the operating system needs it, with a `SAFETY` comment on each block. The one exception is `viewer/import.rs` in `app`, as GTK's call for a texture on a dmabuf is `unsafe`.
 
 ## Keeping the layers apart
 

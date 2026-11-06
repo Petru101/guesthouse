@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Guesthouse
+Comment=Run Windows with the real GPU driver
+Exec=guesthouse
+Icon=net.gpupv.Guesthouse
+Terminal=false
+Categories=System;Emulator;
+Keywords=VM;Windows;GPU;
+StartupNotify=true

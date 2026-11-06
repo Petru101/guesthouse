@@ -1,0 +1,474 @@
+//! A machine's settings: one JSON file each, and the rules they must meet whatever the host.
+
+use crate::context::Context;
+use crate::failure::{Failure, Result};
+use crate::network::{self, Forward, Mode};
+use crate::settings::write_json;
+use serde::{Deserialize, Serialize};
+use std::fs;
+use std::path::{MAIN_SEPARATOR, Path, PathBuf};
+
+/// 2560x1440 can't work: Windows takes the largest mode that fits the VGA memory, whose size QEMU
+/// rounds up to a power of two, and in 16 MiB the firmware's 2048x2048 fits too and is larger.
+pub const SCREENS: [&str; 2] = ["1920x1080", "3840x2160"];
+/// The rates offered by name.
+pub const REFRESH_RATES: [u32; 5] = [60, 64, 120, 144, 240];
+/// A slower rate only makes the guest's timer easier, and this is where a desktop stops being usable.
+pub const MIN_REFRESH_HZ: u32 = 30;
+/// The fastest that has been measured. A saved rate above a lowered limit would stop a machine
+/// loading, so this starts low and can rise.
+pub const MAX_REFRESH_HZ: u32 = 360;
+/// Windows 11's own minimum.
+pub const MIN_CORES: u32 = 2;
+/// Windows 11's own minimum, and above 2.75 GiB, where q35 changes how it splits RAM around the
+/// 4 GiB hole. The daemon relies on the larger-RAM split.
+pub const MIN_RAM_GIB: u32 = 4;
+const MACHINE_FILE: &str = "machine.json";
+const THUMBNAIL_FILE: &str = "thumbnail.png";
+const TOKEN_FILE: &str = "guest.token";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Kind {
+    /// Has GPU-PV.
+    #[default]
+    Windows,
+    /// Has no GPU, and boots what it's given.
+    Plain,
+    /// Ubuntu, installed with no hands, with the host's driver forwarded to it.
+    Linux,
+}
+
+impl Kind {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Windows => "Windows with GPU-PV",
+            Self::Plain => "Plain VM",
+            Self::Linux => "Ubuntu",
+        }
+    }
+}
+
+fn default_cores() -> u32 {
+    8
+}
+
+fn default_ram() -> u32 {
+    16
+}
+
+fn default_screen() -> String {
+    SCREENS[0].to_owned()
+}
+
+fn default_refresh() -> u32 {
+    144
+}
+
+fn default_on() -> bool {
+    true
+}
+
+fn default_bridge() -> String {
+    network::DEFAULT_BRIDGE.to_owned()
+}
+
+/// Fields beyond the first three can be missing: older files don't have them, and each default keeps
+/// such a machine as it was.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Machine {
+    #[serde(skip)]
+    pub id: String,
+    pub name: String,
+    pub disk: String,
+    pub vars: String,
+    #[serde(default = "default_cores")]
+    pub cores: u32,
+    #[serde(default = "default_ram")]
+    pub ram_gib: u32,
+    #[serde(default = "default_screen")]
+    pub screen: String,
+    #[serde(default = "default_refresh")]
+    pub refresh_hz: u32,
+    #[serde(default)]
+    pub vcache_pin: bool,
+    #[serde(default)]
+    pub kind: Kind,
+    /// What is in the drive of a plain machine.
+    #[serde(default)]
+    pub iso: String,
+    /// Windows hasn't finished installing here.
+    #[serde(default)]
+    pub installing: bool,
+    /// A privacy choice, so it's the user's to turn on.
+    #[serde(default)]
+    pub clipboard: bool,
+    /// The host folder the guest sees as a drive, if any.
+    #[serde(default)]
+    pub share: String,
+    /// The most video memory it may use. 0 is no cap.
+    #[serde(default)]
+    pub vram_gib: u32,
+    /// A virtual TPM and Secure Boot, from when it was installed. Older machines stay without.
+    #[serde(default)]
+    pub tpm: bool,
+    /// The performance overlay in the viewer.
+    #[serde(default)]
+    pub overlay: bool,
+    #[serde(default)]
+    pub network_mode: Mode,
+    /// NAT through passt, if it's installed. It gives the guest a second adapter.
+    #[serde(default)]
+    pub passt: bool,
+    /// The first NIC's. Empty is QEMU's default, which older machines keep until told otherwise.
+    #[serde(default)]
+    pub mac: String,
+    #[serde(default = "default_bridge")]
+    pub bridge: String,
+    #[serde(default)]
+    pub forwards: Vec<Forward>,
+    /// Ubuntu's GPU, which is a preview. Off, the guest gets the plain screen.
+    #[serde(default = "default_on")]
+    pub gpu_preview: bool,
+}
+
+impl Machine {
+    /// A machine with the defaults, as a Windows VM from the scripts would have them.
+    pub fn new(id: &str, name: &str, disk: &str, vars: &str) -> Self {
+        Self {
+            id: id.to_owned(),
+            name: name.to_owned(),
+            disk: disk.to_owned(),
+            vars: vars.to_owned(),
+            cores: default_cores(),
+            ram_gib: default_ram(),
+            screen: default_screen(),
+            refresh_hz: default_refresh(),
+            vcache_pin: false,
+            kind: Kind::Windows,
+            iso: String::new(),
+            installing: false,
+            clipboard: false,
+            share: String::new(),
+            vram_gib: 0,
+            tpm: false,
+            overlay: false,
+            network_mode: Mode::Nat,
+            passt: false,
+            mac: String::new(),
+            bridge: default_bridge(),
+            forwards: Vec::new(),
+            gpu_preview: true,
+        }
+    }
+
+    pub fn folder(&self, context: &Context) -> PathBuf {
+        context.paths.machines.join(&self.id)
+    }
+
+    pub fn tpm_folder(&self, context: &Context) -> PathBuf {
+        self.folder(context).join("tpm")
+    }
+
+    pub fn thumbnail(&self, context: &Context) -> PathBuf {
+        self.folder(context).join(THUMBNAIL_FILE)
+    }
+
+    /// The token the guest's agent wants. Each machine has its own.
+    pub fn token_file(&self, context: &Context) -> PathBuf {
+        self.folder(context).join(TOKEN_FILE)
+    }
+
+    pub fn has_gpu(&self) -> bool {
+        self.kind == Kind::Windows && !self.installing
+    }
+
+    /// Whether this machine should get the forwarded GPU, if the host can offer it.
+    pub fn wants_forwarded_gpu(&self) -> bool {
+        self.kind == Kind::Linux && !self.installing && self.gpu_preview
+    }
+
+    /// Whether its disk and firmware file live in its folder, so deleting that takes them too.
+    pub fn owns_files(&self, context: &Context) -> bool {
+        let Ok(folder) = fs::canonicalize(self.folder(context)) else { return false };
+        let inside = format!("{}{MAIN_SEPARATOR}", folder.display());
+        // Ubuntu boots with no firmware file of its own.
+        let mut files = [&self.disk, &self.vars].into_iter().filter(|path| !path.is_empty());
+        files.all(|path| fs::canonicalize(path).is_ok_and(|real| real.to_string_lossy().starts_with(&inside)))
+    }
+
+    pub fn summary(&self) -> String {
+        let (kind, cores, ram) = (self.kind.name(), self.cores, self.ram_gib);
+        match self.kind {
+            Kind::Plain => format!("{kind}, {cores} cores, {ram} GiB, no GPU acceleration"),
+            Kind::Linux if self.gpu_preview => format!("{kind}, {cores} cores, {ram} GiB, GPU preview"),
+            Kind::Linux => format!("{kind}, {cores} cores, {ram} GiB, no GPU"),
+            Kind::Windows => {
+                format!("{kind}, {cores} cores, {ram} GiB, {}, {} Hz", self.screen, self.refresh_hz)
+            }
+        }
+    }
+
+    /// Says what is wrong with these settings, whatever the host. `max_vram_gib` is what the card allows.
+    pub fn problems(&self, max_vram_gib: u32) -> Vec<String> {
+        let mut found = Vec::new();
+        if !valid_id(&self.id) {
+            found.push("The machine's id can only hold small letters, digits and dashes.".to_owned());
+        }
+        if self.name.trim().is_empty() {
+            found.push("The machine needs a name.".to_owned());
+        }
+        // Windows has its limits, and the daemon needs its share. A plain machine only needs to boot.
+        let (least_cores, least_ram) =
+            if self.kind == Kind::Windows { (MIN_CORES, MIN_RAM_GIB) } else { (1, 1) };
+        if self.cores < least_cores {
+            found.push(format!("Cores must be a whole number, at least {least_cores}."));
+        }
+        if self.ram_gib < least_ram {
+            found.push(format!("RAM must be a whole number of GiB, at least {least_ram}."));
+        }
+        if !SCREENS.contains(&self.screen.as_str()) {
+            found.push(format!("The screen size must be one of {}.", SCREENS.join(", ")));
+        }
+        if !(MIN_REFRESH_HZ..=MAX_REFRESH_HZ).contains(&self.refresh_hz) {
+            found.push(refresh_limits());
+        }
+        found.extend(self.network_problems());
+        if self.vram_gib > max_vram_gib {
+            found.push(format!("The video memory cap must be a whole number up to {max_vram_gib} GiB."));
+        }
+        found
+    }
+
+    pub fn network_problems(&self) -> Vec<String> {
+        let mut found = network::forward_list_problems(&self.forwards);
+        if let Some(problem) = network::bridge_name_problem(&self.bridge) {
+            found.push(problem);
+        } else if let Some(problem) =
+            Some(&self.mac).filter(|mac| !mac.is_empty()).and_then(|mac| network::mac_problem(mac))
+        {
+            found.push(problem);
+        } else if self.network_mode == Mode::Bridged && self.mac.is_empty() {
+            found.push("A bridged machine needs its own MAC address.".to_owned());
+        }
+        found
+    }
+
+    /// Replaces the file in one step, so a crash can't leave half of it.
+    pub fn save(&self, context: &Context) -> Result<()> {
+        if let Some(problem) = self.problems(crate::settings::max_vram_gib(context)).into_iter().next() {
+            return Err(Failure(problem));
+        }
+        write_json(&self.folder(context).join(MACHINE_FILE), self)
+    }
+}
+
+pub fn valid_id(id: &str) -> bool {
+    !id.is_empty() && id.bytes().all(|byte| matches!(byte, b'a'..=b'z' | b'0'..=b'9' | b'-'))
+}
+
+pub fn refresh_limits() -> String {
+    format!("The refresh rate must be a whole number from {MIN_REFRESH_HZ} to {MAX_REFRESH_HZ} Hz.")
+}
+
+/// The rate the user typed.
+pub fn read_refresh(text: &str) -> Result<u32> {
+    let text = text.trim();
+    let digits = !text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit());
+    text.parse()
+        .ok()
+        .filter(|hz| digits && (MIN_REFRESH_HZ..=MAX_REFRESH_HZ).contains(hz))
+        .ok_or_else(|| Failure(refresh_limits()))
+}
+
+pub fn load(context: &Context, id: &str) -> Result<Machine> {
+    let path = context.paths.machines.join(id).join(MACHINE_FILE);
+    let could_not_read =
+        |error: &dyn std::fmt::Display| Failure(format!("Could not read {}: {error}", path.display()));
+    let text = fs::read_to_string(&path).map_err(|error| could_not_read(&error))?;
+    let mut machine: Machine = serde_json::from_str(&text).map_err(|error| could_not_read(&error))?;
+    machine.id = id.to_owned();
+    match machine.problems(crate::settings::max_vram_gib(context)).first() {
+        Some(problem) => Err(Failure(format!("{}: {problem}", path.display()))),
+        None => Ok(machine),
+    }
+}
+
+/// The machines, and what is wrong with any file that couldn't be read.
+pub fn load_all(context: &Context) -> (Vec<Machine>, Vec<String>) {
+    let (mut machines, mut errors) = (Vec::new(), Vec::new());
+    for name in sorted_names(&context.paths.machines) {
+        if context.paths.machines.join(&name).is_dir() {
+            match load(context, &name) {
+                Ok(machine) => machines.push(machine),
+                Err(error) => errors.push(error.0),
+            }
+        }
+    }
+    (machines, errors)
+}
+
+/// The names in a folder in order, which is none if there is no folder.
+pub fn sorted_names(folder: &Path) -> Vec<String> {
+    let mut names: Vec<String> = fs::read_dir(folder)
+        .map(|entries| {
+            entries.flatten().map(|entry| entry.file_name().to_string_lossy().into_owned()).collect()
+        })
+        .unwrap_or_default();
+    names.sort();
+    names
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::network::{Forward, Protocol};
+    use crate::testing::{Scratch, scratch_context};
+
+    fn sample() -> Machine {
+        Machine::new("sample", "Sample", "/d", "/v")
+    }
+
+    #[test]
+    fn what_is_saved_loads_the_same() {
+        let scratch = Scratch::new();
+        let context = scratch_context(&scratch);
+        let mut machine = sample();
+        machine.ram_gib = 24;
+        machine.screen = "3840x2160".into();
+        machine.refresh_hz = 240;
+        machine.vcache_pin = true;
+        machine.forwards = vec![Forward::new(Protocol::Tcp, 2222, 22)];
+        machine.save(&context).unwrap();
+        assert_eq!(load(&context, "sample").unwrap(), machine);
+        assert!(!machine.folder(&context).join("machine.json.new").exists());
+    }
+
+    #[test]
+    fn bad_settings_are_refused_and_change_nothing() {
+        let scratch = Scratch::new();
+        let context = scratch_context(&scratch);
+        let good = sample();
+        good.save(&context).unwrap();
+        type Change = fn(&mut Machine);
+        let cases: [(Change, &str); 8] = [
+            (|m| m.cores = 1, "Cores"),
+            (|m| m.ram_gib = 3, "RAM"),
+            (|m| m.screen = "1024x768".into(), "screen"),
+            (|m| m.screen = "2560x1440".into(), "screen"),
+            (|m| m.refresh_hz = MIN_REFRESH_HZ - 1, "refresh"),
+            (|m| m.refresh_hz = MAX_REFRESH_HZ + 1, "refresh"),
+            (|m| m.name = " ".into(), "name"),
+            (|m| m.id = "../x".into(), "id"),
+        ];
+        for (change, text) in cases {
+            let mut bad = good.clone();
+            change(&mut bad);
+            let error = bad.save(&context).unwrap_err();
+            assert!(error.0.contains(text), "{error}");
+        }
+        assert_eq!(load(&context, "sample").unwrap(), good);
+    }
+
+    #[test]
+    fn a_broken_file_is_reported_and_not_fatal() {
+        let scratch = Scratch::new();
+        let context = scratch_context(&scratch);
+        let mut good = sample();
+        good.refresh_hz = 240;
+        good.save(&context).unwrap();
+        let path = good.folder(&context).join("machine.json");
+        let text = fs::read_to_string(&path).unwrap();
+        for (broken, message) in [
+            ("{".to_owned(), "Could not read"),
+            (r#"{"name": 1}"#.to_owned(), "Could not read"),
+            (text.replace("240", "1000"), "refresh"),
+            (text.replace("name", "nom"), "Could not read"),
+        ] {
+            fs::write(&path, broken).unwrap();
+            assert!(load(&context, "sample").unwrap_err().0.contains(message));
+            let (machines, errors) = load_all(&context);
+            assert!(machines.is_empty() && errors.len() == 1);
+        }
+        fs::write(&path, text).unwrap();
+        assert_eq!(load_all(&context), (vec![good], vec![]));
+    }
+
+    #[test]
+    fn any_whole_rate_in_the_limits_is_kept_as_given() {
+        let scratch = Scratch::new();
+        let context = scratch_context(&scratch);
+        let mut machine = sample();
+        for hz in [MIN_REFRESH_HZ, 60, 75, 165, 175, 180, 240, MAX_REFRESH_HZ] {
+            machine.refresh_hz = hz;
+            machine.save(&context).unwrap();
+            assert_eq!(load(&context, "sample").unwrap().refresh_hz, hz);
+            assert!(machine.summary().contains(&format!("{hz} Hz")));
+        }
+    }
+
+    #[test]
+    fn a_typed_rate_is_read_strictly() {
+        assert_eq!(read_refresh(" 165 "), Ok(165));
+        assert_eq!(read_refresh(&MAX_REFRESH_HZ.to_string()), Ok(MAX_REFRESH_HZ));
+        let huge = "9".repeat(5000);
+        for text in
+            ["", " ", "abc", "16.5", "-144", "+144", "1e2", "0x90", "١٤٤", "144 Hz", "29", "361", &huge]
+        {
+            assert!(read_refresh(text).unwrap_err().0.contains("from 30 to 360 Hz"), "{text}");
+        }
+    }
+
+    #[test]
+    fn a_machine_from_before_these_settings_stays_as_it_was() {
+        let scratch = Scratch::new();
+        let context = scratch_context(&scratch);
+        scratch.write(
+            "home/.local/share/guesthouse/machines/old/machine.json",
+            r#"{"name":"Old","disk":"/d","vars":"/v","cores":8,"ram_gib":16,"screen":"1920x1080","refresh_hz":144,"vcache_pin":false}"#,
+        );
+        let old = load(&context, "old").unwrap();
+        assert!(old.kind == Kind::Windows && old.has_gpu() && !old.tpm && !old.overlay && !old.clipboard);
+        assert_eq!((old.network_mode, old.passt, old.mac.as_str()), (Mode::Nat, false, ""));
+        assert_eq!(old.vram_gib, 0);
+        assert!(old.forwards.is_empty());
+    }
+
+    #[test]
+    fn a_bridged_machine_needs_its_own_mac() {
+        let mut machine = sample();
+        machine.network_mode = Mode::Bridged;
+        assert!(machine.problems(0).iter().any(|text| text.contains("own MAC")));
+    }
+
+    #[test]
+    fn a_machines_token_is_in_its_own_folder() {
+        let scratch = Scratch::new();
+        let context = scratch_context(&scratch);
+        assert!(sample().token_file(&context).ends_with("machines/sample/guest.token"));
+    }
+
+    #[test]
+    fn ubuntu_says_its_gpu_is_a_preview_and_a_machine_can_go_without() {
+        let mut machine = Machine { kind: Kind::Linux, ..sample() };
+        assert!(machine.summary().starts_with("Ubuntu, ") && machine.summary().contains("GPU preview"));
+        assert!(machine.wants_forwarded_gpu() && !machine.has_gpu(), "it has no daemon");
+        machine.gpu_preview = false;
+        assert!(machine.summary().contains("no GPU") && !machine.wants_forwarded_gpu());
+    }
+
+    #[test]
+    fn an_install_has_no_forwarded_gpu() {
+        let machine = Machine { kind: Kind::Linux, installing: true, ..sample() };
+        assert!(!machine.wants_forwarded_gpu());
+    }
+
+    #[test]
+    fn plain_machines_say_they_have_no_gpu() {
+        let mut machine = sample();
+        assert!(machine.summary().starts_with("Windows with GPU-PV, "));
+        machine.kind = Kind::Plain;
+        assert!(machine.summary().starts_with("Plain VM, ") && machine.summary().contains("no GPU"));
+    }
+}

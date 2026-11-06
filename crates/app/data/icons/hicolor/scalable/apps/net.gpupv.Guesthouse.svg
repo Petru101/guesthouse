@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="wall" x1="0" y1="50" x2="0" y2="112" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#3584e4"/>
+      <stop offset="1" stop-color="#1c71d8"/>
+    </linearGradient>
+    <linearGradient id="roof" x1="0" y1="14" x2="0" y2="64" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#5e5c64"/>
+      <stop offset="1" stop-color="#3d3846"/>
+    </linearGradient>
+    <linearGradient id="light" x1="0" y1="66" x2="0" y2="98" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#f9f06b"/>
+      <stop offset="1" stop-color="#f6d32d"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="64" cy="82" r="34" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#f9f06b" stop-opacity="0.55"/>
+      <stop offset="1" stop-color="#f9f06b" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect x="84" y="22" width="14" height="30" rx="2" fill="#241f31"/>
+  <rect x="24" y="52" width="80" height="64" rx="6" fill="#1a5fb4"/>
+  <rect x="24" y="48" width="80" height="64" rx="6" fill="url(#wall)"/>
+  <rect x="24" y="48" width="80" height="64" rx="6" fill="url(#glow)"/>
+  <path d="M64 16 112 56H16Z" fill="url(#roof)" stroke="url(#roof)" stroke-width="10" stroke-linejoin="round"/>
+  <path d="M11 61H117" stroke="#241f31" stroke-width="4" stroke-linecap="round"/>
+  <rect x="46" y="68" width="36" height="32" rx="3" fill="#1a5fb4"/>
+  <rect x="48" y="70" width="32" height="28" rx="2" fill="url(#light)"/>
+  <path d="M64 70V98M48 84H80" stroke="#1a5fb4" stroke-width="3"/>
+</svg>

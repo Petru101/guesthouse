@@ -30,6 +30,9 @@ They're in `crates/`, listed here from the bottom up. Each depends only on crate
 | `frame-socket` | The four messages that bring frames to a viewer, on their own so a producer can use them as they are. |
 | `daemon` | Slots, shared memory, sockets, the viewer's socket, and the main loop. |
 | `replay` | Replays a recording and compares every reply. |
+| `frame-socket` | The four messages that bring frames to a viewer, on their own so a producer can use them as they are. |
+| `app-core` | The desktop app's work with no UI: machines, tasks, setup, a VM's start, and `guesthouse-task` and `guesthouse-share`. |
+| `app` | The desktop app's GTK 4 and libadwaita pages. |
 
 To follow one message, start at `Server::read_channel` in `daemon`, go through `Router::handle_frame`, and land in `Session::dispatch` in `core/src/session/mod.rs`. The handlers are grouped by subject in that folder.
 
@@ -125,7 +128,7 @@ The driver version the guest is told comes from setup, which reads it from the d
 
 ## The record-and-compare test
 
-The Python prototype is the reference for behaviour, and the replay tool is how we check we match it.
+The prototype is the reference for behaviour, and the replay tool is how we check we match it.
 
 A recording holds what the prototype received and sent in a real session, along with what the replay can't work out alone: when fences moved, when the prototype took GPU addresses for its own channels, and whether each submission reached the GPU. The format is described in `replay/src/recording.rs`.
 
@@ -143,11 +146,22 @@ The host's own clock in the clock answer is masked, since it can never repeat. M
 
 The host hands out addresses from `GPU_RANGES`, less anything a backend keeps clear with `Backend::kept_gpu_ranges`. A guest's reservation either takes the next hand-out or, if it names an address or a window the next one doesn't fit, is placed. Placed ranges are per process, so the same address can mean different memory in two processes, and every lookup by GPU address names its space. Hand-outs step over placed ranges in all processes.
 
+## The app
+
+`app-core` needs no display, so nearly all of the app can be tested alone. Each machine is one JSON file. Anything slow runs as a task: `guesthouse-task` is a process of its own that outlives the app and leaves its steps in a small file, so the app can close at any moment and read where things are when it opens again.
+
+`Context` holds what the code needs from the PC, and tests swap its parts for stand-ins. A VM's QEMU arguments are built as data in `vm_args`. How a VM and the daemon come up is behind `VmHost`, and everything that knows the daemon's start-up is in `daemon.rs`, so a change there stays there.
+
+Nothing is relative to a project folder. Machines are in the data store, which `~/.config/guesthouse/store` can move, sockets are in the XDG runtime folder, the log is in the state folder, and QEMU and the guest's files are in a program folder found from where it runs. Each machine has its own token for the guest's agent. That folder isn't in this repo, and without it the app runs plain VMs on the system's QEMU.
+
+Ubuntu guests take a route of their own, in `linux/` and `actions/ubuntu.rs`. Ubuntu's installer runs with no hands from a seed disc, and the host's driver reaches the guest on a read-only image, made from the files of the driver that's loaded. An unknown driver branch turns the GPU off and the VM still boots, and another point release warns. That GPU is a preview so far, and the app says so.
+
+The viewer only knows `FrameSource`, which has three kinds. `SocketFrames` takes a guest's frames from the frame socket, with a new texture for each frame, and gives a slot back when GTK lets go of its texture. `ForwardedFrames` takes an Ubuntu guest's frames from its QEMU device. `DbusFrames` listens to QEMU's D-Bus display, which is all that firmware, an install and a plain VM have, and a guest on a GPU has it too until its first frame and again after a reset.
+
 ## Not here yet
 
 Left out for now, because they're still changing in the prototype:
 
 - the NVIDIA backend, and with it real submissions
-- the app
 
 Also not ported: the arena (video memory the guest's CPU can reach), the experiment switches in the prototype's run folder, and turning 10-bit frames into 8-bit ones for an app's staging surface.
