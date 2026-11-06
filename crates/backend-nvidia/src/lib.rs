@@ -18,6 +18,7 @@ pub mod inf;
 pub mod private_data;
 pub mod profile;
 pub mod pushbuffer;
+pub mod queue;
 pub mod record;
 mod ring_position;
 pub mod rm;
@@ -38,6 +39,7 @@ use inf::{INF_NAME, Inf};
 use profile::{
     Generation, GuestBranch, HostBranch, generation_for, guest_branch, guest_channel_classes, host_branch,
 };
+use queue::LiveQueue;
 use record::{CardReader, HostFacts, build, read_host_facts};
 use ring_position::GuestRing;
 use rm::device::{AddressSpace, Device};
@@ -103,6 +105,7 @@ pub struct NvidiaBackend<R> {
     answers: AdapterAnswers,
     pub(crate) spaces: HashMap<SpaceId, AddressSpace>,
     next_space: u64,
+    pub(crate) queues: HashMap<u32, LiveQueue>,
     pub(crate) copier: Option<Copier>,
     /// Rings named in queues' private data, by queue.
     pub(crate) guest_rings: HashMap<u32, GuestRing>,
@@ -183,6 +186,7 @@ impl<R: Rm> NvidiaBackend<R> {
             answers: AdapterAnswers::new(inputs, layout),
             spaces: HashMap::new(),
             next_space: 1,
+            queues: HashMap::new(),
             copier: None,
             guest_rings: HashMap::new(),
             sensors: None,
