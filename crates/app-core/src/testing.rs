@@ -93,7 +93,6 @@ pub fn scratch_paths(scratch: &Scratch) -> Paths {
         vars: scratch.write("firmware/vars", "blank firmware settings"),
         code_secure: scratch.path("firmware/code-secure.qcow2"),
         vars_secure: scratch.write("firmware/vars-secure", "firmware settings with keys"),
-        ..Firmware::default()
     };
     fs::create_dir_all(&paths.shared_memory).unwrap();
     paths
