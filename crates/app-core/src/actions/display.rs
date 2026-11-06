@@ -139,20 +139,23 @@ fn went_in(said: &str) -> bool {
 }
 
 /// Signs the driver on this machine, installs it, and leaves a task that makes it the display at logon.
-fn install(task: &Task, package: &DriverPackage, state: &mut DisplayState) -> Result<bool> {
+/// A lost upload changes nothing here: whatever is in Windows goes on working, and the next boot tries.
+fn install(task: &Task, package: &DriverPackage, state: &mut DisplayState, found: Device) -> Result<()> {
     task.step("Installing the display driver");
-    state.package.clone_from(&package.id);
     if !send_package(task, package)? {
-        fail(task, state, NOT_REACHED, "the files did not all arrive")?;
-        return Ok(false);
+        write_log(task.context, "display driver: the files did not all arrive")?;
+        if found != Device::Working {
+            state.reason = NOT_REACHED.to_owned();
+        }
+        return Ok(());
     }
     let folder = guest_file("").trim_end_matches('\\').to_owned();
     let said = task.ask_guest(&format!("& {} {folder}", guest_file("sign-and-install.ps1")), INSTALL_SECONDS);
     write_log(task.context, &format!("display driver: {}", said.trim()))?;
     if !went_in(&said) {
         take_out(task)?;
-        fail(task, state, DID_NOT_INSTALL, "the install did not finish")?;
-        return Ok(false);
+        state.failed_package.clone_from(&package.id);
+        return fail(task, state, DID_NOT_INSTALL, "the install did not finish");
     }
     let wanted = Wanted::of(task);
     let hz = if REFRESH_RATES.contains(&wanted.hz) { wanted.hz } else { SAFE_HZ };
@@ -163,13 +166,16 @@ fn install(task: &Task, package: &DriverPackage, state: &mut DisplayState) -> Re
     );
     task.ask_guest(&script, TAKE_OVER_SECONDS);
     state.driver = Driver::Installed;
+    state.package.clone_from(&package.id);
+    state.failed_package.clear();
     state.reason.clear();
-    Ok(true)
+    Ok(())
 }
 
 fn fail(task: &Task, state: &mut DisplayState, reason: &str, detail: &str) -> Result<()> {
     write_log(task.context, &format!("display driver: {detail}"))?;
     state.driver = Driver::Failed;
+    state.package.clear();
     state.reason = reason.to_owned();
     state.running = None;
     Ok(())
@@ -201,16 +207,12 @@ fn make_sure_of_driver(task: &Task, state: &mut DisplayState, again: bool) -> Re
         }
         return Ok(());
     };
-    let tried_this_build = state.package == package.id;
     let wanted = match found {
-        Device::Working => !tried_this_build && !state.package.is_empty(),
-        _ => again || !(state.driver == Driver::Failed && tried_this_build),
+        Device::Working => state.package != package.id && state.failed_package != package.id,
+        _ => again || state.failed_package != package.id,
     };
-    if found == Device::Working && state.package.is_empty() {
-        state.package.clone_from(&package.id);
-    }
     if wanted {
-        install(task, &package, state)?;
+        install(task, &package, state, found)?;
     }
     Ok(())
 }
@@ -253,6 +255,7 @@ fn settle_on_basic(task: &mut Task, state: &mut DisplayState, wanted: &Wanted) -
 
 fn give_up(task: &mut Task, state: &mut DisplayState, wanted: &Wanted, reason: &str) -> Result<()> {
     take_out(task)?;
+    state.failed_package = std::mem::take(&mut state.package);
     fail(task, state, reason, "taken out again, as it never came up")?;
     settle_on_basic(task, state, wanted)
 }

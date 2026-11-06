@@ -13,6 +13,7 @@ use guesthouse_daemon::display_note::write_note;
 use serde_json::json;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 const INSTALLED: &str = "Added driver packages:  1\nupdate True error 0 reboot False\n\
@@ -28,7 +29,9 @@ struct Guest {
     install: &'static str,
     screen: Mutex<&'static str>,
     /// Whether frames come once the driver has been told to take over.
-    sends_frames: bool,
+    sends_frames: AtomicBool,
+    /// Files sent to the guest get lost on the way.
+    loses_uploads: AtomicBool,
     asked: Mutex<Vec<String>>,
 }
 
@@ -39,7 +42,8 @@ impl Guest {
             device: Mutex::new(device),
             install,
             screen: Mutex::new(if device == "working" { ON_DRIVER } else { ON_BASIC }),
-            sends_frames,
+            sends_frames: AtomicBool::new(sends_frames),
+            loses_uploads: AtomicBool::new(false),
             asked: Mutex::default(),
         })
     }
@@ -49,16 +53,18 @@ impl Guest {
     }
 
     fn show_frames(&self) {
-        if self.sends_frames {
-            let note = ScreenNote { width: 1920, height: 1080, hdr: false };
-            write_note(&self.run_folder, Some(note)).unwrap();
-        }
+        let note = ScreenNote { width: 1920, height: 1080, hdr: false };
+        let shown = self.sends_frames.load(Ordering::Relaxed).then_some(note);
+        write_note(&self.run_folder, shown).unwrap();
     }
 }
 
 impl GuestAgent for Guest {
     fn ask(&self, _port: u16, _token: &str, script: &str, _seconds: u64) -> String {
         self.asked.lock().unwrap().push(script.to_owned());
+        if script.contains("idd\\") && self.loses_uploads.load(Ordering::Relaxed) {
+            return String::new();
+        }
         if script.contains("WriteAllBytes") {
             let sent = script.split('\'').nth(3).and_then(base64_decode).unwrap_or_default();
             self.asked.lock().unwrap().push(String::from_utf8_lossy(&sent).into_owned());
@@ -91,6 +97,11 @@ impl GuestAgent for Guest {
     }
 }
 
+/// What a boot does, as the tests run it.
+fn boot_display(task: &mut Task) -> Result<()> {
+    set_up_display(task)
+}
+
 struct Rig {
     scratch: Scratch,
     context: Context,
@@ -115,6 +126,12 @@ impl Rig {
         (self, guest)
     }
 
+    fn say_this_build_is_in(&self, id: &str) {
+        let state =
+            DisplayState { driver: Driver::Installed, package: id.to_owned(), ..DisplayState::default() };
+        write_state(&self.context, &self.machine, &state).unwrap();
+    }
+
     fn run(&self, action: fn(&mut Task) -> Result<()>) -> DisplayState {
         let host = RecordingHost::default();
         let mut task = Task::new(&self.context, &host, "start", self.machine.clone());
@@ -127,7 +144,7 @@ impl Rig {
 fn a_machine_with_no_driver_gets_it_and_ends_up_on_our_display() {
     let (rig, guest) = Rig::new().with(|context| Guest::new(context, "missing", INSTALLED, true));
     fake_package(&rig.scratch, "build 1");
-    let state = rig.run(set_up_display);
+    let state = rig.run(boot_display);
     assert_eq!(state.driver, Driver::Installed);
     assert_eq!(state.package, "build 1");
     assert_eq!(state.reason, "");
@@ -141,7 +158,7 @@ fn a_machine_with_no_driver_gets_it_and_ends_up_on_our_display() {
 #[test]
 fn a_build_with_no_driver_stays_on_the_basic_display_and_says_so() {
     let (rig, guest) = Rig::new().with(|context| Guest::new(context, "missing", INSTALLED, true));
-    let state = rig.run(set_up_display);
+    let state = rig.run(boot_display);
     assert_eq!(state.driver, Driver::Absent);
     assert!(state.reason.contains("no display driver"));
     assert!(!state.running.unwrap().on_driver);
@@ -152,7 +169,7 @@ fn a_build_with_no_driver_stays_on_the_basic_display_and_says_so() {
 fn an_install_that_fails_leaves_the_basic_display_and_the_reason() {
     let (rig, guest) = Rig::new().with(|context| Guest::new(context, "missing", REFUSED, true));
     fake_package(&rig.scratch, "build 1");
-    let state = rig.run(set_up_display);
+    let state = rig.run(boot_display);
     assert_eq!(state.driver, Driver::Failed);
     assert!(state.reason.contains("did not install"));
     assert!(!state.running.unwrap().on_driver);
@@ -163,13 +180,13 @@ fn an_install_that_fails_leaves_the_basic_display_and_the_reason() {
 fn a_build_that_failed_isnt_tried_at_every_start_but_can_be_asked_for() {
     let (rig, guest) = Rig::new().with(|context| Guest::new(context, "missing", REFUSED, true));
     fake_package(&rig.scratch, "build 1");
-    rig.run(set_up_display);
-    rig.run(set_up_display);
+    rig.run(boot_display);
+    rig.run(boot_display);
     assert_eq!(guest.asked_for("sign-and-install.ps1 C:"), 1);
     rig.run(install_display);
     assert_eq!(guest.asked_for("sign-and-install.ps1 C:"), 2);
     fake_package(&rig.scratch, "build 2");
-    rig.run(set_up_display);
+    rig.run(boot_display);
     assert_eq!(guest.asked_for("sign-and-install.ps1 C:"), 3, "a new build gets its own try");
 }
 
@@ -177,7 +194,7 @@ fn a_build_that_failed_isnt_tried_at_every_start_but_can_be_asked_for() {
 fn a_driver_that_sends_no_picture_is_taken_out_so_the_vm_stays_usable() {
     let (rig, guest) = Rig::new().with(|context| Guest::new(context, "missing", INSTALLED, false));
     fake_package(&rig.scratch, "build 1");
-    let state = rig.run(set_up_display);
+    let state = rig.run(boot_display);
     assert_eq!(state.driver, Driver::Failed);
     assert!(state.reason.contains("sent no picture"));
     assert_eq!(guest.asked_for("take it out"), 1);
@@ -188,7 +205,7 @@ fn a_driver_that_sends_no_picture_is_taken_out_so_the_vm_stays_usable() {
 fn a_driver_that_was_in_and_doesnt_come_up_is_said_too() {
     let (rig, guest) = Rig::new().with(|context| Guest::new(context, "working", INSTALLED, true));
     *guest.screen.lock().unwrap() = ON_BASIC;
-    let state = rig.run(set_up_display);
+    let state = rig.run(boot_display);
     assert!(state.reason.contains("did not come up"));
     assert_eq!(guest.asked_for("take it out"), 1);
 }
@@ -197,10 +214,11 @@ fn a_driver_that_was_in_and_doesnt_come_up_is_said_too() {
 fn a_working_driver_is_left_alone_and_a_newer_build_goes_on_it() {
     let (rig, guest) = Rig::new().with(|context| Guest::new(context, "working", INSTALLED, true));
     fake_package(&rig.scratch, "build 1");
-    rig.run(set_up_display);
+    rig.say_this_build_is_in("build 1");
+    rig.run(boot_display);
     assert_eq!(guest.asked_for("sign-and-install"), 0);
     fake_package(&rig.scratch, "build 2");
-    assert_eq!(rig.run(set_up_display).package, "build 2");
+    assert_eq!(rig.run(boot_display).package, "build 2");
     assert_eq!(guest.asked_for("sign-and-install.ps1 C:"), 1);
 }
 
@@ -222,7 +240,7 @@ fn hdr_only_reaches_windows_on_a_screen_that_can_show_it() {
 fn what_windows_really_gave_is_kept_and_the_gap_is_said() {
     let (mut rig, _guest) = Rig::new().with(|context| Guest::new(context, "working", INSTALLED, true));
     rig.machine.refresh_hz = 200;
-    let state = rig.run(set_up_display);
+    let state = rig.run(boot_display);
     assert_eq!(state.running.unwrap().hz, 144);
     assert!(state.note.contains("no mode at 1920x1080 and 200 Hz"), "{}", state.note);
 }
@@ -236,4 +254,34 @@ fn a_screen_with_nothing_said_isnt_guessed_at() {
     let state = rig.run(apply_display);
     assert_eq!(state.running, None);
     assert_eq!(guest.asked_for("take it out"), 0);
+}
+
+#[test]
+fn a_lost_upload_leaves_a_working_driver_as_it_is_and_the_next_boot_tries_again() {
+    let (rig, guest) = Rig::new().with(|context| Guest::new(context, "working", INSTALLED, true));
+    rig.say_this_build_is_in("build 1");
+    fake_package(&rig.scratch, "build 2");
+    guest.loses_uploads.store(true, Ordering::Relaxed);
+    let state = rig.run(boot_display);
+    assert_eq!(
+        (state.driver, state.package.as_str(), state.reason.as_str()),
+        (Driver::Installed, "build 1", "")
+    );
+    assert!(state.running.unwrap().on_driver);
+    assert_eq!(guest.asked_for("sign-and-install.ps1 C:"), 0);
+    guest.loses_uploads.store(false, Ordering::Relaxed);
+    assert_eq!(rig.run(boot_display).package, "build 2");
+    assert_eq!(guest.asked_for("sign-and-install.ps1 C:"), 1);
+}
+
+#[test]
+fn a_lost_upload_on_a_new_machine_is_said_and_tried_again() {
+    let (rig, guest) = Rig::new().with(|context| Guest::new(context, "missing", INSTALLED, true));
+    fake_package(&rig.scratch, "build 1");
+    guest.loses_uploads.store(true, Ordering::Relaxed);
+    let state = rig.run(boot_display);
+    assert!(state.reason.contains("did not reach"), "{}", state.reason);
+    assert_eq!(state.package, "");
+    guest.loses_uploads.store(false, Ordering::Relaxed);
+    assert_eq!(rig.run(boot_display).driver, Driver::Installed);
 }

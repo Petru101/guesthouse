@@ -73,8 +73,11 @@ impl RunningScreen {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DisplayState {
     pub driver: Driver,
-    /// The build that's in Windows, or that failed.
+    /// The build that went into Windows. Empty until one really has.
     pub package: String,
+    /// The build that failed, which a start doesn't try again.
+    #[serde(default)]
+    pub failed_package: String,
     /// Why Windows is on the basic display.
     pub reason: String,
     /// What couldn't be done of what was asked for.
