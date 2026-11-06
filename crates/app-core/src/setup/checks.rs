@@ -15,7 +15,7 @@ use std::process::{Command, Stdio};
 /// `nvidia-smi` gives the card's clocks to the record builder.
 const TOOLS: [&str; 5] = ["7z", "genisoimage", "qemu-img", "swtpm", "nvidia-smi"];
 /// What an Ubuntu guest's install takes, beyond what any machine does.
-const UBUNTU_TOOLS: [&str; 5] = ["isoinfo", "genisoimage", "openssl", "ssh-keygen", "setarch"];
+const UBUNTU_TOOLS: [&str; 6] = ["isoinfo", "genisoimage", "openssl", "ssh-keygen", "setarch", "bwrap"];
 const TOOLS_FIX: &str = "On Fedora: sudo dnf install 7zip genisoimage qemu-img swtpm edk2-ovmf, and nvidia-smi from NVIDIA's driver";
 const BUILD_FIX: &str = "qemu/README.md in Guesthouse's source says how to build it.";
 const QEMU_LIBRARIES_FIX: &str = "On Fedora: sudo dnf install pixman libslirp libfdt libusb1 pipewire-libs";

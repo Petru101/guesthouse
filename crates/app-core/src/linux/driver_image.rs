@@ -16,9 +16,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 const VOLUME_LABEL: &str = "NVFWD_DRIVER";
-/// What a guest builds. The device's wire format travels with the modules, so a guest always builds
-/// against the QEMU these sources go with.
-const OUR_SOURCES: [&str; 6] = ["guest", "kapi", "layer", "cast", "tests", "qemu/nvfwd_proto.h"];
+/// What a guest builds.
+const OUR_SOURCES: [&str; 5] = ["guest", "kapi", "layer", "cast", "tests"];
 /// The folders the guest's modules include from, and only their headers.
 const HEADER_FOLDERS: [&str; 8] = [
     "src/nvidia-modeset/kapi/interface",

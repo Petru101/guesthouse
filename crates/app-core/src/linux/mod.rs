@@ -13,5 +13,5 @@ use std::path::PathBuf;
 
 /// What ships with the app for these guests, inside the program folder.
 pub fn guest_sources(context: &Context) -> PathBuf {
-    context.paths.helper("linuxguest")
+    context.paths.helper("linux")
 }

@@ -136,11 +136,11 @@ mod tests {
 
     fn with_sources(scratch: &Scratch) {
         let template = "password: \"@PASSWORD_HASH@\"\nkey: \"@SSH_KEY@\"\nkernel: \"@KERNEL_PACKAGE@\"\n";
-        scratch.write("program/linuxguest/setup/seed/user-data.template", template);
-        scratch.write("program/linuxguest/setup/seed/meta-data", "instance-id: nvfwd-1\n");
-        scratch.write("program/linuxguest/setup/guest/first-boot.sh", "#!/bin/sh\n");
-        scratch.write("program/linuxguest/cast/Xwayland", "#!/bin/sh\n");
-        scratch.write("program/linuxguest/cast/firefox.desktop", "[Desktop Entry]\n");
+        scratch.write("program/linux/setup/seed/user-data.template", template);
+        scratch.write("program/linux/setup/seed/meta-data", "instance-id: nvfwd-1\n");
+        scratch.write("program/linux/setup/guest/first-boot.sh", "#!/bin/sh\n");
+        scratch.write("program/linux/cast/Xwayland", "#!/bin/sh\n");
+        scratch.write("program/linux/cast/firefox.desktop", "[Desktop Entry]\n");
     }
 
     fn machine(context: &Context) -> Machine {
