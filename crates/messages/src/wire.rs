@@ -16,7 +16,7 @@ impl std::fmt::Display for Malformed {
 impl std::error::Error for Malformed {}
 
 /// The most bytes the host makes room for because a message asks. The guest's channel takes packets
-/// of 128 KiB at most, and the largest answer seen from a real guest is the 50,616-byte adapter
+/// of 128 KiB at most, and the largest answer seen from a real guest is a vendor's adapter
 /// record, which grows with the driver, so this is the limit that stays right as drivers change.
 pub const MAX_ANSWER_SIZE: usize = 128 << 10;
 

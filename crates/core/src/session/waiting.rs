@@ -322,9 +322,8 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
 
     /// Adds to a queue's backlog, and holds the reply if too much of it is unfinished.
     ///
-    /// When the guest's driver finds its ring full, it waits very briefly and then tries to build a
-    /// bigger one, which can't work here and costs the device. Its thread waits for this reply, so
-    /// holding it stops the ring filling. Only that thread waits, and other queues go on.
+    /// A guest that fills its ring loses its device. Its thread waits for this reply, so holding it
+    /// stops the ring filling. Only that thread waits, and other queues go on.
     pub(super) fn hold_if_ring_is_full(&mut self, handle: u32, value: u64, work: u32) {
         let Some(limit) = self.backend.unfinished_work_limit() else { return };
         let Some(queue) = self.queues.get_mut(&handle) else { return };
