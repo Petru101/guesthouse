@@ -18,6 +18,7 @@ use crate::wizard;
 use adw::prelude::*;
 use gtk::glib;
 use guesthouse_app_core::context::Context;
+use guesthouse_app_core::gpu_support::{NO_GPU_YET, gpu_ready};
 use guesthouse_app_core::library::{delete, import_existing, remove_entry};
 use guesthouse_app_core::log::write_log;
 use guesthouse_app_core::machine::{Machine, load_all};
@@ -80,7 +81,7 @@ impl Window {
         let pages = adw::NavigationView::new();
         toasts.set_child(Some(&pages));
         window.set_content(Some(&toasts));
-        let library = LibraryPage::new();
+        let library = LibraryPage::new(gpu_ready(&context));
         pages.add(&library.page);
         let this = Self(Rc::new(Inner {
             context,
@@ -286,14 +287,19 @@ impl Window {
         let context = &self.0.context;
         let offered =
             read_prefs(context).get("setup_offered").is_some_and(|value| value != &Value::Bool(false));
-        if !setup_done(context) && !offered {
+        if gpu_ready(context) && !setup_done(context) && !offered {
             self.remember(json!({"setup_offered": true}));
             self.show_setup();
         }
     }
 
+    /// Setup is all about the GPU, so with no GPU support there's nothing it could finish.
     pub fn show_setup(&self) {
-        wizard::show(self);
+        if gpu_ready(&self.0.context) {
+            wizard::show(self);
+        } else {
+            self.problem(NO_GPU_YET);
+        }
     }
 
     pub fn show_log(&self) {

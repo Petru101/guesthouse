@@ -4,6 +4,7 @@ use crate::common::{choose_file, in_background};
 use crate::rows::{number_row, row_button};
 use crate::window::Window;
 use adw::prelude::*;
+use guesthouse_app_core::gpu_support::{NO_GPU_YET, gpu_ready, kind_offered};
 use guesthouse_app_core::host::{host_ram_limit, physical_cores, plain_ram_limit};
 use guesthouse_app_core::iso::{Iso, read_iso};
 use guesthouse_app_core::library::{
@@ -222,9 +223,10 @@ impl NewMachineDialog {
             let warning = driver_warning(&context).map_or_else(String::new, |text| format!(" {text}"));
             self.show_verdict(&iso.title, &format!("Installs by itself and starts with GPU-PV.{warning}"));
         } else {
+            let later = if gpu_ready(&context) { "" } else { NO_GPU_YET };
             self.show_verdict(
                 &format!("{}: a plain VM", iso.title),
-                &format!("You install it by hand. {NO_GPU}"),
+                format!("You install it by hand. {NO_GPU} {later}").trim(),
             );
         }
     }
@@ -252,6 +254,8 @@ impl NewMachineDialog {
     }
 
     fn show_iso(&self, path: &str, iso: Iso) {
+        let kind = kind_offered(&self.0.window.context(), iso.kind);
+        let iso = Iso { kind, ..iso };
         self.describe(&iso);
         self.set_sizes(iso.kind);
         if self.0.name.text().is_empty() {
