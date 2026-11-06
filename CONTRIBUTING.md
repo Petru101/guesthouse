@@ -11,6 +11,8 @@ cargo fmt --check
 cargo bench -p guesthouse-core
 ```
 
+The desktop app in `crates/app` also needs GTK 4 and libadwaita's development files, so it's left out of those commands. Build it with `cargo build -p guesthouse-app`. `crates/app/page-shots.sh` walks its pages on GTK's Broadway backend and saves a picture of each, with no desktop and no GPU.
+
 To try the sockets by hand, `cargo run -p guesthouse-daemon --features stand-in` answers messages with a pretend GPU behind them. It's for poking at, and it won't run a guest.
 
 ## Legal rules

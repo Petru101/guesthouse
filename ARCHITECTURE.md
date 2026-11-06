@@ -29,6 +29,8 @@ They're in `crates/`, listed here from the bottom up. Each depends only on crate
 | `core` | `Session`: the tables for one guest, and the answer to each message. Vendor-neutral. |
 | `daemon` | Slots, shared memory, sockets, and the main loop. |
 | `replay` | Replays a recording and compares every reply. |
+| `app-core` | The desktop app's work with no UI: machines, tasks, setup, a VM's start, and `guesthouse-task` and `guesthouse-share`. |
+| `app` | The desktop app's GTK 4 and libadwaita pages. |
 
 To follow one message, start at `Server::read_channel` in `daemon`, go through `Router::handle_frame`, and land in `Session::dispatch` in `core/src/session/mod.rs`. The handlers are grouped by subject in that folder.
 
@@ -98,12 +100,21 @@ There's a catch to keep in mind. With no vendor backend, `RecordedAnswers` plays
 
 The host's own clock in the clock answer is masked, since it can never repeat. Messages the host sends by itself are compared as a set and not in order, because in a real session their order depends on the GPU's timing.
 
+## The app
+
+`app-core` needs no display, so nearly all of the app can be tested alone. Each machine is one JSON file. Anything slow runs as a task: `guesthouse-task` is a process of its own that outlives the app and leaves its steps in a small file, so the app can close at any moment and read where things are when it opens again.
+
+`Context` holds what the code needs from the PC, and tests swap its parts for stand-ins. A VM's QEMU arguments are built as data in `vm_args`. How a VM and the daemon come up is behind `VmHost`, and everything that knows the daemon's start-up is in `daemon.rs`, so a change there stays there.
+
+Nothing is relative to a project folder. Machines are in the data store, which `~/.config/guesthouse/store` can move, sockets are in the XDG runtime folder, the log is in the state folder, and what ships with the app is in a program folder found from where it runs. Each machine has its own token for the guest's agent. Files for the guest aren't in this repo: they ship with the app.
+
+The viewer is a shell so far. It only knows `FrameSource`, and a pattern stands in for the guest's screen.
+
 ## Not here yet
 
 Left out for now, because they're still changing in the prototype:
 
 - the NVIDIA backend, and with it real submissions
 - the frame path to the viewer
-- the app
 
 Also not ported: the arena (video memory the guest's CPU can reach), the experiment switches in the prototype's run folder, and copies to the screen running off the message thread.
