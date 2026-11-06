@@ -217,8 +217,7 @@ impl Display {
         let state = self.state();
         let context = parts.shared.window.context();
         let running = status.state == State::Running;
-        let on_driver = state.running.is_some_and(|screen| screen.on_driver);
-        let can_change = !status.busy && (!running || on_driver);
+        let can_change = !status.busy;
         parts.screen.set_sensitive(can_change);
         parts.rate.set_sensitive(can_change);
         parts.custom.set_sensitive(can_change);
