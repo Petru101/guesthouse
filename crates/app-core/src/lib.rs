@@ -6,6 +6,7 @@ pub mod context;
 pub mod daemon;
 pub mod failure;
 pub mod host;
+pub mod library;
 pub mod log;
 pub mod machine;
 pub mod monitor;

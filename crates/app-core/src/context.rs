@@ -28,6 +28,8 @@ pub struct Context {
     pub bridge: BridgeHost,
     pub monitor: Arc<dyn Monitor>,
     pub clock: Arc<dyn Clock>,
+    /// Replaces the room an install needs, for a test on a small disk.
+    pub install_room: Option<u64>,
 }
 
 impl Context {
@@ -47,6 +49,7 @@ impl Context {
             bridge: BridgeHost::default(),
             monitor: Arc::new(QmpMonitor),
             clock: Arc::new(RealClock::default()),
+            install_room: None,
         }
     }
 
@@ -66,5 +69,9 @@ impl Context {
 
     pub fn agent_port(&self, slot: Option<Slot>) -> u16 {
         self.paths.agent_port(slot.unwrap_or(self.slot))
+    }
+
+    pub fn install_room_gib(&self) -> u64 {
+        self.install_room.unwrap_or(crate::library::INSTALL_ROOM_GIB)
     }
 }
