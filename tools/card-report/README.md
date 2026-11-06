@@ -26,6 +26,8 @@ From the driver's record:
 
 That record also holds things that identify your card and PC, like the card's UUID and ECID. The program reads the fields above by name and looks at nothing else in it. The record itself never leaves memory, and there are no hex dumps. If the record's size isn't one the program has a layout for, or the card's own ID isn't where the layout says, it reads nothing from the record and the report says so.
 
+It knows two layouts, 617 and 621. The 621 one hasn't met a real record yet, and the report says that. On 621 the fields that moved (name, memory, nodes, classes) are only kept if every one of them looks right, and otherwise the report says they can't be read.
+
 The file never has your PC's name, your user name, serial numbers or paths in it.
 
 ## Building

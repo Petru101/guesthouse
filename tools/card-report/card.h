@@ -61,6 +61,8 @@ typedef struct {
     uint16_t format_version;
     uint16_t format_revision;
     const char *layout;
+    bool layout_unproven;
+    bool moved_fields_unread;
     char name[NAME_SIZE];
     uint32_t architecture;
     uint32_t implementation;
@@ -92,11 +94,13 @@ typedef struct {
     Card cards[MOST_CARDS];
 } Report;
 
-/* The record sizes this program has a layout for, or zero past the last one. */
+/* The record sizes this program has a layout for, largest first, or zero past the last one. */
 uint32_t record_known_size(size_t index);
 
-/* Reads the named fields out of `size` bytes of record, and never looks at any others. */
-void record_read(const uint8_t *data, size_t size, uint16_t device_id, RecordFacts *facts);
+/* Reads the named fields out of `size` bytes of record, and never looks at any others.
+ * `windows_nodes` is how many engine nodes Windows listed, or zero if it wouldn't say. */
+void record_read(const uint8_t *data, size_t size, uint16_t device_id, size_t windows_nodes,
+                 RecordFacts *facts);
 
 /* Copies text, keeping plain printable characters and cutting it to fit. */
 void plain_text(char *to, size_t room, const uint16_t *from, size_t length);

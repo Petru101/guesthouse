@@ -125,7 +125,7 @@ static void read_adapter(UINT adapter, const DeviceIds *ids, AdapterFacts *facts
 }
 
 /* The record stays in this buffer. Only the fields record_read picks out go any further. */
-static void read_record(UINT adapter, uint16_t device_id, RecordFacts *facts)
+static void read_record(UINT adapter, const AdapterFacts *card, RecordFacts *facts)
 {
     uint8_t *record = calloc(1, RECORD_LARGEST_ASK);
     uint32_t size;
@@ -136,13 +136,13 @@ static void read_record(UINT adapter, uint16_t device_id, RecordFacts *facts)
     }
     for (size_t i = 0; (size = record_known_size(i)) != 0; i++) {
         if (ask(adapter, QUERY_RECORD, record, size)) {
-            record_read(record, size, device_id, facts);
+            record_read(record, size, card->device_id, card->node_count, facts);
             free(record);
             return;
         }
     }
     if (ask(adapter, QUERY_RECORD, record, RECORD_LARGEST_ASK)) {
-        record_read(record, RECORD_LARGEST_ASK, device_id, facts);
+        record_read(record, RECORD_LARGEST_ASK, card->device_id, card->node_count, facts);
     }
     free(record);
 }
@@ -167,7 +167,7 @@ static void read_cards(void)
             Card *card = &report.cards[report.card_count++];
 
             read_adapter(adapter, &ids, &card->adapter);
-            read_record(adapter, card->adapter.device_id, &card->record);
+            read_record(adapter, &card->adapter, &card->record);
         }
         close_adapter(&closing);
     }
@@ -250,7 +250,7 @@ static void say_what_happened(void)
         const char *name = card->adapter.name[0] ? card->adapter.name : card->record.name;
 
         printf("Found %s.\n", name[0] ? name : "an NVIDIA card");
-        if (card->record.state != RECORD_READ) {
+        if (card->record.state != RECORD_READ || card->record.moved_fields_unread) {
             printf("Some fields can't be read on this driver, and the report says which.\n");
         }
     }

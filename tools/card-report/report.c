@@ -41,6 +41,17 @@ static void line_unread(FILE *out, const char *label, const RecordFacts *record)
     fprintf(out, "%s: can't be read, %s\n", label, why_unread(record));
 }
 
+/* For the fields that moved on a layout that hasn't met a real record yet. */
+static void line_moved_unread(FILE *out, const char *label, const RecordFacts *record)
+{
+    if (record->moved_fields_unread) {
+        fprintf(out, "%s: can't be read, this field moved on this driver and didn't pass its checks\n",
+                label);
+    } else {
+        line_unread(out, label, record);
+    }
+}
+
 static void line_number(FILE *out, const char *label, uint32_t value, const RecordFacts *record)
 {
     if (value) {
@@ -55,7 +66,7 @@ static void line_memory(FILE *out, const char *label, uint64_t bytes, const Reco
     if (bytes) {
         fprintf(out, "%s: %llu MiB\n", label, (unsigned long long)(bytes / BYTES_PER_MEBIBYTE));
     } else {
-        line_unread(out, label, record);
+        line_moved_unread(out, label, record);
     }
 }
 
@@ -105,7 +116,8 @@ static void write_record_size(FILE *out, const RecordFacts *record)
         line_unread(out, "Driver record size", record);
     }
     if (record->state == RECORD_READ) {
-        fprintf(out, "Driver record layout: %s\n", record->layout);
+        fprintf(out, "Driver record layout: %s%s\n", record->layout,
+                record->layout_unproven ? ", not yet checked against a real record" : "");
     } else {
         line_unread(out, "Driver record layout", record);
     }
@@ -130,7 +142,7 @@ static void write_windows_nodes(FILE *out, const AdapterFacts *adapter)
 static void write_record_nodes(FILE *out, const RecordFacts *record)
 {
     if (!record->nodes_readable) {
-        line_unread(out, "Engine nodes from the record", record);
+        line_moved_unread(out, "Engine nodes from the record", record);
         return;
     }
     fprintf(out, "Engine nodes from the record: %zu\n", record->node_count);
@@ -147,7 +159,7 @@ static void write_record_nodes(FILE *out, const RecordFacts *record)
 static void write_classes(FILE *out, const RecordFacts *record)
 {
     if (!record->classes_readable) {
-        line_unread(out, "Classes", record);
+        line_moved_unread(out, "Classes", record);
         return;
     }
     fprintf(out, "Classes: %zu\n", record->class_count);

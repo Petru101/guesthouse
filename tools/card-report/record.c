@@ -21,6 +21,7 @@
 #define GRAPHICS_SM_VERSION 0x0C
 
 #define NODE_ENTRY_SIZE 40
+#define NODE_ALWAYS_ONE_FIELD 0x04
 #define NODE_SCHEDULED_FIELD 0x08
 #define NODE_IN_FLIGHT_FIELD 0x14
 #define NODE_RECORD_SIZE 0x110
@@ -37,16 +38,34 @@
 #define PCI_VENDOR_MASK 0xFFFF
 #define PCI_DEVICE_SHIFT 16
 #define NAME_CHARS 32
+#define NAME_START "NVIDIA "
 #define HIGHEST_CLASS 0xFFFF
+#define CHANNEL_CLASS_LOW_BYTE 0x6F
 
-/* The fields this program reads, for one driver branch. Each matches RecordLayout in
- * crates/backend-nvidia/src/profile/guest.rs. */
+/* The Windows version block in the record: its own size, then the major version. */
+#define WINDOWS_INFO_SIZE 284
+#define WINDOWS_MAJOR_FIELD 4
+#define WINDOWS_MAJOR 10
+
+/* The most these can be, for a number to be believed. */
+#define HIGHEST_ARCHITECTURE 0xFFF
+#define HIGHEST_BYTE 0xFF
+#define HIGHEST_SM_VERSION 0xFFFF
+#define HIGHEST_SHADER_SET 0xFFFF
+#define MOST_COPY_ENGINES 32
+#define MOST_VIDEO_MEMORY (1ULL << 40)
+
+/* The fields this program reads, for one driver branch. 617 matches RecordLayout in
+ * crates/backend-nvidia/src/profile/guest.rs. An unproven row hasn't met a real record yet, so the
+ * fields that moved on that branch are only read if they all pass moved_fields_hold. */
 typedef struct {
     const char *name;
+    bool unproven;
     uint32_t size;
     uint32_t pci_id;
     uint32_t architecture;
     uint32_t graphics_table;
+    uint32_t windows_version;
     uint32_t shader_set;
     uint32_t node_records;
     uint32_t node_entries;
@@ -56,13 +75,31 @@ typedef struct {
     uint32_t name_field;
 } Layout;
 
+/* Largest first, as a driver may hand a short buffer the start of a longer record. */
 static const Layout layouts[] = {
+    {
+        .name = "621",
+        .unproven = true,
+        .size = 0xCDF8,
+        .pci_id = 0x3C,
+        .architecture = 0xEC,
+        .graphics_table = 0x1EB,
+        .windows_version = 0x1767,
+        .shader_set = 0x1893,
+        .node_records = 0x1D02,
+        .node_entries = 0x7327,
+        .node_count = 0x77FF,
+        .memory = 0xB968,
+        .classes = 0xB998,
+        .name_field = 0xCCF8,
+    },
     {
         .name = "617",
         .size = 0xC5B8,
         .pci_id = 0x3C,
         .architecture = 0xEC,
         .graphics_table = 0x1EB,
+        .windows_version = 0x1767,
         .shader_set = 0x1893,
         .node_records = 0x1D02,
         .node_entries = 0x6AE7,
@@ -156,22 +193,101 @@ static void read_classes(const uint8_t *data, const Layout *layout, RecordFacts 
     facts->class_count = count;
 }
 
-static void read_fields(const uint8_t *data, const Layout *layout, RecordFacts *facts)
+static size_t sm_version_entry(const Layout *layout)
 {
-    size_t sm_version = layout->graphics_table + GRAPHICS_SM_VERSION * TABLE_ENTRY_SIZE + TABLE_VALUE_FIELD;
+    return layout->graphics_table + GRAPHICS_SM_VERSION * TABLE_ENTRY_SIZE;
+}
 
-    facts->layout = layout->name;
-    read_name(data, layout, facts);
-    facts->architecture = read32(data, layout->architecture);
-    facts->implementation = read32(data, layout->architecture + ARCHITECTURE_IMPLEMENTATION_FIELD);
-    facts->chip_revision = read32(data, layout->architecture + ARCHITECTURE_REVISION_FIELD);
-    facts->sm_version = read32(data, sm_version);
-    facts->shader_set = read32(data, layout->shader_set);
+static void read_memory(const uint8_t *data, const Layout *layout, RecordFacts *facts)
+{
     facts->memory_usable = read64(data, layout->memory + MEMORY_USABLE * MEMORY_ENTRY_SIZE);
     facts->memory_heap = read64(data, layout->memory + MEMORY_HEAP * MEMORY_ENTRY_SIZE);
     facts->memory_total = read64(data, layout->memory + MEMORY_TOTAL * MEMORY_ENTRY_SIZE);
+}
+
+static void read_moved_fields(const uint8_t *data, const Layout *layout, RecordFacts *facts)
+{
+    read_name(data, layout, facts);
+    read_memory(data, layout, facts);
     read_nodes(data, layout, facts);
     read_classes(data, layout, facts);
+}
+
+static bool name_holds(const RecordFacts *facts)
+{
+    return !strncmp(facts->name, NAME_START, strlen(NAME_START)) && !strchr(facts->name, '?');
+}
+
+static bool nodes_hold(const uint8_t *data, const Layout *layout, const RecordFacts *facts,
+                       size_t windows_nodes)
+{
+    if (!facts->nodes_readable || !facts->node_count ||
+        (windows_nodes && facts->node_count != windows_nodes)) {
+        return false;
+    }
+    for (size_t i = 0; i < facts->node_count; i++) {
+        const RecordNode *node = &facts->nodes[i];
+        size_t entry = layout->node_entries + i * NODE_ENTRY_SIZE;
+
+        if (read32(data, entry + NODE_ALWAYS_ONE_FIELD) != 1 || node->node_type > HIGHEST_BYTE ||
+            node->scheduled > 1 || !node->in_flight || node->in_flight > HIGHEST_BYTE ||
+            node->copy_engine_count > MOST_COPY_ENGINES || node->copy_engine > HIGHEST_BYTE) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool classes_hold(const RecordFacts *facts)
+{
+    for (size_t i = 0; facts->classes_readable && i < facts->class_count; i++) {
+        if ((facts->classes[i] & 0xFF) == CHANNEL_CLASS_LOW_BYTE) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool memory_holds(const RecordFacts *facts)
+{
+    return facts->memory_total && facts->memory_total < MOST_VIDEO_MEMORY &&
+           facts->memory_usable <= facts->memory_total && facts->memory_heap <= facts->memory_total;
+}
+
+/* The node list sits right after the ECID, so a guess that's a few bytes out could land on it.
+ * Every moved field has to look exactly as it should, or none of them are kept. */
+static bool moved_fields_hold(const uint8_t *data, const Layout *layout, const RecordFacts *facts,
+                              size_t windows_nodes)
+{
+    return name_holds(facts) && nodes_hold(data, layout, facts, windows_nodes) &&
+           classes_hold(facts) && memory_holds(facts);
+}
+
+static void forget_moved_fields(RecordFacts *facts)
+{
+    facts->name[0] = 0;
+    facts->memory_usable = facts->memory_heap = facts->memory_total = 0;
+    facts->nodes_readable = facts->classes_readable = false;
+    facts->node_count = facts->class_count = 0;
+    memset(facts->nodes, 0, sizeof(facts->nodes));
+    memset(facts->classes, 0, sizeof(facts->classes));
+    facts->moved_fields_unread = true;
+}
+
+static void read_fields(const uint8_t *data, const Layout *layout, size_t windows_nodes,
+                        RecordFacts *facts)
+{
+    facts->layout = layout->name;
+    facts->layout_unproven = layout->unproven;
+    facts->architecture = read32(data, layout->architecture);
+    facts->implementation = read32(data, layout->architecture + ARCHITECTURE_IMPLEMENTATION_FIELD);
+    facts->chip_revision = read32(data, layout->architecture + ARCHITECTURE_REVISION_FIELD);
+    facts->sm_version = read32(data, sm_version_entry(layout) + TABLE_VALUE_FIELD);
+    facts->shader_set = read32(data, layout->shader_set);
+    read_moved_fields(data, layout, facts);
+    if (layout->unproven && !moved_fields_hold(data, layout, facts, windows_nodes)) {
+        forget_moved_fields(facts);
+    }
 }
 
 static const Layout *layout_of_size(uint32_t size)
@@ -185,17 +301,28 @@ static const Layout *layout_of_size(uint32_t size)
 }
 
 /* A record of the right size could still be laid out differently, and then a field read by its
- * position could land on something private. The block marker and the card's own ID have to be
- * where this layout says first. */
+ * position could be a wrong number or land on something private. So the block marker, the card's
+ * own ID, the table's own index and the Windows version block have to be where this layout says,
+ * and the numbers have to be ones that can be real. */
 static bool layout_holds(const uint8_t *data, const Layout *layout, uint16_t device_id)
 {
     uint32_t pci_id = read32(data, layout->pci_id);
+    size_t sm_version = sm_version_entry(layout);
 
     return !memcmp(data + BLOCK_MAGIC_FIELD, BLOCK_MAGIC, MAGIC_SIZE) &&
-           (pci_id & PCI_VENDOR_MASK) == NVIDIA_VENDOR && pci_id >> PCI_DEVICE_SHIFT == device_id;
+           (pci_id & PCI_VENDOR_MASK) == NVIDIA_VENDOR && pci_id >> PCI_DEVICE_SHIFT == device_id &&
+           read32(data, sm_version) == GRAPHICS_SM_VERSION &&
+           read32(data, sm_version + TABLE_VALUE_FIELD) <= HIGHEST_SM_VERSION &&
+           read32(data, layout->windows_version) == WINDOWS_INFO_SIZE &&
+           read32(data, layout->windows_version + WINDOWS_MAJOR_FIELD) == WINDOWS_MAJOR &&
+           read32(data, layout->architecture) <= HIGHEST_ARCHITECTURE &&
+           read32(data, layout->architecture + ARCHITECTURE_IMPLEMENTATION_FIELD) <= HIGHEST_BYTE &&
+           read32(data, layout->architecture + ARCHITECTURE_REVISION_FIELD) <= HIGHEST_BYTE &&
+           read32(data, layout->shader_set) <= HIGHEST_SHADER_SET;
 }
 
-void record_read(const uint8_t *data, size_t size, uint16_t device_id, RecordFacts *facts)
+void record_read(const uint8_t *data, size_t size, uint16_t device_id, size_t windows_nodes,
+                 RecordFacts *facts)
 {
     const Layout *layout;
 
@@ -215,6 +342,6 @@ void record_read(const uint8_t *data, size_t size, uint16_t device_id, RecordFac
         facts->state = RECORD_FAILED_CHECK;
     } else {
         facts->state = RECORD_READ;
-        read_fields(data, layout, facts);
+        read_fields(data, layout, windows_nodes, facts);
     }
 }

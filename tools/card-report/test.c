@@ -9,7 +9,13 @@
 #include <string.h>
 
 #define RECORD_SIZE 0xC5B8
+#define RECORD_SIZE_621 0xCDF8
 #define DEVICE_ID 0x2704
+
+/* On the 621 layout, everything from here on sits further along. */
+#define MOVED_FROM 0x6777
+#define MOVED_BY_621 0x840
+#define NO_MOVE 0
 
 /* Where the private things sit in the record. These match RecordLayout in guest.rs. */
 #define UUID_FIELD 0x15CB
@@ -19,7 +25,9 @@
 
 #define PCI_ID_FIELD 0x3C
 #define ARCHITECTURE_FIELD 0xEC
-#define SM_VERSION_FIELD (0x1EB + 0x0C * 8 + 4)
+#define SM_INDEX_FIELD (0x1EB + 0x0C * 8)
+#define SM_VERSION_FIELD (SM_INDEX_FIELD + 4)
+#define WINDOWS_VERSION_FIELD 0x1767
 #define SHADER_SET_FIELD 0x1893
 #define NODE_RECORDS_FIELD 0x1D02
 #define NODE_ENTRIES_FIELD 0x6AE7
@@ -58,11 +66,16 @@ static void put64(uint8_t *record, size_t at, uint64_t value)
     memcpy(record + at, &value, sizeof(value));
 }
 
+static size_t place(size_t field, size_t moved)
+{
+    return field >= MOVED_FROM ? field + moved : field;
+}
+
 /* A record like a driver's, with something non-zero in every byte the report has no business with. */
-static uint8_t *make_record(size_t size)
+static uint8_t *make_moved_record(size_t size, size_t moved)
 {
     static const char *name = "NVIDIA Test Card";
-    static const uint32_t classes[TEST_CLASSES] = { 0x000F, 0xC997, 0xC9B5 };
+    static const uint32_t classes[TEST_CLASSES] = { 0x000F, 0xC96F, 0xC9B5 };
     uint8_t *record = malloc(size);
 
     memset(record, 0xA5, size);
@@ -74,33 +87,48 @@ static uint8_t *make_record(size_t size)
     put32(record, 0x08, (uint32_t)size);
     memcpy(record + 0x0C, "MKVN", 4);
     memcpy(record + UUID_FIELD, uuid, UUID_SIZE);
-    memcpy(record + ECID_FIELD, ecid, ECID_SIZE);
+    memcpy(record + place(ECID_FIELD, moved), ecid, ECID_SIZE);
     put32(record, PCI_ID_FIELD, DEVICE_ID << 16 | NVIDIA_VENDOR);
     put32(record, ARCHITECTURE_FIELD, 0x190);
     put32(record, ARCHITECTURE_FIELD + 4, 3);
     put32(record, ARCHITECTURE_FIELD + 8, 0xA1);
+    put32(record, SM_INDEX_FIELD, 0x0C);
     put32(record, SM_VERSION_FIELD, 0x904);
+    put32(record, WINDOWS_VERSION_FIELD, 284);
+    put32(record, WINDOWS_VERSION_FIELD + 4, 10);
     put32(record, SHADER_SET_FIELD, 0x1234);
-    put64(record, MEMORY_FIELD, 15ULL << 30);
-    put64(record, MEMORY_FIELD + 8, 14ULL << 30);
-    put64(record, MEMORY_FIELD + 24, 16ULL << 30);
-    put32(record, NODE_COUNT_FIELD, TEST_NODES);
+    put64(record, place(MEMORY_FIELD, moved), 15ULL << 30);
+    put64(record, place(MEMORY_FIELD, moved) + 8, 14ULL << 30);
+    put64(record, place(MEMORY_FIELD, moved) + 24, 16ULL << 30);
+    put32(record, place(NODE_COUNT_FIELD, moved), TEST_NODES);
     for (uint32_t node = 0; node < TEST_NODES; node++) {
-        put32(record, NODE_ENTRIES_FIELD + node * NODE_ENTRY_SIZE, node + 1);
-        put32(record, NODE_ENTRIES_FIELD + node * NODE_ENTRY_SIZE + 0x14, 4);
-        put32(record, NODE_RECORDS_FIELD + node * NODE_RECORD_SIZE, 0x1A0);
+        size_t entry = place(NODE_ENTRIES_FIELD, moved) + node * NODE_ENTRY_SIZE;
+        size_t copy = NODE_RECORDS_FIELD + node * NODE_RECORD_SIZE;
+
+        put32(record, entry, node + 1);
+        put32(record, entry + 0x04, 1);
+        put32(record, entry + 0x08, 0);
+        put32(record, entry + 0x14, 4);
+        put32(record, copy, 0x1A0);
+        put32(record, copy + 0x08, 2);
+        put32(record, copy + 0x0C, 9);
     }
-    put32(record, CLASSES_FIELD, TEST_CLASSES);
-    memcpy(record + CLASSES_FIELD + 4, classes, sizeof(classes));
-    memset(record + NAME_FIELD, 0, 64);
+    put32(record, place(CLASSES_FIELD, moved), TEST_CLASSES);
+    memcpy(record + place(CLASSES_FIELD, moved) + 4, classes, sizeof(classes));
+    memset(record + place(NAME_FIELD, moved), 0, 64);
     for (size_t i = 0; name[i]; i++) {
-        record[NAME_FIELD + i * 2] = (uint8_t)name[i];
+        record[place(NAME_FIELD, moved) + i * 2] = (uint8_t)name[i];
     }
     return record;
 }
 
+static uint8_t *make_record(size_t size)
+{
+    return make_moved_record(size, NO_MOVE);
+}
+
 /* The text a report gets from this record. The caller frees it. */
-static char *report_of(const uint8_t *record, size_t size, uint16_t device_id)
+static char *report_with_nodes(const uint8_t *record, size_t size, uint16_t device_id, size_t windows_nodes)
 {
     static Report report;
     char *text = NULL;
@@ -113,25 +141,31 @@ static char *report_of(const uint8_t *record, size_t size, uint16_t device_id)
     report.card_count = 1;
     report.cards[0].adapter.have_ids = true;
     report.cards[0].adapter.device_id = device_id;
-    record_read(record, size, device_id, &report.cards[0].record);
+    record_read(record, size, device_id, windows_nodes, &report.cards[0].record);
     report_write(out, &report);
     fclose(out);
     return text;
 }
 
-static bool in_named_field(size_t at)
+static char *report_of(const uint8_t *record, size_t size, uint16_t device_id)
 {
-    static const struct { size_t start, size; } named[] = {
+    return report_with_nodes(record, size, device_id, 0);
+}
+
+static bool in_named_field(size_t at, size_t moved)
+{
+    const struct { size_t start, size; } named[] = {
         { 0, 0x10 },
         { PCI_ID_FIELD, 4 },
         { ARCHITECTURE_FIELD, 12 },
-        { SM_VERSION_FIELD, 4 },
+        { SM_INDEX_FIELD, 8 },
+        { WINDOWS_VERSION_FIELD, 8 },
         { SHADER_SET_FIELD, 4 },
-        { MEMORY_FIELD, 16 },
-        { MEMORY_FIELD + 24, 8 },
-        { NODE_COUNT_FIELD, 4 },
-        { CLASSES_FIELD, 4 + TEST_CLASSES * 4 },
-        { NAME_FIELD, 64 },
+        { place(MEMORY_FIELD, moved), 16 },
+        { place(MEMORY_FIELD, moved) + 24, 8 },
+        { place(NODE_COUNT_FIELD, moved), 4 },
+        { place(CLASSES_FIELD, moved), 4 + TEST_CLASSES * 4 },
+        { place(NAME_FIELD, moved), 64 },
     };
 
     for (size_t i = 0; i < sizeof(named) / sizeof(named[0]); i++) {
@@ -140,12 +174,11 @@ static bool in_named_field(size_t at)
         }
     }
     for (size_t node = 0; node < TEST_NODES; node++) {
-        size_t entry = NODE_ENTRIES_FIELD + node * NODE_ENTRY_SIZE;
+        size_t entry = place(NODE_ENTRIES_FIELD, moved) + node * NODE_ENTRY_SIZE;
         size_t record = NODE_RECORDS_FIELD + node * NODE_RECORD_SIZE;
 
-        if ((at >= entry && at < entry + 4) || (at >= entry + 8 && at < entry + 12) ||
-            (at >= entry + 0x14 && at < entry + 0x18) || (at >= record && at < record + 4) ||
-            (at >= record + 8 && at < record + 0x10)) {
+        if ((at >= entry && at < entry + 12) || (at >= entry + 0x14 && at < entry + 0x18) ||
+            (at >= record && at < record + 4) || (at >= record + 8 && at < record + 0x10)) {
             return true;
         }
     }
@@ -166,23 +199,22 @@ static void the_named_fields_reach_the_report(void)
     CHECK(strstr(text, "Shader set: 0x1234\n"));
     CHECK(strstr(text, "Video memory: 16384 MiB\n"));
     CHECK(strstr(text, "Engine nodes from the record: 2\n"));
-    CHECK(strstr(text, "Classes: 3\n  000F C997 C9B5\n"));
+    CHECK(strstr(text, "Classes: 3\n  000F C96F C9B5\n"));
     free(text);
     free(record);
 }
 
-/* The real proof of what's read: change any other byte of the record and the report stays the same. */
-static void no_other_byte_of_the_record_changes_the_report(void)
+static void only_named_bytes_change_the_report(size_t size, size_t moved)
 {
-    uint8_t *record = make_record(RECORD_SIZE);
-    char *expected = report_of(record, RECORD_SIZE, DEVICE_ID);
+    uint8_t *record = make_moved_record(size, moved);
+    char *expected = report_of(record, size, DEVICE_ID);
 
-    for (size_t at = 0; at < RECORD_SIZE; at++) {
+    for (size_t at = 0; at < size; at++) {
         char *text;
 
         record[at] ^= 0xFF;
-        text = report_of(record, RECORD_SIZE, DEVICE_ID);
-        if (strcmp(text, expected) && !in_named_field(at)) {
+        text = report_of(record, size, DEVICE_ID);
+        if (strcmp(text, expected) && !in_named_field(at, moved)) {
             printf("byte 0x%zX reached the report\n", at);
             failures++;
         }
@@ -191,6 +223,13 @@ static void no_other_byte_of_the_record_changes_the_report(void)
     }
     free(expected);
     free(record);
+}
+
+/* The real proof of what's read: change any other byte of the record and the report stays the same. */
+static void no_other_byte_of_the_record_changes_the_report(void)
+{
+    only_named_bytes_change_the_report(RECORD_SIZE, NO_MOVE);
+    only_named_bytes_change_the_report(RECORD_SIZE_621, MOVED_BY_621);
 }
 
 static void contains_hex(const char *text, const uint8_t *bytes, size_t size, const char *format)
@@ -203,19 +242,141 @@ static void contains_hex(const char *text, const uint8_t *bytes, size_t size, co
     CHECK(!strstr(text, hex));
 }
 
-static void the_uuid_and_ecid_do_not_appear(void)
+static void check_no_private_values(const char *text)
 {
-    uint8_t *record = make_record(RECORD_SIZE);
-    char *text = report_of(record, RECORD_SIZE, DEVICE_ID);
-
     contains_hex(text, uuid, UUID_SIZE, "%02x");
     contains_hex(text, uuid, UUID_SIZE, "%02X");
     contains_hex(text, uuid, 4, "%02X");
     contains_hex(text, ecid, ECID_SIZE, "%02x");
     contains_hex(text, ecid, ECID_SIZE, "%02X");
     contains_hex(text, ecid, 4, "%02X");
+}
+
+static void the_uuid_and_ecid_do_not_appear(void)
+{
+    uint8_t *record = make_record(RECORD_SIZE);
+    char *text = report_of(record, RECORD_SIZE, DEVICE_ID);
+
+    check_no_private_values(text);
     free(text);
     free(record);
+    record = make_moved_record(RECORD_SIZE_621, MOVED_BY_621);
+    text = report_of(record, RECORD_SIZE_621, DEVICE_ID);
+    check_no_private_values(text);
+    free(text);
+    free(record);
+}
+
+static void the_621_row_reads_every_field_and_says_it_is_unproven(void)
+{
+    uint8_t *record = make_moved_record(RECORD_SIZE_621, MOVED_BY_621);
+    char *text = report_with_nodes(record, RECORD_SIZE_621, DEVICE_ID, TEST_NODES);
+
+    CHECK(strstr(text, "Driver record size: 52728 bytes\n"));
+    CHECK(strstr(text, "Driver record layout: 621, not yet checked against a real record\n"));
+    CHECK(strstr(text, "Architecture: 0x190\n"));
+    CHECK(strstr(text, "SM version: 0x904\n"));
+    CHECK(strstr(text, "Shader set: 0x1234\n"));
+    CHECK(strstr(text, "GPU name: NVIDIA Test Card\n"));
+    CHECK(strstr(text, "Video memory: 16384 MiB\n"));
+    CHECK(strstr(text, "Engine nodes from the record: 2\n"));
+    CHECK(strstr(text, "Classes: 3\n  000F C96F C9B5\n"));
+    free(text);
+    free(record);
+}
+
+static void check_moved_fields_left_out(const char *text)
+{
+    CHECK(strstr(text, "Architecture: 0x190\n"));
+    CHECK(strstr(text, "SM version: 0x904\n"));
+    CHECK(strstr(text, "Shader set: 0x1234\n"));
+    CHECK(strstr(text, "Classes: can't be read, this field moved"));
+    CHECK(strstr(text, "Engine nodes from the record: can't be read, this field moved"));
+    CHECK(strstr(text, "Video memory: can't be read, this field moved"));
+    CHECK(!strstr(text, "NVIDIA Test Card"));
+    check_no_private_values(text);
+}
+
+/* If the move isn't what the row says, whatever its size, nothing past it gets through. */
+static void any_other_move_leaves_the_moved_fields_out(void)
+{
+    for (size_t moved = 0; moved <= 0x1000; moved++) {
+        uint8_t *record;
+        char *text;
+
+        if (moved == MOVED_BY_621) {
+            continue;
+        }
+        record = make_moved_record(RECORD_SIZE_621 + 0x800, moved);
+        put32(record, 0x08, RECORD_SIZE_621);
+        text = report_of(record, RECORD_SIZE_621, DEVICE_ID);
+        check_moved_fields_left_out(text);
+        free(text);
+        free(record);
+    }
+}
+
+/* The ECID sits just before the node list, so a list a little out of place would start on it. */
+static void a_node_list_starting_on_the_ecid_leaves_the_moved_fields_out(void)
+{
+    uint8_t *record = make_moved_record(RECORD_SIZE_621, MOVED_BY_621);
+    size_t entries = NODE_ENTRIES_FIELD + MOVED_BY_621;
+    char *text;
+
+    memmove(record + entries + 8, record + entries, TEST_NODES * NODE_ENTRY_SIZE);
+    memcpy(record + entries, ecid, ECID_SIZE);
+    text = report_of(record, RECORD_SIZE_621, DEVICE_ID);
+    check_moved_fields_left_out(text);
+    free(text);
+    free(record);
+}
+
+static void a_different_node_count_from_windows_leaves_the_moved_fields_out(void)
+{
+    uint8_t *record = make_moved_record(RECORD_SIZE_621, MOVED_BY_621);
+    char *text = report_with_nodes(record, RECORD_SIZE_621, DEVICE_ID, TEST_NODES + 1);
+
+    check_moved_fields_left_out(text);
+    free(text);
+    free(record);
+}
+
+static void moved_fields_that_fail_one_check_are_all_left_out(void)
+{
+    uint8_t *record = make_moved_record(RECORD_SIZE_621, MOVED_BY_621);
+    char *text;
+
+    put64(record, MEMORY_FIELD + MOVED_BY_621 + 24, 1);
+    text = report_of(record, RECORD_SIZE_621, DEVICE_ID);
+    check_moved_fields_left_out(text);
+    free(text);
+    free(record);
+}
+
+static void a_621_record_with_its_early_fields_moved_is_not_read(void)
+{
+    uint8_t *record = make_moved_record(RECORD_SIZE_621, MOVED_BY_621);
+    char *text;
+
+    put32(record, SM_INDEX_FIELD, 0xA5A5A5A5);
+    text = report_of(record, RECORD_SIZE_621, DEVICE_ID);
+    CHECK(strstr(text, "didn't pass its checks"));
+    CHECK(!strstr(text, "SM version: 0x"));
+    CHECK(!strstr(text, "Shader set: 0x"));
+    free(text);
+    put32(record, SM_INDEX_FIELD, 0x0C);
+    put32(record, WINDOWS_VERSION_FIELD, 0xA5A5A5A5);
+    text = report_of(record, RECORD_SIZE_621, DEVICE_ID);
+    CHECK(strstr(text, "didn't pass its checks"));
+    free(text);
+    free(record);
+}
+
+static void the_largest_size_is_asked_for_first(void)
+{
+    CHECK(record_known_size(0) == RECORD_SIZE_621);
+    CHECK(record_known_size(1) == RECORD_SIZE);
+    CHECK(record_known_size(2) == 0);
 }
 
 static void an_unknown_size_says_so_and_reads_nothing_past_the_header(void)
@@ -335,6 +496,13 @@ int main(void)
     the_named_fields_reach_the_report();
     no_other_byte_of_the_record_changes_the_report();
     the_uuid_and_ecid_do_not_appear();
+    the_621_row_reads_every_field_and_says_it_is_unproven();
+    any_other_move_leaves_the_moved_fields_out();
+    a_node_list_starting_on_the_ecid_leaves_the_moved_fields_out();
+    a_different_node_count_from_windows_leaves_the_moved_fields_out();
+    moved_fields_that_fail_one_check_are_all_left_out();
+    a_621_record_with_its_early_fields_moved_is_not_read();
+    the_largest_size_is_asked_for_first();
     an_unknown_size_says_so_and_reads_nothing_past_the_header();
     a_size_in_the_header_beats_the_size_asked_for();
     a_right_size_with_the_wrong_card_in_it_is_not_read();
