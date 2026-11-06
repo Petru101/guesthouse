@@ -18,6 +18,7 @@ pub mod processes;
 pub mod random;
 pub mod settings;
 pub mod slots;
+pub mod start_checks;
 pub mod tasks;
 #[doc(hidden)]
 pub mod testing;
