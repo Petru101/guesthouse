@@ -1,0 +1,279 @@
+//! The VM and the daemon as processes on this PC.
+
+use super::watched::{SCRIPT_POLL, last_words, run_watched};
+use super::{Helper, HelperOutput, Stopped, VmHost};
+use crate::context::Context;
+use crate::daemon::{self, DaemonStart, detached, is_own_daemon};
+use crate::failure::{Failure, Result};
+use crate::machine::{Machine, sorted_names};
+use crate::monitor::Command as Qmp;
+use crate::processes::{memory_taken, qemu_pid};
+use crate::start_checks::SECOND_INSTANCE_REFUSAL;
+use crate::vm_args::{OUTPUT_FILE, Sound, VmPlan};
+use rustix::process::{Pid, Signal, kill_process};
+use std::fs::{self, File};
+use std::process::{Child, Command, Stdio};
+use std::time::Duration;
+
+const MONITOR_WAIT: Duration = Duration::from_secs(20);
+const POLL: Duration = Duration::from_millis(200);
+const AFTER_SIGTERM_SECONDS: u64 = 20;
+const LEFT_OVER_STOP_SECONDS: u64 = 100;
+const AGENT_ATTEMPTS: u32 = 120;
+const AGENT_ANSWER_SECONDS: u64 = 4;
+const AGENT_RETRY: Duration = Duration::from_secs(3);
+const DAEMON_STOP_ATTEMPTS: u32 = 100;
+const DAEMON_STOP_POLL: Duration = Duration::from_millis(100);
+const SOUND_CHECK_SECONDS: &str = "3";
+const SHARED_FILES: [&str; 3] = ["iomem", "ram", "display"];
+/// These can only be left by an earlier run, and a stale socket would pass for a ready daemon.
+const STALE_FILES: [&str; 3] = ["vgpu.sock", "global.sock", "screen.sock"];
+/// The last run's logs are the only evidence of whatever made someone restart.
+const LOGS_TO_KEEP: [&str; 3] = [daemon::OUTPUT_FILE, "serial.log", "qemu.log"];
+const TPM_SOCKET: &str = "tpm.sock";
+/// A new VM hasn't booted yet, whatever an earlier one noted.
+const BOOTS_FILE: &str = "guesthouse-boots";
+const STOPPED_LATE: &str = "The VM would not stop. Try Force Off.";
+const AGENT_UP_SCRIPT: &str = "\"up\"";
+
+/// The VM and the daemon as processes on this PC.
+pub struct LocalHost<'a> {
+    pub context: &'a Context,
+}
+
+impl LocalHost<'_> {
+    fn run_file(&self, name: &str) -> std::path::PathBuf {
+        self.context.run_folder(None).join(name)
+    }
+
+    fn wait_gone(&self, seconds: u64) -> bool {
+        let clock = &self.context.clock;
+        let end = clock.now() + Duration::from_secs(seconds);
+        while qemu_pid(self.context, None).is_some() && clock.now() < end {
+            clock.sleep(SCRIPT_POLL);
+        }
+        qemu_pid(self.context, None).is_none()
+    }
+
+    /// The end of QEMU's output, which says why it failed to start.
+    fn last_words(&self) -> String {
+        last_words(self.context)
+    }
+
+    fn spawn_tpm(&self, plan: &VmPlan) -> Result<()> {
+        let (Some(arguments), Some(state)) = (plan.swtpm_arguments(), plan.tpm.as_ref()) else {
+            return Ok(());
+        };
+        // A TPM ends when QEMU lets go of it, unless a QEMU never came.
+        let socket = self.run_file(TPM_SOCKET);
+        let pattern = format!("^swtpm socket .*path={}", socket.display());
+        let _ = Command::new("pkill").args(["-f", &pattern]).status();
+        let _ = fs::remove_file(&socket);
+        fs::create_dir_all(state)?;
+        let done = Command::new("swtpm").args(arguments).status()?;
+        if !done.success() {
+            return Err(Failure::new("The virtual TPM did not start."));
+        }
+        Ok(())
+    }
+
+    fn spawn_qemu(&self, plan: &VmPlan) -> Result<Child> {
+        self.spawn_tpm(plan)?;
+        let output = File::create(self.run_file(OUTPUT_FILE))?;
+        let command = plan.qemu_command();
+        let (program, arguments) = command.split_first().ok_or_else(|| Failure::new("Nothing to run."))?;
+        let spawned = detached(Command::new(program).args(arguments))
+            .envs(plan.qemu_environment())
+            .stdin(Stdio::null())
+            .stdout(output.try_clone()?)
+            .stderr(output)
+            .spawn()?;
+        Ok(spawned)
+    }
+
+    /// QEMU with no daemon and no shared memory. Returns once its monitor answers.
+    fn start_plain(&self, plan: &VmPlan) -> Result<()> {
+        let _ = fs::remove_file(self.run_file(BOOTS_FILE));
+        let mut process = self.spawn_qemu(plan)?;
+        let clock = &self.context.clock;
+        let end = clock.now() + MONITOR_WAIT;
+        while clock.now() < end {
+            if process.try_wait()?.is_some() {
+                return Err(Failure(
+                    format!("The VM did not start. {}", self.last_words()).trim().to_owned(),
+                ));
+            }
+            if self.context.run_state(None).is_some() {
+                return Ok(());
+            }
+            clock.sleep(POLL);
+        }
+        Err(Failure::new("QEMU started, but its monitor never answered."))
+    }
+
+    fn clear_run_folder(&self) -> Result<()> {
+        for name in STALE_FILES {
+            let _ = fs::remove_file(self.run_file(name));
+        }
+        for name in LOGS_TO_KEEP {
+            let log = self.run_file(name);
+            if log.is_file() {
+                fs::rename(&log, self.run_file(&format!("{name}.1")))?;
+            }
+        }
+        File::create(self.run_file("serial.log"))?;
+        Ok(())
+    }
+
+    fn remove_shared_memory(&self) {
+        for name in SHARED_FILES {
+            let _ = fs::remove_file(self.context.paths.shared_file(name, self.context.slot));
+        }
+    }
+
+    fn wait_for_daemon(&self, daemon: &mut Child) -> Result<()> {
+        let ready = || daemon::SOCKETS.iter().all(|name| self.run_file(name).exists());
+        while !ready() {
+            if daemon.try_wait()?.is_some() {
+                let said = fs::read_to_string(self.run_file(daemon::OUTPUT_FILE)).unwrap_or_default();
+                let last = said.lines().last().unwrap_or("it gave no reason");
+                return Err(Failure(format!("The VM did not start: the daemon stopped: {last}")));
+            }
+            self.context.clock.sleep(POLL);
+        }
+        Ok(())
+    }
+
+    fn wait_for_agent(&self, machine: &Machine) -> Result<()> {
+        for _ in 0..AGENT_ATTEMPTS {
+            if self.context.ask_guest(machine, AGENT_UP_SCRIPT, AGENT_ANSWER_SECONDS, None).contains("up") {
+                return Ok(());
+            }
+            if qemu_pid(self.context, None).is_none() {
+                let words = self.last_words();
+                return Err(Failure(format!("The VM stopped unexpectedly. {words}").trim().to_owned()));
+            }
+            self.context.clock.sleep(AGENT_RETRY);
+        }
+        Err(Failure::new("The VM did not start: the agent never answered."))
+    }
+
+    fn daemons(&self) -> Vec<u32> {
+        let context = self.context;
+        let pids = sorted_names(&context.processes);
+        let own = pids.iter().filter(|pid| is_own_daemon(context, pid, context.slot));
+        own.filter_map(|pid| pid.parse().ok()).collect()
+    }
+
+    /// The VM with its GPU: the daemon must be up before QEMU, and anything left of an earlier run
+    /// goes first.
+    fn start_gpu(&self, plan: &VmPlan, machine: &Machine) -> Result<()> {
+        self.stop(machine, LEFT_OVER_STOP_SECONDS)?;
+        if qemu_pid(self.context, None).is_some()
+            || !self.daemons().is_empty()
+            || memory_taken(self.context, None)
+        {
+            return Err(Failure::new("The VM did not start: something is still running."));
+        }
+        self.clear_run_folder()?;
+        self.remove_shared_memory();
+        let start = DaemonStart::new(self.context, plan.slot, &plan.ram, plan.vram.as_deref());
+        let mut daemon = start.spawn(&plan.run_folder)?;
+        self.wait_for_daemon(&mut daemon)?;
+        let with_sound = VmPlan { sound: sound_on_this_host(), ..plan.clone() };
+        self.spawn_qemu(&with_sound)?;
+        self.wait_for_agent(machine)
+    }
+}
+
+impl VmHost for LocalHost<'_> {
+    fn start(&self, plan: &VmPlan, machine: &Machine) -> Result<()> {
+        fs::create_dir_all(&plan.run_folder)?;
+        if !plan.is_gpu() {
+            return self.start_plain(plan);
+        }
+        if self.context.second_instance() {
+            return Err(Failure::new(SECOND_INSTANCE_REFUSAL));
+        }
+        self.start_gpu(plan, machine)
+    }
+
+    /// With no daemon there's no agent to rely on, so the power button goes first.
+    fn stop(&self, machine: &Machine, seconds: u64) -> Result<Stopped> {
+        if machine.has_gpu() && self.context.second_instance() {
+            return Err(Failure::new(SECOND_INSTANCE_REFUSAL));
+        }
+        let mut how = Stopped::Cleanly;
+        if qemu_pid(self.context, None).is_some() {
+            if machine.has_gpu() {
+                self.context.ask_guest(machine, "Stop-Computer -Force", crate::agent::QUICK_SECONDS, None);
+            } else {
+                self.context.ask_monitor(None, &Qmp::bare("system_powerdown"));
+            }
+            if !self.wait_gone(seconds) {
+                terminate(qemu_pid(self.context, None));
+                if !self.wait_gone(AFTER_SIGTERM_SECONDS) {
+                    return Err(Failure::new(STOPPED_LATE));
+                }
+                how = Stopped::TurnedOff;
+            }
+        }
+        if machine.has_gpu() {
+            self.release()?;
+        }
+        Ok(how)
+    }
+
+    fn release(&self) -> Result<()> {
+        if self.context.second_instance() {
+            return Err(Failure::new(SECOND_INSTANCE_REFUSAL));
+        }
+        for pid in self.daemons() {
+            terminate(Some(pid));
+        }
+        for _ in 0..DAEMON_STOP_ATTEMPTS {
+            if self.daemons().is_empty() {
+                break;
+            }
+            self.context.clock.sleep(DAEMON_STOP_POLL);
+        }
+        if !memory_taken(self.context, None) {
+            self.remove_shared_memory();
+        }
+        Ok(())
+    }
+
+    fn helper(&self, helper: Helper) -> Result<HelperOutput> {
+        let (script, arguments) = helper.command();
+        let program = self.context.paths.helper(script);
+        run_watched(self.context, &program, &arguments, script_environment(self.context))
+    }
+}
+
+/// What the helpers need to find the right VM.
+fn script_environment(context: &Context) -> Vec<(String, String)> {
+    vec![
+        (crate::context::SLOT_VARIABLE.to_owned(), context.slot.number().to_string()),
+        ("RUN_DIR".to_owned(), context.run_folder(None).display().to_string()),
+        ("AGENT_PORT".to_owned(), context.agent_port(None).to_string()),
+    ]
+}
+
+fn terminate(pid: Option<u32>) {
+    if let Some(pid) = pid.and_then(|pid| Pid::from_raw(pid as i32)) {
+        let _ = kill_process(pid, Signal::TERM);
+    }
+}
+
+/// QEMU won't start if it can't reach PipeWire, as from a session with no sound server. Only GPU
+/// machines get sound, as they always have.
+fn sound_on_this_host() -> Option<Sound> {
+    let reachable = Command::new("timeout")
+        .args([SOUND_CHECK_SECONDS, "pw-cli", "info", "0"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    reachable
+        .is_ok_and(|status| status.success())
+        .then(|| Sound { sink: std::env::var("SOUND_SINK").ok().filter(|sink| !sink.is_empty()) })
+}
