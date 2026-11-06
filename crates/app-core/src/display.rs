@@ -11,7 +11,7 @@ use guesthouse_daemon::slot::Slot;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 const STATE_FILE: &str = "display.json";
 const SCREEN_LINE: &str = "screen ";
@@ -137,6 +137,10 @@ pub fn ring_in(context: &Context, slot: Option<Slot>) -> Option<ScreenNote> {
     is_own_daemon(context, &note.daemon.to_string(), slot.unwrap_or(context.slot)).then_some(note)
 }
 
+fn is_readable(file: &Path) -> bool {
+    file.is_file() && fs::File::open(file).is_ok()
+}
+
 /// A build of the display driver, as the packaging leaves it in the program folder.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DriverPackage {
@@ -148,7 +152,8 @@ impl DriverPackage {
     /// `None` unless all of it is there. A build from source has none, and Windows keeps the basic display.
     pub fn find(context: &Context) -> Option<Self> {
         let folder = context.paths.display_driver();
-        let all_there = PACKAGE_FILES.iter().chain(&SUPPORT_FILES).all(|name| folder.join(name).is_file());
+        let all_there =
+            PACKAGE_FILES.iter().chain(&SUPPORT_FILES).all(|name| is_readable(&folder.join(name)));
         let id = fs::read_to_string(folder.join(PACKAGE_ID_FILE)).ok()?.trim().to_owned();
         (all_there && !id.is_empty()).then_some(Self { folder, id })
     }

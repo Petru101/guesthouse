@@ -302,8 +302,14 @@ fn run_action(task: &mut Task, arguments: &[String]) -> Result<()> {
         "resume" => resume(task),
         "clean_up" => clean_up(task),
         "after_reboot" => after_reboot(task),
-        "apply_display" => display::apply_display(task),
-        "install_display" => display::install_display(task),
+        "apply_display" => {
+            display::apply_display(task);
+            Ok(())
+        }
+        "install_display" => {
+            display::install_display(task);
+            Ok(())
+        }
         "install" if task.machine.kind == Kind::Linux => ubuntu::install(task),
         "install" => install(task),
         "take_snapshot" => take_snapshot(task, text),

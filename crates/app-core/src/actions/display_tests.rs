@@ -12,6 +12,7 @@ use crate::vm_host::stand_in::RecordingHost;
 use guesthouse_daemon::display_note::write_note;
 use serde_json::json;
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -100,7 +101,18 @@ impl GuestAgent for Guest {
 
 /// What a boot does, as the tests run it.
 fn boot_display(task: &mut Task) -> Result<()> {
-    set_up_display(task)
+    set_up_display(task);
+    Ok(())
+}
+
+fn apply_settings(task: &mut Task) -> Result<()> {
+    apply_display(task);
+    Ok(())
+}
+
+fn install_again(task: &mut Task) -> Result<()> {
+    install_display(task);
+    Ok(())
 }
 
 struct Rig {
@@ -185,7 +197,7 @@ fn a_build_that_failed_isnt_tried_at_every_start_but_can_be_asked_for() {
     rig.run(boot_display);
     rig.run(boot_display);
     assert_eq!(guest.asked_for("sign-and-install.ps1 C:"), 1);
-    rig.run(install_display);
+    rig.run(install_again);
     assert_eq!(guest.asked_for("sign-and-install.ps1 C:"), 2);
     fake_package(&rig.scratch, "build 2");
     rig.run(boot_display);
@@ -228,13 +240,13 @@ fn a_working_driver_is_left_alone_and_a_newer_build_goes_on_it() {
 fn hdr_only_reaches_windows_on_a_screen_that_can_show_it() {
     let (mut rig, guest) = Rig::new().with(|context| Guest::new(context, "working", INSTALLED, true));
     rig.machine.hdr = true;
-    let state = rig.run(apply_display);
+    let state = rig.run(apply_settings);
     assert_eq!(guest.asked_for("$hdr = 0"), 1);
     assert_eq!(guest.asked_for("$hdr = 1"), 0);
     assert!(state.note.contains("can't show HDR"), "{}", state.note);
     let shows = json!({SCREEN_HDR_PREF: true});
     write_prefs(&rig.context, shows.as_object().unwrap().clone()).unwrap();
-    rig.run(apply_display);
+    rig.run(apply_settings);
     assert_eq!(guest.asked_for("$hdr = 1"), 1);
 }
 
@@ -253,7 +265,7 @@ fn a_screen_with_nothing_said_isnt_guessed_at() {
     let (mut rig, guest) = Rig::new().with(|context| Guest::new(context, "working", INSTALLED, true));
     rig.context.clock = clock;
     *guest.screen.lock().unwrap() = "";
-    let state = rig.run(apply_display);
+    let state = rig.run(apply_settings);
     assert_eq!(state.running, None);
     assert_eq!(guest.asked_for("take it out"), 0);
 }
@@ -292,13 +304,13 @@ fn a_lost_upload_on_a_new_machine_is_said_and_tried_again() {
 fn a_settings_change_that_stalls_never_costs_the_driver() {
     let (rig, guest) = Rig::new().with(|context| Guest::new(context, "working", INSTALLED, false));
     rig.say_this_build_is_in("build 1");
-    let state = rig.run(apply_display);
+    let state = rig.run(apply_settings);
     assert_eq!(guest.asked_for("take it out"), 0);
     assert_eq!(state.driver, Driver::Installed);
     assert_eq!(state.reason, "");
     assert!(state.note.contains("hasn't confirmed"), "{}", state.note);
     *guest.screen.lock().unwrap() = ON_BASIC;
-    let state = rig.run(apply_display);
+    let state = rig.run(apply_settings);
     assert_eq!(guest.asked_for("take it out"), 0, "not even if Windows says it's on the basic display");
     assert_eq!(state.driver, Driver::Installed);
 }
@@ -338,4 +350,25 @@ fn take_over_at_install_is_left_to_the_script_that_sets_the_mode() {
     fake_package(&rig.scratch, "build 1");
     rig.run(boot_display);
     assert_eq!(guest.asked_for("Start-ScheduledTask guesthouse-display"), 0);
+}
+
+#[test]
+fn a_driver_file_that_cant_be_read_is_no_package_at_all() {
+    let (rig, guest) = Rig::new().with(|context| Guest::new(context, "missing", INSTALLED, true));
+    fake_package(&rig.scratch, "build 1");
+    let file = rig.context.paths.display_driver().join("GuesthouseDisplay.dll");
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o000)).unwrap();
+    let state = rig.run(boot_display);
+    assert!(state.reason.contains("no display driver"), "{}", state.reason);
+    assert_eq!(guest.asked_for("sign-and-install.ps1 C:"), 0);
+}
+
+#[test]
+fn a_state_that_cant_be_saved_doesnt_stop_the_machine_and_is_said() {
+    let (rig, _guest) = Rig::new().with(|context| Guest::new(context, "working", INSTALLED, true));
+    fs::create_dir_all(rig.machine.folder(&rig.context).join("display.json.new")).unwrap();
+    let host = RecordingHost::default();
+    let mut task = Task::new(&rig.context, &host, "start", rig.machine.clone());
+    boot_display(&mut task).unwrap();
+    assert!(task.error.contains("display"), "{}", task.error);
 }

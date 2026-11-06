@@ -330,31 +330,47 @@ fn save(task: &Task, state: &DisplayState) -> Result<()> {
     write_state(task.context, &task.machine, state)
 }
 
+/// Whatever goes wrong here goes in the log and on the row. These return nothing, so that a failure
+/// can't reach the code that turns off a VM whose start has failed.
+fn keep_going(task: &mut Task, work: impl FnOnce(&mut Task) -> Result<()>) {
+    if let Err(failure) = work(task) {
+        let said = format!("The display could not be set up: {}", failure.0);
+        let _ = write_log(task.context, &said);
+        task.error = said;
+    }
+}
+
 /// What each boot does.
-pub(super) fn set_up_display(task: &mut Task) -> Result<()> {
-    let mut state = read_state(task.context, &task.machine);
-    state.running = None;
-    save(task, &state)?;
-    make_sure_of_driver(task, &mut state, false)?;
-    save(task, &state)?;
-    apply(task, &mut state, Occasion::Boot)?;
-    save(task, &state)
+pub(super) fn set_up_display(task: &mut Task) {
+    keep_going(task, |task| {
+        let mut state = read_state(task.context, &task.machine);
+        state.running = None;
+        save(task, &state)?;
+        make_sure_of_driver(task, &mut state, false)?;
+        save(task, &state)?;
+        apply(task, &mut state, Occasion::Boot)?;
+        save(task, &state)
+    });
 }
 
 /// The settings have changed while the machine is up.
-pub(super) fn apply_display(task: &mut Task) -> Result<()> {
-    let mut state = read_state(task.context, &task.machine);
-    apply(task, &mut state, Occasion::SettingsChange)?;
-    save(task, &state)
+pub(super) fn apply_display(task: &mut Task) {
+    keep_going(task, |task| {
+        let mut state = read_state(task.context, &task.machine);
+        apply(task, &mut state, Occasion::SettingsChange)?;
+        save(task, &state)
+    });
 }
 
 /// Someone has asked for the driver, after it failed.
-pub(super) fn install_display(task: &mut Task) -> Result<()> {
-    let mut state = read_state(task.context, &task.machine);
-    make_sure_of_driver(task, &mut state, true)?;
-    save(task, &state)?;
-    apply(task, &mut state, Occasion::Boot)?;
-    save(task, &state)
+pub(super) fn install_display(task: &mut Task) {
+    keep_going(task, |task| {
+        let mut state = read_state(task.context, &task.machine);
+        make_sure_of_driver(task, &mut state, true)?;
+        save(task, &state)?;
+        apply(task, &mut state, Occasion::Boot)?;
+        save(task, &state)
+    });
 }
 
 #[cfg(test)]

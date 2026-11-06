@@ -166,6 +166,6 @@ pub(super) fn wait_for_desktop(task: &Task) -> bool {
 
 pub(super) fn set_up_desktop(task: &mut Task) -> Result<()> {
     note_boot(task)?;
-    set_up_display(task)?;
+    set_up_display(task);
     apply_share(task)
 }
