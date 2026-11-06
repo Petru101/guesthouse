@@ -1509,12 +1509,12 @@ mod held_replies {
     #[derive(Default)]
     struct Frames(std::rc::Rc<std::cell::RefCell<Vec<&'static str>>>);
 
-    impl crate::FrameSink for Frames {
-        fn ring_opened(&mut self, _: &crate::FrameRing) {
+    impl crate::StagingSink for Frames {
+        fn ring_opened(&mut self, _: &crate::StagingRing) {
             self.0.borrow_mut().push("opened");
         }
 
-        fn frame_ready(&mut self, _: &crate::Frame) {
+        fn frame_ready(&mut self, _: &crate::StagingFrame) {
             self.0.borrow_mut().push("ready");
         }
 

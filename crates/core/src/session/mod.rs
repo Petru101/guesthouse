@@ -13,7 +13,7 @@ mod waiting;
 use crate::config::Config;
 use crate::deferred::Deferred;
 use crate::fences::FencePool;
-use crate::frames::{FrameSink, StagingFrames};
+use crate::frames::{StagingFrames, StagingSink};
 use crate::gpu_addresses::{AddressUse, GpuAddresses};
 use crate::guest_ranges::GuestRanges;
 use crate::handles::HandleCounter;
@@ -141,7 +141,7 @@ pub struct Session<B, M> {
     pub(crate) next_copy: u64,
     pub(crate) parked: VecDeque<Parked>,
     pub(crate) staging_frames: StagingFrames,
-    pub(crate) frame_sink: Option<Box<dyn FrameSink>>,
+    pub(crate) frame_sink: Option<Box<dyn StagingSink>>,
 
     pub(crate) ticket: Option<ReplyTicket>,
     pub(crate) held: bool,
@@ -224,7 +224,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
     }
 
     /// Sets where finished frames go.
-    pub fn set_frame_sink(&mut self, sink: Box<dyn FrameSink>) {
+    pub fn set_frame_sink(&mut self, sink: Box<dyn StagingSink>) {
         self.frame_sink = Some(sink);
     }
 

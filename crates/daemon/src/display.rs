@@ -2,7 +2,7 @@
 //!
 //! This is a stopgap for the viewer as it is today, kept small, until there is a socket to replace it.
 
-use guesthouse_core::{Frame, FrameRing, FrameSink};
+use guesthouse_core::{StagingFrame, StagingRing, StagingSink};
 use std::fs::OpenOptions;
 use std::os::fd::AsRawFd;
 use std::path::PathBuf;
@@ -63,8 +63,8 @@ impl DisplayFile {
     }
 }
 
-impl FrameSink for DisplayFile {
-    fn ring_opened(&mut self, ring: &FrameRing) {
+impl StagingSink for DisplayFile {
+    fn ring_opened(&mut self, ring: &StagingRing) {
         if !self.map() {
             return;
         }
@@ -82,7 +82,7 @@ impl FrameSink for DisplayFile {
         }
     }
 
-    fn frame_ready(&mut self, frame: &Frame) {
+    fn frame_ready(&mut self, frame: &StagingFrame) {
         self.sequence = frame.sequence;
         if self.map() {
             self.set_sequence(frame.sequence * 2);
@@ -123,15 +123,15 @@ mod tests {
             colour: 0,
         };
         let mut display = DisplayFile::new(path.clone(), 0x1000);
-        display.ring_opened(&FrameRing { generation: 1, slots: 1, surface, guest_address: 0x3000 });
-        display.frame_ready(&Frame { generation: 1, slot: 0, sequence: 4 });
+        display.ring_opened(&StagingRing { generation: 1, slots: 1, surface, guest_address: 0x3000 });
+        display.frame_ready(&StagingFrame { generation: 1, slot: 0, sequence: 4 });
         display.slot_overwriting(1, 0);
         let sequence = |bytes: &[u8]| u64::from_le_bytes(bytes[SEQUENCE..SEQUENCE + 8].try_into().unwrap());
         let bytes = fs::read(&path).unwrap();
         assert_eq!(sequence(&bytes), 9);
         assert_eq!(&bytes[..8], MAGIC);
         assert_eq!(bytes[OFFSET..OFFSET + 8], 0x2000u64.to_le_bytes());
-        display.frame_ready(&Frame { generation: 1, slot: 0, sequence: 5 });
+        display.frame_ready(&StagingFrame { generation: 1, slot: 0, sequence: 5 });
         assert_eq!(sequence(&fs::read(&path).unwrap()), 10);
         fs::remove_file(path).unwrap();
     }
