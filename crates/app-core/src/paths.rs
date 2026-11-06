@@ -4,6 +4,7 @@
 //! disk. A VM's sockets go in the runtime folder, the log in the state folder, and QEMU and the
 //! guest's files in the program folder.
 
+use crate::firmware::Firmware;
 use crate::linux::layout::{SOURCES_FOLDER, SOURCES_MARK};
 use guesthouse_daemon::slot::Slot;
 use std::collections::HashMap;
@@ -90,31 +91,6 @@ pub struct Paths {
     pub own_run: Option<PathBuf>,
     pub own_agent_port: Option<u16>,
     pub firmware: Firmware,
-}
-
-/// The firmware files, which come from the distribution.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Firmware {
-    pub code: PathBuf,
-    /// Goes with `vars`.
-    pub vars: PathBuf,
-    /// The 4 MiB firmware, the one with TPM drivers.
-    pub code_secure: PathBuf,
-    /// With Microsoft's keys, so Secure Boot is on. It goes with `code_secure`.
-    pub vars_secure: PathBuf,
-}
-
-impl Default for Firmware {
-    fn default() -> Self {
-        const FOLDER: &str = "/usr/share/edk2/ovmf";
-        let file = |name: &str| Path::new(FOLDER).join(name);
-        Self {
-            code: file("OVMF_CODE.secboot.fd"),
-            vars: file("OVMF_VARS.fd"),
-            code_secure: file("OVMF_CODE_4M.secboot.qcow2"),
-            vars_secure: file("OVMF_VARS_4M.secboot.qcow2"),
-        }
-    }
 }
 
 impl Paths {

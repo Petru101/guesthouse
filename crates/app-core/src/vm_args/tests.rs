@@ -39,7 +39,7 @@ fn a_gpu_vms_arguments_stay_word_for_word_the_same() {
     let run_folder = PathBuf::from("/x/run");
     let plan = VmPlan {
         qemu_files: Some("/x/p/qemu/pc-bios".into()),
-        firmware: Firmware::default(),
+        firmware: Firmware::fedora(),
         ram_file: "/dev/shm/gpupv-ram".into(),
         io_file: "/dev/shm/gpupv-iomem".into(),
         run_folder,

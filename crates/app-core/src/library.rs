@@ -28,6 +28,7 @@ pub const MAX_DISK_GIB: u32 = 16384;
 pub const INSTALL_ROOM_GIB: u64 = 40;
 pub const NO_DRIVER_FILES: &str = "Windows needs NVIDIA's driver first. Run Setup Again from the menu.";
 const SHUT_DOWN_FIRST: &str = "Shut the VM down first.";
+const NO_FIRMWARE: &str = "QEMU's UEFI firmware isn't installed. Install ovmf, which Fedora calls edk2-ovmf.";
 /// The file a disk is called in its machine's folder.
 const DISK_FILE: &str = "disk.qcow2";
 const FIRMWARE_FILE: &str = "vars.fd";
@@ -90,6 +91,12 @@ pub fn create_problems(context: &Context, machine: &Machine, disk_gib: u32) -> R
     }
     if !Path::new(&machine.iso).is_file() {
         found.push("Choose an ISO first.".to_owned());
+    }
+    let firmware = &context.paths.firmware;
+    if !machine.vars.is_empty()
+        && !(if machine.tpm { &firmware.vars_secure } else { &firmware.vars }).exists()
+    {
+        found.push(NO_FIRMWARE.to_owned());
     }
     fs::create_dir_all(&context.paths.machines)?;
     if machine.kind == Kind::Windows && !gpu_ready(context) {
@@ -305,6 +312,16 @@ mod tests {
         let second = create(&context, &plain(&scratch, "Tiny Linux", None)).unwrap();
         assert_eq!(second.id, "tiny-linux-2", "a second machine with this name gets its own folder");
         assert_eq!(new_id(&context, "???"), "machine");
+    }
+
+    #[test]
+    fn with_no_firmware_it_says_what_to_install() {
+        let scratch = Scratch::new();
+        let mut context = scratch_context(&scratch);
+        context.paths.firmware.vars = scratch.path("not-installed");
+        let iso = scratch.write("disc.iso", "disc").display().to_string();
+        let new = NewMachine { name: "VM".into(), iso, kind: Kind::Plain, cores: 2, ram_gib: 2, disk_gib: 4 };
+        assert_eq!(create(&context, &new).unwrap_err().0, NO_FIRMWARE);
     }
 
     #[test]

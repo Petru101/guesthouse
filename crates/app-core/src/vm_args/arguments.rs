@@ -1,6 +1,7 @@
 //! QEMU's arguments, in the order the guest has already seen.
 
 use super::{Boot, DISPLAY_SOCKET, Sound, VmPlan};
+use crate::firmware::format_of;
 use crate::text::qemu_value;
 
 const HYPERV_FEATURES: &str = "hv-relaxed,hv-vapic,hv-spinlocks=0x1fff,hv-vpindex,hv-runtime,hv-time,hv-synic,\
@@ -38,10 +39,8 @@ impl VmPlan {
     }
 
     fn firmware_drives(&self) -> Vec<String> {
-        let (code, format) = match self.tpm {
-            Some(_) => (&self.firmware.code_secure, "qcow2"),
-            None => (&self.firmware.code, "raw"),
-        };
+        let code = if self.tpm.is_some() { &self.firmware.code_secure } else { &self.firmware.code };
+        let format = format_of(code);
         words(&[
             "-global",
             "driver=cfi.pflash01,property=secure,value=on",

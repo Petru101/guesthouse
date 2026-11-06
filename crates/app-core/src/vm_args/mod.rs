@@ -11,9 +11,9 @@ mod ubuntu;
 pub use ubuntu::{FORWARDED_INPUT_SOCKET, FRAMES_PREFIX, INSTALL_LOG, ssh_port};
 
 use crate::context::Context;
+use crate::firmware::Firmware;
 use crate::machine::Machine;
 use crate::network::{Forward, Mode};
-use crate::paths::Firmware;
 use guesthouse_daemon::slot::Slot;
 use std::fs;
 use std::path::{Path, PathBuf};

@@ -1,7 +1,8 @@
 //! What the tests share: scratch folders, and contexts that can't reach the real PC.
 
 use crate::context::Context;
-use crate::paths::{Firmware, Paths, Variables};
+use crate::firmware::Firmware;
+use crate::paths::{Paths, Variables};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -68,7 +69,7 @@ pub fn scratch_paths(scratch: &Scratch) -> Paths {
     paths.firmware = Firmware {
         code: scratch.path("firmware/code"),
         vars: scratch.write("firmware/vars", "blank firmware settings"),
-        code_secure: scratch.path("firmware/code-secure"),
+        code_secure: scratch.path("firmware/code-secure.qcow2"),
         vars_secure: scratch.write("firmware/vars-secure", "firmware settings with keys"),
     };
     fs::create_dir_all(&paths.shared_memory).unwrap();

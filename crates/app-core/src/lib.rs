@@ -13,6 +13,7 @@ pub mod context;
 pub mod daemon;
 pub mod disk_image;
 pub mod failure;
+pub mod firmware;
 pub mod forwarded_input;
 pub mod gpu_sample;
 pub mod gpu_support;
