@@ -139,7 +139,7 @@ impl VmPlan {
             agent_port: context.paths.agent_port(slot),
             cores: machine.cores,
             ram: format!("{}G", machine.ram_gib),
-            screen: machine.screen.clone(),
+            screen: machine.basic_screen().to_owned(),
             disk: machine.disk.clone(),
             vars: machine.vars.clone(),
             tpm: machine.tpm.then(|| machine.tpm_folder(context)),

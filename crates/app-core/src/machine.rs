@@ -8,11 +8,14 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{MAIN_SEPARATOR, Path, PathBuf};
 
-/// 2560x1440 can't work: Windows takes the largest mode that fits the VGA memory, whose size QEMU
-/// rounds up to a power of two, and in 16 MiB the firmware's 2048x2048 fits too and is larger.
-pub const SCREENS: [&str; 2] = ["1920x1080", "3840x2160"];
-/// The rates offered by name.
-pub const REFRESH_RATES: [u32; 5] = [60, 64, 120, 144, 240];
+/// The sizes offered, which the display driver has.
+pub const SCREENS: [&str; 3] = ["1920x1080", "2560x1440", "3840x2160"];
+/// What the basic display can do. 2560x1440 can't work there: Windows takes the largest mode that fits
+/// the VGA memory, whose size QEMU rounds up to a power of two, and in 16 MiB the firmware's 2048x2048
+/// fits too and is larger.
+const BASIC_SCREENS: [&str; 2] = ["1920x1080", "3840x2160"];
+/// The rates offered by name, which are the ones in the display driver's settings.
+pub const REFRESH_RATES: [u32; 6] = [60, 90, 120, 144, 165, 240];
 /// A slower rate only makes the guest's timer easier, and this is where a desktop stops being usable.
 pub const MIN_REFRESH_HZ: u32 = 30;
 /// The fastest that has been measured. A saved rate above a lowered limit would stop a machine
@@ -92,6 +95,9 @@ pub struct Machine {
     pub screen: String,
     #[serde(default = "default_refresh")]
     pub refresh_hz: u32,
+    /// Wanted, that is: Windows only goes to HDR on a screen that can show it.
+    #[serde(default)]
+    pub hdr: bool,
     #[serde(default)]
     pub vcache_pin: bool,
     #[serde(default)]
@@ -146,6 +152,7 @@ impl Machine {
             ram_gib: default_ram(),
             screen: default_screen(),
             refresh_hz: default_refresh(),
+            hdr: false,
             vcache_pin: false,
             kind: Kind::Windows,
             iso: String::new(),
@@ -204,15 +211,29 @@ impl Machine {
         files.all(|path| fs::canonicalize(path).is_ok_and(|real| real.to_string_lossy().starts_with(&inside)))
     }
 
+    /// The size the VM's VGA gets, for the firmware and for Windows if it's on the basic display.
+    pub fn basic_screen(&self) -> &str {
+        if BASIC_SCREENS.contains(&self.screen.as_str()) { &self.screen } else { BASIC_SCREENS[0] }
+    }
+
+    /// What was asked for, which is what's true of a machine that's off.
+    fn screen_wanted(&self) -> String {
+        let hdr = if self.hdr { ", HDR" } else { "" };
+        format!("{}, {} Hz{hdr}", self.screen, self.refresh_hz)
+    }
+
     pub fn summary(&self) -> String {
+        self.summary_showing(&self.screen_wanted())
+    }
+
+    /// The summary, with what's known of the screen.
+    pub fn summary_showing(&self, screen: &str) -> String {
         let (kind, cores, ram) = (self.kind.name(), self.cores, self.ram_gib);
         match self.kind {
             Kind::Plain => format!("{kind}, {cores} cores, {ram} GiB, no GPU acceleration"),
             Kind::Linux if self.gpu_preview => format!("{kind}, {cores} cores, {ram} GiB, GPU preview"),
             Kind::Linux => format!("{kind}, {cores} cores, {ram} GiB, no GPU"),
-            Kind::Windows => {
-                format!("{kind}, {cores} cores, {ram} GiB, {}, {} Hz", self.screen, self.refresh_hz)
-            }
+            Kind::Windows => format!("{kind}, {cores} cores, {ram} GiB, {screen}"),
         }
     }
 
@@ -363,11 +384,10 @@ mod tests {
         let good = sample();
         good.save(&context).unwrap();
         type Change = fn(&mut Machine);
-        let cases: [(Change, &str); 11] = [
+        let cases: [(Change, &str); 10] = [
             (|m| m.cores = 1, "Cores"),
             (|m| m.ram_gib = 3, "RAM"),
             (|m| m.screen = "1024x768".into(), "screen"),
-            (|m| m.screen = "2560x1440".into(), "screen"),
             (|m| m.refresh_hz = MIN_REFRESH_HZ - 1, "refresh"),
             (|m| m.refresh_hz = MAX_REFRESH_HZ + 1, "refresh"),
             (|m| m.name = " ".into(), "name"),
@@ -383,6 +403,15 @@ mod tests {
             assert!(error.0.contains(text), "{error}");
         }
         assert_eq!(load(&context, "sample").unwrap(), good);
+    }
+
+    #[test]
+    fn a_size_only_the_driver_has_boots_at_one_the_basic_display_has() {
+        let mut machine = sample();
+        machine.screen = "2560x1440".into();
+        assert_eq!(machine.basic_screen(), "1920x1080");
+        machine.screen = "3840x2160".into();
+        assert_eq!(machine.basic_screen(), "3840x2160");
     }
 
     #[test]
