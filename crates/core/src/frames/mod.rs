@@ -7,14 +7,11 @@
 mod picture;
 mod ring;
 mod slots;
-mod staging;
 
 pub use picture::Picture;
 pub use ring::FrameCounts;
 pub(crate) use ring::{LiveRing, RING_SLOTS, ScreenFrames, SlotInFlight, SlotMemory};
 pub use slots::{NotTheViewers, Slots};
-pub(crate) use staging::StagingFrames;
-pub use staging::{StagingFrame, StagingRing, StagingSink};
 
 use std::os::fd::BorrowedFd;
 

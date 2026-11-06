@@ -5,7 +5,6 @@
 //! runs every message through [`router::Router`] to the session. [`viewer::ViewerPort`] serves the
 //! frame socket from that same thread.
 
-pub mod display;
 pub mod environment;
 pub mod guest_memory;
 pub mod logger;

@@ -126,8 +126,9 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             return Ok(());
         }
         if self.copies.is_empty() && (self.targets_reached(&targets) || now >= deadline) {
-            if let StagingStart::Finished(status) = self.begin_copy(&copy) {
-                self.end_copy(&copy, status);
+            if let StagingStart::Finished(status) =
+                self.backend.start_staging_copy(&mut services!(self), &copy)
+            {
                 let slot = self.after_staging(&copy, handles, status);
                 if slot.is_none() {
                     answer_status(status, out);
@@ -158,11 +159,10 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         while !self.targets_reached(targets) && Instant::now() < deadline {
             thread::sleep(FRAME_WAIT_STEP);
         }
-        let status = match self.begin_copy(copy) {
+        let status = match self.backend.start_staging_copy(&mut services!(self), copy) {
             StagingStart::Finished(status) => status,
             StagingStart::Running => self.wait_for_copy(),
         };
-        self.end_copy(copy, status);
         if let Some(slot) = self.after_staging(copy, handles, status) {
             let slot_status = self.wait_for_copy();
             self.ring_copy_ended(slot, slot_status);
@@ -230,22 +230,6 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         self.copies.iter().any(|job| job.id == id)
     }
 
-    fn begin_copy(&mut self, copy: &StagingCopy) -> StagingStart {
-        if let (true, Some(sink), Some(address)) =
-            (copy.is_screen, self.frame_sink.as_deref_mut(), copy.target_guest_address)
-        {
-            self.staging_frames.copy_starting(sink, copy.target, address);
-        }
-        self.backend.start_staging_copy(&mut services!(self), copy)
-    }
-
-    fn end_copy(&mut self, copy: &StagingCopy, status: Status) {
-        if let (true, Status::SUCCESS, Some(sink)) = (copy.is_screen, status, self.frame_sink.as_deref_mut())
-        {
-            self.staging_frames.copy_finished(sink);
-        }
-    }
-
     /// Moves the first job along, and the ones after it if that frees them to go.
     pub(super) fn poll_copies(&mut self, now: Instant) {
         while let Some(mut job) = self.copies.pop_front() {
@@ -253,7 +237,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
                 self.backend.poll_staging_copy(&mut services!(self), now)
             } else if self.targets_reached(&job.targets) || now >= job.deadline {
                 job.running = true;
-                match self.begin_copy(&job.copy) {
+                match self.backend.start_staging_copy(&mut services!(self), &job.copy) {
                     StagingStart::Finished(status) => Some(status),
                     StagingStart::Running => None,
                 }
@@ -267,7 +251,6 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             if let Some(slot) = job.slot.take() {
                 self.ring_copy_ended(slot, status);
             } else {
-                self.end_copy(&job.copy, status);
                 job.status = status;
                 job.slot = self.after_staging(&job.copy, job.handles, status);
                 if job.slot.is_some() {

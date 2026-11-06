@@ -63,7 +63,7 @@ impl Slot {
         project.join(format!("{RUN_FOLDER}{}", self.suffix()))
     }
 
-    /// A file in shared memory, like `ram`, `iomem` or `display`.
+    /// A file in shared memory, like `ram` or `iomem`.
     pub fn shared_file(self, name: &str) -> PathBuf {
         Path::new(SHARED_MEMORY).join(format!("{SHARED_FILE_PREFIX}-{name}{}", self.suffix()))
     }

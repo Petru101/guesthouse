@@ -14,7 +14,7 @@ mod waiting;
 use crate::config::Config;
 use crate::deferred::Deferred;
 use crate::fences::FencePool;
-use crate::frames::{ScreenFrames, StagingFrames, StagingSink};
+use crate::frames::ScreenFrames;
 use crate::gpu_addresses::{AddressUse, GpuAddresses};
 use crate::guest_ranges::GuestRanges;
 use crate::handles::HandleCounter;
@@ -141,8 +141,6 @@ pub struct Session<B, M> {
     pub(crate) copies: VecDeque<CopyJob>,
     pub(crate) next_copy: u64,
     pub(crate) parked: VecDeque<Parked>,
-    pub(crate) staging_frames: StagingFrames,
-    pub(crate) frame_sink: Option<Box<dyn StagingSink>>,
     pub(crate) frames: ScreenFrames,
 
     pub(crate) ticket: Option<ReplyTicket>,
@@ -191,8 +189,6 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             copies: VecDeque::new(),
             next_copy: 0,
             parked: VecDeque::new(),
-            staging_frames: StagingFrames::default(),
-            frame_sink: None,
             frames: ScreenFrames::default(),
             ticket: None,
             held: false,
@@ -224,11 +220,6 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
     /// Takes GPU addresses as a backend would, for a replay standing in for one.
     pub fn take_gpu_addresses(&mut self, size: u64, align: u64) -> Result<u64, BackendError> {
         self.gpu_addresses.take(size, align, AddressUse::Host)
-    }
-
-    /// Sets where finished frames go.
-    pub fn set_frame_sink(&mut self, sink: Box<dyn StagingSink>) {
-        self.frame_sink = Some(sink);
     }
 
     /// Chooses how copies to the staging surface wait.

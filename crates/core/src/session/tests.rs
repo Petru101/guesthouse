@@ -1507,37 +1507,6 @@ mod held_replies {
         }
         assert!(session.backend().copies.is_empty());
     }
-
-    #[derive(Default)]
-    struct Frames(std::rc::Rc<std::cell::RefCell<Vec<&'static str>>>);
-
-    impl crate::StagingSink for Frames {
-        fn ring_opened(&mut self, _: &crate::StagingRing) {
-            self.0.borrow_mut().push("opened");
-        }
-
-        fn frame_ready(&mut self, _: &crate::StagingFrame) {
-            self.0.borrow_mut().push("ready");
-        }
-
-        fn ring_closed(&mut self, _: u32) {
-            self.0.borrow_mut().push("closed");
-        }
-    }
-
-    #[test]
-    fn the_sink_hears_of_the_screens_frames_only() {
-        let mut session = session();
-        let frames = Frames::default();
-        let seen = frames.0.clone();
-        session.set_frame_sink(Box::new(frames));
-        let (_, source, _, target) = surfaces(&mut session);
-        send(&mut session, &copy(0, source, target));
-        assert!(seen.borrow().is_empty(), "the target is not in the shared window");
-        lock(&mut session, target);
-        send(&mut session, &copy(0, source, target));
-        assert_eq!(*seen.borrow(), ["opened", "ready"]);
-    }
 }
 
 mod address_reuse {
