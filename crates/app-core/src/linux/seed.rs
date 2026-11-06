@@ -5,6 +5,7 @@
 use super::guest_sources;
 use crate::context::Context;
 use crate::failure::{Failure, Result};
+use crate::iso::iso_maker;
 use crate::machine::Machine;
 use crate::snapshots::copy_tree;
 use std::fs;
@@ -115,7 +116,7 @@ pub fn make_seed(context: &Context, machine: &Machine, kernel_package: &str) -> 
     let archive = make_payload(&sources, &folder)?;
     let disc = seed_disc(context, machine);
     output(
-        Command::new("genisoimage")
+        Command::new(iso_maker())
             .args(["-quiet", "-r", "-V", "cidata", "-o"])
             .arg(&disc)
             .arg("-graft-points")

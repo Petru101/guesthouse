@@ -2,6 +2,15 @@
 /* The function table nvidia-drm asks for, and what is refused or does nothing. */
 #include "standin.h"
 
+/*
+ * The table's size where every function in it is filled in below. A driver that adds one must fail
+ * here, in the build, which turns the GPU off and says why. Otherwise nvidia-drm would call a null
+ * pointer in the guest's kernel.
+ */
+#define KNOWN_TABLE_BYTES 424
+_Static_assert(sizeof(struct NvKmsKapiFunctionsTable) == KNOWN_TABLE_BYTES,
+	       "this driver's KAPI table has changed: the stand-in needs its new functions");
+
 static struct NvKmsKapiChannelEvent *allocateChannelEvent(struct NvKmsKapiDevice *d, NvKmsChannelEventProc *proc, void *data, NvU64 u, NvU64 s) { return NULL; }
 static void freeChannelEvent(struct NvKmsKapiDevice *d, struct NvKmsKapiChannelEvent *cb) { }
 static NvBool getCRC32(struct NvKmsKapiDevice *d, NvU32 head, struct NvKmsKapiCrcs *crc) { return NV_FALSE; }

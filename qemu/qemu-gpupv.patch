@@ -6228,3 +6228,225 @@ index 0000000..80376a3
 -- 
 2.56.0
 
+From 45e1c3ffb8715191cd6bca6a8c1462584a8f8364 Mon Sep 17 00:00:00 2001
+From: xnixy <x@ruxn.com>
+Date: Thu, 5 Nov 2026 23:54:29 -0800
+Subject: [PATCH 22/22] hw/misc/nvfwd: a guest keeps its sensor page with no
+ daemon
+
+NVIDIA's user-mode driver won't start without this object, so a sensor daemon
+that couldn't start cost a guest CUDA and Vulkan and not just its readings. The
+page now comes first and the daemon second. With no daemon the page stays empty,
+which a guest reads as N/A.
+
+The daemon can't hang a vCPU any more either, and if it dies its last readings
+go with it. It runs with signals unblocked too, as it inherited a vCPU's mask.
+---
+ hw/misc/nvfwd/sensors.c | 111 +++++++++++++++++++++++++++++++++-------
+ hw/misc/nvfwd/sensors.h |   2 +-
+ 2 files changed, 93 insertions(+), 20 deletions(-)
+
+diff --git a/hw/misc/nvfwd/sensors.c b/hw/misc/nvfwd/sensors.c
+index 941b352..003a812 100644
+--- a/hw/misc/nvfwd/sensors.c
++++ b/hw/misc/nvfwd/sensors.c
+@@ -5,6 +5,8 @@
+ #include "sensors.h"
+ #include "rusd.h"
+ 
++#include <poll.h>
++#include <signal.h>
+ #include <spawn.h>
+ #include <sys/socket.h>
+ 
+@@ -60,6 +62,9 @@
+ #define MAX_MAPPING_FILES 4096
+ #define MAX_REFUSALS_LOGGED 64
+ 
++/* A guest's call waits on the daemon, on its vCPU, so a stuck daemon may stall a VM but never hang it. */
++#define DAEMON_ANSWER_SECONDS 5
++
+ typedef struct {
+     uint32_t client, object, file;
+     uint64_t mask;
+@@ -71,7 +76,6 @@ struct Sensors {
+     const char *daemon_path;
+     QemuMutex lock;
+     int daemon, page_fd;
+-    bool unavailable;
+     uint64_t polling;
+     SensorObject objects[MAX_OBJECTS];
+     bool mapping_next[MAX_MAPPING_FILES];
+@@ -118,55 +122,123 @@ static bool spawn_daemon(Sensors *s, int socket_end, int page_fd)
+ {
+     char *const argv[] = { (char *)s->daemon_path, NULL };
+     posix_spawn_file_actions_t actions;
++    posix_spawnattr_t attributes;
++    sigset_t none;
+     pid_t pid;
+     int rc;
+ 
+     posix_spawn_file_actions_init(&actions);
+     posix_spawn_file_actions_adddup2(&actions, socket_end, SENSORD_SOCKET_FD);
+     posix_spawn_file_actions_adddup2(&actions, page_fd, SENSORD_PAGE_FD);
+-    rc = posix_spawn(&pid, s->daemon_path, &actions, NULL, argv, environ);
++    /* This runs on a vCPU, which blocks every signal: the daemon must still go when it's told to. */
++    sigemptyset(&none);
++    posix_spawnattr_init(&attributes);
++    posix_spawnattr_setsigmask(&attributes, &none);
++    posix_spawnattr_setflags(&attributes, POSIX_SPAWN_SETSIGMASK);
++    rc = posix_spawn(&pid, s->daemon_path, &actions, &attributes, argv, environ);
++    posix_spawnattr_destroy(&attributes);
+     posix_spawn_file_actions_destroy(&actions);
+     return !rc;
+ }
+ 
+-/* The daemon comes up with the first guest that asks, and stays until the VM ends. */
+-static bool start_page(Sensors *s)
++/* A page of zeros reads as no readings, which is what a guest should see when nothing fills it in. */
++static void clear_page(Sensors *s)
+ {
++    static const uint8_t zeros[RUSD_MAP_BYTES];
++
++    if (pwrite(s->page_fd, zeros, sizeof(zeros), 0) != sizeof(zeros)) {
++        fprintf(s->log, "sensors: could not clear the page, so its readings stay old\n");
++    }
++}
++
++/* Sensors are a nicety. Losing them must never cost a guest its GPU, so the page stays. */
++static void go_without_daemon(Sensors *s, const char *why)
++{
++    fprintf(s->log, "sensors: no readings from here on, as %s\n", why);
++    fflush(s->log);
++    if (s->daemon >= 0) {
++        close(s->daemon);
++        s->daemon = -1;
++    }
++    s->polling = 0;
++    clear_page(s);
++}
++
++static void start_daemon(Sensors *s)
++{
++    struct timeval patience = { .tv_sec = DAEMON_ANSWER_SECONDS };
+     uint32_t client = 0;
+     int ends[2];
+ 
+-    if (s->daemon >= 0 || s->unavailable) {
+-        return s->daemon >= 0;
++    if (!s->daemon_path) {
++        go_without_daemon(s, "QEMU was given no sensor daemon");
++        return;
+     }
+-    s->unavailable = true;
+-    s->page_fd = memfd_create("nvfwd-sensors", MFD_CLOEXEC);
+-    if (!s->daemon_path || s->page_fd < 0 || ftruncate(s->page_fd, RUSD_MAP_BYTES) ||
+-        socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, ends)) {
+-        return false;
++    if (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, ends)) {
++        go_without_daemon(s, "there is no socket for the daemon");
++        return;
+     }
++    setsockopt(ends[0], SOL_SOCKET, SO_RCVTIMEO, &patience, sizeof(patience));
++    setsockopt(ends[0], SOL_SOCKET, SO_SNDTIMEO, &patience, sizeof(patience));
+     if (!spawn_daemon(s, ends[1], s->page_fd)) {
+         close(ends[0]);
+         close(ends[1]);
+-        return false;
++        go_without_daemon(s, "the daemon would not start");
++        return;
+     }
+     close(ends[1]);
+     if (read(ends[0], &client, sizeof(client)) != sizeof(client) || !client) {
+         close(ends[0]);
+-        return false;
++        go_without_daemon(s, "the daemon has no sensor page for this driver");
++        return;
+     }
+     fprintf(s->log, "sensors: daemon has host client %#x\n", client);
+     fflush(s->log);
+     s->daemon = ends[0];
+-    s->unavailable = false;
++}
++
++/*
++ * The page comes with the first guest that asks, and stays until the VM ends. NVIDIA's user-mode
++ * driver won't start without this object, so a guest gets one with or without a daemon to fill it.
++ */
++static bool start_page(Sensors *s)
++{
++    if (s->page_fd >= 0) {
++        return true;
++    }
++    s->page_fd = memfd_create("nvfwd-sensors", MFD_CLOEXEC);
++    if (s->page_fd < 0) {
++        return false;
++    }
++    if (ftruncate(s->page_fd, RUSD_MAP_BYTES)) {
++        close(s->page_fd);
++        s->page_fd = -1;
++        return false;
++    }
++    start_daemon(s);
+     return true;
+ }
+ 
+-static bool request_polling(Sensors *s, uint64_t mask)
++static void request_polling(Sensors *s, uint64_t mask)
+ {
+     int32_t status = -1;
+ 
+-    return write(s->daemon, &mask, sizeof(mask)) == sizeof(mask) &&
+-           read(s->daemon, &status, sizeof(status)) == sizeof(status) && !status;
++    if (write(s->daemon, &mask, sizeof(mask)) != sizeof(mask) ||
++        read(s->daemon, &status, sizeof(status)) != sizeof(status)) {
++        go_without_daemon(s, "the daemon stopped answering");
++    } else if (!status) {
++        s->polling = mask;
++    }
++}
++
++/* With no change to ask for, a dead daemon would go unnoticed, and its last readings would look live. */
++static void notice_dead_daemon(Sensors *s)
++{
++    struct pollfd socket_end = { .fd = s->daemon };
++
++    if (s->daemon >= 0 && poll(&socket_end, 1, 0) > 0 && (socket_end.revents & (POLLHUP | POLLERR))) {
++        go_without_daemon(s, "the daemon has gone");
++    }
+ }
+ 
+ /* The host polls what any guest object still wants, and nothing when none does. */
+@@ -175,13 +247,14 @@ static void update_polling(Sensors *s)
+     uint64_t wanted = 0;
+     int i;
+ 
++    notice_dead_daemon(s);
+     for (i = 0; i < MAX_OBJECTS; i++) {
+         if (s->objects[i].used) {
+             wanted |= s->objects[i].mask;
+         }
+     }
+-    if (wanted != s->polling && s->daemon >= 0 && request_polling(s, wanted)) {
+-        s->polling = wanted;
++    if (wanted != s->polling && s->daemon >= 0) {
++        request_polling(s, wanted);
+     }
+ }
+ 
+diff --git a/hw/misc/nvfwd/sensors.h b/hw/misc/nvfwd/sensors.h
+index cb26bd5..982e31c 100644
+--- a/hw/misc/nvfwd/sensors.h
++++ b/hw/misc/nvfwd/sensors.h
+@@ -24,7 +24,7 @@ typedef struct SensorCall {
+     uint32_t data_size;
+ } SensorCall;
+ 
+-/* daemon_path is the nvfwd-sensord program. Without one, guests get no sensor page. */
++/* daemon_path is the nvfwd-sensord program. Without one, guests get a page with no readings. */
+ Sensors *sensors_new(FILE *log, const char *daemon_path);
+ 
+ /* True when the call was answered here, with its status written, and must not be forwarded. */
+-- 
+2.56.0
+

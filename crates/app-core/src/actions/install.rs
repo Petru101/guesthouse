@@ -6,6 +6,7 @@ use crate::agent::{QUICK_SECONDS, guest_script, make_password, make_token};
 use crate::context::Context;
 use crate::disk_image::disk_size_gib;
 use crate::failure::{Failure, Result};
+use crate::iso::iso_maker;
 use crate::library::make_disk;
 use crate::machine::Machine;
 use crate::monitor::Command as Qmp;
@@ -92,7 +93,7 @@ fn fill_answer_disc(context: &Context, machine: &Machine, files: &Path) -> Resul
     let path = answer_disc_path(context, machine);
     // Made private first: the disc holds the token, and genisoimage keeps a file's mode.
     fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&path)?;
-    let result = Command::new("genisoimage")
+    let result = Command::new(iso_maker())
         .args(["-quiet", "-J", "-joliet-long", "-r", "-V", ANSWER_LABEL, "-graft-points", "-o"])
         .arg(&path)
         .arg(format!("/={}", files.display()))
