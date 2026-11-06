@@ -249,6 +249,16 @@ impl Screen {
         Some(thumbnail(self.0.latest.borrow().as_ref()?, width))
     }
 
+    /// What kind of texture is on screen, for the page checks.
+    pub fn texture_kind(&self) -> String {
+        self.0.latest.borrow().as_ref().map_or_else(String::new, |texture| texture.type_().name().to_owned())
+    }
+
+    /// What QEMU's display has called, for the page checks.
+    pub fn display_calls(&self) -> Vec<(String, u64)> {
+        self.0.qemu.borrow().as_ref().map(|source| source.calls()).unwrap_or_default()
+    }
+
     pub fn frames_shown(&self) -> u64 {
         self.0.frames.get()
     }

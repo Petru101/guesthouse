@@ -9,6 +9,7 @@ use super::frames::FrameSource;
 use gtk::gdk::prelude::*;
 use gtk::glib::variant::{FromVariant, Handle};
 use gtk::{gdk, gio, glib};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -69,6 +70,7 @@ struct Shared {
     cursor: Option<Cursor>,
     cursor_on: Option<bool>,
     cursor_changed: bool,
+    calls: BTreeMap<String, u64>,
 }
 
 fn number<T: FromVariant>(arguments: &glib::Variant, index: usize) -> Option<T> {
@@ -79,9 +81,14 @@ fn bytes(arguments: &glib::Variant, index: usize) -> glib::Bytes {
     arguments.child_value(index).data_as_bytes()
 }
 
+fn note_size(shared: &mut Shared, width: u32, height: u32) {
+    *shared.calls.entry(format!("{width}x{height}")).or_default() += 1;
+}
+
 fn on_scanout(shared: &mut Shared, arguments: &glib::Variant) -> Option<()> {
     let (width, height) = (number(arguments, 0)?, number(arguments, 1)?);
     let (stride, format) = (number(arguments, 2)?, number(arguments, 3)?);
+    note_size(shared, width, height);
     shared.surface = Surface::new(width, height, stride, format, bytes(arguments, 4).to_vec());
     shared.dirty = true;
     Some(())
@@ -102,6 +109,7 @@ fn on_scanout_map(shared: &mut Shared, arguments: &glib::Variant, message: &gio:
     let offset: u32 = number(arguments, 1)?;
     let (width, height) = (number(arguments, 2)?, number(arguments, 3)?);
     let (stride, format) = (number(arguments, 4)?, number(arguments, 5)?);
+    note_size(shared, width, height);
     shared.surface = Some(Surface::shared(width, height, stride, format, file, offset.into()));
     shared.dirty = true;
     Some(())
@@ -119,6 +127,7 @@ fn on_cursor_define(shared: &mut Shared, arguments: &glib::Variant) -> Option<()
 fn on_call(shared: &Mutex<Shared>, method: &str, arguments: &glib::Variant, message: &gio::DBusMessage) {
     let Ok(mut shared) = shared.lock() else { return };
     let shared = &mut *shared;
+    *shared.calls.entry(method.to_owned()).or_default() += 1;
     match method {
         "Scanout" => on_scanout(shared, arguments),
         "Update" => on_update(shared, arguments),
@@ -229,6 +238,10 @@ impl FrameSource for DbusFrames {
 
     fn alive(&self) -> bool {
         self.alive.load(Ordering::Relaxed)
+    }
+
+    fn calls(&self) -> Vec<(String, u64)> {
+        self.shared.lock().map(|shared| shared.calls.clone().into_iter().collect()).unwrap_or_default()
     }
 
     /// A guest on VGA draws its pointer into the frame and QEMU says nothing about it.

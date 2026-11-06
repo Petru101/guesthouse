@@ -157,6 +157,16 @@ impl ScreenPage {
         self.screen().map_or(0, |screen| screen.frames_shown())
     }
 
+    /// What kind of texture is on screen, for the page checks.
+    pub fn texture_kind(&self) -> String {
+        self.screen().map(|screen| screen.texture_kind()).unwrap_or_default()
+    }
+
+    /// What QEMU's display has called, for the page checks.
+    pub fn display_calls(&self) -> Vec<(String, u64)> {
+        self.screen().map(|screen| screen.display_calls()).unwrap_or_default()
+    }
+
     /// Whether the guest is taking input, for the page checks.
     pub fn has_input(&self) -> bool {
         self.screen().is_some_and(|screen| screen.has_input())

@@ -11,6 +11,10 @@ pub trait FrameSource {
     fn newest(&mut self) -> Option<gdk::Texture>;
     /// Whether frames can still come. One that has gone is dropped, and looked for again.
     fn alive(&self) -> bool;
+    /// How often the source has heard each kind of call, by name, for the page checks.
+    fn calls(&self) -> Vec<(String, u64)> {
+        Vec::new()
+    }
     /// The pointer to show over the screen, when the guest has changed it.
     fn new_cursor(&mut self) -> Option<gdk::Cursor> {
         None
