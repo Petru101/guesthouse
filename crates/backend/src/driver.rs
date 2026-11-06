@@ -4,7 +4,9 @@
 //! Those are separate things, each with its own profile inside a vendor backend, so a survey says
 //! which branches are known without saying anything about cards.
 
+use crate::PciCard;
 use std::fmt;
+use std::path::PathBuf;
 
 /// A Windows driver version, as four numbers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,6 +57,10 @@ pub struct Setup {
     pub guest_driver_version: DriverVersion,
     /// The guest driver's branch, in the vendor's own naming.
     pub guest_branch: String,
+    /// Where setup unpacked the guest driver, which a vendor may read answers from.
+    pub driver_folder: PathBuf,
+    /// The card setup chose, if it chose one.
+    pub card: Option<PciCard>,
 }
 
 /// One driver's version and branch, in the vendor's own naming.

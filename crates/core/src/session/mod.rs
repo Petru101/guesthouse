@@ -17,8 +17,8 @@ use crate::guest_ranges::GuestRanges;
 use crate::handles::HandleCounter;
 use crate::pending::{Gate, Pending};
 use crate::sync_table::SyncTable;
-use crate::tables::{Allocation, Queue, ReservedRange};
-use guesthouse_backend::{Backend, BackendError, GuestMemory, HostServices, SpaceId};
+use crate::tables::{Allocation, Mapping, Queue, ReservedRange};
+use guesthouse_backend::{Backend, BackendError, GuestMemory, HostServices, SharedSpan, SpaceId};
 use guesthouse_messages::notice::Notice;
 use guesthouse_messages::wire::{Malformed, put_u32};
 use guesthouse_messages::{Command, MessageHeader, Status};
@@ -294,7 +294,17 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
 pub(crate) struct Services<'a, M> {
     gpu_addresses: &'a mut GpuAddresses,
     allocations: &'a HashMap<u32, Allocation>,
-    memory: &'a M,
+    memory: &'a mut M,
+}
+
+impl<M: GuestMemory> Services<'_, M> {
+    /// The allocation in shared pages whose mapping holds this address, and the mapping.
+    fn shared_mapping(&self, address: u64) -> Option<(u64, &Mapping)> {
+        self.allocations.values().find_map(|allocation| {
+            let base = allocation.guest_address?;
+            Some((base, allocation.mappings.iter().find(|mapping| mapping.contains(address))?))
+        })
+    }
 }
 
 impl<M: GuestMemory> HostServices for Services<'_, M> {
@@ -302,19 +312,31 @@ impl<M: GuestMemory> HostServices for Services<'_, M> {
         self.gpu_addresses.take(size, align, AddressUse::Host)
     }
 
-    fn read_at_gpu_address(&self, address: u64, out: &mut [u8]) -> bool {
-        let Some(guest_address) = self.allocations.values().find_map(|allocation| {
-            let base = allocation.guest_address?;
-            let mapping = allocation.mappings.iter().find(|mapping| mapping.contains(address))?;
-            Some(base + mapping.first + address - mapping.address)
-        }) else {
-            return false;
-        };
-        for (index, chunk) in out.chunks_mut(8).enumerate() {
-            let word = self.memory.read_u64(guest_address + index as u64 * 8).to_le_bytes();
-            chunk.copy_from_slice(&word[..chunk.len()]);
-        }
-        true
+    fn read_at_gpu_address(&self, address: u64, out: &mut [u8]) -> Option<usize> {
+        let span = self.shared_span(address)?;
+        Some(self.memory.read_bytes(span.guest_address, out))
+    }
+
+    fn shared_span(&self, address: u64) -> Option<SharedSpan> {
+        let (base, mapping) = self.shared_mapping(address)?;
+        let offset_in_mapping = address - mapping.address;
+        Some(SharedSpan {
+            guest_address: base + mapping.first + offset_in_mapping,
+            offset_in_mapping,
+            mapping_length: mapping.length,
+        })
+    }
+
+    fn write_u32(&mut self, address: u64, value: u32) {
+        self.memory.write_u32(address, value);
+    }
+
+    fn write_u64(&mut self, address: u64, value: u64) {
+        self.memory.write_u64(address, value);
+    }
+
+    fn read_guest(&self, address: u64, out: &mut [u8]) -> usize {
+        self.memory.read_bytes(address, out)
     }
 
     fn fence_value(&self, fence: u64) -> u64 {
@@ -324,7 +346,11 @@ impl<M: GuestMemory> HostServices for Services<'_, M> {
 
 macro_rules! services {
     ($session:expr) => {
-        $crate::session::Services::new(&mut $session.gpu_addresses, &$session.allocations, &$session.memory)
+        $crate::session::Services::new(
+            &mut $session.gpu_addresses,
+            &$session.allocations,
+            &mut $session.memory,
+        )
     };
 }
 pub(crate) use services;
@@ -333,7 +359,7 @@ impl<'a, M> Services<'a, M> {
     pub(crate) fn new(
         gpu_addresses: &'a mut GpuAddresses,
         allocations: &'a HashMap<u32, Allocation>,
-        memory: &'a M,
+        memory: &'a mut M,
     ) -> Self {
         Self { gpu_addresses, allocations, memory }
     }

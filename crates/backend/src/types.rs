@@ -176,6 +176,16 @@ pub enum WorkStart {
     Started { doorbell: u64 },
 }
 
+/// Where a GPU address lies in memory shared with the guest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SharedSpan {
+    pub guest_address: u64,
+    /// Bytes of the mapping before this address.
+    pub offset_in_mapping: u64,
+    /// The whole mapping's length.
+    pub mapping_length: u64,
+}
+
 /// A frame to copy to a staging surface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StagingCopy {

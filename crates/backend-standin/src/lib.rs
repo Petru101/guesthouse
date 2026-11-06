@@ -28,6 +28,8 @@ pub const VENDOR_ANSWER: &[u8] = b"stand-in answer";
 pub const REGISTRY_NAME: &str = "standinvalue";
 pub const DRIVER_STORE: &str = "C:\\stand-in";
 const NODE_COUNT: u32 = 8;
+/// A node the stand-in has no channel for, to test that a context there is refused.
+pub const NODE_WITHOUT_CHANNEL: u32 = 7;
 const COLOUR_8_BIT: u32 = 7;
 const FORMAT_32_BIT: u32 = 21;
 
@@ -169,6 +171,7 @@ impl Backend for StandIn {
     fn preserve_contents(
         &mut self,
         _host: &mut dyn HostServices,
+        _own_space: SpaceId,
         from: MemoryId,
         to: MemoryId,
         size: u64,
@@ -299,6 +302,10 @@ impl Backend for StandIn {
     fn copy_to_staging(&mut self, _host: &mut dyn HostServices, copy: &StagingCopy) -> Status {
         self.copies.push(*copy);
         Status::SUCCESS
+    }
+
+    fn node_has_channel(&mut self, node: u32) -> bool {
+        node != NODE_WITHOUT_CHANNEL
     }
 }
 

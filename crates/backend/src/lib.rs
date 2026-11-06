@@ -20,6 +20,8 @@ pub use guesthouse_messages::registry::RegistryName;
 pub use memory::{GuestMemory, PagesView};
 pub use types::*;
 
+use std::os::fd::OwnedFd;
+
 /// Everything a GPU vendor must provide.
 ///
 /// Calls come from one thread, and the methods after [`Backend::facts`] run on the message path, so
@@ -51,9 +53,12 @@ pub trait Backend: Sized {
     fn release_memory(&mut self, memory: MemoryId);
 
     /// Copies what the GPU may have written from one block to another, when an allocation moves.
+    /// This one may wait a moment, as the guest can't go on until it is done, and nothing else
+    /// needing the copy engine is running.
     fn preserve_contents(
         &mut self,
         host: &mut dyn HostServices,
+        own_space: SpaceId,
         from: MemoryId,
         to: MemoryId,
         size: u64,
@@ -92,6 +97,16 @@ pub trait Backend: Sized {
     /// The GPU's clock, in nanoseconds.
     fn gpu_clock(&mut self) -> Result<u64, BackendError>;
 
+    /// Hands out memory as a file another process can use where it lies, for frames that stay in
+    /// video memory. No frame path needs this yet.
+    fn export_memory(&mut self, _memory: MemoryId, _size: u64) -> Result<OwnedFd, BackendError> {
+        Err(BackendError::new("this backend can't export memory yet"))
+    }
+
+    /// Whether a context on this engine node can have a channel. Work for a node that can't has
+    /// nowhere to run, and sent to the wrong engine it would be a fault on a card the host is using.
+    fn node_has_channel(&mut self, node: u32) -> bool;
+
     /// Prepares work without letting it run. [`WorkStart::Finished`] says nothing reached the GPU,
     /// and the backend has done what the guest would otherwise wait for, except the queue's fence.
     fn start_work(&mut self, host: &mut dyn HostServices, work: &Work<'_>) -> WorkStart;
@@ -111,8 +126,21 @@ pub trait HostServices {
     /// Takes GPU addresses from the pool guest allocations use, as both share every address space.
     fn take_gpu_addresses(&mut self, size: u64, align: u64) -> Result<u64, BackendError>;
 
-    /// Reads guest-visible memory by GPU address. Returns false if it is not in shared pages.
-    fn read_at_gpu_address(&self, address: u64, out: &mut [u8]) -> bool;
+    /// Reads guest-visible memory by GPU address. Returns how many bytes it could, as this stops at
+    /// the end of the window, or `None` if the address is not in shared pages.
+    fn read_at_gpu_address(&self, address: u64, out: &mut [u8]) -> Option<usize>;
+
+    /// Where a GPU address is in shared pages.
+    fn shared_span(&self, address: u64) -> Option<SharedSpan>;
+
+    /// Writes a 32-bit word by guest physical address, where the GPU may be reading.
+    fn write_u32(&mut self, address: u64, value: u32);
+
+    /// Writes a 64-bit word by guest physical address, where the GPU may be reading.
+    fn write_u64(&mut self, address: u64, value: u64);
+
+    /// Reads by guest physical address.
+    fn read_guest(&self, address: u64, out: &mut [u8]) -> usize;
 
     /// A fence's value, by its guest physical address.
     fn fence_value(&self, fence: u64) -> u64;

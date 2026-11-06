@@ -12,7 +12,7 @@ use guesthouse_messages::allocation::{CreateAllocation, CreateAllocationAnswer};
 use guesthouse_messages::queue::CreateHardwareQueue;
 use guesthouse_messages::standard::StandardRecord;
 use guesthouse_messages::wire::{align_up, u32_at, u64_at};
-use guesthouse_messages::{Command, MessageHeader};
+use guesthouse_messages::{Command, HEADER_SIZE, MessageHeader};
 use std::collections::VecDeque;
 
 /// Adapter queries the core answers by itself, and so are really compared.
@@ -140,6 +140,7 @@ impl Backend for RecordedAnswers {
     fn preserve_contents(
         &mut self,
         _host: &mut dyn HostServices,
+        _own_space: SpaceId,
         _from: MemoryId,
         _to: MemoryId,
         _size: u64,
@@ -253,5 +254,14 @@ impl Backend for RecordedAnswers {
     fn copy_to_staging(&mut self, _host: &mut dyn HostServices, _copy: &StagingCopy) -> Status {
         self.note(Provenance::PartlyRecorded);
         u32_at(&self.expected, 0).map_or(Status::UNSUCCESSFUL, Status)
+    }
+
+    /// A refused context answers with a handle of zero, and a recording has no other way to say so.
+    fn node_has_channel(&mut self, _node: u32) -> bool {
+        let refused = u32_at(&self.expected, HEADER_SIZE).is_ok_and(|handle| handle == 0);
+        if refused {
+            self.note(Provenance::PartlyRecorded);
+        }
+        !refused
     }
 }

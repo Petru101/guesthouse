@@ -199,11 +199,11 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         let host_address = self.memory.host_address(address);
         let shared = self.backend.adopt_host_pages(host_address, align_up(size, PAGE_SIZE))?;
         let has_mappings = !self.allocations[&handle].mappings.is_empty();
-        if self.work_started > 0 && has_mappings {
-            let host = &mut super::services!(self);
-            self.backend.preserve_contents(host, memory, shared, size)?;
-        }
         let own = if has_mappings { Some(self.own_space()?) } else { None };
+        if let (true, Some(own)) = (self.work_started > 0, own) {
+            let host = &mut super::services!(self);
+            self.backend.preserve_contents(host, own, memory, shared, size)?;
+        }
         let allocation = self.allocations.get_mut(&handle).expect("read above");
         for mapping in &allocation.mappings {
             let unmap = UnmapRequest {
