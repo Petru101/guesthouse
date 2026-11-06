@@ -331,3 +331,11 @@ fn a_stopped_gpu_is_no_reason_to_give_up_on_the_driver() {
     }
     assert_eq!(guest.asked_for("take it out"), 0);
 }
+
+#[test]
+fn take_over_at_install_is_left_to_the_script_that_sets_the_mode() {
+    let (rig, guest) = Rig::new().with(|context| Guest::new(context, "missing", INSTALLED, true));
+    fake_package(&rig.scratch, "build 1");
+    rig.run(boot_display);
+    assert_eq!(guest.asked_for("Start-ScheduledTask guesthouse-display"), 0);
+}

@@ -32,7 +32,6 @@ const RING_POLL: Duration = Duration::from_secs(1);
 const BLANK_BOOTS_ALLOWED: u32 = 2;
 /// What the logon task uses if the machine's own rate isn't one the driver has.
 const SAFE_HZ: u32 = 60;
-const LOGON_TASK: &str = "guesthouse-display";
 const HARDWARE_ID: &str = r"Root\GuesthouseDisplay";
 /// The name the INF gives the device, which the install prints beside its state.
 const HARDWARE_NAME: &str = "RDPUDD Chained DD";
@@ -153,6 +152,7 @@ fn went_in(said: &str) -> bool {
 }
 
 /// Signs the driver on this machine, installs it, and leaves a task that makes it the display at logon.
+/// This boot's take-over is `apply-display.ps1`'s: two scripts at it together can leave the screen at 800x600.
 /// A lost upload changes nothing here: whatever is in Windows goes on working, and the next boot tries.
 fn install(task: &Task, package: &DriverPackage, state: &mut DisplayState, found: Device) -> Result<()> {
     task.step("Installing the display driver");
@@ -174,10 +174,8 @@ fn install(task: &Task, package: &DriverPackage, state: &mut DisplayState, found
     let wanted = Wanted::of(task);
     let hz = if REFRESH_RATES.contains(&wanted.hz) { wanted.hz } else { SAFE_HZ };
     let (width, height) = (wanted.width, wanted.height);
-    let script = format!(
-        "& {} {folder} {width} {height} {hz} {GUEST_USER}; Start-ScheduledTask {LOGON_TASK}",
-        guest_file("install-take-over.ps1")
-    );
+    let script =
+        format!("& {} {folder} {width} {height} {hz} {GUEST_USER}", guest_file("install-take-over.ps1"));
     task.ask_guest(&script, TAKE_OVER_SECONDS);
     state.driver = Driver::Installed;
     state.package.clone_from(&package.id);
