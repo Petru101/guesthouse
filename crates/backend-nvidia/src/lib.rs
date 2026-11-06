@@ -12,6 +12,7 @@ pub mod escape;
 #[cfg(any(test, feature = "fake-rm"))]
 pub mod fake_guest;
 pub mod inf;
+mod list_repair;
 pub mod private_data;
 pub mod profile;
 pub mod pushbuffer;
