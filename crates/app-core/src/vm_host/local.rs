@@ -1,7 +1,6 @@
 //! The VM and the daemon as processes on this PC.
 
-use super::watched::{SCRIPT_POLL, last_words, run_watched};
-use super::{Helper, HelperOutput, Stopped, VmHost};
+use super::{Stopped, VmHost};
 use crate::context::Context;
 use crate::daemon::{self, DaemonStart, detached, is_own_daemon};
 use crate::failure::{Failure, Result};
@@ -15,6 +14,8 @@ use std::fs::{self, File};
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
+const LAST_WORDS_BYTES: usize = 300;
+const STOP_POLL: Duration = Duration::from_millis(500);
 const MONITOR_WAIT: Duration = Duration::from_secs(20);
 const POLL: Duration = Duration::from_millis(200);
 const AFTER_SIGTERM_SECONDS: u64 = 20;
@@ -50,7 +51,7 @@ impl LocalHost<'_> {
         let clock = &self.context.clock;
         let end = clock.now() + Duration::from_secs(seconds);
         while qemu_pid(self.context, None).is_some() && clock.now() < end {
-            clock.sleep(SCRIPT_POLL);
+            clock.sleep(STOP_POLL);
         }
         qemu_pid(self.context, None).is_none()
     }
@@ -242,21 +243,6 @@ impl VmHost for LocalHost<'_> {
         }
         Ok(())
     }
-
-    fn helper(&self, helper: Helper) -> Result<HelperOutput> {
-        let (script, arguments) = helper.command();
-        let program = self.context.paths.helper(script);
-        run_watched(self.context, &program, &arguments, script_environment(self.context))
-    }
-}
-
-/// What the helpers need to find the right VM.
-fn script_environment(context: &Context) -> Vec<(String, String)> {
-    vec![
-        (crate::context::SLOT_VARIABLE.to_owned(), context.slot.number().to_string()),
-        ("RUN_DIR".to_owned(), context.run_folder(None).display().to_string()),
-        ("AGENT_PORT".to_owned(), context.agent_port(None).to_string()),
-    ]
 }
 
 fn terminate(pid: Option<u32>) {
@@ -276,4 +262,14 @@ fn sound_on_this_host() -> Option<Sound> {
     reachable
         .is_ok_and(|status| status.success())
         .then(|| Sound { sink: std::env::var("SOUND_SINK").ok().filter(|sink| !sink.is_empty()) })
+}
+
+/// The end of QEMU's output, which says why it failed to start.
+pub fn last_words(context: &Context) -> String {
+    let path = context.run_folder(None).join(OUTPUT_FILE);
+    let text = fs::read(path).unwrap_or_default();
+    let text = String::from_utf8_lossy(&text);
+    let text = text.trim();
+    let start = text.char_indices().rev().nth(LAST_WORDS_BYTES - 1).map_or(0, |found| found.0);
+    text[start..].to_owned()
 }

@@ -14,10 +14,8 @@ use std::process::{Command, Stdio};
 /// `nvidia-smi` gives the card's clocks to the record builder.
 const TOOLS: [&str; 5] = ["7z", "genisoimage", "qemu-img", "swtpm", "nvidia-smi"];
 const TOOLS_FIX: &str = "On Fedora: sudo dnf install 7zip genisoimage qemu-img swtpm edk2-ovmf, and nvidia-smi from NVIDIA's driver";
-const BUILD_FIX: &str =
-    "Run scripts/build-qemu.sh. It needs git, and podman or docker, and takes a few minutes.";
+const BUILD_FIX: &str = "qemu/README.md in Guesthouse's source says how to build it.";
 const QEMU_LIBRARIES_FIX: &str = "On Fedora: sudo dnf install pixman libslirp libfdt libusb1 pipewire-libs";
-const REFRESH_TOOLS: [&str; 2] = ["fastclock.exe", "nudge.exe"];
 const CARD_FIX: &str = "GPU-PV needs an RTX 5090, or another consumer RTX 50-series card.";
 /// The Linux driver this has been run on. The guest's graphics depend on the exact version.
 pub const TESTED_DRIVER: &str = "615.78.08";
@@ -169,19 +167,6 @@ fn check_tools(context: &Context, tools: &[&str]) -> Check {
     Check::ok(TITLE, format!("{} and the OVMF firmware are here.", tools.join(", ")))
 }
 
-/// A VM runs without these, at the guest's own rate.
-fn check_refresh_tools(context: &Context) -> Check {
-    const TITLE: &str = "Refresh rate tools";
-    let folder = context.paths.helper("capture");
-    let missing: Vec<&str> =
-        REFRESH_TOOLS.iter().copied().filter(|name| !folder.join(name).exists()).collect();
-    if !missing.is_empty() {
-        let fix = format!("{BUILD_FIX} Without them machines stay at 64 Hz.");
-        return Check::new(TITLE, CheckState::Warning, format!("Missing: {}.", missing.join(", ")), fix);
-    }
-    Check::ok(TITLE, format!("{} are here.", REFRESH_TOOLS.join(", ")))
-}
-
 /// Judges shared memory of this size in GiB. It counts the whole size, as a running VM has some in
 /// use and gives it back.
 fn judge_shared_memory(size: f64) -> Check {
@@ -245,7 +230,6 @@ pub fn check_pc(context: &Context) -> Vec<Check> {
         check_kvm(context),
         check_qemu(context),
         check_tools(context, &TOOLS),
-        check_refresh_tools(context),
         check_shared_memory(context),
         check_disk(context),
     ]
@@ -327,7 +311,7 @@ mod tests {
         let mut context = scratch_context(&scratch);
         context.paths.qemu = scratch.path("qemu");
         let found = check_qemu(&context);
-        assert!(found.state == CheckState::Failed && found.fix.contains("build-qemu.sh"));
+        assert!(found.state == CheckState::Failed && found.fix.contains("qemu/README.md"));
         let script = "#!/bin/sh\necho 'error while loading shared libraries: libslirp.so.0' >&2\nexit 127\n";
         scratch.write("qemu", script);
         fs::set_permissions(&context.paths.qemu, fs::Permissions::from_mode(0o755)).unwrap();
@@ -350,18 +334,6 @@ mod tests {
         assert_eq!(found.state, CheckState::Failed);
         assert!(
             found.text.contains("no-such-tool") && found.text.contains("OVMF") && !found.text.contains("sh,")
-        );
-    }
-
-    #[test]
-    fn refresh_tools_are_only_a_warning() {
-        let scratch = Scratch::new();
-        let context = scratch_context(&scratch);
-        let found = check_refresh_tools(&context);
-        assert!(
-            found.state == CheckState::Warning
-                && found.text.contains("fastclock.exe")
-                && found.fix.contains("build-qemu.sh")
         );
     }
 

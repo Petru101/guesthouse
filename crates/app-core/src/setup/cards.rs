@@ -17,7 +17,7 @@ const NVIDIA_NAMES_START: &str = "\n10de  ";
 const DISPLAY_CLASS: &str = "0x03";
 /// The card this has been run on.
 const TESTED_CARDS: [u32; 1] = [0x2B85];
-/// Consumer 50-series, from pci.ids. The workstation cards on these chips don't count, as nothing
+/// Consumer 50-series, from pci.ids, which may be used under the 3-clause BSD licence. The workstation cards on these chips don't count, as nothing
 /// says their answers are the same.
 const CONSUMER_CARDS: [(&str, &[u32]); 5] = [
     ("GB202", &[0x2B85, 0x2B87, 0x2B8C]),

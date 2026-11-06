@@ -1,17 +1,15 @@
 //! The host's time zone, in the words Windows Setup wants.
 //!
-//! The table from IANA zones to Windows' names isn't in this repo. It ships with the guest's other
-//! files, as lines of `IANA-name<TAB>Windows-name`. Without it a guest stays on UTC, which is also
-//! what the answer file's template says.
+//! The table comes from Unicode's public CLDR data, under the Unicode License v3: `data/windows-zones.txt`
+//! says where. Anything it can't place stays on UTC, which is also what the answer file's template says.
 
-use crate::context::Context;
 use chrono::{Datelike, Local};
 use std::fs;
 use std::path::Path;
 use std::process::Command;
 
 pub const HOST_ZONE_LINK: &str = "/etc/localtime";
-const ZONE_TABLE: &str = "windows-zones.txt";
+const ZONE_TABLE: &str = include_str!("../data/windows-zones.txt");
 const ZONE_DATABASE: &str = "/usr/share/zoneinfo";
 const FALLBACK: &str = "UTC";
 
@@ -22,10 +20,9 @@ pub fn host_zone(link: impl AsRef<Path>) -> String {
     text.split_once("zoneinfo/").map_or_else(String::new, |(_, zone)| zone.to_owned())
 }
 
-fn read_table(context: &Context) -> Vec<(String, String)> {
-    let text = fs::read_to_string(context.paths.guest_files().join(ZONE_TABLE)).unwrap_or_default();
-    let split = |line: &str| line.split_once('\t').map(|(zone, name)| (zone.to_owned(), name.to_owned()));
-    text.lines().filter_map(split).filter(|(_, name)| plain_name(name)).collect()
+fn table() -> Vec<(&'static str, &'static str)> {
+    let lines = ZONE_TABLE.lines().filter(|line| !line.starts_with('#'));
+    lines.filter_map(|line| line.split_once('\t')).filter(|(_, name)| plain_name(name)).collect()
 }
 
 /// A bad value must never reach Windows Setup.
@@ -55,65 +52,59 @@ fn offsets(zone: &str, year: i32) -> Option<(String, String)> {
 /// which shows the right local time but can differ in when daylight saving changes. That can leave
 /// the guest an hour out for some weeks of the year. The offsets are next year's, as a zone that has
 /// just changed its rules still has this year's old ones. With no match it stays UTC.
-pub fn windows_zone(context: &Context, zone: &str) -> String {
-    let table = read_table(context);
-    if let Some((_, name)) = table.iter().find(|(known, _)| known == zone) {
-        return name.clone();
+pub fn windows_zone(zone: &str) -> String {
+    let table = table();
+    if let Some((_, name)) = table.iter().find(|(known, _)| *known == zone) {
+        return (*name).to_owned();
     }
     let year = Local::now().year() + 1;
     let Some(wanted) = offsets(zone, year) else { return FALLBACK.to_owned() };
     let same = table.iter().find(|(known, _)| offsets(known, year).as_ref() == Some(&wanted));
-    same.map_or_else(|| FALLBACK.to_owned(), |(_, name)| name.clone())
+    same.map_or_else(|| FALLBACK.to_owned(), |(_, name)| (*name).to_owned())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing::{Scratch, scratch_context};
+    use crate::testing::Scratch;
     use std::os::unix::fs::symlink;
-
-    /// Made-up Windows names, so that no real table is needed here.
-    fn with_table(scratch: &Scratch) -> Context {
-        scratch.write(
-            "program/guest/windows-zones.txt",
-            "Etc/UTC\tUTC\nAmerica/Los_Angeles\tCoast Zone\nAsia/Tokyo\tIsland Zone\nEurope/Berlin\tMiddle Zone\nbad/one\t<x>\n",
-        );
-        scratch_context(scratch)
-    }
 
     #[test]
     fn a_known_zone_comes_from_the_table() {
-        let scratch = Scratch::new();
-        let context = with_table(&scratch);
-        assert_eq!(windows_zone(&context, "America/Los_Angeles"), "Coast Zone");
-        assert_eq!(windows_zone(&context, "Etc/UTC"), "UTC");
+        assert_eq!(windows_zone("America/Los_Angeles"), "Pacific Standard Time");
+        assert_eq!(windows_zone("Europe/Berlin"), "W. Europe Standard Time");
+        assert_eq!(windows_zone("Asia/Tokyo"), "Tokyo Standard Time");
+        assert_eq!(windows_zone("Etc/UTC"), "UTC");
+    }
+
+    #[test]
+    fn the_table_is_whole_and_holds_plain_names() {
+        assert_eq!(table().len(), 139);
+        assert_eq!(table()[0], ("Etc/UTC", "UTC"));
     }
 
     #[test]
     fn an_unknown_zone_stays_utc() {
-        let scratch = Scratch::new();
-        let context = with_table(&scratch);
-        for zone in ["Mars/Olympus_Mons", "", "<TimeZone>", "America", "../../etc/passwd", "bad/one"] {
-            assert_eq!(windows_zone(&context, zone), "UTC", "{zone}");
+        for zone in ["Mars/Olympus_Mons", "", "<TimeZone>", "America", "../../etc/passwd", "Antarctica/Troll"]
+        {
+            assert_eq!(windows_zone(zone), "UTC", "{zone}");
         }
     }
 
     #[test]
     fn a_zone_not_in_the_table_takes_one_with_the_same_offsets() {
-        let scratch = Scratch::new();
-        let context = with_table(&scratch);
-        if !is_zone("Europe/Paris") {
+        if !is_zone("Europe/Amsterdam") {
             return;
         }
-        assert_eq!(windows_zone(&context, "Europe/Paris"), "Middle Zone");
-        assert_eq!(windows_zone(&context, "Asia/Seoul"), "Island Zone");
-    }
-
-    #[test]
-    fn with_no_table_a_guest_stays_on_utc() {
-        let scratch = Scratch::new();
-        let context = scratch_context(&scratch);
-        assert_eq!(windows_zone(&context, "Europe/Paris"), "UTC");
+        for (zone, name) in [
+            ("Asia/Kolkata", "India Standard Time"),
+            ("Europe/Kyiv", "GTB Standard Time"),
+            ("Europe/Amsterdam", "W. Europe Standard Time"),
+            ("Australia/Sydney", "AUS Eastern Standard Time"),
+            ("America/Phoenix", "US Mountain Standard Time"),
+        ] {
+            assert_eq!(windows_zone(zone), name, "{zone}");
+        }
     }
 
     #[test]

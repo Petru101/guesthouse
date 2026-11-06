@@ -5,16 +5,17 @@ use crate::rows::choice_row;
 use crate::viewer::OVERLAY_KEYS;
 use adw::prelude::*;
 use guesthouse_app_core::machine::{Kind, MAX_REFRESH_HZ, MIN_REFRESH_HZ, REFRESH_RATES, read_refresh};
-use guesthouse_app_core::tasks::{State, Status};
-use std::cell::Cell;
+use guesthouse_app_core::tasks::Status;
 use std::rc::Rc;
+
+/// The guest keeps its own rate until a display driver can be told, so nothing applies this yet.
+const RATE_NOTE: &str = "Kept for later. The guest stays at its own rate for now.";
 
 struct Parts {
     shared: Shared,
     group: adw::PreferencesGroup,
     rate: adw::ComboRow,
     custom: adw::EntryRow,
-    running: Cell<bool>,
 }
 
 #[derive(Clone)]
@@ -40,8 +41,7 @@ impl Display {
             .input_purpose(gtk::InputPurpose::Digits)
             .build();
         group.add(&custom);
-        let this =
-            Self(Rc::new(Parts { shared: shared.clone(), group, rate, custom, running: Cell::new(false) }));
+        let this = Self(Rc::new(Parts { shared: shared.clone(), group, rate, custom }));
         this.show_custom_rate();
         this.connect();
         this.add_viewer_group(page);
@@ -115,23 +115,12 @@ impl Display {
         shared.machine.borrow_mut().refresh_hz = hz;
         self.0.custom.set_text(&hz.to_string());
         shared.save();
-        if self.0.running.get() {
-            shared.window.launch("refresh", &shared.machine.borrow(), &[], None);
-        }
     }
 
     pub fn set_status(&self, status: &Status) {
-        let running = status.state == State::Running;
-        self.0.running.set(running);
         self.0.rate.set_sensitive(!status.busy);
         self.0.custom.set_sensitive(!status.busy);
-        let note = if status.busy {
-            status.step.as_str()
-        } else if running {
-            "Applies at once."
-        } else {
-            "Applies at boot."
-        };
+        let note = if status.busy { status.step.as_str() } else { RATE_NOTE };
         self.0.rate.set_subtitle(note);
     }
 }

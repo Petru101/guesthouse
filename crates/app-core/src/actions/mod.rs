@@ -4,7 +4,7 @@
 mod desktop;
 mod install;
 
-pub use desktop::{apply_refresh, apply_share, boots, rebooted};
+pub use desktop::{apply_share, boots, rebooted};
 use desktop::{note_boot, set_up_desktop, wait_for_desktop};
 pub use install::{
     INSTALL_STEPS, answer_disc_path, answer_file, install, install_step, make_answer_disc, wait_for_setup,
@@ -26,7 +26,7 @@ use crate::start_checks::{start_problems, video_cap};
 use crate::tasks::{TaskRecord, write_task};
 use crate::text::shell_quote;
 use crate::vm_args::{Boot, VmPlan};
-use crate::vm_host::{Helper, Stopped, VmHost};
+use crate::vm_host::{Stopped, VmHost};
 use rustix::fs::{FlockOperation, flock};
 use rustix::process::{Pid, Signal, kill_process, kill_process_group};
 use std::fs::File;
@@ -198,20 +198,14 @@ fn force(task: &mut Task, other: Option<&str>) -> Result<()> {
     if task.machine.has_gpu() { task.host.release() } else { Ok(()) }
 }
 
-fn refresh(task: &mut Task) -> Result<()> {
-    if task.pid().is_some() { apply_refresh(task) } else { Ok(()) }
-}
-
 fn clean_up(task: &mut Task) -> Result<()> {
     task.step("Cleaning up after the VM");
     task.host.release()
 }
 
-/// For a guest left paused: the debug stub stops it when something connects, and a dropped
-/// connection doesn't start it again. Detaching first also clears any breakpoint left behind.
+/// For a guest left paused.
 fn resume(task: &mut Task) -> Result<()> {
     task.step("Resuming the VM");
-    task.host.helper(Helper::DetachDebugger)?;
     task.context.ask_monitor(None, &Qmp::bare("cont"));
     task.error = if task.context.run_state(None).as_deref() == Some("running") {
         "The VM had been left paused. It is running again."
@@ -251,7 +245,6 @@ fn run_action(task: &mut Task, arguments: &[String]) -> Result<()> {
         "start" => start(task),
         "stop" => stop(task),
         "force" => force(task, first),
-        "refresh" => refresh(task),
         "grow" => grow(task, text.parse().map_err(|_| Failure::new("That is not a size."))?),
         "resume" => resume(task),
         "clean_up" => clean_up(task),

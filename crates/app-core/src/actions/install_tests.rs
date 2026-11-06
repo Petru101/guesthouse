@@ -1,6 +1,6 @@
 use super::super::desktop::DESKTOP_SCRIPT;
 use super::super::tests::{FakeClock, machine, plain_task_context, with_vm_running};
-use super::super::{Helper, Stopped, Task, VmHost, load};
+use super::super::{Stopped, Task, VmHost, load};
 use super::*;
 use crate::agent::stand_in::ScriptedAgent;
 use crate::machine::Kind;
@@ -96,8 +96,10 @@ fn the_answer_file_gets_the_hosts_zone() {
     let scratch = Scratch::new();
     let context = scratch_context(&scratch);
     scratch.write("program/guest/autounattend.xml", "<a><TimeZone>UTC</TimeZone></a>");
-    scratch.write("program/guest/windows-zones.txt", "Asia/Tokyo\tIsland Zone\n");
-    assert_eq!(answer_file(&context, "Asia/Tokyo").unwrap(), "<a><TimeZone>Island Zone</TimeZone></a>");
+    assert_eq!(
+        answer_file(&context, "Asia/Tokyo").unwrap(),
+        "<a><TimeZone>Tokyo Standard Time</TimeZone></a>"
+    );
     assert_eq!(answer_file(&context, "Mars/Olympus_Mons").unwrap(), "<a><TimeZone>UTC</TimeZone></a>");
 }
 
@@ -200,10 +202,6 @@ impl VmHost for InstallHost<'_> {
 
     fn release(&self) -> Result<()> {
         self.inner.release()
-    }
-
-    fn helper(&self, helper: Helper) -> Result<crate::vm_host::HelperOutput> {
-        self.inner.helper(helper)
     }
 }
 

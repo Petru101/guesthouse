@@ -50,7 +50,7 @@ const TOKEN_ON_DISC: &str = "token.txt";
 
 /// The answer file for a host in this IANA zone. The template says UTC.
 pub fn answer_file(context: &Context, zone: &str) -> Result<String> {
-    let name = zones::windows_zone(context, zone);
+    let name = zones::windows_zone(zone);
     Ok(guest_script(context, "autounattend.xml")?.replace("<TimeZone>UTC<", &format!("<TimeZone>{name}<")))
 }
 

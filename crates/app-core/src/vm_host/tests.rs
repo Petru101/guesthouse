@@ -1,4 +1,3 @@
-use super::watched::LAST_WORDS_BYTES;
 use super::*;
 use crate::machine::Kind;
 use crate::slots;
@@ -11,22 +10,6 @@ fn program(scratch: &Scratch, name: &str, text: &str) -> std::path::PathBuf {
     let path = scratch.write(name, text);
     fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
     path
-}
-
-#[test]
-fn more_output_than_a_pipe_holds_does_not_stop_the_script() {
-    let scratch = Scratch::new();
-    let context = scratch_context(&scratch);
-    fs::create_dir_all(&context.paths.program).unwrap();
-    let noisy = program(
-        &scratch,
-        "noisy.sh",
-        "#!/bin/sh\nhead -c 300000 /dev/zero | tr '\\0' 'x'\necho\necho done\nexit 3\n",
-    );
-    let output = run_watched(&context, &noisy, &[], Vec::new()).unwrap();
-    assert_eq!(output.code, 3);
-    assert_eq!(output.text.len(), 300006);
-    assert!(output.text.ends_with("done\n"));
 }
 
 #[test]
@@ -100,6 +83,6 @@ fn last_words_are_the_end_of_the_output() {
     fs::create_dir_all(&folder).unwrap();
     fs::write(folder.join(OUTPUT_FILE), format!("{}end\n", "é".repeat(400))).unwrap();
     let words = last_words(&context);
-    assert_eq!(words.chars().count(), LAST_WORDS_BYTES);
+    assert_eq!(words.chars().count(), 300);
     assert!(words.ends_with("end"));
 }

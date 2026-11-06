@@ -46,47 +46,6 @@ impl Machine {
     }
 }
 
-fn apply(answers: &[(i32, &str)], hz: u32) -> (String, usize) {
-    let scratch = Scratch::new();
-    let context = scratch_context(&scratch);
-    let host = RecordingHost::answering(answers);
-    let mut task = Task::new(&context, &host, "start", Machine { refresh_hz: hz, ..machine(&context) });
-    apply_refresh(&mut task).unwrap();
-    let error = task.error.clone();
-    (error, host.said().len())
-}
-
-#[test]
-fn the_rate_is_read_from_the_helpers_own_line() {
-    let said = "queue 0x1: rate 64/1, period 156250 ticks\nnow 144/1, period 69444 ticks\n";
-    assert_eq!(apply(&[(0, said)], 144), (String::new(), 1));
-    assert_eq!(
-        apply(&[(0, "now 165/1, period 60606 ticks\n")], 165),
-        (String::new(), 1),
-        "a custom rate too"
-    );
-}
-
-#[test]
-fn only_a_plain_failure_is_tried_again() {
-    let not_yet = (0, "StartVSync did not run\n");
-    assert_eq!(apply(&[not_yet, (0, "now 144/1, period 69444 ticks\n")], 144), (String::new(), 2));
-    let (error, runs) = apply(&[not_yet, not_yet], 144);
-    assert_eq!(runs, 2);
-    assert!(error.starts_with("Could not set 144 Hz."));
-}
-
-#[test]
-fn a_refusal_passes_its_reason_on_and_is_not_tried_again() {
-    let reason = "this module is new here, and its symbols could not be fetched: no network.";
-    let (error, runs) = apply(&[(3, &format!("cannot set the rate: {reason}\n"))], 144);
-    assert_eq!(runs, 1);
-    assert_eq!(error, format!("The rate was not set to 144 Hz: {reason} The VM works, at the rate it had."));
-    let (error, runs) = apply(&[(3, "something else\n")], 144);
-    assert_eq!(runs, 1);
-    assert!(!error.contains("The log has") && error.contains("in the log"));
-}
-
 #[test]
 fn a_shared_folder_is_reported_only_if_it_did_not_map() {
     let scratch = Scratch::new();
@@ -142,16 +101,54 @@ fn a_plain_machine_starts_through_the_host_with_its_iso() {
 fn a_gpu_machine_starts_through_the_same_host_and_sets_up_its_desktop() {
     let scratch = Scratch::new();
     let mut context = plain_task_context(&scratch);
-    let agent = Arc::new(ScriptedAgent::answering(&["3\r\n"]));
+    scratch.write("program/capture/display.ps1", "what the session sees");
+    let agent = Arc::new(ScriptedAgent::answering(&[
+        "3
+",
+        "",
+        "screen 1920x1080
+",
+    ]));
     context.agent = agent.clone();
     let vm = machine(&context);
     crate::agent::make_token(&context, &vm).unwrap();
     fs::create_dir_all(context.run_folder(None)).unwrap();
-    let host = RecordingHost::answering(&[(0, "screen 1920x1080\n"), (0, "now 144/1\n")]);
+    let host = RecordingHost::default();
     let mut task = Task::new(&context, &host, "start", vm);
     boot(&mut task).unwrap();
-    assert_eq!(host.said(), ["start gpu", "DesktopSize", "SetRefresh(144)"]);
+    assert_eq!(host.said(), ["start gpu"]);
     assert_eq!(task.error, "");
+    let asked = agent.requests.lock().unwrap();
+    assert!(asked[1].2.contains("WriteAllBytes"), "the script goes to the guest first");
+    assert!(asked[2].2.contains("New-ScheduledTaskPrincipal"), "and runs in the user's session");
+}
+
+#[test]
+fn a_desktop_at_the_wrong_size_is_set_and_checked_again() {
+    let scratch = Scratch::new();
+    let mut context = plain_task_context(&scratch);
+    scratch.write("program/capture/display.ps1", "what the session sees");
+    scratch.write("program/capture/setmode.ps1", "set the mode");
+    let answers = [
+        "3
+",
+        "",
+        "screen 1024x768
+",
+        "",
+        "",
+        "",
+        "screen 800x600
+",
+    ];
+    context.agent = Arc::new(ScriptedAgent::answering(&answers));
+    let vm = machine(&context);
+    crate::agent::make_token(&context, &vm).unwrap();
+    fs::create_dir_all(context.run_folder(None)).unwrap();
+    let host = RecordingHost::default();
+    let mut task = Task::new(&context, &host, "start", vm);
+    boot(&mut task).unwrap();
+    assert_eq!(task.error, "The desktop is 800x600, not 1920x1080.");
 }
 
 #[test]
