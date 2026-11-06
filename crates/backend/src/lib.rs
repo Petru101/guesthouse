@@ -104,9 +104,10 @@ pub trait Backend: Sized {
         Err(BackendError::new("this backend can't export memory yet"))
     }
 
-    /// Whether a context on this engine node can have a channel. Work for a node that can't has
-    /// nowhere to run, and sent to the wrong engine it would be a fault on a card the host is using.
-    fn node_has_channel(&mut self, node: u32) -> bool;
+    /// Whether a context on this engine node may be made. `client_hint` is what the guest says the
+    /// context is for. Work for a node with no channel has nowhere to run, and sent to the wrong
+    /// engine it would be a fault on a card the host is using.
+    fn context_allowed(&mut self, node: u32, client_hint: u32) -> bool;
 
     /// How much of a queue may be unfinished before the guest's next submission is held back. In the
     /// vendor's own units, the ones [`WorkStart::Started`] counts in. `None` means no limit.

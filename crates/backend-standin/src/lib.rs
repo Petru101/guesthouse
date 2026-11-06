@@ -318,7 +318,7 @@ impl Backend for StandIn {
         std::mem::take(&mut self.copy_done).then_some(Status::SUCCESS)
     }
 
-    fn node_has_channel(&mut self, node: u32) -> bool {
+    fn context_allowed(&mut self, node: u32, _client_hint: u32) -> bool {
         node != NODE_WITHOUT_CHANNEL
     }
 

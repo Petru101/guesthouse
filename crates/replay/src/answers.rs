@@ -276,7 +276,7 @@ impl Backend for RecordedAnswers {
     }
 
     /// A refused context answers with a handle of zero, and a recording has no other way to say so.
-    fn node_has_channel(&mut self, _node: u32) -> bool {
+    fn context_allowed(&mut self, _node: u32, _client_hint: u32) -> bool {
         let refused = u32_at(&self.expected, HEADER_SIZE).is_ok_and(|handle| handle == 0);
         if refused {
             self.note(Provenance::PartlyRecorded);

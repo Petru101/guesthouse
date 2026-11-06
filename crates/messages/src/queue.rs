@@ -17,17 +17,24 @@ fn padded(fixed_part: usize, private_size: u32) -> usize {
 #[derive(Debug, Clone, Copy)]
 pub struct CreateContext {
     pub node: u32,
+    /// Which graphics API the guest says this context is for.
+    pub client_hint: u32,
     pub private_size: u32,
 }
 
 impl CreateContext {
     const HANDLE: usize = crate::HEADER_SIZE;
     const NODE: usize = 0x20;
+    const CLIENT_HINT: usize = 0x2C;
     const PRIVATE_SIZE: usize = 0x30;
     const PRIVATE: usize = 0x34;
 
     pub fn parse(message: &[u8]) -> Result<Self, Malformed> {
-        Ok(Self { node: u32_at(message, Self::NODE)?, private_size: u32_at(message, Self::PRIVATE_SIZE)? })
+        Ok(Self {
+            node: u32_at(message, Self::NODE)?,
+            client_hint: u32_at(message, Self::CLIENT_HINT)?,
+            private_size: u32_at(message, Self::PRIVATE_SIZE)?,
+        })
     }
 
     pub fn answer(&self, message: &[u8], handle: u32, out: &mut Vec<u8>) {

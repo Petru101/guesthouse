@@ -106,7 +106,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         let request = CreateContext::parse(message)?;
         // Video work sent to a copy channel would be a bad push buffer on the card the host's desktop
         // uses, so it stops here. A handle of zero fails the context, and the program can fall back.
-        if !self.backend.node_has_channel(request.node) {
+        if !self.backend.context_allowed(request.node, request.client_hint) {
             log::info!("refused a context on node {}, which has no channel here", request.node);
             request.answer(message, 0, out);
             return Ok(());
