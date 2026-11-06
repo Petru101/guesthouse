@@ -30,8 +30,7 @@ pub(crate) fn has_ring_position_flag(private: &[u8]) -> bool {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct GuestRing {
     address: u64,
-    /// Taken as entries. If it is really bytes, the mapping is the smaller of the two, or an entry
-    /// that was never written shows up the mistake.
+    /// In bytes. Measured: with 0x2000 here, positions go from 1023 back to 0.
     size: u32,
 }
 
@@ -56,7 +55,7 @@ impl GuestRing {
         let span =
             host.guest_span(space, self.address).ok_or("the ring isn't in memory the host can read")?;
         let room = (span.mapping_length - span.offset_in_mapping) / ENTRY_SIZE as u64;
-        let ring_entries = room.min(u64::from(self.size));
+        let ring_entries = room.min(u64::from(self.size) / ENTRY_SIZE as u64);
         if ring_entries == 0 || u64::from(count) > ring_entries {
             return Err("more entries than the ring holds");
         }
@@ -135,8 +134,9 @@ mod tests {
         listing.iter().step_by(ENTRY_SIZE).copied().collect()
     }
 
+    /// `size` is in entries here, as the tests read better that way.
     fn read(ring: &Ring, size: u32, count: u32, end: u32) -> Result<Vec<u8>, &'static str> {
-        GuestRing { address: RING, size }.entries_before(ring, SPACE, count, end)
+        GuestRing { address: RING, size: size * ENTRY_SIZE as u32 }.entries_before(ring, SPACE, count, end)
     }
 
     #[test]
@@ -160,13 +160,18 @@ mod tests {
     }
 
     #[test]
+    fn a_position_back_at_zero_takes_the_last_entry_of_the_ring() {
+        assert_eq!(firsts(&read(&ring_of(8), 8, 1, 0).unwrap()), [8]);
+    }
+
+    #[test]
     fn a_position_past_one_lap_wraps_too() {
         assert_eq!(firsts(&read(&ring_of(8), 8, 2, 8 + 3).unwrap()), [2, 3]);
     }
 
     #[test]
     fn a_size_field_bigger_than_the_mapping_is_held_to_the_mapping() {
-        assert_eq!(firsts(&read(&ring_of(4), 0x2000, 1, 5).unwrap()), [1]);
+        assert_eq!(firsts(&read(&ring_of(4), 0x400, 1, 5).unwrap()), [1]);
     }
 
     #[test]
@@ -188,7 +193,8 @@ mod tests {
 
     #[test]
     fn a_ring_the_host_cannot_see_is_refused() {
-        let found = GuestRing { address: RING + 8, size: 4 }.entries_before(&ring_of(4), SPACE, 1, 1);
+        let size = 4 * ENTRY_SIZE as u32;
+        let found = GuestRing { address: RING + 8, size }.entries_before(&ring_of(4), SPACE, 1, 1);
         assert!(found.is_err());
     }
 
