@@ -1,7 +1,7 @@
 //! Whole messages through a session with the stand-in backend.
 
 use super::*;
-use crate::{FENCE_AREA, MemoryLimits};
+use crate::{FENCE_AREA, MemoryLimits, Waiting};
 use guesthouse_backend_standin::{REGISTRY_NAME, SparseMemory, StandIn, VENDOR_ANSWER, VENDOR_ONLY_QUERY};
 use guesthouse_messages::adapter::AdapterQuery;
 use guesthouse_messages::notice::Notice;
@@ -1239,6 +1239,102 @@ mod queues {
         let copies = &session.backend().copies;
         assert!(copies[0].is_screen);
         assert!(!copies[1].is_screen);
+    }
+}
+
+mod held_replies {
+    use super::*;
+
+    const TICKET: ReplyTicket = ReplyTicket { channel: 1, transaction: 0x77 };
+
+    fn send_with_ticket(session: &mut TestSession, message: &[u8]) -> (Answer, Vec<u8>) {
+        let mut out = Vec::new();
+        let answer = session.handle_message(message, Some(TICKET), &mut out);
+        (answer, out)
+    }
+
+    fn submission(queue: u32, value: u64) -> Vec<u8> {
+        let mut request = message(Command::SubmitToHardwareQueue, 0x50);
+        set_u32(&mut request, 0x18, queue);
+        set_u64(&mut request, 0x20, value);
+        request
+    }
+
+    fn busy_queue(limit: u64) -> (TestSession, u32, u64) {
+        let mut session = session();
+        let backend = session.backend_mut();
+        backend.run_work = true;
+        backend.work_per_submission = 100;
+        backend.unfinished_limit = Some(limit);
+        let context = create_context(&mut session, 0);
+        let (queue, _, fence) = create_queue(&mut session, context);
+        (session, queue, fence)
+    }
+
+    #[test]
+    fn a_ring_with_room_answers_at_once() {
+        let (mut session, queue, _) = busy_queue(100);
+        assert_eq!(send_with_ticket(&mut session, &submission(queue, 1)).0, Answer::Now);
+    }
+
+    #[test]
+    fn a_full_ring_holds_the_reply_until_the_gpu_catches_up() {
+        let (mut session, queue, fence) = busy_queue(100);
+        let _ = send_with_ticket(&mut session, &submission(queue, 1));
+        assert_eq!(send_with_ticket(&mut session, &submission(queue, 2)).0, Answer::Held);
+        assert_eq!(session.poll(Instant::now()), Waiting::Urgent);
+        assert_eq!(session.take_replies().count(), 0);
+        session.memory_mut().write_u64(fence, 1);
+        let _ = session.poll(Instant::now());
+        let replies: Vec<_> = session.take_replies().collect();
+        assert_eq!(replies, [HeldReply { ticket: TICKET, bytes: SUCCESS.to_le_bytes().to_vec() }]);
+    }
+
+    #[test]
+    fn a_hold_leaves_other_messages_free_to_run() {
+        let (mut session, queue, _) = busy_queue(100);
+        let _ = send_with_ticket(&mut session, &submission(queue, 1));
+        assert_eq!(send_with_ticket(&mut session, &submission(queue, 2)).0, Answer::Held);
+        let (answer, reply) = send_with_ticket(&mut session, &message(Command::CreateDevice, HEADER_SIZE));
+        assert_eq!(answer, Answer::Now);
+        assert_eq!(reply.len(), 4);
+    }
+
+    #[test]
+    fn a_hold_is_bounded() {
+        let (mut session, queue, _) = busy_queue(100);
+        let _ = send_with_ticket(&mut session, &submission(queue, 1));
+        let _ = send_with_ticket(&mut session, &submission(queue, 2));
+        let later = Instant::now() + crate::pending::RING_ROOM_TIMEOUT + Duration::from_millis(1);
+        let _ = session.poll(later);
+        assert_eq!(session.take_replies().count(), 1);
+    }
+
+    #[test]
+    fn a_closed_queue_lets_its_held_reply_go() {
+        let (mut session, queue, _) = busy_queue(100);
+        let _ = send_with_ticket(&mut session, &submission(queue, 1));
+        let _ = send_with_ticket(&mut session, &submission(queue, 2));
+        let mut request = message(Command::DestroyHardwareQueue, 0x20);
+        set_u32(&mut request, 0x18, queue);
+        send(&mut session, &request);
+        let _ = session.poll(Instant::now());
+        assert_eq!(session.take_replies().count(), 1);
+    }
+
+    #[test]
+    fn a_guest_that_wants_no_reply_is_not_held() {
+        let (mut session, queue, _) = busy_queue(100);
+        let mut out = Vec::new();
+        let _ = session.handle_message(&submission(queue, 1), None, &mut out);
+        assert_eq!(session.handle_message(&submission(queue, 2), None, &mut out), Answer::Now);
+    }
+
+    #[test]
+    fn only_the_watch_on_the_gpu_is_not_urgent() {
+        let (mut session, queue, _) = busy_queue(1000);
+        let _ = send_with_ticket(&mut session, &submission(queue, 1));
+        assert_eq!(session.poll(Instant::now()), Waiting::Background);
     }
 }
 
