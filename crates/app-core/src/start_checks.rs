@@ -95,7 +95,7 @@ pub fn video_cap(machine: &Machine, others: &[Machine], max_vram_gib: u32) -> u3
 pub fn start_problems(context: &Context, machine: &Machine) -> Result<Vec<String>> {
     let mut found = machine.problems(max_vram_gib(context));
     for path in [&machine.disk, &machine.vars] {
-        if !Path::new(path).exists() {
+        if !path.is_empty() && !Path::new(path).exists() {
             found.push(format!("{path} is missing."));
         }
     }

@@ -35,6 +35,8 @@ pub enum Kind {
     Windows,
     /// Has no GPU, and boots what it's given.
     Plain,
+    /// Ubuntu, installed with no hands, with the host's driver forwarded to it.
+    Linux,
 }
 
 impl Kind {
@@ -42,6 +44,7 @@ impl Kind {
         match self {
             Self::Windows => "Windows with GPU-PV",
             Self::Plain => "Plain VM",
+            Self::Linux => "Ubuntu",
         }
     }
 }
@@ -60,6 +63,10 @@ fn default_screen() -> String {
 
 fn default_refresh() -> u32 {
     144
+}
+
+fn default_on() -> bool {
+    true
 }
 
 fn default_bridge() -> String {
@@ -121,6 +128,9 @@ pub struct Machine {
     pub bridge: String,
     #[serde(default)]
     pub forwards: Vec<Forward>,
+    /// Ubuntu's GPU, which is a preview. Off, the guest gets the plain screen.
+    #[serde(default = "default_on")]
+    pub gpu_preview: bool,
 }
 
 impl Machine {
@@ -149,6 +159,7 @@ impl Machine {
             mac: String::new(),
             bridge: default_bridge(),
             forwards: Vec::new(),
+            gpu_preview: true,
         }
     }
 
@@ -173,19 +184,26 @@ impl Machine {
         self.kind == Kind::Windows && !self.installing
     }
 
+    /// Whether this machine should get the forwarded GPU, if the host can offer it.
+    pub fn wants_forwarded_gpu(&self) -> bool {
+        self.kind == Kind::Linux && !self.installing && self.gpu_preview
+    }
+
     /// Whether its disk and firmware file live in its folder, so deleting that takes them too.
     pub fn owns_files(&self, context: &Context) -> bool {
         let Ok(folder) = fs::canonicalize(self.folder(context)) else { return false };
         let inside = format!("{}{MAIN_SEPARATOR}", folder.display());
-        [&self.disk, &self.vars]
-            .iter()
-            .all(|path| fs::canonicalize(path).is_ok_and(|real| real.to_string_lossy().starts_with(&inside)))
+        // Ubuntu boots with no firmware file of its own.
+        let mut files = [&self.disk, &self.vars].into_iter().filter(|path| !path.is_empty());
+        files.all(|path| fs::canonicalize(path).is_ok_and(|real| real.to_string_lossy().starts_with(&inside)))
     }
 
     pub fn summary(&self) -> String {
         let (kind, cores, ram) = (self.kind.name(), self.cores, self.ram_gib);
         match self.kind {
             Kind::Plain => format!("{kind}, {cores} cores, {ram} GiB, no GPU acceleration"),
+            Kind::Linux if self.gpu_preview => format!("{kind}, {cores} cores, {ram} GiB, GPU preview"),
+            Kind::Linux => format!("{kind}, {cores} cores, {ram} GiB, no GPU"),
             Kind::Windows => {
                 format!("{kind}, {cores} cores, {ram} GiB, {}, {} Hz", self.screen, self.refresh_hz)
             }
@@ -203,7 +221,7 @@ impl Machine {
         }
         // Windows has its limits, and the daemon needs its share. A plain machine only needs to boot.
         let (least_cores, least_ram) =
-            if self.kind == Kind::Plain { (1, 1) } else { (MIN_CORES, MIN_RAM_GIB) };
+            if self.kind == Kind::Windows { (MIN_CORES, MIN_RAM_GIB) } else { (1, 1) };
         if self.cores < least_cores {
             found.push(format!("Cores must be a whole number, at least {least_cores}."));
         }
@@ -429,6 +447,21 @@ mod tests {
         let scratch = Scratch::new();
         let context = scratch_context(&scratch);
         assert!(sample().token_file(&context).ends_with("machines/sample/guest.token"));
+    }
+
+    #[test]
+    fn ubuntu_says_its_gpu_is_a_preview_and_a_machine_can_go_without() {
+        let mut machine = Machine { kind: Kind::Linux, ..sample() };
+        assert!(machine.summary().starts_with("Ubuntu, ") && machine.summary().contains("GPU preview"));
+        assert!(machine.wants_forwarded_gpu() && !machine.has_gpu(), "it has no daemon");
+        machine.gpu_preview = false;
+        assert!(machine.summary().contains("no GPU") && !machine.wants_forwarded_gpu());
+    }
+
+    #[test]
+    fn an_install_has_no_forwarded_gpu() {
+        let machine = Machine { kind: Kind::Linux, installing: true, ..sample() };
+        assert!(!machine.wants_forwarded_gpu());
     }
 
     #[test]

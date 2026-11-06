@@ -34,6 +34,35 @@ pub struct Iso {
     pub edition: String,
 }
 
+const UBUNTU_KERNEL: &str = "casper/vmlinuz";
+const UBUNTU_INITRD: &str = "casper/initrd";
+/// Only the server ISO has its kernel here, and the install needs the exact one it holds.
+const KERNEL_POOL: &str = "pool/main/l/linux-signed/";
+
+/// The generic kernel's package name, from a file in the ISO's pool.
+pub fn kernel_package(path: &str) -> Option<&str> {
+    let name = path.trim_start_matches('/').strip_prefix(KERNEL_POOL)?;
+    let (package, _) = name.split_once('_')?;
+    let version = package.strip_prefix("linux-image-")?.strip_suffix("-generic")?;
+    version.bytes().all(|byte| byte.is_ascii_digit() || byte == b'.' || byte == b'-').then_some(package)
+}
+
+/// What an ISO with Ubuntu's layout is, from the names in it. `None` if it isn't Ubuntu.
+fn read_ubuntu(names: &HashMap<String, &str>) -> Option<Iso> {
+    if !names.contains_key(UBUNTU_KERNEL) || !names.contains_key(UBUNTU_INITRD) {
+        return None;
+    }
+    let found = names.keys().filter_map(|name| kernel_package(name)).min();
+    Some(found.map_or_else(
+        || Iso::plain("Ubuntu, but not the server ISO that installs by itself"),
+        |package| Iso {
+            kind: Kind::Linux,
+            title: format!("Ubuntu server, {package}"),
+            edition: package.to_owned(),
+        },
+    ))
+}
+
 impl Iso {
     fn plain(title: &str) -> Self {
         Self { kind: Kind::Plain, title: title.to_owned(), edition: String::new() }
@@ -147,7 +176,9 @@ pub fn read_iso(path: &str) -> Result<Iso> {
         .map(|name| (name.to_lowercase(), name))
         .collect();
     let entry = names.get("sources/install.wim").or_else(|| names.get("sources/install.esd"));
-    let Some(entry) = entry else { return Ok(Iso::plain("Not Windows")) };
+    let Some(entry) = entry else {
+        return Ok(read_ubuntu(&names).unwrap_or_else(|| Iso::plain("Not Windows")));
+    };
     for (name, build, architecture) in wim_images(path, entry) {
         if name == WINDOWS_EDITION && build >= FIRST_WINDOWS_11_BUILD && architecture == WIM_AMD64 {
             return Ok(Iso { kind: Kind::Windows, title: format!("{name}, build {build}"), edition: name });
@@ -239,6 +270,36 @@ mod tests {
                 "{name}"
             );
         }
+    }
+
+    #[test]
+    fn the_server_iso_is_known_by_its_kernel() {
+        let scratch = Scratch::new();
+        let package = "pool/main/l/linux-signed/linux-image-7.0.0-38-generic_7.0.0-38.38_amd64.deb";
+        let files: [(&str, &[u8]); 3] =
+            [("casper/vmlinuz", b"kernel"), ("casper/initrd", b"initrd"), (package, b"deb")];
+        let found = read_iso(&make_iso(&scratch, "server", &files)).unwrap();
+        assert_eq!((found.kind, found.edition.as_str()), (Kind::Linux, "linux-image-7.0.0-38-generic"));
+    }
+
+    #[test]
+    fn a_desktop_iso_says_what_is_needed_instead() {
+        let scratch = Scratch::new();
+        let path =
+            make_iso(&scratch, "desktop", &[("casper/vmlinuz", b"kernel"), ("casper/initrd", b"initrd")]);
+        let found = read_iso(&path).unwrap();
+        assert_eq!(found.kind, Kind::Plain);
+        assert!(found.title.contains("server ISO"));
+    }
+
+    #[test]
+    fn only_a_generic_kernel_counts() {
+        let pool = "pool/main/l/linux-signed";
+        let wanted = Some("linux-image-7.0.0-38-generic");
+        assert_eq!(kernel_package(&format!("{pool}/linux-image-7.0.0-38-generic_7.0.0_amd64.deb")), wanted);
+        assert_eq!(kernel_package(&format!("/{pool}/linux-image-7.0.0-38-generic_7.0.0_amd64.deb")), wanted);
+        assert_eq!(kernel_package(&format!("{pool}/linux-image-7.0.0-38-lowlatency_7.0.0_amd64.deb")), None);
+        assert_eq!(kernel_package("elsewhere/linux-image-7.0.0-38-generic_7.0.0_amd64.deb"), None);
     }
 
     #[test]

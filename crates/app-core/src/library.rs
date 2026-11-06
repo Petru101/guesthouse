@@ -83,7 +83,7 @@ pub struct NewMachine {
 /// Says why this new machine can't be made now.
 pub fn create_problems(context: &Context, machine: &Machine, disk_gib: u32) -> Result<Vec<String>> {
     let mut found = machine.problems(crate::settings::max_vram_gib(context));
-    let least = if machine.kind == Kind::Plain { MIN_PLAIN_DISK_GIB } else { MIN_WINDOWS_DISK_GIB };
+    let least = if machine.kind == Kind::Windows { MIN_WINDOWS_DISK_GIB } else { MIN_PLAIN_DISK_GIB };
     if !(least..=MAX_DISK_GIB).contains(&disk_gib) {
         found.push(format!("The disk must be between {least} and {MAX_DISK_GIB} GiB."));
     }
@@ -115,7 +115,9 @@ pub fn make_disk(context: &Context, machine: &Machine, gib: u32) -> Result<()> {
         return Err(Failure(format!("The disk could not be made: {}", said.trim())));
     }
     let firmware = &context.paths.firmware;
-    fs::copy(if machine.tpm { &firmware.vars_secure } else { &firmware.vars }, &machine.vars)?;
+    if !machine.vars.is_empty() {
+        fs::copy(if machine.tpm { &firmware.vars_secure } else { &firmware.vars }, &machine.vars)?;
+    }
     let _ = fs::remove_dir_all(machine.tpm_folder(context));
     Ok(())
 }
@@ -127,15 +129,19 @@ pub fn create(context: &Context, new: &NewMachine) -> Result<Machine> {
     let disk = folder.join(DISK_FILE);
     let firmware = folder.join(FIRMWARE_FILE);
     let windows = new.kind == Kind::Windows;
+    let installs = windows || new.kind == Kind::Linux;
+    // Ubuntu's firmware is in QEMU, so it has no settings file.
+    let firmware =
+        if new.kind == Kind::Linux { String::new() } else { firmware.to_string_lossy().into_owned() };
     let machine = Machine {
         cores: new.cores,
         ram_gib: new.ram_gib,
         kind: new.kind,
         iso: new.iso.clone(),
-        installing: windows,
+        installing: installs,
         tpm: windows,
         mac: unused_mac(context),
-        ..Machine::new(&id, new.name.trim(), &disk.to_string_lossy(), &firmware.to_string_lossy())
+        ..Machine::new(&id, new.name.trim(), &disk.to_string_lossy(), &firmware)
     };
     if let Some(problem) = create_problems(context, &machine, new.disk_gib)?.into_iter().next() {
         return Err(Failure(problem));
@@ -320,6 +326,18 @@ mod tests {
             assert!(create(&context, &change).unwrap_err().0.contains(text));
             assert_eq!(sorted_names(&context.paths.machines), before, "a refused machine leaves nothing");
         }
+    }
+
+    #[test]
+    fn ubuntu_installs_with_no_firmware_file_and_no_windows_driver() {
+        let scratch = Scratch::new();
+        let context = scratch_context(&scratch);
+        let iso = scratch.write("server.iso", "disc").display().to_string();
+        let new =
+            NewMachine { name: "Ubuntu".into(), iso, kind: Kind::Linux, cores: 8, ram_gib: 8, disk_gib: 2 };
+        let made = create(&context, &new).unwrap();
+        assert!(made.installing && !made.tpm && made.vars.is_empty());
+        assert!(made.owns_files(&context));
     }
 
     #[test]
