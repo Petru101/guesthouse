@@ -1,0 +1,362 @@
+//! Makes the read-only image that carries the host's driver to a guest. It's made once per driver
+//! version and state of the guest's sources. An image already made for the loaded driver is used as it
+//! is, even if the files on disk have since moved on, because it still matches what is loaded.
+
+use super::driver_files::{self, PACKAGES};
+use super::driver_versions::{
+    DriverHost, TESTED_VERSIONS, branch_refusal, installed_versions, refusal, untested_warning,
+};
+use crate::failure::Result;
+use crate::machine::sorted_names;
+use std::fs;
+use std::io::Write;
+use std::os::unix::fs::{PermissionsExt, symlink};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+
+const VOLUME_LABEL: &str = "NVFWD_DRIVER";
+/// What a guest builds. The device's wire format travels with the modules, so a guest always builds
+/// against the QEMU these sources go with.
+const OUR_SOURCES: [&str; 6] = ["guest", "kapi", "layer", "cast", "tests", "qemu/nvfwd_proto.h"];
+const GENERATED_TABLES: [&str; 3] = ["nv_tables.h", "uvm_tables.h", "class_tables.h"];
+/// The folders the guest's modules include from, and only their headers.
+const HEADER_FOLDERS: [&str; 8] = [
+    "src/nvidia-modeset/kapi/interface",
+    "src/nvidia-modeset/interface",
+    "src/common/sdk/nvidia/inc",
+    "src/common/modeset/timing",
+    "src/common/unix/common/inc",
+    "src/common/modeset/hdmipacket",
+    "src/common/inc",
+    "src/nvidia/arch/nvalloc/unix/include",
+];
+const SOURCE_ID_LENGTH: usize = 12;
+const READ_ONLY: u32 = 0o444;
+
+/// What came of asking for an image.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Outcome {
+    /// The image to attach, and a warning if this version is untested.
+    Ready { image: PathBuf, warning: Option<String> },
+    /// Why the VM starts without a GPU, in words the guest can show too.
+    Refused(String),
+}
+
+fn source_version(tree: &Path) -> Option<String> {
+    let text = fs::read_to_string(tree.join("version.mk")).ok()?;
+    text.lines().find_map(|line| {
+        let (key, value) = line.split_once('=')?;
+        (key.trim() == "NVIDIA_VERSION").then(|| value.trim().to_owned())
+    })
+}
+
+fn walk(root: &Path, name: &str, found: &mut Vec<String>) {
+    let path = root.join(name);
+    if path.is_dir() {
+        for child in sorted_names(&path) {
+            walk(root, &format!("{name}/{child}"), found);
+        }
+    } else if path.is_file() {
+        found.push(name.to_owned());
+    }
+}
+
+fn our_files(sources: &Path) -> Vec<String> {
+    let mut found = Vec::new();
+    for name in OUR_SOURCES {
+        walk(sources, name, &mut found);
+    }
+    found.sort();
+    found
+}
+
+/// Changes when the guest's sources do, so a guest rebuilds when they move on.
+fn sources_id(sources: &Path, names: &[String]) -> Result<String> {
+    let mut child = Command::new("sha256sum").stdin(Stdio::piped()).stdout(Stdio::piped()).spawn()?;
+    let mut input = child.stdin.take().ok_or_else(|| crate::Failure::new("sha256sum took no input."))?;
+    for name in names {
+        input.write_all(name.as_bytes())?;
+        input.write_all(&fs::read(sources.join(name))?)?;
+    }
+    drop(input);
+    let said = child.wait_with_output()?;
+    Ok(String::from_utf8_lossy(&said.stdout).chars().take(SOURCE_ID_LENGTH).collect())
+}
+
+fn run(command: &mut Command) -> Result<()> {
+    let result = command.output()?;
+    if !result.status.success() {
+        let said = String::from_utf8_lossy(&result.stderr);
+        return Err(crate::Failure(format!("{:?} failed: {}", command.get_program(), said.trim())));
+    }
+    Ok(())
+}
+
+fn tar(archive: &Path, verb: &str, prefix: &str, root: &Path, names: &[String]) -> Result<()> {
+    run(Command::new("tar")
+        .arg(verb)
+        .arg(archive)
+        .args(["--owner=root", "--group=root", "--numeric-owner"])
+        .arg(format!("--transform=s,^,{prefix},"))
+        .arg("-C")
+        .arg(root)
+        .args(names))
+}
+
+fn headers(tree: &Path) -> Vec<String> {
+    let mut found = Vec::new();
+    for folder in HEADER_FOLDERS {
+        walk(tree, folder, &mut found);
+    }
+    found.retain(|name| name.ends_with(".h"));
+    found
+}
+
+fn write_sources(path: &Path, sources: &Path, tree: &Path, names: &[String], staging: &Path) -> Result<()> {
+    let tables = staging.join("tables");
+    fs::create_dir_all(&tables)?;
+    run(Command::new("python3")
+        .arg("-I")
+        .arg(sources.join("tools/gen_tables.py"))
+        .arg(tree)
+        .arg(tables.join("nv_tables.h"))
+        .arg(tables.join("names.txt")))?;
+    let generated = |name: &&String| GENERATED_TABLES.iter().any(|table| name.ends_with(*table));
+    let plain: Vec<String> = names.iter().filter(|name| !generated(name)).cloned().collect();
+    tar(path, "-cf", "nvfwd/", sources, &plain)?;
+    let made: Vec<String> = GENERATED_TABLES.iter().map(|name| (*name).to_owned()).collect();
+    tar(path, "-rf", "nvfwd/guest/", &tables, &made)?;
+    tar(path, "-rf", "nvidia/", tree, &["kernel-open".to_owned()])?;
+    tar(path, "-rf", "nvidia/", tree, &headers(tree))
+}
+
+fn copy_file(source: &Path, target: &Path, place: &str) -> Result<()> {
+    if let Some(folder) = target.parent() {
+        fs::create_dir_all(folder)?;
+    }
+    if place.ends_with("nvidia_icd.x86_64.json") {
+        fs::write(target, driver_files::rewrite_icd(&fs::read_to_string(source)?))?;
+    } else if source.is_symlink() {
+        symlink(fs::read_link(source)?, target)?;
+    } else {
+        fs::copy(source, target)?;
+    }
+    Ok(())
+}
+
+/// Everything about the host that can refuse the image, before anything is built.
+fn check_before_building(host: &dyn DriverHost, tree: &Path) -> std::result::Result<String, String> {
+    let Some(loaded) = host.loaded_version() else {
+        return Err(refusal(None, &installed_versions(host)).unwrap_or_default());
+    };
+    if let Some(reason) = branch_refusal(&loaded) {
+        return Err(reason);
+    }
+    if source_version(tree).as_deref() != Some(&loaded) {
+        return Err(format!(
+            "{} is not NVIDIA's source at version {loaded}, and the guest's modules need its headers. Get it \
+             with: git clone --depth 1 --branch {loaded} https://github.com/NVIDIA/open-gpu-kernel-modules",
+            tree.display()
+        ));
+    }
+    Ok(loaded)
+}
+
+/// A driver update or a reboot during the copy must not leave a mixed image.
+fn still_matches(host: &dyn DriverHost, loaded: &str) -> bool {
+    let now = host.loaded_version();
+    now.as_deref() == Some(loaded) && refusal(now.as_deref(), &installed_versions(host)).is_none()
+}
+
+fn build(
+    host: &dyn DriverHost,
+    sources: &Path,
+    tree: &Path,
+    pairs: &[(String, String)],
+    names: &[String],
+    (loaded, id): (&str, &str),
+    (staging, image): (&Path, &Path),
+) -> Result<Option<String>> {
+    let content = staging.join("image");
+    fs::create_dir_all(&content)?;
+    for (source, place) in pairs {
+        copy_file(Path::new(source), &content.join(place), place)?;
+    }
+    write_sources(&content.join("sources.tar"), sources, tree, names, staging)?;
+    let tested = if TESTED_VERSIONS.contains(&loaded) { "yes" } else { "no" };
+    fs::write(content.join("manifest"), format!("version={loaded}\nid={id}\ntested={tested}\n"))?;
+    let partial = staging.join("image.iso");
+    // -r makes every file root's and world readable. Rock Ridge keeps the library links.
+    run(Command::new("genisoimage")
+        .args(["-quiet", "-r", "-V", VOLUME_LABEL, "-o"])
+        .arg(&partial)
+        .arg(&content))?;
+    if !still_matches(host, loaded) {
+        return Ok(Some(
+            "The host's driver changed while the image was being made. Start the VM again.".to_owned(),
+        ));
+    }
+    fs::set_permissions(&partial, fs::Permissions::from_mode(READ_ONLY))?;
+    fs::rename(&partial, image)?;
+    Ok(None)
+}
+
+/// The image for the loaded driver, made if it has to be. `sources` is what ships with the app, `tree`
+/// NVIDIA's open source at the loaded version, and `folder` where images are kept.
+pub fn prepare(host: &dyn DriverHost, sources: &Path, tree: &Path, folder: &Path) -> Result<Outcome> {
+    let loaded = match check_before_building(host, tree) {
+        Ok(loaded) => loaded,
+        Err(reason) => return Ok(Outcome::Refused(reason)),
+    };
+    let names = our_files(sources);
+    let id = format!("{loaded}-{}", sources_id(sources, &names)?);
+    let image = folder.join(format!("driver-{id}.iso"));
+    let warning = untested_warning(&loaded);
+    if image.exists() {
+        return Ok(Outcome::Ready { image, warning });
+    }
+    if let Some(reason) = refusal(Some(&loaded), &installed_versions(host)) {
+        return Ok(Outcome::Refused(reason));
+    }
+    let pairs = driver_files::chosen(&host.packaged_files(&PACKAGES));
+    let places: Vec<String> = pairs.iter().map(|(_, place)| place.clone()).collect();
+    let lacking = driver_files::missing(&places, &loaded);
+    if !lacking.is_empty() {
+        return Ok(Outcome::Refused(format!("The driver image would lack:\n  {}", lacking.join("\n  "))));
+    }
+    let staging = folder.join(format!("staging-{}", std::process::id()));
+    fs::create_dir_all(&staging)?;
+    let built = build(host, sources, tree, &pairs, &names, (&loaded, &id), (&staging, &image));
+    let _ = fs::remove_dir_all(&staging);
+    Ok(match built? {
+        Some(reason) => Outcome::Refused(reason),
+        None => Outcome::Ready { image, warning },
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::linux::driver_versions::DRIVER_PACKAGES;
+    use crate::testing::Scratch;
+
+    struct FakeHost {
+        loaded: Option<String>,
+        installed: Option<String>,
+        files: Vec<String>,
+    }
+
+    impl DriverHost for FakeHost {
+        fn loaded_version(&self) -> Option<String> {
+            self.loaded.clone()
+        }
+
+        fn installed_version(&self, _package: &str) -> Option<String> {
+            self.installed.clone()
+        }
+
+        fn packaged_files(&self, packages: &[&str]) -> Vec<String> {
+            assert!(DRIVER_PACKAGES.iter().all(|package| packages.contains(package)));
+            self.files.clone()
+        }
+    }
+
+    fn host(version: &str) -> FakeHost {
+        FakeHost { loaded: Some(version.to_owned()), installed: Some(version.to_owned()), files: Vec::new() }
+    }
+
+    fn tree(scratch: &Scratch, version: &str) -> PathBuf {
+        scratch.write("tree/version.mk", format!("NVIDIA_VERSION = {version}\n"));
+        scratch.path("tree")
+    }
+
+    fn sources(scratch: &Scratch) -> PathBuf {
+        scratch.write("sources/guest/nvidia.c", "module");
+        scratch.path("sources")
+    }
+
+    fn reason(outcome: Outcome) -> String {
+        match outcome {
+            Outcome::Refused(reason) => reason,
+            Outcome::Ready { .. } => panic!("it should have been refused"),
+        }
+    }
+
+    #[test]
+    fn an_unknown_branch_turns_the_gpu_off_even_with_an_image() {
+        let scratch = Scratch::new();
+        let tree = tree(&scratch, "620.11");
+        let said =
+            reason(prepare(&host("620.11"), &sources(&scratch), &tree, &scratch.path("images")).unwrap());
+        assert!(said.contains("branch 620"));
+    }
+
+    #[test]
+    fn no_module_is_a_refusal() {
+        let scratch = Scratch::new();
+        let tree = tree(&scratch, "615.78.08");
+        let none = FakeHost { loaded: None, installed: None, files: Vec::new() };
+        let said = reason(prepare(&none, &sources(&scratch), &tree, &scratch.path("images")).unwrap());
+        assert!(said.contains("no NVIDIA kernel module"));
+    }
+
+    #[test]
+    fn the_wrong_source_tree_says_how_to_get_the_right_one() {
+        let scratch = Scratch::new();
+        let tree = tree(&scratch, "600.1");
+        let said =
+            reason(prepare(&host("615.78.08"), &sources(&scratch), &tree, &scratch.path("images")).unwrap());
+        assert!(said.contains("git clone") && said.contains("615.78.08"));
+    }
+
+    #[test]
+    fn a_pending_reboot_is_a_refusal_when_there_is_no_image_yet() {
+        let scratch = Scratch::new();
+        let tree = tree(&scratch, "615.78.08");
+        let waiting = FakeHost { installed: Some("615.90.01".into()), ..host("615.78.08") };
+        let said = reason(prepare(&waiting, &sources(&scratch), &tree, &scratch.path("images")).unwrap());
+        assert!(said.contains("Reboot"));
+    }
+
+    #[test]
+    fn an_image_for_the_loaded_driver_is_used_as_it_is() {
+        let scratch = Scratch::new();
+        let tree = tree(&scratch, "615.78.08");
+        let sources = sources(&scratch);
+        let id = sources_id(&sources, &our_files(&sources)).unwrap();
+        let image = scratch.write(&format!("images/driver-615.78.08-{id}.iso"), "made earlier");
+        let moved_on = FakeHost { installed: Some("615.90.01".into()), ..host("615.78.08") };
+        let found = prepare(&moved_on, &sources, &tree, &scratch.path("images")).unwrap();
+        assert_eq!(found, Outcome::Ready { image, warning: None });
+    }
+
+    #[test]
+    fn another_point_release_warns_and_goes_on() {
+        let scratch = Scratch::new();
+        let tree = tree(&scratch, "615.90.01");
+        let sources = sources(&scratch);
+        let id = sources_id(&sources, &our_files(&sources)).unwrap();
+        scratch.write(&format!("images/driver-615.90.01-{id}.iso"), "made earlier");
+        let found = prepare(&host("615.90.01"), &sources, &tree, &scratch.path("images")).unwrap();
+        assert!(matches!(found, Outcome::Ready { warning: Some(_), .. }));
+    }
+
+    #[test]
+    fn a_change_to_the_sources_changes_the_images_name() {
+        let scratch = Scratch::new();
+        let sources = sources(&scratch);
+        let before = sources_id(&sources, &our_files(&sources)).unwrap();
+        assert_eq!(before.len(), SOURCE_ID_LENGTH);
+        scratch.write("sources/guest/nvidia.c", "another module");
+        assert_ne!(sources_id(&sources, &our_files(&sources)).unwrap(), before);
+    }
+
+    #[test]
+    fn missing_files_name_their_packages() {
+        let scratch = Scratch::new();
+        let tree = tree(&scratch, "615.78.08");
+        let said =
+            reason(prepare(&host("615.78.08"), &sources(&scratch), &tree, &scratch.path("images")).unwrap());
+        assert!(said.contains("libcuda.so.615.78.08, from the package"));
+    }
+}

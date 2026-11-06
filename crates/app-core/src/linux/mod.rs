@@ -3,4 +3,5 @@
 //! anything about that is in doubt, the GPU stays off and the VM still boots.
 
 pub mod driver_files;
+pub mod driver_image;
 pub mod driver_versions;
