@@ -1,11 +1,13 @@
 //! `guesthouse-check`: what this PC can run, for `install.sh`. It's a program of its own because it has
 //! to run from a download, before GTK may be on this PC. It changes nothing, and opens no device.
 //!
-//! Each line is `check`, the state, the title, what was found and the fix, and the last is `gpu` and
+//! Each line is `check`, the state, the title, what was found and the fix. A `gtk` line has the version
+//! of GTK, if there is one, so the script can choose the app that runs on it. The last is `gpu` and
 //! `yes` or `no`, all split by tabs. The script prints these words and never runs them.
 
 use guesthouse_app_core::context::Context;
 use guesthouse_app_core::setup::checks::{Check, CheckState, check_host};
+use guesthouse_app_core::setup::toolkit::gtk_version;
 use std::process::ExitCode;
 
 fn state_word(state: CheckState) -> &'static str {
@@ -37,6 +39,9 @@ fn main() -> ExitCode {
     let report = check_host(&context);
     for check in &report.checks {
         println!("{}", line(check));
+    }
+    if let Some(version) = gtk_version() {
+        println!("gtk\t{version}");
     }
     println!("gpu\t{}", if report.gpu { "yes" } else { "no" });
     ExitCode::SUCCESS

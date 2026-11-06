@@ -141,7 +141,11 @@ stage_app() {
     for program in guesthouse guesthouse-check guesthouse-daemon guesthouse-share guesthouse-task; do
         cp "$target_folder/release/$program" "$OUT/stage/"
     done
-    write_symbol_needs "$OUT/stage/guesthouse"
+    # A build with HDR won't load on GTK older than 4.16, so a second one goes along for those, and
+    # install.sh keeps the one that fits. It's the lower floor, so it's what the symbols are read from.
+    (cd "$REPO" && cargo build --release --locked -p guesthouse-app --no-default-features)
+    cp "$target_folder/release/guesthouse" "$OUT/stage/guesthouse-no-hdr"
+    write_symbol_needs "$OUT/stage/guesthouse-no-hdr"
     mkdir -p "$OUT/stage/share"
     cp "$REPO/crates/app/data/$APP_ID.desktop" "$OUT/stage/share/"
     cp -R "$REPO/crates/app/data/icons" "$OUT/stage/share/"

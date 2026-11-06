@@ -109,7 +109,7 @@ new_test() {
     printf 'adw_new_thing' >"$T/libraries/libadwaita-1.so.0"
     printf 'gtk_new_thing' >"$T/libraries/libgtk-4.so.1"
     printf 'pipewire' >"$T/libraries/libpipewire-0.3.so.0"
-    unset LIBRARIES_PRESENT SUDO_FAILS FAKE_GPU_REFUSED
+    unset LIBRARIES_PRESENT SUDO_FAILS FAKE_GPU_REFUSED FAKE_GTK
     FIRMWARE_HERE=no
     OSTREE=no
     KVM_CLOSED=no
@@ -134,7 +134,7 @@ sandbox() {
     [ "$WITHOUT_NAMESPACE" = no ] || wrapper=()
     env -i HOME="$H" PATH="$T/bin" XDG_RUNTIME_DIR="$T/runtime" STAND_IN_LOG="$T/log" \
         FAKE_RELEASES="$T/releases" FAKE_LIBRARIES="$T/libraries" LIBRARIES_PRESENT="${LIBRARIES_PRESENT:-}" \
-        FAKE_FIRMWARE="$T/firmware" SUDO_FAILS="${SUDO_FAILS:-}" FAKE_GPU_REFUSED="${FAKE_GPU_REFUSED:-}" \
+        FAKE_FIRMWARE="$T/firmware" SUDO_FAILS="${SUDO_FAILS:-}" FAKE_GPU_REFUSED="${FAKE_GPU_REFUSED:-}" FAKE_GTK="${FAKE_GTK-4.20}" \
         "${wrapper[@]}" "$@"
 }
 

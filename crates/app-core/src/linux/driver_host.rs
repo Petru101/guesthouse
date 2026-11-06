@@ -55,12 +55,12 @@ pub fn is_driver_library(name: &str) -> bool {
 }
 
 /// The 64-bit libraries in what `ldconfig -p` printed.
-fn libraries_in(listing: &str) -> Vec<PathBuf> {
+pub(crate) fn libraries_in(listing: &str) -> Vec<PathBuf> {
     let lines = listing.lines().filter(|line| line.contains(SIXTY_FOUR_BIT));
     lines.filter_map(|line| line.split_once(ARROW)).map(|(_, path)| PathBuf::from(path.trim())).collect()
 }
 
-fn loader_listing() -> String {
+pub(crate) fn loader_listing() -> String {
     let tools = LOADER_TOOLS.iter().filter_map(|tool| Command::new(tool).arg(LOADER_LIST_FLAG).output().ok());
     let mut answers = tools.filter(|said| said.status.success());
     answers.next().map(|said| String::from_utf8_lossy(&said.stdout).into_owned()).unwrap_or_default()
