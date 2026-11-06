@@ -3339,3 +3339,512 @@ index c44ddb6..9e9e288 100644
 -- 
 2.56.0
 
+From 61d4421dd1f4e94e68fbee606a7c6197ff97e8b6 Mon Sep 17 00:00:00 2001
+From: xnixy <x@ruxn.com>
+Date: Thu, 5 Nov 2026 22:59:41 -0800
+Subject: [PATCH 15/21] hw/misc/nvfwd: a daemon that holds the card's sensor
+ page
+
+The driver's sensor page holds more than a guest should see, so a program of its
+own keeps it and copies the allowed parts into a page for the guest. It is a
+separate process so that QEMU holds no host client.
+---
+ hw/misc/nvfwd/meson.build |   3 +
+ hw/misc/nvfwd/rusd.c      | 343 ++++++++++++++++++++++++++++++++++++++
+ hw/misc/nvfwd/rusd.h      |  62 +++++++
+ hw/misc/nvfwd/sensord.c   |  53 ++++++
+ 4 files changed, 461 insertions(+)
+ create mode 100644 hw/misc/nvfwd/rusd.c
+ create mode 100644 hw/misc/nvfwd/rusd.h
+ create mode 100644 hw/misc/nvfwd/sensord.c
+
+diff --git a/hw/misc/nvfwd/meson.build b/hw/misc/nvfwd/meson.build
+index 9e9e288..60613fd 100644
+--- a/hw/misc/nvfwd/meson.build
++++ b/hw/misc/nvfwd/meson.build
+@@ -10,3 +10,6 @@ nvfwd_ss = files(
+   'accounting.c',
+ )
+ system_ss.add(when: 'CONFIG_PCI', if_true: nvfwd_ss)
++
++# A program of its own, and not a part of QEMU: sensord.c says why.
++executable('nvfwd-sensord', files('sensord.c', 'rusd.c'), install: false)
+diff --git a/hw/misc/nvfwd/rusd.c b/hw/misc/nvfwd/rusd.c
+new file mode 100644
+index 0000000..0aa3ef7
+--- /dev/null
++++ b/hw/misc/nvfwd/rusd.c
+@@ -0,0 +1,343 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++/*
++ * The host side of the sensor page: see rusd.h. Used by nvfwd-sensord.
++ */
++#ifndef _GNU_SOURCE
++#define _GNU_SOURCE
++#endif
++#include "rusd.h"
++
++#include <fcntl.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/ioctl.h>
++#include <sys/mman.h>
++#include <unistd.h>
++
++/* Every offset below was read from this version's cl00de.h. Another driver may move them. */
++#define DRIVER_VERSION "615.78.08"
++#define DRIVER_VERSION_FILE "/sys/module/nvidia/version"
++
++#define IOCTL_MAGIC 'F'
++#define ESC_RM_CONTROL 0x2a
++#define ESC_RM_ALLOC 0x2b
++#define ESC_RM_FREE 0x29
++#define ESC_RM_MAP_MEMORY 0x4e
++#define ESC_REGISTER_FD 0xc9
++#define ESC_ATTACH_GPUS_TO_FD 0xd4
++
++#define CLASS_ROOT_CLIENT 0x41
++#define CLASS_DEVICE 0x80
++#define CLASS_SUBDEVICE 0x2080
++#define CLASS_SHARED_DATA 0xde
++
++#define CTRL_GET_PROBED_IDS 0x214
++#define CTRL_ATTACH_IDS 0x215
++#define CTRL_REQUEST_DATA_POLL 0xde0001
++
++#define MAX_GPUS 32
++#define GPU_ID_END 0xffffffffu
++#define HANDLE_DEVICE 0xde000001u
++#define HANDLE_SUBDEVICE 0xde000002u
++#define HANDLE_SHARED_DATA 0xde000003u
++#define MAP_READ_ONLY 1
++
++/* The value a timestamp holds while the page's writer is inside a section. */
++#define TIMESTAMP_WRITING UINT64_MAX
++#define COPY_ATTEMPTS 4
++
++struct alloc_args {
++    uint32_t root, parent, object, class_id;
++    uint64_t params, rights;
++    uint32_t params_size, flags, status, pad;
++};
++
++struct control_args {
++    uint32_t client, object, cmd, flags;
++    uint64_t params;
++    uint32_t params_size, status;
++};
++
++struct free_args {
++    uint32_t root, parent, object, status;
++};
++
++struct map_args {
++    uint32_t client, device, memory, pad;
++    uint64_t offset, length, linear;
++    uint32_t status, flags;
++    int32_t fd, pad2;
++};
++
++struct client_params {
++    uint32_t client, process_id;
++    char process_name[104];
++    uint64_t pid_info;
++};
++
++struct device_params {
++    uint32_t device_id, client_share, target_client, target_device, flags, pad;
++    uint64_t va_size, va_start, va_limit;
++    uint32_t va_mode, pad2;
++};
++
++/*
++ * What a guest may see, each section being a timestamp followed by its data. Not here, so zero in
++ * the guest's page: BAR1 and framebuffer totals (other clients' use), the ERR_CONT register, the
++ * graphics context log flag, PCI counters, and per-process use.
++ */
++static const struct { uint32_t at, size; } guest_sections[] = {
++    { 0x048, 0x028 }, /* clkPublicDomainInfos */
++    { 0x070, 0x758 }, /* clkThrottleInfo */
++    { 0x7c8, 0x030 }, /* perfDevUtil */
++    { 0x7f8, 0x0f0 }, /* memEcc */
++    { 0x8e8, 0x010 }, /* perfCurrentPstate */
++    { 0x8f8, 0x010 }, /* powerLimitGpu */
++    { 0x908, 0x010 }, /* temperatures[GPU] */
++    { 0x918, 0x010 }, /* temperatures[MEMORY] */
++    { 0x928, 0x010 }, /* temperatures[BOARD] */
++    { 0x938, 0x010 }, /* temperatures[POWER_SUPPLY] */
++    { 0x948, 0x010 }, /* temperatures[HBM] */
++    { 0x958, 0x030 }, /* memRowRemap */
++    { 0x988, 0x020 }, /* memBankRemap */
++    { 0x9a8, 0x018 }, /* avgPowerUsage */
++    { 0x9c0, 0x018 }, /* instPowerUsage */
++    { 0x9d8, 0x010 }, /* powerPolicyStatus */
++    { 0xa18, 0x048 }, /* fanCoolerStatus */
++};
++
++struct Rusd {
++    int control_fd, gpu_fd; /* the GPU file stays open: RM wants the card open for a device */
++    uint32_t client;
++    const volatile uint8_t *raw;
++    volatile uint8_t *filtered;
++};
++
++static int rm_call(int fd, unsigned nr, void *args, size_t size)
++{
++    return ioctl(fd, _IOC(_IOC_READ | _IOC_WRITE, IOCTL_MAGIC, nr, size), args);
++}
++
++static int rm_alloc(Rusd *r, uint32_t parent, uint32_t object, uint32_t class_id, void *params,
++                    uint32_t size)
++{
++    struct alloc_args a = {
++        .root = r->client, .parent = parent, .object = object, .class_id = class_id,
++        .params = (uintptr_t)params, .params_size = size,
++    };
++
++    if (rm_call(r->control_fd, ESC_RM_ALLOC, &a, sizeof(a)) || a.status) {
++        fprintf(stderr, "rusd: alloc of class %#x: status %#x\n", class_id, a.status);
++        return -1;
++    }
++    if (!r->client) {
++        r->client = a.object;
++    }
++    return 0;
++}
++
++static int rm_control(Rusd *r, uint32_t object, uint32_t cmd, void *params, uint32_t size)
++{
++    struct control_args a = {
++        .client = r->client, .object = object, .cmd = cmd,
++        .params = (uintptr_t)params, .params_size = size,
++    };
++
++    if (rm_call(r->control_fd, ESC_RM_CONTROL, &a, sizeof(a)) || a.status) {
++        fprintf(stderr, "rusd: control %#x: status %#x\n", cmd, a.status);
++        return -1;
++    }
++    return 0;
++}
++
++static bool driver_matches(void)
++{
++    char version[32] = "";
++    FILE *f = fopen(DRIVER_VERSION_FILE, "r");
++
++    if (f) {
++        if (!fgets(version, sizeof(version), f)) {
++            version[0] = 0;
++        }
++        fclose(f);
++    }
++    version[strcspn(version, "\n")] = 0;
++    return !strcmp(version, DRIVER_VERSION);
++}
++
++static int attach_first_gpu(Rusd *r)
++{
++    uint32_t probed[MAX_GPUS * 3] = { 0 };
++    uint32_t attach[MAX_GPUS + 1];
++
++    if (rm_control(r, r->client, CTRL_GET_PROBED_IDS, probed, sizeof(probed))) {
++        return -1;
++    }
++    memset(attach, 0xff, sizeof(attach));
++    attach[0] = probed[0];
++    if (rm_control(r, r->client, CTRL_ATTACH_IDS, attach, sizeof(attach))) {
++        return -1;
++    }
++    return rm_call(r->control_fd, ESC_ATTACH_GPUS_TO_FD, probed, sizeof(probed[0]));
++}
++
++static int map_shared_data(Rusd *r)
++{
++    struct map_args a = {
++        .client = r->client, .device = HANDLE_SUBDEVICE, .memory = HANDLE_SHARED_DATA,
++        .length = RUSD_PAGE_BYTES, .flags = MAP_READ_ONLY, .fd = r->control_fd,
++    };
++    void *page;
++
++    if (rm_call(r->control_fd, ESC_RM_MAP_MEMORY, &a, sizeof(a)) || a.status) {
++        fprintf(stderr, "rusd: map: status %#x\n", a.status);
++        return -1;
++    }
++    page = mmap(NULL, RUSD_MAP_BYTES, PROT_READ, MAP_SHARED, r->control_fd, 0);
++    if (page == MAP_FAILED) {
++        perror("rusd: mmap");
++        return -1;
++    }
++    r->raw = page;
++    return 0;
++}
++
++static int map_filtered_page(Rusd *r, int page_fd)
++{
++    void *page = mmap(NULL, RUSD_MAP_BYTES, PROT_READ | PROT_WRITE, MAP_SHARED, page_fd, 0);
++
++    if (page == MAP_FAILED) {
++        return -1;
++    }
++    r->filtered = page;
++    return 0;
++}
++
++Rusd *rusd_open(int page_fd)
++{
++    struct client_params client = { 0 };
++    struct device_params device = { 0 };
++    uint32_t subdevice = 0;
++    uint64_t no_polling = 0;
++    Rusd *r;
++
++    if (!driver_matches()) {
++        fprintf(stderr, "rusd: host driver is not %s, so no sensor page\n", DRIVER_VERSION);
++        return NULL;
++    }
++    r = calloc(1, sizeof(*r));
++    if (!r) {
++        return NULL;
++    }
++    r->control_fd = open("/dev/nvidiactl", O_RDWR | O_CLOEXEC);
++    r->gpu_fd = open("/dev/nvidia0", O_RDWR | O_CLOEXEC);
++    if (r->control_fd < 0 || r->gpu_fd < 0 ||
++        rm_call(r->gpu_fd, ESC_REGISTER_FD, &r->control_fd, sizeof(r->control_fd)) ||
++        rm_alloc(r, 0, 0, CLASS_ROOT_CLIENT, &client, sizeof(client)) ||
++        attach_first_gpu(r) ||
++        rm_alloc(r, r->client, HANDLE_DEVICE, CLASS_DEVICE, &device, sizeof(device)) ||
++        rm_alloc(r, HANDLE_DEVICE, HANDLE_SUBDEVICE, CLASS_SUBDEVICE, &subdevice, sizeof(subdevice)) ||
++        rm_alloc(r, HANDLE_SUBDEVICE, HANDLE_SHARED_DATA, CLASS_SHARED_DATA, &no_polling,
++                 sizeof(no_polling)) ||
++        map_shared_data(r) || map_filtered_page(r, page_fd)) {
++        rusd_close(r);
++        return NULL;
++    }
++    return r;
++}
++
++void rusd_close(Rusd *r)
++{
++    if (!r) {
++        return;
++    }
++    if (r->raw) {
++        munmap((void *)r->raw, RUSD_MAP_BYTES);
++    }
++    if (r->filtered) {
++        munmap((void *)r->filtered, RUSD_MAP_BYTES);
++    }
++    if (r->client) {
++        struct free_args a = { .root = r->client, .parent = r->client, .object = r->client };
++        rm_call(r->control_fd, ESC_RM_FREE, &a, sizeof(a));
++    }
++    if (r->gpu_fd >= 0) {
++        close(r->gpu_fd);
++    }
++    if (r->control_fd >= 0) {
++        close(r->control_fd);
++    }
++    free(r);
++}
++
++int rusd_request(Rusd *r, uint64_t mask)
++{
++    if (mask & ~(uint64_t)RUSD_GUEST_POLL_MASK) {
++        return -1;
++    }
++    return rm_control(r, HANDLE_SHARED_DATA, CTRL_REQUEST_DATA_POLL, &mask, sizeof(mask));
++}
++
++static uint64_t timestamp_at(const volatile uint8_t *page, uint32_t at)
++{
++    return __atomic_load_n((const volatile uint64_t *)(page + at), __ATOMIC_ACQUIRE);
++}
++
++static void set_timestamp(volatile uint8_t *page, uint32_t at, uint64_t value)
++{
++    __atomic_store_n((volatile uint64_t *)(page + at), value, __ATOMIC_RELEASE);
++}
++
++/* The driver's own rule: a section is good if its timestamp is the same before and after. */
++static void copy_section(Rusd *r, uint32_t at, uint32_t size)
++{
++    enum { TIMESTAMP_BYTES = sizeof(uint64_t) };
++    uint8_t data[0x800];
++    int attempt;
++
++    for (attempt = 0; attempt < COPY_ATTEMPTS; attempt++) {
++        uint64_t before = timestamp_at(r->raw, at);
++
++        if (before == TIMESTAMP_WRITING) {
++            continue;
++        }
++        if (before == timestamp_at(r->filtered, at)) {
++            return;
++        }
++        memcpy(data, (const void *)(r->raw + at + TIMESTAMP_BYTES), size - TIMESTAMP_BYTES);
++        __atomic_thread_fence(__ATOMIC_ACQUIRE);
++        if (before != timestamp_at(r->raw, at)) {
++            continue;
++        }
++        set_timestamp(r->filtered, at, TIMESTAMP_WRITING);
++        __atomic_thread_fence(__ATOMIC_RELEASE);
++        memcpy((void *)(r->filtered + at + TIMESTAMP_BYTES), data, size - TIMESTAMP_BYTES);
++        set_timestamp(r->filtered, at, before);
++        return;
++    }
++}
++
++void rusd_refresh(Rusd *r)
++{
++    size_t i;
++
++    for (i = 0; i < sizeof(guest_sections) / sizeof(guest_sections[0]); i++) {
++        copy_section(r, guest_sections[i].at, guest_sections[i].size);
++    }
++}
++
++uint32_t rusd_client(const Rusd *r)
++{
++    return r->client;
++}
++
++const void *rusd_filtered(const Rusd *r)
++{
++    return (const void *)r->filtered;
++}
++
++const void *rusd_raw(const Rusd *r)
++{
++    return (const void *)r->raw;
++}
+diff --git a/hw/misc/nvfwd/rusd.h b/hw/misc/nvfwd/rusd.h
+new file mode 100644
+index 0000000..6648b24
+--- /dev/null
++++ b/hw/misc/nvfwd/rusd.h
+@@ -0,0 +1,62 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++/*
++ * The card's sensor page, for guests.
++ *
++ * NVIDIA's driver publishes temperatures, clocks, power and more in one shared page, class 0xDE
++ * ("RUSD"). That page also holds card-wide memory figures and, when polled, host process IDs, and
++ * it is the same page for every client on the host. A guest therefore never gets it: this module
++ * owns one host client with one such object, and copies only the sections a guest may see into a
++ * page of its own. It runs in nvfwd-sensord, never in QEMU: see sensord.c for why.
++ */
++#ifndef RUSD_H
++#define RUSD_H
++
++#include <stdbool.h>
++#include <stdint.h>
++
++/* Polling bits from the driver's cl00de.h. */
++#define RUSD_POLL_CLOCK 0x01
++#define RUSD_POLL_PERF 0x02
++#define RUSD_POLL_MEMORY 0x04
++#define RUSD_POLL_POWER 0x08
++#define RUSD_POLL_THERMAL 0x10
++#define RUSD_POLL_FAN 0x40
++
++/* Left out on purpose: 0x20 is PCI link counters, 0x80 is per-process use with host process IDs. */
++#define RUSD_GUEST_POLL_MASK (RUSD_POLL_CLOCK | RUSD_POLL_PERF | RUSD_POLL_MEMORY | RUSD_POLL_POWER | \
++                              RUSD_POLL_THERMAL | RUSD_POLL_FAN)
++
++/* Size of the driver's page, and of what a guest maps. */
++#define RUSD_PAGE_BYTES 0xc70
++#define RUSD_MAP_BYTES 4096
++
++/*
++ * How QEMU and nvfwd-sensord talk: the daemon first sends its 32-bit client handle, zero if it has
++ * no page. Then each 64-bit mask QEMU sends is answered with a 32-bit status, zero for success.
++ */
++#define SENSORD_SOCKET_FD 3
++#define SENSORD_PAGE_FD 4
++
++typedef struct Rusd Rusd;
++
++/*
++ * page_fd is the file the filtered page goes in, RUSD_MAP_BYTES long. NULL when the host driver is
++ * not the one the page layout was read from, or has no such page.
++ */
++Rusd *rusd_open(int page_fd);
++void rusd_close(Rusd *r);
++
++/* Tells the host which data to keep fresh. Zero stops the polling, which costs the whole card. */
++int rusd_request(Rusd *r, uint64_t mask);
++
++/* Copies the sections a guest may see into the filtered page. */
++void rusd_refresh(Rusd *r);
++
++/* This module's own client handle on the host, for the log. */
++uint32_t rusd_client(const Rusd *r);
++
++/* The filtered page, and the host's own page, which must never leave this process. */
++const void *rusd_filtered(const Rusd *r);
++const void *rusd_raw(const Rusd *r);
++
++#endif
+diff --git a/hw/misc/nvfwd/sensord.c b/hw/misc/nvfwd/sensord.c
+new file mode 100644
+index 0000000..85c12ed
+--- /dev/null
++++ b/hw/misc/nvfwd/sensord.c
+@@ -0,0 +1,53 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++/*
++ * nvfwd-sensord: owns the host's sensor page on behalf of one VM.
++ *
++ * This is a separate process on purpose: QEMU holds no host client of its own, as every guest call
++ * runs inside it and the driver treats one process's clients as one owner. QEMU gets only the
++ * filtered page and this socket.
++ *
++ * Started by sensors.c, with SENSORD_SOCKET_FD and SENSORD_PAGE_FD open. Exits with the VM.
++ */
++#include "rusd.h"
++
++#include <poll.h>
++#include <unistd.h>
++
++#define REFRESH_MILLISECONDS 100
++
++int main(void)
++{
++    Rusd *rusd = rusd_open(SENSORD_PAGE_FD);
++    uint32_t client = rusd ? rusd_client(rusd) : 0;
++    uint64_t polling = 0;
++
++    if (write(SENSORD_SOCKET_FD, &client, sizeof(client)) != sizeof(client) || !rusd) {
++        return 1;
++    }
++    for (;;) {
++        struct pollfd request = { .fd = SENSORD_SOCKET_FD, .events = POLLIN };
++
++        if (poll(&request, 1, REFRESH_MILLISECONDS) > 0) {
++            uint64_t mask;
++            int32_t status;
++
++            if (read(SENSORD_SOCKET_FD, &mask, sizeof(mask)) != sizeof(mask)) {
++                break;
++            }
++            status = rusd_request(rusd, mask);
++            if (!status) {
++                polling = mask;
++            }
++            if (polling) {
++                rusd_refresh(rusd);
++            }
++            if (write(SENSORD_SOCKET_FD, &status, sizeof(status)) != sizeof(status)) {
++                break;
++            }
++        } else if (polling) {
++            rusd_refresh(rusd);
++        }
++    }
++    rusd_close(rusd);
++    return 0;
++}
+-- 
+2.56.0
+
