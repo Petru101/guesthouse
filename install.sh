@@ -22,7 +22,7 @@ REPO_URL=https://github.com/xnixy/guesthouse
 RELEASE_URL=$REPO_URL/releases/download
 LATEST_SCRIPT_URL=https://raw.githubusercontent.com/xnixy/guesthouse/main/install.sh
 
-APP_ID=net.gpupv.Guesthouse
+APP_ID=io.github.xnixy.Guesthouse
 ARCH=x86_64
 MANIFEST_FORMAT=1
 QEMU_PROGRAM=qemu/build/qemu-system-x86_64

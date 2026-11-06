@@ -18,7 +18,7 @@ set -eu
 QEMU_TAG=v11.1.3
 QEMU_COMMIT=005c61c0ef6f6ae615283440b4bb7be51b2c6ddd
 QEMU_UPSTREAM=${QEMU_UPSTREAM:-https://gitlab.com/qemu-project/qemu.git}
-APP_ID=net.gpupv.Guesthouse
+APP_ID=io.github.xnixy.Guesthouse
 ARCH=x86_64
 
 # These stay the host's. The C library can't be mixed, and PipeWire's client must match its server.
