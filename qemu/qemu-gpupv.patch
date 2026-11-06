@@ -5295,3 +5295,303 @@ index 5851bc2..ce7c443 100644
 -- 
 2.56.0
 
+From 00d6101d0c23a444b6082589eaf9c60c69ff34b9 Mon Sep 17 00:00:00 2001
+From: xnixy <x@ruxn.com>
+Date: Thu, 5 Nov 2026 22:59:41 -0800
+Subject: [PATCH 19/21] hw/misc/nvfwd: map the host's memory into a window in
+ guest space
+
+A plain mapping goes over part of BAR4, and KVM's notifier does the rest. A UVM
+mapping has to stay at the guest's address, so it gets a memory slot of its own.
+---
+ hw/misc/nvfwd/meson.build |   1 +
+ hw/misc/nvfwd/window.c    | 265 ++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 266 insertions(+)
+ create mode 100644 hw/misc/nvfwd/window.c
+
+diff --git a/hw/misc/nvfwd/meson.build b/hw/misc/nvfwd/meson.build
+index ce7c443..e6aa521 100644
+--- a/hw/misc/nvfwd/meson.build
++++ b/hw/misc/nvfwd/meson.build
+@@ -12,6 +12,7 @@ nvfwd_ss = files(
+   'allow.c',
+   'fds.c',
+   'forward.c',
++  'window.c',
+ )
+ system_ss.add(when: 'CONFIG_PCI', if_true: nvfwd_ss)
+ 
+diff --git a/hw/misc/nvfwd/window.c b/hw/misc/nvfwd/window.c
+new file mode 100644
+index 0000000..b79179e
+--- /dev/null
++++ b/hw/misc/nvfwd/window.c
+@@ -0,0 +1,265 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++/* The window in BAR4, and the host mappings a guest has in it. See nvfwd.h. */
++#include "qemu/osdep.h"
++#include "qemu/units.h"
++#include "qemu/main-loop.h"
++#include <sys/mman.h>
++#include "nvfwd.h"
++#include "rusd.h"
++
++#define PAGE_BYTES 4096ull
++#define PAGE_SHIFT_BITS 12
++#define MAP_PROT_ALLOWED (PROT_READ | PROT_WRITE)
++
++/*
++ * UVM maps at the guest's own address, in QEMU's address space. MAP_FIXED_NOREPLACE keeps it off
++ * what QEMU has mapped, and these keep it to where a program's memory can really be.
++ */
++#define UVM_ADDRESS_LOWEST (4 * GiB)
++#define UVM_ADDRESS_END 0x7ffffffff000ull
++
++void window_init(NvfwdState *s)
++{
++    s->free_ranges[0].off = 0;
++    s->free_ranges[0].len = s->win_size;
++    s->free_count = 1;
++}
++
++static int64_t win_alloc(NvfwdState *s, uint64_t len)
++{
++    uint64_t align = len >= 2 * MiB ? 2 * MiB : 4096;
++    int64_t got = -1;
++    int i;
++
++    qemu_mutex_lock(&s->lock);
++    for (i = 0; i < s->free_count; i++) {
++        WinRange *r = &s->free_ranges[i];
++        uint64_t start = QEMU_ALIGN_UP(r->off, align);
++        if (start + len <= r->off + r->len) {
++            uint64_t tail = r->off + r->len - (start + len);
++            uint64_t head = start - r->off;
++            got = start;
++            if (head) {
++                r->len = head;
++                if (tail && s->free_count < MAX_RANGES) {
++                    s->free_ranges[s->free_count].off = start + len;
++                    s->free_ranges[s->free_count++].len = tail;
++                }
++            } else if (tail) {
++                r->off = start + len;
++                r->len = tail;
++            } else {
++                *r = s->free_ranges[--s->free_count];
++            }
++            break;
++        }
++    }
++    qemu_mutex_unlock(&s->lock);
++    return got;
++}
++
++static void win_free(NvfwdState *s, uint64_t off, uint64_t len)
++{
++    int i;
++    qemu_mutex_lock(&s->lock);
++    for (i = 0; i < s->free_count; i++) {
++        WinRange *r = &s->free_ranges[i];
++        if (r->off + r->len == off) {
++            r->len += len;
++            goto out;
++        }
++        if (off + len == r->off) {
++            r->off = off;
++            r->len += len;
++            goto out;
++        }
++    }
++    if (s->free_count < MAX_RANGES) {
++        s->free_ranges[s->free_count].off = off;
++        s->free_ranges[s->free_count++].len = len;
++    }
++out:
++    qemu_mutex_unlock(&s->lock);
++}
++
++/* Space in the window, on the list of live mappings. -1 if either is full. */
++static int64_t win_claim(NvfwdState *s, uint64_t len)
++{
++    int64_t off = win_alloc(s, len);
++    WindowMap entry = { .window_offset = off, .len = len };
++
++    if (off >= 0 && !maps_add(s->maps, &entry)) {
++        win_free(s, off, len);
++        return -1;
++    }
++    return off;
++}
++
++/* Puts back the anonymous filler, which a failed MAP_FIXED may have removed. */
++static void win_refill(NvfwdState *s, uint64_t off, uint64_t len)
++{
++    mmap(s->win + off, len, PROT_READ | PROT_WRITE,
++         MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_FIXED, -1, 0);
++}
++
++static void win_release(NvfwdState *s, uint64_t off, uint64_t len)
++{
++    WindowMap want = { .window_offset = off, .len = len }, gone;
++
++    win_refill(s, off, len);
++    if (maps_take(s->maps, &want, &gone)) {
++        win_free(s, off, len);
++    }
++}
++
++/*
++ * The guest's copy of the sensor page, never the host's. It is read-only to a program, as the
++ * host's is, but writable here: a write through a stale mapping must reach this copy rather than
++ * stop the VM on a read-only host page.
++ */
++static void do_map_sensors(NvfwdState *s, struct nvfwd_req *r)
++{
++    int64_t off;
++
++    if (r->a0 != RUSD_MAP_BYTES || (r->a1 & PROT_WRITE)) {
++        r->ret = -EPERM;
++        return;
++    }
++    off = win_claim(s, r->a0);
++    if (off < 0) {
++        r->ret = -ENOMEM;
++        return;
++    }
++    if (mmap(s->win + off, r->a0, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED,
++             sensors_page_fd(s->sensors), 0) == MAP_FAILED) {
++        r->ret = -errno;
++        win_release(s, off, r->a0);
++        return;
++    }
++    r->a3 = off;
++    r->ret = 0;
++}
++
++void do_mmap(NvfwdState *s, struct nvfwd_req *r)
++{
++    int fd = host_fd(s, r->fdid);
++    uint64_t len = r->a0;
++    int64_t off;
++    void *p;
++
++    if (fd < 0 || !len || len & (PAGE_BYTES - 1) || len > s->win_size ||
++        !!r->a3 != (s->fd_kind[r->fdid] == NVFWD_DEV_UVM)) {
++        r->ret = -EINVAL;
++        return;
++    }
++    if (r->a3) { /* UVM: offset must equal the address, in this process */
++        uint64_t address = r->a2 << PAGE_SHIFT_BITS;
++        void *at = (void *)address;
++
++        if (r->a2 > UVM_ADDRESS_END >> PAGE_SHIFT_BITS || address < UVM_ADDRESS_LOWEST ||
++            len > UVM_ADDRESS_END - address) {
++            r->ret = -EINVAL;
++            return;
++        }
++        p = mmap(at, len, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED_NOREPLACE, fd, address);
++        if (s->trace) {
++            fprintf(s->log, "UVM mmap %p+%#llx -> %p errno %d\n", at, (unsigned long long)len, p,
++                    p == MAP_FAILED ? errno : 0);
++            fflush(s->log);
++        }
++        if (p == MAP_FAILED) {
++            r->ret = -errno;
++            return;
++        }
++        /*
++         * The range must stay at this address, so the guest reaches it through a memory slot of
++         * its own, overlaid on the window. A guest CPU fault then lands in UVM's fault handler
++         * through KVM, in this process, which is the mm UVM knows.
++         */
++        off = win_alloc(s, len);
++        if (off < 0) {
++            munmap(p, len);
++            r->ret = -ENOMEM;
++            return;
++        }
++        {
++            MemoryRegion *mr = g_new0(MemoryRegion, 1);
++            WindowMap entry = { .window_offset = off, .len = len, .address = (uint64_t)p,
++                               .region = mr, .uvm = true };
++            char name[32];
++
++            if (!maps_add(s->maps, &entry)) {
++                g_free(mr);
++                win_free(s, off, len);
++                munmap(p, len);
++                r->ret = -ENOMEM;
++                return;
++            }
++            snprintf(name, sizeof(name), "nvfwd-uvm-%llx", (unsigned long long)off);
++            bql_lock();
++            memory_region_init_ram_ptr(mr, OBJECT(s), name, len, p);
++            memory_region_add_subregion_overlap(&s->window, off, mr, 1);
++            bql_unlock();
++        }
++        r->a3 = off;
++        r->ret = 0;
++        return;
++    }
++    if (s->sensors && sensors_take_mapping(s->sensors, r->fdid)) {
++        do_map_sensors(s, r);
++        return;
++    }
++    /* The driver takes offset 0 only: what to map comes from the map call before this. */
++    if (r->a2 || r->a1 & ~(uint64_t)MAP_PROT_ALLOWED ||
++        (s->fd_read_only[r->fdid] && r->a1 & PROT_WRITE)) {
++        r->ret = -EINVAL;
++        return;
++    }
++    s->fd_read_only[r->fdid] = false;
++    throttle(s);
++    off = win_claim(s, len);
++    if (off < 0) {
++        r->ret = -ENOMEM;
++        return;
++    }
++    p = mmap(s->win + off, len, r->a1, MAP_SHARED | MAP_FIXED, fd, 0);
++    if (s->trace) {
++        fprintf(s->log, "M fd=%u len=%#llx prot=%llu pgoff=%#llx win=%#llx -> %p errno=%d\n", r->fdid,
++                (unsigned long long)len, (unsigned long long)r->a1, (unsigned long long)r->a2,
++                (unsigned long long)off, p, p == MAP_FAILED ? errno : 0);
++        fflush(s->log);
++    }
++    if (p == MAP_FAILED) {
++        r->ret = -errno;
++        win_release(s, off, len);
++        return;
++    }
++    r->a3 = off;
++    r->ret = 0;
++}
++
++void do_munmap(NvfwdState *s, struct nvfwd_req *r)
++{
++    /* UVM: a0 window offset, a3 address. Only a mapping handed out earlier can go. */
++    WindowMap want = { .window_offset = r->a0, .len = r->a1, .uvm = r->a2 != 0,
++                      .address = r->a2 ? r->a3 : 0 };
++    WindowMap gone;
++
++    if (!maps_take(s->maps, &want, &gone)) {
++        r->ret = -EINVAL;
++        return;
++    }
++    if (gone.uvm) {
++        MemoryRegion *mr = gone.region;
++
++        bql_lock();
++        memory_region_del_subregion(&s->window, mr);
++        object_unparent(OBJECT(mr));
++        bql_unlock();
++        r->ret = munmap((void *)gone.address, gone.len) ? -errno : 0;
++    } else {
++        win_refill(s, gone.window_offset, gone.len);
++        r->ret = 0;
++    }
++    win_free(s, gone.window_offset, gone.len);
++}
+-- 
+2.56.0
+
