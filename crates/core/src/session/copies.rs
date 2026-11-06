@@ -9,6 +9,9 @@
 //! of the copy. Three things keep the rest in order: jobs run one at a time, in order; the queues
 //! it reads are held until it is done, as their next frame may draw into this image; and a message
 //! that frees or moves a surface in use is parked until the jobs are done.
+//!
+//! A screen's frame then has a copy into the frame ring too, in `frame_ring.rs`. It reads the same
+//! image, so in either order the guest's reply waits for it, and all of the above covers it.
 
 use super::{Answer, Handled, HeldReply, ReplyTicket, Session, answer_status, services};
 use crate::config::CopyOrder;
