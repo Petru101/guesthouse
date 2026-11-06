@@ -6450,3 +6450,60 @@ index cb26bd5..982e31c 100644
 -- 
 2.56.0
 
+From 56962a3e6abb6e0450e2250bf77586c885c4592a Mon Sep 17 00:00:00 2001
+From: xnixy <x@ruxn.com>
+Date: Fri, 6 Nov 2026 00:48:57 -0800
+Subject: [PATCH 23/23] hw/misc/nvfwd: sensor calls wait for the call rate too
+
+They returned before the limit was asked, and a change of poll mask is a call on
+the host's driver through the daemon, so a guest could make those as fast as the
+socket went. The one wait now comes before them, on a call and on a mapping.
+---
+ hw/misc/nvfwd/forward.c | 3 ++-
+ hw/misc/nvfwd/window.c  | 2 +-
+ 2 files changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/hw/misc/nvfwd/forward.c b/hw/misc/nvfwd/forward.c
+index f095856..19e244b 100644
+--- a/hw/misc/nvfwd/forward.c
++++ b/hw/misc/nvfwd/forward.c
+@@ -387,6 +387,8 @@ static void forward_ioctl(NvfwdState *s, Bounce *b, uint32_t *held, uint32_t *nh
+         r->ret = rc;
+         return;
+     }
++    /* Before the sensor objects: a mask change there is a call on the host, through the daemon. */
++    throttle(s);
+     if (s->sensors && !uvm) {
+         SensorCall sensor_call = { .nr = nr, .arg = arg, .size = size, .file = r->fdid,
+                                    .map_file = r->fdid, .data = data, .data_size = r->len };
+@@ -437,7 +439,6 @@ static void forward_ioctl(NvfwdState *s, Bounce *b, uint32_t *held, uint32_t *nh
+             return;
+         }
+     }
+-    throttle(s);
+     if (s->trace) {
+         t0 = g_get_monotonic_time();
+     }
+diff --git a/hw/misc/nvfwd/window.c b/hw/misc/nvfwd/window.c
+index b79179e..7df016e 100644
+--- a/hw/misc/nvfwd/window.c
++++ b/hw/misc/nvfwd/window.c
+@@ -205,6 +205,7 @@ void do_mmap(NvfwdState *s, struct nvfwd_req *r)
+         r->ret = 0;
+         return;
+     }
++    throttle(s);
+     if (s->sensors && sensors_take_mapping(s->sensors, r->fdid)) {
+         do_map_sensors(s, r);
+         return;
+@@ -216,7 +217,6 @@ void do_mmap(NvfwdState *s, struct nvfwd_req *r)
+         return;
+     }
+     s->fd_read_only[r->fdid] = false;
+-    throttle(s);
+     off = win_claim(s, len);
+     if (off < 0) {
+         r->ret = -ENOMEM;
+-- 
+2.56.0
+

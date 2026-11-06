@@ -71,4 +71,4 @@ This is the first step and no more. QEMU still opens `/dev/nvidia*` itself, with
 
 `make -C linux/tests/device QEMU=/path/to/patched/qemu BUILD=/somewhere` runs the device's checks with no GPU and no VM, under ASan and UBSan. It needs `libasan`, `libubsan` and glib's headers.
 
-`tests/` has small programs for CUDA, Vulkan and OpenGL. The CUDA and Vulkan ones count wrong values, and `glbench` writes an image to compare with a run on the host.
+`tests/` has small programs for CUDA, Vulkan and OpenGL, and `sensorrate`, which shows that sensor calls wait for the call rate. The CUDA and Vulkan ones count wrong values, and `glbench` writes an image to compare with a run on the host.
