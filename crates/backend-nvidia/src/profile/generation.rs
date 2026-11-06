@@ -13,6 +13,8 @@ pub struct Generation {
     pub architectures: &'static [u32],
     pub channel_class: u32,
     pub copy_class: u32,
+    pub video_decode_class: u32,
+    pub video_encode_class: u32,
     pub usermode_class: u32,
     /// What graphics channels bind, in subchannel order, which the guest's commands assume.
     pub graphics_classes: &'static [ChannelClass],
@@ -36,6 +38,8 @@ pub const BLACKWELL: Generation = Generation {
     architectures: &[0x1A0, 0x1B0],
     channel_class: 0xCA6F,
     copy_class: BLACKWELL_DMA_COPY_B,
+    video_decode_class: 0xCFB0,
+    video_encode_class: 0xCFB7,
     usermode_class: 0xC761,
     graphics_classes: &[
         (BLACKWELL_B, 16),

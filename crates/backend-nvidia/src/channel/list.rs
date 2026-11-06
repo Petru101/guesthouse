@@ -4,7 +4,8 @@
 //! what is free, as the control block's read position stays at zero on these channels. So nothing
 //! frees the ring during a list, and a whole list has to fit.
 
-use super::{AREA_SIZE, Channel, HOST_SUBCHANNEL};
+use super::copy::{LAUNCH_SEMAPHORE_ONLY, METHOD_LAUNCH, METHOD_SET_SEMAPHORE};
+use super::{AREA_SIZE, COPY_SUBCHANNEL, Channel, Engine, HOST_SUBCHANNEL, VIDEO_SUBCHANNEL};
 #[cfg(any(test, feature = "fake-rm"))]
 use crate::pushbuffer::RingEntry;
 use crate::pushbuffer::{increasing, ring_entry};
@@ -24,7 +25,43 @@ const SEMAPHORE_ADDRESS_LOW: u32 = 0x5C;
 const SEMAPHORE_WORDS: u32 = 5;
 /// Release, after earlier work has finished, with a 64-bit value.
 const SEMAPHORE_RELEASE_64: u32 = 0x0110_0001;
-const RELEASE_WORDS: u32 = SEMAPHORE_WORDS + 1;
+
+/// A video engine's own semaphore, from the public headers for the video classes, so the fence moves
+/// in the engine's own order. It writes one word, so a value past that gets a host release.
+const VIDEO_SEMAPHORE_ADDRESS: u32 = 0x240;
+const VIDEO_SEMAPHORE_ADDRESS_WORDS: u32 = 3;
+const VIDEO_SEMAPHORE_RELEASE: u32 = 0x304;
+const VIDEO_RELEASE_ONE_WORD: u32 = 0;
+
+/// What releases a fence at the end of a list.
+fn release_words(engine: Engine, fence_gpu_address: u64, value: u64) -> [u32; 6] {
+    match engine {
+        Engine::Video(_) if value <= u64::from(u32::MAX) => [
+            increasing(VIDEO_SUBCHANNEL, VIDEO_SEMAPHORE_ADDRESS, VIDEO_SEMAPHORE_ADDRESS_WORDS),
+            (fence_gpu_address >> 32) as u32,
+            fence_gpu_address as u32,
+            value as u32,
+            increasing(VIDEO_SUBCHANNEL, VIDEO_SEMAPHORE_RELEASE, 1),
+            VIDEO_RELEASE_ONE_WORD,
+        ],
+        Engine::Copy if value <= u64::from(u32::MAX) => [
+            increasing(COPY_SUBCHANNEL, METHOD_SET_SEMAPHORE, 3),
+            (fence_gpu_address >> 32) as u32,
+            fence_gpu_address as u32,
+            value as u32,
+            increasing(COPY_SUBCHANNEL, METHOD_LAUNCH, 1),
+            LAUNCH_SEMAPHORE_ONLY,
+        ],
+        _ => [
+            increasing(HOST_SUBCHANNEL, SEMAPHORE_ADDRESS_LOW, SEMAPHORE_WORDS),
+            fence_gpu_address as u32,
+            (fence_gpu_address >> 32) as u32,
+            value as u32,
+            (value >> 32) as u32,
+            SEMAPHORE_RELEASE_64,
+        ],
+    }
+}
 
 /// The ring has no room for a list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -113,16 +150,9 @@ impl ListChannel {
         }
         let slot = RELEASES + self.releases % RING_ENTRIES as usize * RELEASE_SLOT;
         self.releases += 1;
-        let words = [
-            increasing(HOST_SUBCHANNEL, SEMAPHORE_ADDRESS_LOW, SEMAPHORE_WORDS),
-            fence_gpu_address as u32,
-            (fence_gpu_address >> 32) as u32,
-            value as u32,
-            (value >> 32) as u32,
-            SEMAPHORE_RELEASE_64,
-        ];
+        let words = release_words(self.channel.engine(), fence_gpu_address, value);
         self.channel.area().store_words(slot, &words);
-        self.append(ring_entry(self.channel.area_address() + slot as u64, RELEASE_WORDS));
+        self.append(ring_entry(self.channel.area_address() + slot as u64, words.len() as u32));
         // The queue's own commands can write this value before the GPU has read the release's entry.
         self.unfinished.push_back((value, (self.put + RING_ENTRIES - 1) % RING_ENTRIES));
         Ok(self.put)
@@ -181,10 +211,20 @@ mod tests {
         assert_eq!(list.add(&entry, FENCE, 7, 0), Ok(4));
         assert_eq!(entry_at(&list, 2), RingEntry { address: 0x1000, length: 4 });
         let release = entry_at(&list, 3);
-        assert_eq!(release.length, RELEASE_WORDS);
+        assert_eq!(release.length, 6);
         let words = list.channel.area().load_words((release.address - AREA_ADDRESS) as usize, 6);
         assert_eq!(&words[1..5], [0x2345_6000, 1, 7, 0]);
         assert_eq!(words[5], SEMAPHORE_RELEASE_64);
+    }
+
+    #[test]
+    fn a_video_engine_releases_the_fence_itself_after_its_work() {
+        let video =
+            Engine::Video(crate::channel::VideoEngine { rm_engine: 0x13, class: 0xCFB0, instance: 0 });
+        let words = release_words(video, FENCE, 7);
+        assert_eq!(words[0], increasing(4, 0x240, 3));
+        assert_eq!(words[1..4], [1, 0x2345_6000, 7]);
+        assert_eq!(words[4..6], [increasing(4, 0x304, 1), 0]);
     }
 
     #[test]

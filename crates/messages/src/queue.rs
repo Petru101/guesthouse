@@ -28,7 +28,7 @@ impl CreateContext {
     const NODE: usize = 0x20;
     const CLIENT_HINT: usize = 0x2C;
     const PRIVATE_SIZE: usize = 0x30;
-    const PRIVATE: usize = 0x34;
+    pub const PRIVATE: usize = 0x34;
 
     pub fn parse(message: &[u8]) -> Result<Self, Malformed> {
         Ok(Self {

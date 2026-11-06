@@ -1,5 +1,6 @@
 //! Answers to adapter queries the vendor owns.
 
+use super::caps::{CAPS_SIZE, caps_answer};
 use super::guid::name_based_guid;
 use super::nodes::{ENGINE_3D, ENGINE_COPY, ENGINE_VIDEO_DECODE, ENGINE_VIDEO_ENCODE, Node, node_metadata};
 use super::queries::fixed_answers;
@@ -35,6 +36,8 @@ fn utf16_zero(text: &str) -> Vec<u8> {
 #[derive(Debug, Clone)]
 pub struct Inputs {
     pub record: Vec<u8>,
+    /// The RM's engine numbers on this card.
+    pub engines: Vec<u32>,
     pub nodes: Vec<Node>,
     pub registry: AdapterRegistry,
     pub guid_seed: String,
@@ -46,6 +49,8 @@ pub struct Inputs {
 #[derive(Debug, Clone)]
 pub struct AdapterAnswers {
     record: Vec<u8>,
+    rm_engines: Vec<u32>,
+    layout: &'static RecordLayout,
     discovery_field: usize,
     fixed: HashMap<u32, Vec<u8>>,
     nodes: Vec<Vec<u8>>,
@@ -54,12 +59,14 @@ pub struct AdapterAnswers {
 }
 
 impl AdapterAnswers {
-    pub fn new(inputs: Inputs, layout: &RecordLayout) -> Self {
+    pub fn new(inputs: Inputs, layout: &'static RecordLayout) -> Self {
         let guid = name_based_guid(&inputs.guid_seed);
         let fixed = fixed_answers(&guid, inputs.graphics_hertz, inputs.memory_hertz);
         let numbered = (0u32..).zip(&inputs.nodes);
         Self {
             record: inputs.record,
+            rm_engines: inputs.engines,
+            layout,
             discovery_field: layout.gpu_discovery,
             fixed: fixed.into_iter().collect(),
             nodes: numbered.map(|(ordinal, node)| node_metadata(ordinal, node)).collect(),
@@ -72,7 +79,7 @@ impl AdapterAnswers {
         &self.registry
     }
 
-    /// Only graphics and copy engines have channels here, and a node beyond the list has neither.
+    /// Graphics and copy engines. Video engines have channels too, of their own kind.
     pub fn node_has_channel(&self, node: u32) -> bool {
         let engine = self.engines.get(node as usize);
         engine.is_some_and(|&engine| engine == ENGINE_3D || engine == ENGINE_COPY)
@@ -133,6 +140,9 @@ impl AdapterAnswers {
     /// Answers a query, or returns `None` for one the core answers.
     pub fn answer(&self, query: &VendorQuery<'_>, out: &mut Vec<u8>) -> Option<Status> {
         match query.kind {
+            QUERY_RECORD if query.size == CAPS_SIZE => {
+                caps_answer(&self.record, self.layout, &self.rm_engines, query.data, out)
+            }
             QUERY_RECORD => self.record_answer(query.size, out),
             QUERY_USER_DRIVER_NAME => Self::user_driver_name(query, out),
             QUERY_OPENGL => self.opengl_info(query, out)?,
@@ -159,6 +169,7 @@ mod tests {
     fn answers() -> AdapterAnswers {
         let inputs = Inputs {
             record: vec![7; 16],
+            engines: Vec::new(),
             nodes: node_list(&[0x01, 0x09, 0x0D, 0x13], None),
             registry: AdapterRegistry::default(),
             guid_seed: "seed".into(),

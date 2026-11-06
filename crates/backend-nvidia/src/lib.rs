@@ -27,9 +27,10 @@ pub mod staging;
 pub mod startup;
 
 use answers::adapter::{AdapterAnswers, Inputs};
-use answers::nodes::node_list;
+use answers::nodes::{ENGINE_VIDEO_ENCODE, Node, node_list};
 use answers::perf_data;
 use answers::registry::AdapterRegistry;
+use channel::VideoEngine;
 use guesthouse_backend::{
     AdapterFacts, AllocationShape, Backend, BackendError, DriverSurvey, GpuRange, HostServices, MapRequest,
     MemoryId, PciCard, Refusal, RegistryName, RegistryValue, Setup, SlotCopy, SpaceId, StagingCopy,
@@ -60,8 +61,11 @@ const NVIDIA_VENDOR: u16 = 0x10DE;
 /// measured number: a long benchmark finished at this limit, and failed at 6,144 and with no limit.
 const UNFINISHED_ENTRIES_LIMIT: u64 = 4000;
 
-/// What the guest's runtime says a Vulkan context is for.
+/// What the guest's runtime says a Vulkan context is for. Vulkan's video queue families can also
+/// transfer, and it uses them for plain copies, so its contexts on video nodes get copy channels.
 const CLIENT_HINT_VULKAN: u32 = 4;
+
+const CONTEXT_READY: usize = 0xD7C;
 
 const RECORD_QUEUE_TOKEN: usize = 0x40;
 const RECORD_QUEUE_HEAP: usize = 0x5C;
@@ -101,6 +105,7 @@ pub struct NvidiaBackend<R> {
     guest: &'static GuestBranch,
     /// The class behind each handle the guest's driver uses.
     channel_classes: Vec<(u32, u32)>,
+    nodes: Vec<Node>,
     facts: AdapterFacts,
     answers: AdapterAnswers,
     pub(crate) spaces: HashMap<SpaceId, AddressSpace>,
@@ -170,13 +175,22 @@ impl<R: Rm> NvidiaBackend<R> {
         };
         let (graphics_hertz, memory_hertz) = (clock(layout.rated_clocks), clock(layout.rated_clocks + 4));
         let card_uuid = record[layout.uuid..layout.uuid + 16].try_into().expect("sixteen bytes");
-        let inputs = Inputs { guid_seed, graphics_hertz, memory_hertz, nodes, registry, record };
+        let inputs = Inputs {
+            guid_seed,
+            graphics_hertz,
+            memory_hertz,
+            nodes: nodes.clone(),
+            registry,
+            record,
+            engines,
+        };
         Ok(Self {
             device,
             generation,
             host_branch,
             guest,
             channel_classes: guest_channel_classes(guest, generation),
+            nodes,
             facts: AdapterFacts {
                 card: pci_card,
                 name,
@@ -199,6 +213,19 @@ impl<R: Rm> NvidiaBackend<R> {
     /// Where live readings come from. Nothing is read from the card unless this is called.
     pub fn set_sensors(&mut self, sensors: Box<dyn SnapshotReader>) {
         self.sensors = Some(sensors);
+    }
+
+    /// The video engine this work's commands are for, if they are for one.
+    pub(crate) fn video_engine(&self, work: &Work<'_>) -> Option<VideoEngine> {
+        if work.client_hint == CLIENT_HINT_VULKAN {
+            return None;
+        }
+        let node = self.nodes.get(work.node as usize)?;
+        let (rm_engine, instance) = node.video?;
+        let encodes = node.engine == ENGINE_VIDEO_ENCODE;
+        let generation = self.generation;
+        let class = if encodes { generation.video_encode_class } else { generation.video_decode_class };
+        Some(VideoEngine { rm_engine, class, instance })
     }
 
     pub fn answers(&self) -> &AdapterAnswers {
@@ -345,7 +372,7 @@ impl<R: Rm + OpenRm> Backend for NvidiaBackend<R> {
     }
 
     fn kept_gpu_ranges(&self) -> &'static [GpuRange] {
-        &[escape::RUNTIME_GPU_RANGE]
+        &[escape::RUNTIME_GPU_RANGE, escape::RUNTIME_PLACED_RANGE]
     }
 
     fn guest_restarted(&mut self) {
@@ -353,7 +380,10 @@ impl<R: Rm + OpenRm> Backend for NvidiaBackend<R> {
     }
 
     fn escape(&mut self, data: &mut [u8], memory: &dyn Fn() -> VideoMemoryUse) {
-        if let Err(error) = escape::answer(&mut self.device, &self.channel_classes, memory, data) {
+        log::debug!("escape {:02x?}, {} bytes", data.get(0x10..0x14), data.len());
+        let facts =
+            escape::EscapeFacts { channel_classes: &self.channel_classes, nodes: &self.nodes, memory };
+        if let Err(error) = escape::answer(&mut self.device, facts, data) {
             log::warn!("an escape failed: {error}");
         }
     }
@@ -375,12 +405,19 @@ impl<R: Rm + OpenRm> Backend for NvidiaBackend<R> {
         self.device.export_dmabuf(handle_of(memory), size).map_err(memory_error)
     }
 
-    /// Vulkan is let through on video nodes: its video queue families can also transfer, it uses
-    /// them for plain copies, and its driver crashes if the context is refused. It has no family on
-    /// the other engines without a channel, so there the hint changes nothing.
-    fn context_allowed(&mut self, node: u32, client_hint: u32) -> bool {
-        let vulkan_copies = client_hint == CLIENT_HINT_VULKAN && self.answers.node_is_video(node);
-        self.answers.node_has_channel(node) || vulkan_copies
+    /// Only the engines with no channel here are refused, which a guest can fall back from.
+    fn context_allowed(&mut self, node: u32, _client_hint: u32) -> bool {
+        self.answers.node_has_channel(node) || self.answers.node_is_video(node)
+    }
+
+    /// A context on a video node has no hardware queue of its own. Its runtime checks that the answer
+    /// says the context can take work, and a zero stops it.
+    fn finish_context_data(&mut self, node: u32, private: &mut [u8]) {
+        if self.answers.node_is_video(node)
+            && let Some(field) = private.get_mut(CONTEXT_READY..CONTEXT_READY + 4)
+        {
+            field.copy_from_slice(&1u32.to_le_bytes());
+        }
     }
 
     fn unfinished_work_limit(&self) -> Option<u64> {

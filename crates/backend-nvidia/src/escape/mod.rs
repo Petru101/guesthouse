@@ -7,11 +7,13 @@ mod client_alloc;
 mod control;
 mod gpu_groups;
 mod gpu_range;
+mod node_list;
 mod time_pairs;
 mod video_memory;
 
-pub use gpu_range::RUNTIME_GPU_RANGE;
+pub use gpu_range::{RUNTIME_GPU_RANGE, RUNTIME_PLACED_RANGE};
 
+use crate::answers::nodes::Node;
 use crate::rm::device::Device;
 use crate::rm::{Rm, RmError};
 use guesthouse_backend::VideoMemoryUse;
@@ -39,6 +41,12 @@ const FUNCTION_RUNTIME_GPU_RANGE: u32 = 0x0100_0113;
 const FUNCTION_RM_ALLOC: u32 = 0x0500_002A;
 /// How much video memory there is, for OpenGL's memory queries.
 const FUNCTION_VIDEO_MEMORY: u32 = 0x0100_0012;
+/// Which node is which engine, for the video runtime.
+const FUNCTION_LIST_NODES: u32 = 0x0100_000F;
+/// Asked before an encoding session opens, and the session is refused unless the answer is yes.
+const FUNCTION_ENCODE_ASK: u32 = 0x0100_0128;
+const ENCODE_ANSWER: usize = 0x30;
+const ENCODE_YES: u8 = 1;
 
 const GPU_LIST_COUNT: usize = 0x34;
 const GPU_LIST_HANDLES: usize = 0x38;
@@ -56,16 +64,21 @@ fn put(data: &mut [u8], at: usize, value: u32) {
     }
 }
 
-/// Answers an escape in place. `channel_classes` is the class behind each of the guest's handles.
-pub fn answer<R: Rm>(
-    device: &mut Device<R>,
-    channel_classes: &[(u32, u32)],
-    memory: &dyn Fn() -> VideoMemoryUse,
-    data: &mut [u8],
-) -> Result<(), RmError> {
+/// What an escape's answer can draw on, besides the card.
+#[derive(Clone, Copy)]
+pub struct EscapeFacts<'a> {
+    /// The class behind each of the guest's handles.
+    pub channel_classes: &'a [(u32, u32)],
+    pub nodes: &'a [Node],
+    /// Adds up the guest's allocations, so it's only for the escapes that ask.
+    pub memory: &'a dyn Fn() -> VideoMemoryUse,
+}
+
+/// Answers an escape in place.
+pub fn answer<R: Rm>(device: &mut Device<R>, facts: EscapeFacts<'_>, data: &mut [u8]) -> Result<(), RmError> {
     let Some(function) = get(data, FUNCTION) else { return Ok(()) };
     match function {
-        FUNCTION_RM_CONTROL => control::run(device, channel_classes, data)?,
+        FUNCTION_RM_CONTROL => control::run(device, facts.channel_classes, data)?,
         FUNCTION_LIST_GPUS => {
             // The RM's number serves as the handle, which comes back to the host later.
             let gpu_id = device.gpu_id()?;
@@ -78,7 +91,13 @@ pub fn answer<R: Rm>(
         FUNCTION_LIST_COMPUTE_GPUS => {}
         FUNCTION_CHECK_DISPLAY => {}
         FUNCTION_RUNTIME_GPU_RANGE => gpu_range::answer(data),
-        FUNCTION_VIDEO_MEMORY => video_memory::answer(memory(), data),
+        FUNCTION_VIDEO_MEMORY => video_memory::answer((facts.memory)(), data),
+        FUNCTION_LIST_NODES => node_list::answer(facts.nodes, data),
+        FUNCTION_ENCODE_ASK => {
+            if let Some(answer) = data.get_mut(ENCODE_ANSWER) {
+                *answer = ENCODE_YES;
+            }
+        }
         FUNCTION_RM_ALLOC => {
             put(data, HEADER_SIZE_FIELD, HEADER_SIZE);
             client_alloc::answer(data);
@@ -109,6 +128,9 @@ pub(super) mod tests {
         Device::open(rm, &HOST_615).unwrap()
     }
 
+    pub(super) const NO_FACTS: EscapeFacts<'static> =
+        EscapeFacts { channel_classes: &[], nodes: &[], memory: &NO_MEMORY };
+
     pub(super) fn escape(function: u32, size: usize) -> Vec<u8> {
         let mut data = vec![0; size];
         put(&mut data, FUNCTION, function);
@@ -118,7 +140,7 @@ pub(super) mod tests {
     #[test]
     fn a_plain_escape_gets_the_usual_answer() {
         let mut data = escape(0x0123, 0x40);
-        answer(&mut device(), &[], &NO_MEMORY, &mut data).unwrap();
+        answer(&mut device(), NO_FACTS, &mut data).unwrap();
         assert_eq!(get(&data, HEADER_SIZE_FIELD), Some(HEADER_SIZE));
         assert_eq!(get(&data, ANSWERED), Some(1));
         assert_eq!(get(&data, RESULT), Some(1));
@@ -127,7 +149,7 @@ pub(super) mod tests {
     #[test]
     fn one_escape_says_it_is_unsupported_as_the_real_driver_does() {
         let mut data = escape(FUNCTION_UNSUPPORTED, 0x40);
-        answer(&mut device(), &[], &NO_MEMORY, &mut data).unwrap();
+        answer(&mut device(), NO_FACTS, &mut data).unwrap();
         assert_eq!(get(&data, RESULT), Some(RESULT_UNSUPPORTED as u32));
     }
 
@@ -135,14 +157,14 @@ pub(super) mod tests {
     fn a_display_check_keeps_its_own_size() {
         let mut data = escape(FUNCTION_CHECK_DISPLAY, 0x40);
         put(&mut data, HEADER_SIZE_FIELD, 0x1234);
-        answer(&mut device(), &[], &NO_MEMORY, &mut data).unwrap();
+        answer(&mut device(), NO_FACTS, &mut data).unwrap();
         assert_eq!(get(&data, HEADER_SIZE_FIELD), Some(0x1234));
     }
 
     #[test]
     fn the_gpu_list_has_this_one_card() {
         let mut data = escape(FUNCTION_LIST_GPUS, GPU_LIST_KINDS + 4);
-        answer(&mut device(), &[], &NO_MEMORY, &mut data).unwrap();
+        answer(&mut device(), NO_FACTS, &mut data).unwrap();
         assert_eq!(get(&data, GPU_LIST_COUNT), Some(1));
         assert_eq!(get(&data, GPU_LIST_HANDLES), Some(0x300));
     }
@@ -152,13 +174,20 @@ pub(super) mod tests {
         let mut data = escape(FUNCTION_VIDEO_MEMORY, 0x54);
         put(&mut data, HEADER_SIZE_FIELD, 0x54);
         let memory = || VideoMemoryUse { total: 1 << 30, used: 0 };
-        answer(&mut device(), &[], &memory, &mut data).unwrap();
+        answer(&mut device(), EscapeFacts { memory: &memory, ..NO_FACTS }, &mut data).unwrap();
         assert_eq!(get(&data, HEADER_SIZE_FIELD), Some(0x54));
         assert_eq!(get(&data, RESULT), Some(1));
     }
 
     #[test]
+    fn the_encoders_question_gets_a_yes() {
+        let mut data = escape(FUNCTION_ENCODE_ASK, ENCODE_ANSWER + 1);
+        answer(&mut device(), NO_FACTS, &mut data).unwrap();
+        assert_eq!(data[ENCODE_ANSWER], ENCODE_YES);
+    }
+
+    #[test]
     fn a_short_escape_is_not_a_problem() {
-        answer(&mut device(), &[], &NO_MEMORY, &mut [0; 4]).unwrap();
+        answer(&mut device(), NO_FACTS, &mut [0; 4]).unwrap();
     }
 }

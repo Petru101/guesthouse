@@ -173,6 +173,20 @@ fn release_host_semaphores(host: &mut dyn HostServices, space: SpaceId, ring: &[
 }
 
 impl<R: Rm> NvidiaBackend<R> {
+    /// What runs this work's commands, on a list channel.
+    fn engine_for(&self, work: &Work<'_>) -> Engine {
+        match self.video_engine(work) {
+            Some(video) => Engine::Video(video),
+            None if self.answers().node_is_graphics(work.node) => Engine::Graphics,
+            None => Engine::Copy,
+        }
+    }
+
+    /// Whether this work's commands are copies, which a channel here needs changed.
+    fn runs_copies(&self, work: &Work<'_>) -> bool {
+        self.engine_for(work) == Engine::Copy
+    }
+
     fn take_area(&mut self, host: &mut dyn HostServices, size: usize) -> Option<u64> {
         host.take_gpu_addresses(size as u64, crate::CHANNEL_ADDRESS_ALIGN).ok()
     }
@@ -201,8 +215,8 @@ impl<R: Rm> NvidiaBackend<R> {
         };
         let place = ChannelPlace { ring_address, ring_entries, area_address, area_size: AREA_SIZE };
         let Some(space) = self.spaces.get(&work.space) else { return };
-        let made =
-            Channel::new(&mut self.device, self.generation, self.host_branch, space, place, Engine::Graphics);
+        let engine = self.video_engine(work).map_or(Engine::Graphics, Engine::Video);
+        let made = Channel::new(&mut self.device, self.generation, self.host_branch, space, place, engine);
         match made {
             Ok(channel) => {
                 let prelude_at = span.guest_address + u64::from(first - 1) * ENTRY_SIZE as u64;
@@ -313,8 +327,7 @@ impl<R: Rm> NvidiaBackend<R> {
         if let (Some(area_address), Some(space)) =
             (self.take_area(host, LIST_AREA), self.spaces.get(&work.space))
         {
-            let graphics = self.answers().node_is_graphics(work.node);
-            let engine = if graphics { Engine::Graphics } else { Engine::Copy };
+            let engine = self.engine_for(work);
             let place = ChannelPlace {
                 ring_address: ListChannel::ring_address(area_address),
                 ring_entries: ListChannel::RING_ENTRIES,
@@ -367,7 +380,7 @@ impl<R: Rm> NvidiaBackend<R> {
         let ring = self.guest_rings.get(&work.queue).ok_or_else(|| stop("it named no ring"))?;
         let (count, end) = (word(work.private, ENTRIES), word(work.private, RING_END));
         let listing = ring.entries_before(host, work.space, count, end).map_err(stop)?;
-        if work.node != 0 && !patch_copy_semaphores(host, work.space, &listing) {
+        if self.runs_copies(work) && !patch_copy_semaphores(host, work.space, &listing) {
             return Err(stop("a copy's commands can't be read, so they can't be made safe"));
         }
         self.start_on_list(host, work, &listing)
@@ -459,7 +472,7 @@ impl<R: Rm> NvidiaBackend<R> {
         }
         let previous_end = self.queues.get(&work.queue).and_then(|queue| queue.list_end);
         let listing = Self::listing(host, work, previous_end)?;
-        if work.node != 0 {
+        if self.runs_copies(work) {
             patch_copy_semaphores(host, work.space, &listing);
         }
         let started = self.start_on_list(host, work, &listing);
@@ -574,6 +587,7 @@ mod tests {
             queue: 1,
             space: SpaceId(1),
             node: 1,
+            client_hint: 0,
             private,
             fence: 0,
             fence_gpu_address: 0,
