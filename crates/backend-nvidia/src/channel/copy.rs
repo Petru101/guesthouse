@@ -36,6 +36,9 @@ const LAUNCH_PITCH_ONE_LINE: u32 = 0x18E;
 /// Flushed, with nothing to transfer, ending in a one-word semaphore.
 pub(crate) const LAUNCH_SEMAPHORE_ONLY: u32 = 0xC;
 const BLOCK_HEIGHT_SHIFT: u32 = 4;
+const BLOCK_HEIGHT_MASK: u32 = 0xF;
+const ORIGIN_MASK: u32 = 0xFFFF;
+const ORIGIN_Y_SHIFT: u32 = 16;
 /// Blocks are one GOB wide and deep, and GOBs have eight rows.
 const BLOCK_GOB_HEIGHT_8: u32 = 1 << 12;
 
@@ -114,12 +117,12 @@ impl CopyChannel {
         let mut words = self.head(&tiled.rows);
         words.extend([
             increasing(COPY_SUBCHANNEL, METHOD_SET_SOURCE_BLOCK_SIZE, 6),
-            tiled.block << BLOCK_HEIGHT_SHIFT | BLOCK_GOB_HEIGHT_8,
+            (tiled.block & BLOCK_HEIGHT_MASK) << BLOCK_HEIGHT_SHIFT | BLOCK_GOB_HEIGHT_8,
             tiled.surface_width,
             tiled.surface_height,
             1,
             0,
-            tiled.x | tiled.y << 16,
+            tiled.x & ORIGIN_MASK | (tiled.y & ORIGIN_MASK) << ORIGIN_Y_SHIFT,
             increasing(COPY_SUBCHANNEL, METHOD_LAUNCH, 1),
             LAUNCH_BLOCK_TO_PITCH_LINES,
         ]);
@@ -269,6 +272,22 @@ mod tests {
         assert_eq!(words[16], 3 << 4 | 1 << 12);
         assert_eq!(words[21], 4 | 2 << 16);
         assert_eq!(*words.last().unwrap(), LAUNCH_BLOCK_TO_PITCH_LINES);
+    }
+
+    #[test]
+    fn a_tiled_copys_numbers_stay_in_their_own_fields() {
+        let (_, mut copier) = copier();
+        let tiled = Tiled {
+            rows: rows(),
+            x: 0x1_0004,
+            y: 0x1_0002,
+            surface_width: 1024,
+            surface_height: 768,
+            block: 0x13,
+        };
+        let words = copier.tiled(&tiled);
+        assert_eq!(words[16], 3 << 4 | 1 << 12);
+        assert_eq!(words[21], 4 | 2 << 16);
     }
 
     #[test]

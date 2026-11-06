@@ -5,7 +5,7 @@
 //! against the allocation's real size, and these rules don't lean on the description being right.
 //! The sums are done in 128 bits, where two of our 64-bit numbers can't wrap.
 
-use guesthouse_backend::{COPY_PIXEL_BYTES, SurfaceShape};
+use guesthouse_backend::{Backend, COPY_PIXEL_BYTES, SurfaceShape};
 use guesthouse_messages::queue::Rectangle;
 
 /// Some rows of a surface, in bytes across and rows down.
@@ -42,12 +42,6 @@ impl Rows {
         Self::of(left, top, width, count)
     }
 
-    /// A whole picture, from the top left corner.
-    pub fn whole(width_in_pixels: u32, count: u32) -> Self {
-        let width = u64::from(width_in_pixels) * u64::from(COPY_PIXEL_BYTES);
-        Self { x: 0, y: 0, width, count: u64::from(count) }
-    }
-
     fn end_of_row(&self) -> u128 {
         u128::from(self.x) + u128::from(self.width)
     }
@@ -72,14 +66,22 @@ impl Rows {
     }
 }
 
-/// Whether these rows can be read from a surface in this much memory.
-pub(super) fn read_fits(rows: &Rows, surface: &SurfaceShape, memory: u64) -> bool {
-    rows.fit_linear(surface.pitch, memory)
+/// Whether these rows can be read from a surface in this much memory. A tiled surface has to fit
+/// whole, as where one row lies in it is the backend's business, and the rows have to lie inside
+/// what the copy engine will take to be the surface.
+pub(super) fn read_fits<B: Backend>(backend: &B, rows: &Rows, surface: &SurfaceShape, memory: u64) -> bool {
+    if surface.tiling.is_none() {
+        return rows.fit_linear(surface.pitch, memory);
+    }
+    rows.end_of_row() <= u128::from(surface.pitch)
+        && rows.end_of_rows() <= u128::from(surface.height)
+        && backend.tiled_bytes(surface, rows.x, rows.y).is_some_and(|bytes| bytes <= memory)
 }
 
 /// Whether a copy of a rectangle stays inside both surfaces and their memory. The target's tiling
 /// plays no part, as a copy writes it row by row whatever it says.
-pub(super) fn copy_fits(
+pub(super) fn copy_fits<B: Backend>(
+    backend: &B,
     read: &Rows,
     (source, source_memory): (&SurfaceShape, u64),
     written: &Rows,
@@ -87,7 +89,7 @@ pub(super) fn copy_fits(
 ) -> bool {
     read.inside_pixels(source)
         && written.inside_pixels(target)
-        && read_fits(read, source, source_memory)
+        && read_fits(backend, read, source, source_memory)
         && written.fit_linear(target.pitch, target_memory)
 }
 

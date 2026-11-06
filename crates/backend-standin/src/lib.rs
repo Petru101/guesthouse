@@ -155,6 +155,12 @@ impl Default for StandIn {
 
 /// Where private data can state a pitch. Zero means rows with no padding.
 const PITCH_FIELD: usize = 20;
+/// Where private data can ask for tiling, as one more than the log2 of the block height. Zero means
+/// rows in order.
+const TILING_FIELD: usize = 24;
+/// Rows in the shortest block of a pretend tiled surface, and the tallest log2 there is.
+const TILE_ROWS: u64 = 8;
+const MOST_TILING: u32 = 5;
 
 fn field(private: &[u8], at: usize) -> u32 {
     private.get(at..at + 4).map_or(0, |bytes| u32::from_le_bytes(bytes.try_into().expect("four bytes")))
@@ -269,7 +275,7 @@ impl Backend for StandIn {
             height,
             format: FORMAT_32_BIT,
             pitch,
-            tiling: None,
+            tiling: field(private, TILING_FIELD).checked_sub(1),
             refresh: (60, 1),
             samples: (1, 0),
             colour: COLOUR_8_BIT,
@@ -358,6 +364,13 @@ impl Backend for StandIn {
     fn start_slot_copy(&mut self, _host: &mut dyn HostServices, copy: &SlotCopy) -> StagingStart {
         self.slot_copies.push(*copy);
         if self.slow_copies { StagingStart::Running } else { StagingStart::Finished(self.slot_copy_status) }
+    }
+
+    /// Blocks are a whole pitch wide here, so only the height rounds up.
+    fn tiled_bytes(&self, surface: &SurfaceShape, _x: u64, _y: u64) -> Option<u64> {
+        let block = surface.tiling.filter(|&block| block <= MOST_TILING)?;
+        let rows = u64::from(surface.height).next_multiple_of(TILE_ROWS << block);
+        rows.checked_mul(u64::from(surface.pitch))
     }
 
     fn read_memory_start(

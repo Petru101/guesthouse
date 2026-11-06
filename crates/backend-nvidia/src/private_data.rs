@@ -2,15 +2,12 @@
 //! would fill in on real hardware.
 
 use crate::profile::AllocationLayout;
+use crate::tiling::{BLOCK_LIMIT, GOB_HEIGHT, GOB_WIDTH};
 use guesthouse_backend::{AllocationShape, SurfaceShape};
 
 const SMALL_PAGE: u64 = 0x1000;
 const BIG_PAGE: u64 = 0x10000;
 const DEFAULT_SIZE: u64 = 4096;
-const GOB_WIDTH: u64 = 64;
-const GOB_HEIGHT: u64 = 8;
-/// A block height past this is not a real one, so the field holds something else.
-const TILING_LIMIT: u32 = 6;
 
 /// Bits 3:2 of the second attribute word say whether the GPU's cache may hold this memory.
 const CACHE_SHIFT: u32 = 2;
@@ -104,7 +101,8 @@ pub fn allocation_size(layout: &AllocationLayout, data: &[u8]) -> u64 {
         let tiling = word(data, layout.tiling);
         let columns = u64::from(word(data, layout.columns));
         let rows = u64::from(word(data, layout.rows));
-        if columns != 0 && tiling < TILING_LIMIT {
+        // A block height past the engine's isn't one, so the field holds something else.
+        if columns != 0 && tiling < BLOCK_LIMIT {
             let blocks = columns.saturating_mul(rows);
             size = size.max(blocks.saturating_mul(GOB_WIDTH * (GOB_HEIGHT << tiling)));
         }
@@ -132,7 +130,7 @@ pub fn surface_shape(layout: &AllocationLayout, data: &[u8]) -> Option<SurfaceSh
     let columns = word(data, layout.columns);
     let pitch = match word(data, layout.pitch) {
         // Some images leave the pitch empty, but a GOB is always the same width.
-        0 => columns.wrapping_mul(GOB_WIDTH as u32),
+        0 => columns.saturating_mul(GOB_WIDTH as u32),
         pitch => pitch,
     };
     Some(SurfaceShape {
@@ -266,7 +264,7 @@ mod tests {
         let mut bytes = data(0x1000);
         set_word(&mut bytes, LAYOUT.columns, u32::MAX);
         set_word(&mut bytes, LAYOUT.rows, u32::MAX);
-        set_word(&mut bytes, LAYOUT.tiling, TILING_LIMIT - 1);
+        set_word(&mut bytes, LAYOUT.tiling, BLOCK_LIMIT - 1);
         assert!(allocation_size(LAYOUT, &bytes) > 1 << 60);
     }
 

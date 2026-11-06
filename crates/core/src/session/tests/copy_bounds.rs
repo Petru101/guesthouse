@@ -234,3 +234,56 @@ fn a_standard_surface_has_room_for_its_whole_rectangle() {
     let request = copy(image, staging, [0, 0, 1366, 768], [0, 0]);
     assert_eq!(outcome(&mut session, &request), (SUCCESS, 1));
 }
+
+/// Stand-in private data for a tiled surface. Blocks there are 8 rows high, doubled `block` times.
+fn tiled(memory: u64, width: u32, height: u32, pitch: u32, block: u32) -> Vec<u8> {
+    let mut data = shape(memory, width, height, pitch);
+    data.resize(28, 0);
+    set_u32(&mut data, 24, block + 1);
+    data
+}
+
+#[test]
+fn a_tiled_source_that_fills_its_memory_goes_through() {
+    let mut session = session();
+    let (_, source) = allocate(&mut session, tiled(ROW as u64 * 256, 256, 250, ROW, 3));
+    let target = plain(&mut session);
+    let request = copy(source, target, [0, 0, 256, 250], [0, 0]);
+    assert_eq!(outcome(&mut session, &request), (SUCCESS, 1));
+}
+
+#[test]
+fn a_tiled_source_bigger_than_its_memory_is_refused_even_for_one_row() {
+    let mut session = session();
+    let (_, source) = allocate(&mut session, tiled(ROW as u64 * 250, 256, 250, ROW, 3));
+    let target = plain(&mut session);
+    let request = copy(source, target, [0, 0, 1, 1], [0, 0]);
+    assert_eq!(outcome(&mut session, &request), (UNSUCCESSFUL, 0));
+}
+
+#[test]
+fn a_block_height_the_engine_lacks_is_refused() {
+    let mut session = session();
+    let (_, source) = allocate(&mut session, tiled(WHOLE * 64, 256, 256, ROW, 6));
+    let target = plain(&mut session);
+    let request = copy(source, target, [0, 0, 256, 256], [0, 0]);
+    assert_eq!(outcome(&mut session, &request), (UNSUCCESSFUL, 0));
+}
+
+#[test]
+fn rows_past_a_tiled_sources_height_are_refused_when_it_states_none() {
+    let mut session = session();
+    let (_, source) = allocate(&mut session, tiled(WHOLE, 256, 0, ROW, 0));
+    let target = plain(&mut session);
+    let request = copy(source, target, [0, 0, 256, 1], [0, 0]);
+    assert_eq!(outcome(&mut session, &request), (UNSUCCESSFUL, 0));
+}
+
+#[test]
+fn a_row_past_a_tiled_sources_pitch_is_refused() {
+    let mut session = session();
+    let (_, source) = allocate(&mut session, tiled(WHOLE, 0, 256, ROW, 0));
+    let target = plain(&mut session);
+    let request = copy(source, target, [1, 0, 257, 1], [0, 0]);
+    assert_eq!(outcome(&mut session, &request), (UNSUCCESSFUL, 0));
+}

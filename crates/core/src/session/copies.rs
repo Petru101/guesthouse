@@ -67,7 +67,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         let read = Rows::read_by(&rectangle);
         let written = Rows::written_by(&rectangle, request.target_left, request.target_top);
         let fits = read.zip(written).is_some_and(|(read, written)| {
-            copy_fits(&read, (&source, sizes.0), &written, (&target, sizes.1))
+            copy_fits(&self.backend, &read, (&source, sizes.0), &written, (&target, sizes.1))
         });
         if !fits {
             // The GPU would take a size like this as a very long copy, which nothing can interrupt.

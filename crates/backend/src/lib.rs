@@ -176,6 +176,12 @@ pub trait Backend: Sized {
     fn start_slot_copy(&mut self, _host: &mut dyn HostServices, _copy: &SlotCopy) -> StagingStart {
         StagingStart::Finished(Status::UNSUCCESSFUL)
     }
+
+    /// The bytes a tiled surface fills, as this backend's copy engine lays it out, for a copy that
+    /// starts at byte `x` of row `y`. `None` if the engine can't be given these numbers at all.
+    fn tiled_bytes(&self, _surface: &SurfaceShape, _x: u64, _y: u64) -> Option<u64> {
+        None
+    }
 }
 
 /// What a backend may ask of the host while it works.

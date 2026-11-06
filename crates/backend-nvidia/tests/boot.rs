@@ -547,6 +547,75 @@ fn a_ring_with_no_gap_gets_its_invalidate_from_the_copy_channel() {
     assert_eq!(session.backend().device().rm.doorbells().len(), before + 2, "the invalidate, then the queue");
 }
 
+/// Makes a tiled surface of `pitch` by `height`, filling `size` bytes, and a linear target for it.
+/// Returns the surface and the target.
+fn tiled_and_target(session: &mut Guest, pitch: u32, height: u32, block: u32, size: u32) -> (u32, u32) {
+    let layout = &GUEST_617.allocation;
+    let mut source = blank_request();
+    set_u32(&mut source, layout.size, size);
+    set_u32(&mut source, layout.width, pitch / 4);
+    set_u32(&mut source, layout.height, height);
+    set_u32(&mut source, layout.pitch, pitch);
+    set_u32(&mut source, layout.tiling, block);
+    set_u32(&mut source, layout.columns, pitch / 64);
+    let mut target = blank_request();
+    set_u32(&mut target, layout.size, pitch * height);
+    set_u32(&mut target, layout.width, pitch / 4);
+    set_u32(&mut target, layout.height, height);
+    set_u32(&mut target, layout.pitch, pitch);
+    let mut create = message(Command::CreateAllocation, 0x40);
+    set_u32(&mut create, 0x28, 2);
+    for private in [&source, &target] {
+        create.extend_from_slice(&[0; 4]);
+        create.extend_from_slice(&(private.len() as u32).to_le_bytes());
+        create.extend_from_slice(&[0; 4]);
+    }
+    create.extend_from_slice(&source);
+    create.extend_from_slice(&target);
+    let reply = send(session, &create);
+    (u32_at(&reply, 0x10).unwrap(), u32_at(&reply, 0x58).unwrap())
+}
+
+fn copy_of(source: u32, target: u32, width: u32, height: u32) -> Vec<u8> {
+    let mut copy = message(Command::CopyToStaging, 0x50);
+    set_u32(&mut copy, 0x20, source);
+    set_u32(&mut copy, 0x24, target);
+    set_u32(&mut copy, 0x30, width);
+    set_u32(&mut copy, 0x34, height);
+    copy
+}
+
+#[test]
+fn a_tiled_screen_that_fills_its_blocks_starts_a_copy() {
+    let mut session = guest();
+    // 1080 rows take nine blocks of 128.
+    let (source, target) = tiled_and_target(&mut session, 7680, 1080, 4, 7680 * 1152);
+    session.set_copy_order(guesthouse_core::CopyOrder::Held);
+    let mut out = Vec::new();
+    let copy = copy_of(source, target, 1920, 1080);
+    assert_eq!(session.handle_message(&copy, TICKET, &mut out), Answer::Held);
+}
+
+#[test]
+fn a_tiled_screen_short_of_its_last_block_is_refused() {
+    let mut session = guest();
+    let (source, target) = tiled_and_target(&mut session, 7680, 1080, 4, 7680 * 1080);
+    assert_eq!(
+        send(&mut session, &copy_of(source, target, 1920, 1080)),
+        Status::UNSUCCESSFUL.0.to_le_bytes()
+    );
+}
+
+#[test]
+fn a_block_height_past_the_engines_is_refused() {
+    let mut session = guest();
+    let (source, target) = tiled_and_target(&mut session, 7680, 1080, 6, 7680 * 2048);
+    assert_eq!(
+        send(&mut session, &copy_of(source, target, 1920, 1080)),
+        Status::UNSUCCESSFUL.0.to_le_bytes()
+    );
+}
+
 /// Starts a copy to a staging surface that nothing will finish.
 fn start_held_frame_copy(session: &mut Guest) {
     let layout = &GUEST_617.allocation;
