@@ -49,6 +49,7 @@ dependencies = [
  "guesthouse-backend",
  "guesthouse-backend-standin",
  "guesthouse-core",
+ "guesthouse-frame-socket",
  "guesthouse-messages",
  "guesthouse-transport",
  "libc",

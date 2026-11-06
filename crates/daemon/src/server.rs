@@ -4,6 +4,7 @@
 //! session one order for the messages of both channels.
 
 use crate::router::{Channel, FrameSink, Router};
+use crate::viewer::ViewerPort;
 use guesthouse_backend::{Backend, GuestMemory};
 use guesthouse_core::Waiting;
 use guesthouse_transport::{FrameHeader, FrameStream};
@@ -27,6 +28,11 @@ const TIMING_REPORT: Duration = Duration::from_secs(10);
 /// The kernel may stretch a sleep by this much, which by default is more than the sleep itself.
 const TIMER_SLACK_NANOS: libc::c_ulong = 1;
 const NO_DESCRIPTOR: i32 = -1;
+/// Each channel has two places in a wait, and so does the viewer, after them.
+const CHANNEL_PLACES: usize = 2 * Channel::ALL.len();
+const VIEWER_LISTENER: usize = CHANNEL_PLACES;
+const VIEWER_SOCKET: usize = CHANNEL_PLACES + 1;
+const ALL_PLACES: usize = CHANNEL_PLACES + 2;
 
 struct Connection {
     stream: UnixStream,
@@ -63,6 +69,7 @@ impl FrameSink for Connections<'_> {
 pub struct Server<B, M> {
     router: Router<B, M>,
     ports: Vec<Port>,
+    viewers: ViewerPort,
     waiting: Waiting,
     urgent_since: Option<Instant>,
     scratch: Vec<u8>,
@@ -81,11 +88,23 @@ impl<B: Backend, M: GuestMemory> Server<B, M> {
             }
             ports.push(Port { channel, listener: UnixListener::bind(path)?, connection: None });
         }
-        Ok(Self { router, ports, waiting: Waiting::Nothing, urgent_since: None, scratch: Vec::new() })
+        let viewers = ViewerPort::bind(run_folder)?;
+        Ok(Self {
+            router,
+            ports,
+            viewers,
+            waiting: Waiting::Nothing,
+            urgent_since: None,
+            scratch: Vec::new(),
+        })
     }
 
     pub fn router(&self) -> &Router<B, M> {
         &self.router
+    }
+
+    pub fn router_mut(&mut self) -> &mut Router<B, M> {
+        &mut self.router
     }
 
     /// Serves until an error nothing can recover from.
@@ -101,6 +120,7 @@ impl<B: Backend, M: GuestMemory> Server<B, M> {
             if timings.is_enabled() && now - last_report > TIMING_REPORT {
                 log::info!("where submissions spend their time:\n{timings}");
                 log::info!("kept: {:?}", self.router.session().table_sizes());
+                log::info!("frames: {:?}", self.router.session().frame_counts());
                 last_report = now;
             }
         }
@@ -127,13 +147,19 @@ impl<B: Backend, M: GuestMemory> Server<B, M> {
     /// Waits for something to happen, for at most `timeout` if given, and deals with it.
     pub fn step(&mut self, timeout: Option<Duration>) -> io::Result<()> {
         // Each port has two places, its listener and its connection. Poll skips a negative descriptor.
-        let mut descriptors = [readable(NO_DESCRIPTOR); 2 * Channel::ALL.len()];
+        let mut descriptors = [readable(NO_DESCRIPTOR); ALL_PLACES];
         for (port, pair) in self.ports.iter().zip(descriptors.as_chunks_mut::<2>().0) {
             pair[0].fd = port.listener.as_raw_fd();
             pair[1].fd = port.connection.as_ref().map_or(NO_DESCRIPTOR, |open| open.stream.as_raw_fd());
         }
+        let (listener, viewer, blocked) = self.viewers.wait_on();
+        descriptors[VIEWER_LISTENER].fd = listener;
+        descriptors[VIEWER_SOCKET].fd = viewer;
+        if blocked {
+            descriptors[VIEWER_SOCKET].events |= libc::POLLOUT;
+        }
         wait(&mut descriptors, timeout)?;
-        for (index, pair) in descriptors.as_chunks::<2>().0.iter().enumerate() {
+        for (index, pair) in descriptors[..CHANNEL_PLACES].as_chunks::<2>().0.iter().enumerate() {
             if pair[1].revents != 0 {
                 self.read_channel(index);
             }
@@ -143,8 +169,17 @@ impl<B: Backend, M: GuestMemory> Server<B, M> {
                 self.ports[index].connection = Some(Connection { stream, frames: FrameStream::new() });
             }
         }
+        // The guest's channels went first, and the viewer's trouble is only ever the viewer's.
+        let session = self.router.session_mut();
+        if descriptors[VIEWER_SOCKET].revents != 0 {
+            self.viewers.read(session);
+        }
+        if descriptors[VIEWER_LISTENER].revents != 0 {
+            self.viewers.accept(session);
+        }
         let mut sink = Connections { ports: &mut self.ports, scratch: &mut self.scratch };
         self.waiting = self.router.poll(Instant::now(), &mut sink)?;
+        self.router.session_mut().offer_frames(&mut self.viewers);
         Ok(())
     }
 

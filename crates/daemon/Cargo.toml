@@ -19,6 +19,7 @@ stand-in = ["dep:guesthouse-backend-standin"]
 guesthouse-backend.workspace = true
 guesthouse-backend-standin = { workspace = true, optional = true }
 guesthouse-core.workspace = true
+guesthouse-frame-socket.workspace = true
 guesthouse-messages.workspace = true
 guesthouse-transport.workspace = true
 # mmap and ppoll, which the standard library does not offer.
