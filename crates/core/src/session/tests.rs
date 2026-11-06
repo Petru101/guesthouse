@@ -159,6 +159,8 @@ fn signal_message(objects: &[u32], contexts: &[u32], values: &[u64]) -> Vec<u8> 
     request
 }
 
+mod frame_ring;
+
 mod dispatch {
     use super::*;
 
