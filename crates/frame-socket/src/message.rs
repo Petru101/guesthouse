@@ -1,4 +1,4 @@
-//! The five messages and their bytes, which are little-endian. Every packet starts with the magic
+//! The messages and their bytes, which are little-endian. Every packet starts with the magic
 //! number, the protocol's version and what kind of message follows.
 
 use std::fmt;
@@ -14,6 +14,9 @@ const RING: u16 = 2;
 const FRAME: u16 = 3;
 const RELEASE: u16 = 4;
 const LIGHT: u16 = 5;
+const CURSOR_WANTED: u16 = 6;
+const CURSOR_SHAPE: u16 = 7;
+const CURSOR_MOVE: u16 = 8;
 
 /// A pixel format and memory layout, as DRM names them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -110,6 +113,43 @@ pub struct Light {
     pub mastering: Option<Mastering>,
 }
 
+/// Producer to viewer, only after [`Message::CursorWanted`]: a new cursor picture. It comes with one
+/// descriptor, of a sealed file of BGRA pixels with straight alpha, `size` bytes long. These numbers can come
+/// from a guest, so a viewer must ask [`CursorShape::fits`] before it reads the file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CursorShape {
+    pub shape: u32,
+    pub width: u32,
+    pub height: u32,
+    pub pitch: u32,
+    pub hot_x: u32,
+    pub hot_y: u32,
+    pub size: u32,
+}
+
+impl CursorShape {
+    /// Whether the picture lies inside its file.
+    pub fn fits(&self) -> bool {
+        let row = self.width.checked_mul(4);
+        let rows = self.pitch.checked_mul(self.height);
+        self.width > 0
+            && self.height > 0
+            && row.is_some_and(|row| row <= self.pitch)
+            && rows.is_some_and(|rows| rows <= self.size)
+    }
+}
+
+/// Producer to viewer, only after [`Message::CursorWanted`]: where the picture's top left corner is, in
+/// the picture's pixels. It can be partly off the screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CursorMove {
+    pub x: i32,
+    pub y: i32,
+    pub visible: bool,
+    /// How bright cursor white should be, on an HDR screen.
+    pub sdr_white_nits: u32,
+}
+
 /// Viewer to producer: the slot can be written again.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Release {
@@ -124,6 +164,11 @@ pub enum Message {
     Frame(Frame),
     Release(Release),
     Light(Light),
+    /// Viewer to producer: it will draw the cursor, so leave it out of the frames. A viewer that never
+    /// sends this gets no cursor messages at all, so the version stays.
+    CursorWanted,
+    CursorShape(CursorShape),
+    CursorMove(CursorMove),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -301,6 +346,9 @@ impl Message {
             Self::Frame(_) => FRAME,
             Self::Release(_) => RELEASE,
             Self::Light(_) => LIGHT,
+            Self::CursorWanted => CURSOR_WANTED,
+            Self::CursorShape(_) => CURSOR_SHAPE,
+            Self::CursorMove(_) => CURSOR_MOVE,
         }
     }
 
@@ -323,6 +371,25 @@ impl Message {
             }
             Self::Frame(frame) => write_frame(&mut writer, frame),
             Self::Light(light) => write_light(&mut writer, light),
+            Self::CursorWanted => {}
+            Self::CursorShape(shape) => {
+                let numbers = [
+                    shape.shape,
+                    shape.width,
+                    shape.height,
+                    shape.pitch,
+                    shape.hot_x,
+                    shape.hot_y,
+                    shape.size,
+                ];
+                numbers.iter().for_each(|&number| writer.u32(number));
+            }
+            Self::CursorMove(position) => {
+                writer.u32(position.x as u32);
+                writer.u32(position.y as u32);
+                writer.u8(position.visible.into());
+                writer.u32(position.sdr_white_nits);
+            }
             Self::Release(release) => {
                 writer.u32(release.generation);
                 writer.u32(release.slot);
@@ -345,6 +412,22 @@ impl Message {
             RING => Self::Ring(read_ring(&mut reader)?),
             FRAME => Self::Frame(read_frame(&mut reader)?),
             LIGHT => Self::Light(read_light(&mut reader)?),
+            CURSOR_WANTED => Self::CursorWanted,
+            CURSOR_SHAPE => Self::CursorShape(CursorShape {
+                shape: reader.u32()?,
+                width: reader.u32()?,
+                height: reader.u32()?,
+                pitch: reader.u32()?,
+                hot_x: reader.u32()?,
+                hot_y: reader.u32()?,
+                size: reader.u32()?,
+            }),
+            CURSOR_MOVE => Self::CursorMove(CursorMove {
+                x: reader.u32()? as i32,
+                y: reader.u32()? as i32,
+                visible: reader.u8()? != 0,
+                sdr_white_nits: reader.u32()?,
+            }),
             RELEASE => Self::Release(Release { generation: reader.u32()?, slot: reader.u32()? }),
             kind => return Err(DecodeError::UnknownKind(kind)),
         };
@@ -363,12 +446,23 @@ mod tests {
         Descriptor { width: 1920, height: 1080, stride: 7680, offset: 0, format: XRGB, colour: Colour::SRGB }
     }
 
-    fn all() -> [Message; 6] {
+    fn all() -> [Message; 9] {
         [
             Message::Hello(Hello { formats: vec![XRGB], refresh_millihertz: 144_000, peak_nits: 400 }),
             Message::Ring(Ring { generation: 7, slots: 3, size: 1 << 23 }),
             Message::Frame(Frame { generation: 7, slot: 2, sequence: 9, descriptor: descriptor() }),
             Message::Light(Light { generation: 7, slot: 2, sdr_white_nits: 240, mastering: None }),
+            Message::CursorWanted,
+            Message::CursorShape(CursorShape {
+                shape: 3,
+                width: 32,
+                height: 32,
+                pitch: 128,
+                hot_x: 1,
+                hot_y: 2,
+                size: 4096,
+            }),
+            Message::CursorMove(CursorMove { x: -4, y: 90, visible: true, sdr_white_nits: 240 }),
             Message::Light(Light {
                 generation: 7,
                 slot: 2,
@@ -418,6 +512,18 @@ mod tests {
             let bytes = Message::Ring(Ring { generation: 1, slots, size: 1 }).encode();
             assert_eq!(Message::decode(&bytes), Err(DecodeError::Malformed));
         }
+    }
+
+    #[test]
+    fn a_cursor_must_lie_inside_its_file() {
+        let shape =
+            CursorShape { shape: 1, width: 32, height: 32, pitch: 128, hot_x: 0, hot_y: 0, size: 4096 };
+        assert!(shape.fits());
+        assert!(!CursorShape { size: 4095, ..shape }.fits());
+        assert!(!CursorShape { width: 0, ..shape }.fits());
+        assert!(!CursorShape { pitch: 124, ..shape }.fits(), "rows would overlap");
+        assert!(!CursorShape { width: u32::MAX, ..shape }.fits());
+        assert!(!CursorShape { pitch: u32::MAX, height: u32::MAX, ..shape }.fits());
     }
 
     #[test]
