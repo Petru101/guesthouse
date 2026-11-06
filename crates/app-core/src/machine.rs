@@ -234,6 +234,11 @@ impl Machine {
         if !(MIN_REFRESH_HZ..=MAX_REFRESH_HZ).contains(&self.refresh_hz) {
             found.push(refresh_limits());
         }
+        for path in [&self.disk, &self.vars, &self.iso, &self.share] {
+            if !path.is_empty() && !Path::new(path).is_absolute() {
+                found.push(format!("{path} must be a full path on this PC."));
+            }
+        }
         found.extend(self.network_problems());
         if self.vram_gib > max_vram_gib {
             found.push(format!("The video memory cap must be a whole number up to {max_vram_gib} GiB."));
@@ -352,7 +357,7 @@ mod tests {
         let good = sample();
         good.save(&context).unwrap();
         type Change = fn(&mut Machine);
-        let cases: [(Change, &str); 8] = [
+        let cases: [(Change, &str); 11] = [
             (|m| m.cores = 1, "Cores"),
             (|m| m.ram_gib = 3, "RAM"),
             (|m| m.screen = "1024x768".into(), "screen"),
@@ -361,6 +366,9 @@ mod tests {
             (|m| m.refresh_hz = MAX_REFRESH_HZ + 1, "refresh"),
             (|m| m.name = " ".into(), "name"),
             (|m| m.id = "../x".into(), "id"),
+            (|m| m.disk = "json:{}".into(), "full path"),
+            (|m| m.iso = "-x".into(), "full path"),
+            (|m| m.share = "shared".into(), "full path"),
         ];
         for (change, text) in cases {
             let mut bad = good.clone();

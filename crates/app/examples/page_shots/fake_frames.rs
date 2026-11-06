@@ -3,7 +3,7 @@
 use guesthouse_frame_socket::{
     Colour, Descriptor, Format, Frame, FrameListener, Message, Release, Ring, SOCKET_NAME,
 };
-use rustix::fs::{MemfdFlags, ftruncate, memfd_create};
+use rustix::fs::{MemfdFlags, SealFlags, fcntl_add_seals, ftruncate, memfd_create};
 use rustix::io::pwrite;
 use std::collections::BTreeSet;
 use std::os::fd::{AsFd, OwnedFd};
@@ -45,8 +45,9 @@ pub fn serve(run_folder: &Path, released: Arc<AtomicU64>) {
         assert!(matches!(socket.receive().unwrap().unwrap().message, Message::Hello(_)));
         let slots: Vec<OwnedFd> = (0..SLOTS)
             .map(|_| {
-                let file = memfd_create("slot", MemfdFlags::CLOEXEC).unwrap();
+                let file = memfd_create("slot", MemfdFlags::CLOEXEC | MemfdFlags::ALLOW_SEALING).unwrap();
                 ftruncate(&file, SIZE).unwrap();
+                fcntl_add_seals(&file, SealFlags::SHRINK).unwrap();
                 file
             })
             .collect();

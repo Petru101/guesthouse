@@ -2,12 +2,9 @@
 
 use super::Window;
 use crate::application::APP_ID;
+use crate::rows::name_for_readers;
 use adw::prelude::*;
 use gtk::gio;
-
-const WITH_GPU: &str = "A machine is Windows with GPU-PV, Ubuntu, or anything else that boots from an ISO.";
-const WITHOUT_GPU: &str = "A machine is anything that boots from an ISO. It runs on the CPU for now, as GPU \
-                           machines aren't available yet.";
 
 const COLUMN_SPACING: i32 = 12;
 const COLUMN_MARGIN: i32 = 24;
@@ -37,7 +34,7 @@ fn main_menu() -> gio::Menu {
 }
 
 impl LibraryPage {
-    pub fn new(gpu_machines: bool) -> Self {
+    pub fn new(description: &str) -> Self {
         let list = gtk::ListBox::builder()
             .selection_mode(gtk::SelectionMode::None)
             .valign(gtk::Align::Start)
@@ -63,7 +60,7 @@ impl LibraryPage {
         let empty = adw::StatusPage::builder()
             .icon_name(APP_ID)
             .title("No Machines")
-            .description(if gpu_machines { WITH_GPU } else { WITHOUT_GPU })
+            .description(description)
             .child(&start)
             .build();
         let stack = gtk::Stack::new();
@@ -71,6 +68,7 @@ impl LibraryPage {
         stack.add_named(&empty, Some("empty"));
         let add = gtk::Button::builder().icon_name("list-add-symbolic").tooltip_text("New Machine").build();
         let header = adw::HeaderBar::new();
+        name_for_readers(&add, "New Machine");
         header.pack_start(&add);
         let menu = gtk::MenuButton::builder()
             .icon_name("open-menu-symbolic")
@@ -78,6 +76,7 @@ impl LibraryPage {
             .tooltip_text("Main Menu")
             .menu_model(&main_menu())
             .build();
+        name_for_readers(&menu, "Main Menu");
         header.pack_end(&menu);
         let toolbar = adw::ToolbarView::new();
         toolbar.set_content(Some(&stack));

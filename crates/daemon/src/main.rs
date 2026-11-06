@@ -21,7 +21,10 @@ fn main() -> ExitCode {
     };
     let project = env::args_os().nth(1).map_or_else(|| PathBuf::from("."), PathBuf::from);
     match serve(slot, project) {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(()) => {
+            slot.remove_shared_files();
+            ExitCode::SUCCESS
+        }
         Err(error) => {
             eprintln!("{error}");
             ExitCode::FAILURE

@@ -7,13 +7,16 @@ use crate::random::random_hex;
 use crate::text::{base64_decode, base64_encode};
 use guesthouse_daemon::slot::Slot;
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpStream};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const CONNECT_SECONDS: u64 = 5;
+/// Far more than any script of ours prints.
+const MOST_ANSWER: usize = 4 << 20;
+const ANSWER_CHUNK: usize = 64 << 10;
 const TOKEN_BYTES: usize = 16;
 /// The most text the clipboard passes either way.
 pub const MOST_CLIPBOARD_TEXT: usize = 1 << 20;
@@ -36,11 +39,33 @@ impl GuestAgent for TcpAgent {
 fn talk(port: u16, token: &str, script: &str, seconds: u64) -> std::io::Result<String> {
     let address = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
     let mut stream = TcpStream::connect_timeout(&address, Duration::from_secs(CONNECT_SECONDS))?;
-    stream.set_read_timeout(Some(Duration::from_secs(seconds)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(seconds.max(1))))?;
     writeln!(stream, "{token} {}", base64_encode(script.as_bytes()))?;
-    let mut answer = Vec::new();
-    stream.read_to_end(&mut answer)?;
+    let answer = read_answer(&mut stream, Duration::from_secs(seconds))?;
     Ok(String::from_utf8_lossy(&answer).into_owned())
+}
+
+/// As much of the answer as comes in `patience`, up to the most an answer can be. Each read has what
+/// is left of the time, so an answer that keeps trickling ends as one that stops does.
+fn read_answer(stream: &mut TcpStream, patience: Duration) -> std::io::Result<Vec<u8>> {
+    let end = Instant::now() + patience;
+    let mut answer = Vec::new();
+    let mut chunk = [0; ANSWER_CHUNK];
+    while answer.len() < MOST_ANSWER {
+        let left = end.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            break;
+        }
+        stream.set_read_timeout(Some(left))?;
+        match stream.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(size) => answer.extend_from_slice(&chunk[..size]),
+            Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => break,
+            Err(error) => return Err(error),
+        }
+    }
+    answer.truncate(MOST_ANSWER);
+    Ok(answer)
 }
 
 /// The machine's token, made the first time. Only an install calls this: the guest learns the token
@@ -189,6 +214,47 @@ mod tests {
         scratch.write("program/guest/clipboard.ps1", "the helper");
         scratch.write("program/guest/clipboard-start.ps1", "start it");
         scratch.write("program/guest/clipboard-ask.ps1", "ask it");
+    }
+
+    fn answering_with(reply: impl FnOnce(TcpStream) + Send + 'static) -> u16 {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        thread::spawn(move || {
+            let stream = listener.accept().unwrap().0;
+            // Read first: closing on a request nobody read could lose the answer.
+            let mut line = String::new();
+            BufReader::new(stream.try_clone().unwrap()).read_line(&mut line).unwrap();
+            reply(stream);
+        });
+        port
+    }
+
+    #[test]
+    fn an_answer_that_keeps_trickling_ends_on_time() {
+        let port = answering_with(|mut stream| {
+            while stream.write_all(b"x").is_ok() {
+                thread::sleep(Duration::from_millis(100));
+            }
+        });
+        let start = Instant::now();
+        let answer = TcpAgent.ask(port, "token", "up", 1);
+        assert!(start.elapsed() < Duration::from_secs(3), "it took {:?}", start.elapsed());
+        assert!(!answer.is_empty());
+    }
+
+    #[test]
+    fn an_answer_has_a_size_limit() {
+        let port = answering_with(|mut stream| {
+            let block = vec![b'x'; 1 << 20];
+            while stream.write_all(&block).is_ok() {}
+        });
+        assert_eq!(TcpAgent.ask(port, "token", "up", 20).len(), MOST_ANSWER);
+    }
+
+    #[test]
+    fn a_whole_answer_comes_back() {
+        let port = answering_with(|mut stream| stream.write_all(b"finished\r\n").unwrap());
+        assert_eq!(TcpAgent.ask(port, "token", "up", 5), "finished\r\n");
     }
 
     #[test]

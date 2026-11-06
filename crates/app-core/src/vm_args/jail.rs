@@ -13,7 +13,9 @@ use std::path::Path;
 /// render node, the sensor daemon reads the driver's version there, and `-nic user` reads
 /// `/etc/resolv.conf`, which is often a link into `/run`.
 const SANDBOX: &str = "bwrap --unshare-user --unshare-pid --unshare-ipc --unshare-uts --unshare-cgroup-try \
-    --new-session --clearenv --setenv PATH /usr/bin --tmpfs /tmp --ro-bind /usr /usr --ro-bind /etc /etc \
+    --new-session --clearenv --setenv PATH /usr/bin --tmpfs /tmp --ro-bind /usr /usr --ro-bind-try /etc/ld.so.cache /etc/ld.so.cache \
+    --ro-bind-try /etc/nsswitch.conf /etc/nsswitch.conf --ro-bind-try /etc/hosts /etc/hosts \
+    --ro-bind-try /etc/resolv.conf /etc/resolv.conf \
     --symlink usr/lib /lib --symlink usr/lib64 /lib64 --symlink usr/bin /bin --proc /proc --dev /dev \
     --ro-bind /sys/class/drm /sys/class/drm --ro-bind /sys/devices /sys/devices \
     --ro-bind /sys/module/nvidia/version /sys/module/nvidia/version \
@@ -49,14 +51,17 @@ impl VmPlan {
         let mut command: Vec<String> = SANDBOX.split_whitespace().map(str::to_owned).collect();
         // A QEMU in its build folder finds its firmware through links to the folder above.
         let qemu_tree = folder_of(Path::new(&folder_of(&self.qemu)));
-        for path in [qemu_tree, folder_of(image), folder_of(sensor_daemon)] {
+        for path in [qemu_tree, folder_of(sensor_daemon)] {
             command.extend(bind("--ro-bind", &path));
         }
-        command.extend(bind("--ro-bind", &allow_list.display().to_string()));
+        for file in [image, allow_list] {
+            command.extend(bind("--ro-bind", &file.display().to_string()));
+        }
         if let Some(folder) = &self.qemu_files {
             command.extend(bind("--ro-bind", &folder.display().to_string()));
         }
-        command.extend(bind("--bind", &folder_of(Path::new(&self.disk))));
+        // The disk and not its folder, which holds the machine's settings and keys.
+        command.extend(bind("--bind", &self.disk));
         command.extend(bind("--bind", &self.run_folder.display().to_string()));
         for node in gpu_nodes(devices) {
             command.extend(bind("--dev-bind", &node));
@@ -128,9 +133,11 @@ mod tests {
         let written: Vec<&String> =
             command.windows(2).filter(|two| two[0] == "--bind").map(|two| &two[1]).collect();
         assert_eq!(written.len(), 2);
-        assert_eq!(written[0], "/m/ubuntu");
+        assert_eq!(written[0], "/m/ubuntu/disk.qcow2");
+        assert!(!written.iter().any(|path| *path == "/m/ubuntu"), "the machine's folder stays out");
         assert!(says(&command, "--ro-bind", "/p/linux/allow.txt"));
-        assert!(says(&command, "--ro-bind", "/images"));
+        assert!(says(&command, "--ro-bind", "/images/driver.iso"));
+        assert!(!says(&command, "--ro-bind", "/etc"), "only the files QEMU reads from /etc");
         assert_eq!(command.last().map(String::as_str), Some("--"));
     }
 

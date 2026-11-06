@@ -15,7 +15,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const STEP: Option<Duration> = Some(Duration::from_millis(200));
 const WANTS_COMPLETION: FrameFlags = FrameFlags(1);
@@ -186,4 +186,34 @@ fn a_frame_with_a_bad_range_list_closes_the_channel_and_nothing_else() {
     server.step(STEP).unwrap();
     assert_eq!(receive(&mut vgpu).0.transaction, 2);
     fs::remove_dir_all(folder).unwrap();
+}
+
+#[test]
+fn the_server_ends_when_qemu_has_gone() {
+    let folder = run_folder("gone");
+    let mut server = server(&folder);
+    server.set_qemu_gone_after(Duration::from_millis(50));
+    let vgpu = connect(&mut server, &folder, Channel::Vgpu);
+    let global = connect(&mut server, &folder, Channel::Global);
+    drop((vgpu, global));
+    let start = Instant::now();
+    server.run().unwrap();
+    assert!(start.elapsed() < Duration::from_secs(10), "it took {:?}", start.elapsed());
+    fs::remove_dir_all(&folder).unwrap();
+}
+
+#[test]
+fn a_channel_that_closes_and_comes_back_ends_nothing() {
+    let folder = run_folder("back");
+    let mut server = server(&folder);
+    let vgpu = connect(&mut server, &folder, Channel::Vgpu);
+    let global = connect(&mut server, &folder, Channel::Global);
+    drop(global);
+    server.step(STEP).unwrap();
+    assert!(!server.qemu_is_gone_now(), "one channel is still open");
+    let _again = connect(&mut server, &folder, Channel::Global);
+    drop(vgpu);
+    server.step(STEP).unwrap();
+    assert!(!server.qemu_is_gone_now());
+    fs::remove_dir_all(&folder).unwrap();
 }

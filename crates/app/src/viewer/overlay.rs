@@ -41,7 +41,10 @@ impl PerformanceOverlay {
             let now = watched.frames_shown();
             let sample = sampler.latest();
             let seconds = since.elapsed().as_secs_f64();
-            let text = overlay::text((now - frames) as u32, seconds, sample.as_ref(), sampler.now());
+            let mut text = overlay::text((now - frames) as u32, seconds, sample.as_ref(), sampler.now());
+            if let Some(nits) = watched.sdr_white_nits() {
+                text.push_str(&format!("\nHDR, SDR white {nits} nits"));
+            }
             updating.set_label(&text);
             shown.set((now, Instant::now()));
             glib::ControlFlow::Continue

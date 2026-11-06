@@ -1,11 +1,8 @@
 //! The XML a WebDAV client expects.
 
+use crate::share::anchored::Info;
 use crate::share::inside::quote;
 use chrono::DateTime;
-use std::fs;
-use std::io;
-use std::os::unix::fs::MetadataExt;
-use std::path::Path;
 
 /// File times Windows sets, and is told it has, which it needs to finish a copy.
 const WINDOWS_TIMES: [&str; 4] =
@@ -21,26 +18,25 @@ fn escape(text: &str) -> String {
     text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
 }
 
-pub fn entry(path: &Path, href: &[u8]) -> io::Result<String> {
-    let info = fs::metadata(path)?;
-    let folder = info.is_dir();
+pub fn entry(info: Info, href: &[u8]) -> String {
+    let folder = info.is_folder;
     let kind = if folder { "<D:collection/>" } else { "" };
     let size = if folder {
         String::new()
     } else {
-        format!("<D:getcontentlength>{}</D:getcontentlength>", info.len())
+        format!("<D:getcontentlength>{}</D:getcontentlength>", info.size)
     };
     let slash = if folder && !href.ends_with(b"/") { "/" } else { "" };
-    Ok(format!(
+    format!(
         "<D:response><D:href>{}{slash}</D:href><D:propstat><D:prop>\
          <D:resourcetype>{kind}</D:resourcetype>{size}\
          <D:getlastmodified>{}</D:getlastmodified>\
          <D:creationdate>{}</D:creationdate>\
          </D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response>",
         escape(&quote(href)),
-        http_date(info.mtime()),
-        http_date(info.ctime()),
-    ))
+        http_date(info.modified),
+        http_date(info.changed),
+    )
 }
 
 pub fn xml_response(entries: &str) -> String {

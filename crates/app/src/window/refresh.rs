@@ -9,6 +9,7 @@ use guesthouse_app_core::context::Context;
 use guesthouse_app_core::machine::{Machine, load_all};
 use guesthouse_app_core::processes::all_leftovers;
 use guesthouse_app_core::slots;
+use guesthouse_app_core::stopped::note_if_stopped_by_itself;
 use guesthouse_app_core::tasks::{State, Status, free_slot, is_paused, status};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -23,6 +24,8 @@ pub struct RefreshState {
     reading: bool,
     ticks: u32,
     paused_before: BTreeSet<String>,
+    /// The machines that were up at the last look, and their slots.
+    running_before: BTreeMap<String, u8>,
     leftovers_before: BTreeMap<u8, u64>,
     problem: Option<String>,
 }
@@ -166,6 +169,22 @@ impl Window {
         }
     }
 
+    /// A VM can go at any moment, and the row showing Off doesn't say that it wasn't meant to.
+    fn say_what_stopped(&self, report: &Report) {
+        let up = |(id, status): (&String, &Status)| {
+            Some((id.clone(), status.slot.filter(|_| status.state == State::Running)?))
+        };
+        let running: BTreeMap<String, u8> = report.statuses.iter().filter_map(up).collect();
+        let before = std::mem::replace(&mut self.0.refresh.borrow_mut().running_before, running);
+        for (id, slot) in before {
+            let gone = report.statuses.get(&id).is_some_and(|found| found.state == State::Off && !found.busy);
+            let machine = self.0.rows.borrow().get(&id).map(|row| row.machine().borrow().clone());
+            if let Some(machine) = machine.filter(|_| gone) {
+                note_if_stopped_by_itself(&self.0.context, &machine, slot);
+            }
+        }
+    }
+
     fn show_status(&self, report: Report) {
         {
             let mut state = self.0.refresh.borrow_mut();
@@ -180,6 +199,7 @@ impl Window {
         if report.checked {
             self.act_on_checks(&report);
         }
+        self.say_what_stopped(&report);
         for (id, status) in &report.statuses {
             self.show_machine_status(id, status, report.vm_running);
         }

@@ -2,6 +2,7 @@
 //!
 //! Frames come from a [`FrameSource`], with a new texture for each one.
 
+use super::cursor_layer::CursorLayer;
 use super::dbus_frames::DbusFrames;
 use super::forwarded_frames::ForwardedFrames;
 use super::frames::{FrameRoute, FrameSource, thumbnail};
@@ -25,7 +26,7 @@ const POLL: Duration = Duration::from_millis(1);
 const FOLLOW_GUEST: Duration = Duration::from_secs(1);
 const SPINNER_SIZE: i32 = 48;
 const FIRST_RATIO: f32 = 16.0 / 9.0;
-const STYLE: &str = ".guest-screen { background: black; color: white; }
+const STYLE: &str = ".guest-screen { background: #000000; color: #ffffff; }
 .performance-overlay { background: rgba(0, 0, 0, 0.65); color: white; padding: 6px 10px; border-radius: 6px;
   font-size: smaller; font-feature-settings: \"tnum\"; }";
 
@@ -33,7 +34,11 @@ pub(super) struct Inner {
     pub(super) root: gtk::Overlay,
     pub(super) picture: gtk::Picture,
     pub(super) aspect: gtk::AspectFrame,
-    pub(super) spinner: adw::Spinner,
+    pub(super) spinner: gtk::Spinner,
+    /// The guest's cursor as the host's pointer, once it has one.
+    pub(super) guest_pointer: RefCell<Option<gdk::Cursor>>,
+    /// The guest's cursor, while there's no host pointer to show it.
+    pub(super) cursor_layer: CursorLayer,
     pub(super) run_folder: RefCell<PathBuf>,
     /// The guest's frames from the GPU, when it has any.
     pub(super) gpu: RefCell<Option<Box<dyn FrameSource>>>,
@@ -80,13 +85,15 @@ impl Screen {
             .focusable(true)
             .build();
         let aspect = gtk::AspectFrame::builder().child(&picture).obey_child(false).ratio(FIRST_RATIO).build();
-        let spinner = adw::Spinner::new();
+        let spinner = gtk::Spinner::builder().spinning(true).build();
         spinner.set_size_request(SPINNER_SIZE, SPINNER_SIZE);
         spinner.set_halign(gtk::Align::Center);
         spinner.set_valign(gtk::Align::Center);
         let root = gtk::Overlay::new();
         root.set_child(Some(&aspect));
         root.add_overlay(&spinner);
+        let cursor_layer = CursorLayer::new();
+        root.add_overlay(cursor_layer.widget());
         root.add_css_class("guest-screen");
         let style = gtk::CssProvider::new();
         style.load_from_string(STYLE);
@@ -101,6 +108,8 @@ impl Screen {
             picture,
             aspect,
             spinner,
+            guest_pointer: RefCell::default(),
+            cursor_layer,
             gpu: RefCell::default(),
             qemu: RefCell::default(),
             booting: Cell::new(true),
@@ -227,6 +236,7 @@ impl Screen {
     /// The guest's own frames win, and QEMU's are only looked at until they come.
     fn next_texture(&self) -> Option<gdk::Texture> {
         let from_gpu = self.0.gpu.borrow_mut().as_mut().and_then(|source| source.newest());
+        self.follow_gpu_cursor();
         if from_gpu.is_some() {
             self.0.booting.set(false);
             self.0.qemu.borrow_mut().take();
@@ -238,6 +248,39 @@ impl Screen {
             self.0.picture.set_cursor(Some(&cursor));
         }
         source.newest()
+    }
+
+    /// A cursor moving makes no frame, so this is looked at whether a frame came or not.
+    fn follow_gpu_cursor(&self) {
+        let mut gpu = self.0.gpu.borrow_mut();
+        let Some(source) = gpu.as_mut() else { return };
+        if let Some(cursor) = source.new_cursor() {
+            *self.0.guest_pointer.borrow_mut() = Some(cursor);
+        }
+        // A pointer set here would show through the capture, which hides the root's.
+        let captured = self.0.captured.get();
+        let pointer = self.0.guest_pointer.borrow().clone().filter(|_| !captured);
+        if self.0.picture.cursor() != pointer {
+            self.0.picture.set_cursor(pointer.as_ref());
+        }
+        let drawn = source.drawn_cursor().filter(|_| captured);
+        let place = drawn.as_ref().and_then(|(_, position)| self.on_widget(position.x, position.y));
+        match (drawn, place) {
+            (Some((cursor, _)), Some((x, y, scale))) => self.0.cursor_layer.show(&cursor, x, y, scale),
+            _ => self.0.cursor_layer.hide(),
+        }
+    }
+
+    /// A point in the guest's pixels as a point on the screen widget, and the scale between them.
+    fn on_widget(&self, x: i32, y: i32) -> Option<(f64, f64, f64)> {
+        let width = self.0.latest.borrow().as_ref()?.width();
+        let bounds = self.0.picture.compute_bounds(&self.0.root)?;
+        let scale = f64::from(bounds.width()) / f64::from(width.max(1));
+        Some((
+            f64::from(bounds.x()) + f64::from(x) * scale,
+            f64::from(bounds.y()) + f64::from(y) * scale,
+            scale,
+        ))
     }
 
     fn show(&self, texture: gdk::Texture) {
@@ -262,6 +305,11 @@ impl Screen {
     /// What QEMU's display has called, for the page checks.
     pub fn display_calls(&self) -> Vec<(String, u64)> {
         self.0.qemu.borrow().as_ref().map(|source| source.calls()).unwrap_or_default()
+    }
+
+    /// How bright the guest wants SDR white, if it's showing an HDR picture.
+    pub fn sdr_white_nits(&self) -> Option<u32> {
+        self.0.gpu.borrow().as_ref().and_then(|source| source.sdr_white_nits())
     }
 
     pub fn frames_shown(&self) -> u64 {

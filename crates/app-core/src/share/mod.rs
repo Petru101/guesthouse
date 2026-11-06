@@ -6,6 +6,7 @@
 //!
 //! The guest isn't trusted: nothing here reaches outside the folder, links included.
 
+mod anchored;
 mod http;
 mod inside;
 mod listing;
@@ -13,10 +14,8 @@ mod listing;
 use http::{Request, reply};
 use inside::{Folder, url_path};
 use listing::{entry, http_date, lock_body, proppatch_body, xml_response};
-use std::fs::{self, File};
 use std::io::{self, BufRead, ErrorKind, Read, Write, copy};
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::{MetadataExt, symlink};
 use std::path::Path;
 
 /// Windows sends a few hundred bytes. This is the only body held whole.
@@ -103,21 +102,24 @@ impl Share {
         output: &mut impl Write,
     ) -> io::Result<()> {
         request.discard_body(input)?;
-        let Some(path) = self.folder.path_of(&request.target).filter(|path| path.exists()) else {
+        let files = &self.folder.files;
+        let found =
+            self.folder.followed_path_of(&request.target).and_then(|path| Some((files.info(&path)?, path)));
+        let Some((info, path)) = found else {
             return reply(output, 404, b"", &[]);
         };
         let href = url_path(&request.target);
-        let mut entries = vec![entry(&path, &href)?];
-        if path.is_dir() && request.header("Depth") != Some("0") {
+        let mut entries = vec![entry(info, &href)];
+        if info.is_folder && request.header("Depth") != Some("0") {
             let parent = href.strip_suffix(b"/").unwrap_or(&href);
-            let mut names: Vec<_> = fs::read_dir(&path)?.flatten().map(|found| found.file_name()).collect();
+            let mut names = files.names(&path)?;
             names.sort();
             for name in names {
-                let child = path.join(&name);
                 let child_href = [parent, b"/", name.as_bytes()].concat();
                 let target = inside::quote(&child_href);
-                if self.folder.path_of(&target).is_some() && child.exists() {
-                    entries.push(entry(&child, &child_href)?);
+                let child = self.folder.followed_path_of(&target);
+                if let Some(info) = child.and_then(|child| files.info(&child)) {
+                    entries.push(entry(info, &child_href));
                 }
             }
         }
@@ -145,27 +147,31 @@ impl Share {
     }
 
     fn get(&self, request: &Request, output: &mut impl Write, send: bool) -> io::Result<()> {
-        let Some(path) = self.folder.path_of(&request.target).filter(|path| path.is_file()) else {
+        let files = &self.folder.files;
+        let found =
+            self.folder.followed_path_of(&request.target).and_then(|path| Some((files.info(&path)?, path)));
+        let Some((info, path)) = found.filter(|(info, _)| info.is_file) else {
             return reply(output, 404, b"", &[]);
         };
-        let found = fs::metadata(&path)?;
-        let (size, modified) = (found.len().to_string(), http_date(found.mtime()));
+        let (size, modified) = (info.size.to_string(), http_date(info.modified));
         let headers = [("Content-Type", ANY_FILE), ("Content-Length", &size), ("Last-Modified", &modified)];
         http::headers(output, 200, &headers)?;
         if send {
-            copy(&mut File::open(path)?, output)?;
+            copy(&mut files.read(&path)?, output)?;
         }
         Ok(())
     }
 
     fn put(&self, request: &Request, input: &mut impl BufRead, output: &mut impl Write) -> io::Result<()> {
-        let path = self.folder.path_of(&request.target).filter(|path| !path.is_dir());
+        let files = &self.folder.files;
+        let is_folder = |path: &Path| files.info(path).is_some_and(|info| info.is_folder);
+        let path = self.folder.followed_path_of(&request.target).filter(|path| !is_folder(path));
         let Some(path) = path else {
             request.discard_body(input)?;
             return reply(output, 403, b"", &[]);
         };
-        let new = !path.exists();
-        match File::create(&path) {
+        let new = files.info(&path).is_none();
+        match files.create(&path) {
             Ok(mut file) => {
                 copy(&mut input.by_ref().take(request.length()), &mut file)?;
                 reply(output, if new { 201 } else { 204 }, b"", &[])
@@ -183,12 +189,7 @@ impl Share {
         else {
             return reply(output, 403, b"", &[]);
         };
-        let done = if path.is_dir() && !path.is_symlink() {
-            fs::remove_dir_all(path)
-        } else {
-            fs::remove_file(path)
-        };
-        answered(output, done, 204)
+        answered(output, self.folder.files.remove(&path), 204)
     }
 
     fn make_folder(
@@ -199,7 +200,7 @@ impl Share {
     ) -> io::Result<()> {
         request.discard_body(input)?;
         let Some(path) = self.folder.path_of(&request.target) else { return reply(output, 403, b"", &[]) };
-        answered(output, fs::create_dir(path), 201)
+        answered(output, self.folder.files.make_folder(&path), 201)
     }
 
     fn destination(&self, request: &Request) -> Option<std::path::PathBuf> {
@@ -218,11 +219,11 @@ impl Share {
         let (Some(path), Some(target)) = (path, self.destination(request)) else {
             return reply(output, 403, b"", &[]);
         };
-        let replaced = target.exists();
+        let replaced = self.folder.files.info(&target).is_some();
         if replaced && request.header("Overwrite") == Some("F") {
             return reply(output, 412, b"", &[]);
         }
-        answered(output, fs::rename(path, target), if replaced { 204 } else { 201 })
+        answered(output, self.folder.files.rename(&path, &target), if replaced { 204 } else { 201 })
     }
 
     fn copy_entry(
@@ -237,44 +238,29 @@ impl Share {
             return reply(output, 403, b"", &[]);
         };
         // A folder copied into itself would go on until the disk was full.
-        if target.starts_with(&path) && path.is_dir() {
+        let files = &self.folder.files;
+        if target.starts_with(&path) && files.info(&path).is_some_and(|info| info.is_folder) {
             return reply(output, 403, b"", &[]);
         }
-        let replaced = target.exists();
+        let replaced = files.info(&target).is_some();
         if replaced && request.header("Overwrite") == Some("F") {
             return reply(output, 412, b"", &[]);
         }
-        answered(output, copy_tree(&path, &target), if replaced { 204 } else { 201 })
+        answered(output, files.copy(&path, &target), if replaced { 204 } else { 201 })
     }
 
     fn lock(&self, request: &Request, input: &mut impl BufRead, output: &mut impl Write) -> io::Result<()> {
         request.discard_body(input)?;
-        let Some(path) = self.folder.path_of(&request.target) else { return reply(output, 403, b"", &[]) };
-        let created = !path.exists();
-        if created && let Err(error) = File::options().append(true).create(true).open(&path) {
+        let Some(path) = self.folder.followed_path_of(&request.target) else {
+            return reply(output, 403, b"", &[]);
+        };
+        let created = self.folder.files.info(&path).is_none();
+        if created && let Err(error) = self.folder.files.touch(&path) {
             return reply_error(output, &error);
         }
         let token = format!("<{LOCK_TOKEN}>");
         let headers = [("Lock-Token", token.as_str()), ("Content-Type", XML)];
         reply(output, if created { 201 } else { 200 }, lock_body(LOCK_TOKEN).as_bytes(), &headers)
-    }
-}
-
-/// Copies a file or folder, keeping links as links: following one could lead out of the share.
-fn copy_tree(from: &Path, to: &Path) -> io::Result<()> {
-    let found = fs::symlink_metadata(from)?;
-    if found.is_symlink() {
-        let _ = fs::remove_file(to);
-        symlink(fs::read_link(from)?, to)
-    } else if found.is_dir() {
-        fs::create_dir_all(to)?;
-        for entry in fs::read_dir(from)? {
-            let entry = entry?;
-            copy_tree(&entry.path(), &to.join(entry.file_name()))?;
-        }
-        Ok(())
-    } else {
-        fs::copy(from, to).map(|_| ())
     }
 }
 
