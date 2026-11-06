@@ -86,7 +86,7 @@ start_process_as() {
     rm -f "$program"
     cp "$(readlink -f "$T/bin/bash")" "$program"
     mkfifo "$T/hold"
-    "$program" -c 'exec 3<>"$0"; read -r -t 60 line <&3' "$T/hold" "$@" &
+    HOME=${VM_HOME:-$H} "$program" -c 'exec 3<>"$0"; read -r -t 60 line <&3' "$T/hold" "$@" &
     process=$!
 }
 
@@ -115,6 +115,15 @@ t_a_vm_on_the_systems_qemu_stops_the_uninstall() {
     check_exit 1
     check_said "Guesthouse is running"
     check_there "$H/.local/lib/guesthouse/current"
+}
+
+t_a_vm_in_another_home_does_not_stop_it() {
+    install_plain
+    VM_HOME=$T/another-home start_process_as "$T/elsewhere/qemu-system-x86_64" "unix:$T/runtime/guesthouse/run/qmp.sock,server"
+    answering 'yes\n' "$SHELL_UNDER_TEST" "$(uninstaller)"
+    stop_process
+    check_exit 0
+    check_gone "$H/.local/lib/guesthouse/current"
 }
 
 t_a_qemu_of_someone_elses_does_not_stop_it() {

@@ -119,7 +119,8 @@ real_folder() {
     (cd "$1" 2>/dev/null && pwd -P) || printf '%s' "$1"
 }
 
-# Processes of this install, and any QEMU with one of its sockets, as a VM may run on the system's QEMU.
+# Processes of this install, and any QEMU of this HOME with one of its sockets, as a VM may run on the
+# system's QEMU. Someone can run the app under another HOME and share a runtime folder.
 list_running() {
     real_root=$(real_folder "$LIB_ROOT")
     for folder in /proc/[0-9]*; do
@@ -134,7 +135,8 @@ list_running() {
             qemu-system-*) ;;
             *) continue ;;
         esac
-        if tr '\0' '\n' <"$folder/cmdline" 2>/dev/null | grep -qF "$RUN_BASE/"; then
+        if tr '\0' '\n' <"$folder/cmdline" 2>/dev/null | grep -qF "$RUN_BASE/" &&
+            tr '\0' '\n' <"$folder/environ" 2>/dev/null | grep -qxF "HOME=$HOME"; then
             say "${folder#/proc/} ${exe##*/}"
         fi
     done
