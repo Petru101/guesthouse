@@ -123,6 +123,8 @@ I'd rather you hear this from me:
 
 ## What's next
 
+The full list, with what's already done, is in the [roadmap](https://github.com/xnixy/guesthouse/issues/2). The short version:
+
 1. Move the NVIDIA backend here, so this repo can boot a guest
 2. The app and an installer, so you can try it
 3. CUDA and video in Windows
