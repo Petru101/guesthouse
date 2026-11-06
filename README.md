@@ -73,6 +73,10 @@ Linux takes a different route. The guest runs NVIDIA's real Linux driver and its
 
 `nvidia-smi`, CUDA and Vulkan work, and speed is about the same as the host: 111–113 TFLOPS on Vulkan in both, and a CUDA launch takes 14.5 µs against 13.9. GNOME runs on it through Zink, with Firefox, Files, Settings and a terminal all working. Godot's Windows build even runs in there through Wine on Wayland.
 
+![nvidia-smi and a small CUDA test in a terminal on the Ubuntu guest's desktop](docs/images/nvidia-smi-in-ubuntu.jpg)
+
+That's `nvidia-smi` and a small CUDA test of mine, on the guest's own desktop. The load and memory it shows are for the whole card, because other VMs were using it at the time.
+
 In theory this route isn't tied to the 5090 the way the Windows one is. It forwards the real driver's calls, so it should work on anything NVIDIA's open driver supports, from the 20 series up, as long as its tables get rebuilt for that driver version. That's only theory for now: it has run on my 5090, on driver 615.78.08, with an AMD CPU, and nothing else.
 
 Delay is where it's behind. A simple app takes about 20 to 30 ms from key press to picture, against about 11.5 on the host, and Godot takes 50 to 100 ms.
