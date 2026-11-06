@@ -6,7 +6,7 @@
 
 That's Godot's full Forward+ renderer on Vulkan, in Windows, in a VM on Fedora. Nothing is passed through. The host never gives up the card, so my GNOME desktop keeps running on it the whole time.
 
-> **Status:** you can't install this yet. The app is here and runs plain VMs. The GPU part only runs on my PC so far, and it isn't in this repo. See [where this is at](#where-this-is-at).
+> **Status:** there's no installer yet. The app and the Linux GPU route are here if you're happy to build them yourself. The Windows GPU part isn't in this repo yet. All of it has only run on my PC. See [where this is at](#where-this-is-at).
 
 ## Why I'm building this
 
@@ -29,8 +29,9 @@ This repo is where it's all heading. So far it has:
 - a tool that replays a recorded session and compares every reply with the prototype's
 - the socket that hands frames to a viewer as dmabufs
 - the desktop app, in `crates/app`, which runs plain VMs today
+- the Linux GPU route, in `linux/`, with its QEMU device in the patch
 
-There's no GPU backend here yet, so the daemon starts, tells you that, and stops. The app still works: it makes and runs plain VMs, and says why GPU machines aren't there. A plain VM needs QEMU and its D-Bus display, which Fedora calls `qemu-ui-dbus`. The next big step is moving the NVIDIA part over, and after that an installer.
+There's no Windows GPU backend here yet, so the daemon starts, tells you that, and stops. The app still works: it makes and runs plain VMs, and says why GPU machines aren't there. A plain VM needs QEMU and its D-Bus display, which Fedora calls `qemu-ui-dbus`. The next big step is moving the NVIDIA part over, and after that an installer.
 
 ![The app's library, with a Windows machine and an Ubuntu machine](docs/images/app-library.jpg)
 
@@ -77,6 +78,8 @@ A heavy Godot test scene at 1280x720 does about 690 fps natively. In the VM it's
 
 ### Linux guests
 
+This route is in this repo, in [`linux/`](linux/README.md), with how to try it.
+
 Linux takes a different route. The guest runs NVIDIA's real Linux driver and its calls get forwarded to the host's driver. So far that's Ubuntu 26.04.1.
 
 `nvidia-smi`, CUDA and Vulkan work, and speed is about the same as the host: 111–113 TFLOPS on Vulkan in both, and a CUDA launch takes 14.5 µs against 13.9. GNOME runs on it through Zink, with Firefox, Files, Settings and a terminal all working. Godot's Windows build even runs in there through Wine on Wayland.
@@ -122,8 +125,8 @@ What's in place for Windows guests:
 
 What's still coming:
 
-- **Jails.** The daemon and QEMU run as you, with nothing around them. That's the next wall to build.
-- **Linux guests aren't walled off yet.** Their driver calls get forwarded to the host, so for now treat a Linux guest like your own user account, and don't run anything in it you wouldn't run on your host. I'm fixing that now with stricter checks on every forwarded call, limits on calls and video memory, and then a proper jail around the part that talks to the driver. This route won't go public until the checks are in.
+- **Jails.** For Windows guests the daemon and QEMU run as you, with nothing around them. For Linux guests QEMU runs in a bubblewrap sandbox, and a proper jail around the part that talks to the driver is the next wall to build.
+- **Trust a Linux guest like you trust yourself.** A Linux guest gets the GPU the way a program of yours does. It can do what your user can do to the card, it sees whole-card sensor and memory readings, and it can slow or crash your GPU session, which takes your desktop with it. It only gets calls on the list, it can only name its own GPU clients, and QEMU runs in a sandbox with no root. As far as I could test, it can't reach QEMU's memory or anyone else's GPU work. There's no full jail yet, so a bug in NVIDIA's driver or in this device is still a bug in your user account. Treat a guest as being as trusted as you, and don't run one you don't trust.
 
 ## My favourite bugs
 
@@ -158,7 +161,7 @@ The full list, with what's already done, is in the [roadmap](https://github.com/
 3. The new display driver, for real refresh rates and HDR
 4. CUDA and video in Windows
 5. Find the missing third of the speed
-6. Lock down Linux guests, and put jails around the daemon and QEMU
+6. Proper jails around the daemon and QEMU
 7. Several GPU VMs at once through the app, tested properly
 
 ## Trying the code

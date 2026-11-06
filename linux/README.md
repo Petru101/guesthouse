@@ -27,6 +27,12 @@ You need an NVIDIA card with the open kernel modules, and the driver version in 
 
 The install takes about ten minutes with no hands, and the first boot builds everything. If anything about the driver is in doubt the GPU stays off and the VM still boots, and the guest says why. As root in the guest, `nvfwd-check` says which parts work.
 
+## How far to trust a guest
+
+A Linux guest gets the GPU the way a program of yours does. It can do what your user can do to the card, it sees whole-card sensor and memory readings, and it can slow or crash your GPU session, which takes your desktop with it. It only gets calls on the list, it can only name its own GPU clients, and QEMU runs in a sandbox with no root. As far as I could test, it can't reach QEMU's memory or anyone else's GPU work. There's no full jail yet, so a bug in NVIDIA's driver or in this device is still a bug in your user account. Treat a guest as being as trusted as you, and don't run one you don't trust.
+
+On a driver point release the sensor daemon doesn't know, CUDA and Vulkan may fail outright instead of just losing sensors. I haven't tried one.
+
 ## Limits
 
 Each is a setting on the device, so `-device nvfwd,...,max-vram=12G`. A value of 0 for the rate turns it off. A machine's video memory cap in the app becomes `max-vram`.
