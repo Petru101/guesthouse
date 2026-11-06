@@ -50,8 +50,8 @@ typedef struct gh_header {
 	uint16_t version;
 	uint16_t kind;
 	uint32_t size; /* Of the whole message, this header included. */
-	uint32_t generation;
-	uint32_t reserved;
+	uint32_t generation; /* Counts from one for each swap chain, so it only means something with the monitor. */
+	uint32_t monitor;
 } gh_header;
 
 /* Sent once for each ring, after the slots exist and are stamped. Slots are all the same shape. */
@@ -63,12 +63,12 @@ typedef struct gh_register {
 	uint32_t pitch; /* Bytes from one row to the next. */
 	uint64_t slot_size; /* What the buffer was created with, for finding it among the guest's allocations. */
 	uint32_t fourcc;
-	uint32_t monitor;
+	uint32_t reserved0;
 	uint8_t cicp_primaries;
 	uint8_t cicp_transfer;
 	uint8_t cicp_matrix;
 	uint8_t full_range;
-	uint32_t reserved;
+	uint32_t reserved1;
 } gh_register;
 
 /* Mastering data as IddCx gives it. Primaries are in units of 0.00002, minimum luminance in units of 0.0001 nits. */

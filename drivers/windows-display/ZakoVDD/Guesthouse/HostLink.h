@@ -64,6 +64,7 @@ private:
 
 	EscapeChannel& m_Channel;
 	std::uint32_t m_Generation = 0;
+	std::uint32_t m_Monitor = 0;
 	std::uint64_t m_Sequence = 0;
 	std::uint32_t m_NextSlot = GH_NO_SLOT;
 	bool m_RingOpen = false;

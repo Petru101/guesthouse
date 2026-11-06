@@ -13,6 +13,7 @@ static RingShape Shape(WireFormat format)
 	shape.height = 2160;
 	shape.slotSize = static_cast<std::uint64_t>(PitchFor(3840)) * 2160;
 	shape.format = format;
+	shape.monitor = 2;
 	return shape;
 }
 
@@ -27,6 +28,7 @@ static void Registers_the_ring_and_gets_its_first_slot()
 	CHECK(daemon.rings.size() == 1);
 	const gh_register& ring = daemon.rings[0];
 	CHECK(ring.header.generation == 1);
+	CHECK(ring.header.monitor == 2);
 	CHECK(ring.fourcc == GH_FOURCC_XBGR2101010);
 	CHECK(ring.cicp_primaries == GH_CICP_PRIMARIES_BT2020);
 	CHECK(ring.cicp_transfer == GH_CICP_TRANSFER_PQ);
@@ -54,6 +56,7 @@ static void Writes_only_where_the_last_reply_said()
 	link.FrameWritten(link.NextSlot(), FrameFacts{});
 	CHECK(daemon.frames.back().slot == 0);
 	CHECK(daemon.frames.back().sequence == 1);
+	CHECK(daemon.frames.back().header.monitor == 2);
 	CHECK(link.NextSlot() == 2);
 
 	link.FrameWritten(link.NextSlot(), FrameFacts{});

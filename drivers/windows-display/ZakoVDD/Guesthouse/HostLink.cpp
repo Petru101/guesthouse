@@ -29,6 +29,7 @@ void HostLink::Fill(gh_header& header, std::uint16_t kind, std::uint32_t size) c
 	header.kind = kind;
 	header.size = size;
 	header.generation = m_Generation;
+	header.monitor = m_Monitor;
 }
 
 bool HostLink::Exchange(void* message, std::uint32_t size)
@@ -73,6 +74,7 @@ bool HostLink::Exchange(void* message, std::uint32_t size)
 bool HostLink::OpenRing(const RingShape& shape)
 {
 	m_Generation = NextGeneration();
+	m_Monitor = shape.monitor;
 	m_Sequence = 0;
 
 	MessageBuffer buffer = {};
@@ -84,7 +86,6 @@ bool HostLink::OpenRing(const RingShape& shape)
 	message.pitch = PitchFor(shape.width);
 	message.slot_size = shape.slotSize;
 	message.fourcc = FourccOf(shape.format);
-	message.monitor = shape.monitor;
 	DescribeColour(shape.format, message);
 
 	m_RingOpen = Exchange(&buffer, BufferSize);
