@@ -108,9 +108,14 @@ fn a_gpu_machine_starts_through_the_same_host_and_sets_up_its_desktop() {
 ",
         "gpu working 1
 ",
+        "device missing",
+        "",
+        "screen basic 1920x1080 64 hdr 0",
         "",
         "screen 1920x1080
 ",
+        "",
+        "screen basic 1920x1080 64 hdr 0",
     ]));
     context.agent = agent.clone();
     let vm = machine(&context);
@@ -123,8 +128,9 @@ fn a_gpu_machine_starts_through_the_same_host_and_sets_up_its_desktop() {
     assert_eq!(task.error, "");
     let asked = agent.requests.lock().unwrap();
     assert!(asked[1].2.contains("Win32_VideoController"), "the GPU is checked before anything else");
-    assert!(asked[2].2.contains("WriteAllBytes"), "the script goes to the guest first");
-    assert!(asked[3].2.contains("New-ScheduledTaskPrincipal"), "and runs in the user's session");
+    assert!(asked[2].2.contains("DEVPKEY"), "then the display driver");
+    assert!(asked[3].2.contains("WriteAllBytes"), "a script goes to the guest first");
+    assert!(asked[4].2.contains("New-ScheduledTaskPrincipal"), "and runs in the user's session");
 }
 
 #[test]
@@ -138,6 +144,9 @@ fn a_desktop_at_the_wrong_size_is_set_and_checked_again() {
 ",
         "gpu working 1
 ",
+        "device missing",
+        "",
+        "screen basic 1024x768 64 hdr 0",
         "",
         "screen 1024x768
 ",
@@ -146,6 +155,8 @@ fn a_desktop_at_the_wrong_size_is_set_and_checked_again() {
         "",
         "screen 800x600
 ",
+        "",
+        "screen basic 800x600 64 hdr 0",
     ];
     context.agent = Arc::new(ScriptedAgent::answering(&answers));
     let vm = machine(&context);

@@ -1,13 +1,15 @@
-//! The guest's desktop once it's up: the boots seen so far, its size, its rate and its shared folder.
+//! The guest's desktop once it's up: the boots seen so far, its size on the basic display and its shared
+//! folder.
 
 use super::Task;
+use super::display::set_up_display;
 use crate::agent::guest_script;
 use crate::context::Context;
 use crate::failure::Result;
-use crate::log::write_log;
 use crate::text::base64_encode;
 use guesthouse_daemon::slot::Slot;
 use std::fs;
+use std::path::Path;
 use std::time::Duration;
 
 /// The firmware writes one of these to the serial log each boot.
@@ -17,19 +19,18 @@ pub(super) const SERIAL_FILE: &str = "serial.log";
 const SHARE_SCRIPT_SECONDS: u64 = 40;
 /// Where the guest keeps what the app puts there, and the account its desktop runs as.
 pub(super) const GUEST_FOLDER: &str = "C:\\gpupv";
-const GUEST_USER: &str = "gpupv";
+pub(super) const GUEST_USER: &str = "gpupv";
 const UPLOAD_SECONDS: u64 = 60;
+const PUT_MARK: &str = "file placed";
 
 /// A script for the user's session: its name, and how many seconds it gets.
 #[derive(Clone, Copy)]
-struct SessionScript {
-    name: &'static str,
-    patience: u32,
-    answer_seconds: u64,
+pub(super) struct SessionScript {
+    pub name: &'static str,
+    pub patience: u32,
+    pub answer_seconds: u64,
 }
 
-const REFRESH: SessionScript = SessionScript { name: "set-refresh", patience: 25, answer_seconds: 35 };
-const REFRESH_SCRIPT: &str = include_str!("../../data/set-refresh.ps1");
 const DISPLAY_SCRIPT: SessionScript = SessionScript { name: "display", patience: 25, answer_seconds: 40 };
 const SET_MODE_SCRIPT: SessionScript = SessionScript { name: "setmode", patience: 40, answer_seconds: 55 };
 const DESKTOP_ATTEMPTS: u32 = 60;
@@ -63,16 +64,22 @@ pub(super) fn note_boot(task: &Task) -> Result<()> {
     Ok(())
 }
 
+/// Copies a file into the guest, and says whether it got there.
+pub(super) fn put_file(task: &Task, local: &Path, guest: &str) -> Result<bool> {
+    let data = base64_encode(&fs::read(local)?);
+    let script =
+        format!("[IO.File]::WriteAllBytes('{guest}', [Convert]::FromBase64String('{data}')); '{PUT_MARK}'");
+    Ok(task.ask_guest(&script, UPLOAD_SECONDS).contains(PUT_MARK))
+}
+
 /// Copies a file from the program folder into the guest.
 pub(super) fn put_guest_file(task: &Task, local: &str, guest: &str) -> Result<()> {
-    let data = base64_encode(&fs::read(task.context.paths.guest_files().join(local))?);
-    let script = format!("[IO.File]::WriteAllBytes('{guest}', [Convert]::FromBase64String('{data}'))");
-    task.ask_guest(&script, UPLOAD_SECONDS);
+    put_file(task, &task.context.paths.guest_files().join(local), guest)?;
     Ok(())
 }
 
 /// Runs a script this app holds as the logged-in user.
-fn run_text_in_session(task: &Task, script: SessionScript, text: &str) -> Result<String> {
+pub(super) fn run_in_session_text(task: &Task, script: SessionScript, text: &str) -> Result<String> {
     let data = base64_encode(text.as_bytes());
     let file = format!("{GUEST_FOLDER}\\{}.ps1", script.name);
     task.ask_guest(
@@ -115,8 +122,9 @@ fn desktop_size(task: &Task) -> Result<Option<String>> {
     Ok(size.contains('x').then_some(size))
 }
 
-fn apply_screen(task: &mut Task) -> Result<()> {
-    let wanted = task.machine.screen.clone();
+/// For the basic display, whose size comes from the VGA memory.
+pub(super) fn apply_screen(task: &mut Task) -> Result<()> {
+    let wanted = task.machine.basic_screen().to_owned();
     task.step("Checking the desktop size");
     if desktop_size(task)?.as_deref() == Some(&wanted) {
         return Ok(());
@@ -156,19 +164,8 @@ pub(super) fn wait_for_desktop(task: &Task) -> bool {
     false
 }
 
-/// A rate only a display driver has. With the basic display there's one mode, and it stays.
-fn apply_refresh(task: &mut Task) -> Result<()> {
-    let wanted = task.machine.refresh_hz;
-    task.step(&format!("Setting the display to {wanted} Hz"));
-    let script = format!("$wanted = {wanted}\n{REFRESH_SCRIPT}");
-    let said = run_text_in_session(task, REFRESH, &script)?;
-    write_log(task.context, &format!("refresh rate: {}", said.trim()))?;
-    Ok(())
-}
-
 pub(super) fn set_up_desktop(task: &mut Task) -> Result<()> {
     note_boot(task)?;
-    apply_screen(task)?;
-    apply_refresh(task)?;
+    set_up_display(task);
     apply_share(task)
 }

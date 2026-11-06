@@ -3,6 +3,7 @@
 
 use crate::context::{Context, SLOT_VARIABLE};
 use crate::daemon::detached;
+use crate::display::{read_state, ring_in, screen_text};
 use crate::failure::{Failure, Result};
 use crate::log::open_for_appending;
 use crate::machine::Machine;
@@ -90,6 +91,10 @@ pub struct Status {
     pub busy: bool,
     /// Which VM it is, if it's running or has a task.
     pub slot: Option<u8>,
+    /// What's really on the guest's screen, in words, while it's up.
+    pub screen: String,
+    /// Why the screen isn't what was asked for.
+    pub display_problem: String,
 }
 
 pub fn task_path(context: &Context, slot: Option<Slot>) -> PathBuf {
@@ -154,9 +159,17 @@ pub fn status(context: &Context, machine: &Machine) -> Status {
     let mut found = what_is_running(context, machine);
     let folder = found.slot.map(|number| context.run_folder(Some(slots::number(number))));
     if found.state == State::Running
-        && let Some(note) = folder.and_then(|folder| read_note(&folder))
+        && let Some(note) = folder.as_ref().and_then(|folder| read_note(folder))
     {
         found.error = note;
+    }
+    if machine.has_gpu() {
+        let shown = read_state(context, machine);
+        found.display_problem = shown.problem(found.state == State::Running).to_owned();
+        if found.state == State::Running {
+            let slot = found.slot.map(slots::number);
+            found.screen = screen_text(&shown, ring_in(context, slot));
+        }
     }
     found
 }
@@ -193,7 +206,8 @@ fn what_is_running(context: &Context, machine: &Machine) -> Status {
         "stop" | "force" | "clean_up" => State::Stopping,
         _ => state,
     };
-    Status { state, step: task.step.clone(), error: task.error.clone(), busy: true, slot: Some(number) }
+    let (step, error) = (task.step.clone(), task.error.clone());
+    Status { state, step, error, busy: true, slot: Some(number), ..Status::default() }
 }
 
 /// Starts a task that will outlive the app, and returns at once. It runs in the machine's slot, or

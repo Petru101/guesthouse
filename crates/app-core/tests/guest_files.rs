@@ -3,7 +3,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-const SENT_TO_THE_GUEST: [&str; 13] = [
+const SENT_TO_THE_GUEST: [&str; 14] = [
     "SetupComplete.cmd",
     "agent.ps1",
     "autounattend.xml",
@@ -11,6 +11,7 @@ const SENT_TO_THE_GUEST: [&str; 13] = [
     "clipboard-ask.ps1",
     "clipboard-start.ps1",
     "clipboard.ps1",
+    "display-remove.ps1",
     "display.ps1",
     "finish.ps1",
     "nv-files.ps1",

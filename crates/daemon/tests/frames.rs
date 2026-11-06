@@ -363,7 +363,15 @@ fn a_new_viewer_takes_the_place_of_the_old_one() {
     assert!(new.ring.generation > old.ring.generation);
     rig.next_frame(&new);
     assert_eq!(rig.live_exports(), SLOTS as usize);
-    assert!(old.socket.receive().map(|_| ()).is_err_and(|error| error.kind() == ErrorKind::UnexpectedEof));
+    // A frame can be on its way to the old viewer when the new one comes, and that's read first.
+    let ended = loop {
+        match old.socket.receive() {
+            Ok(Some(_)) => continue,
+            Ok(None) => break None,
+            Err(error) => break Some(error.kind()),
+        }
+    };
+    assert_eq!(ended, Some(ErrorKind::UnexpectedEof));
 }
 
 #[test]
@@ -530,6 +538,7 @@ fn frames_keep_going_when_the_export_is_refused() {
 mod display_driver {
     use super::*;
     use guesthouse_backend_nvidia::fake_guest;
+    use guesthouse_daemon::display_note::{ScreenNote, read_note};
     use guesthouse_messages::indirect::as_the_driver_sends as driver;
     use guesthouse_messages::indirect::{
         CursorMove, CursorPiece, FrameDone, Look, Mastering, Register, RingName, Stamp,
@@ -607,6 +616,28 @@ mod display_driver {
             }
         }
         panic!("no frame came");
+    }
+
+    #[test]
+    fn the_app_is_told_of_the_drivers_screen_and_when_it_goes() {
+        let mut rig = Rig::new();
+        assert_eq!(read_note(&rig.folder), None);
+        rig.stamped_buffers();
+        let first = rig.say(&driver::register(&ring(Look::HDR))).1.expect("a slot");
+        for _ in 0..MOST_STEPS {
+            rig.step();
+        }
+        let note =
+            ScreenNote { width: WIDTH, height: HEIGHT, hdr: true, daemon: process::id(), frames: false };
+        assert_eq!(read_note(&rig.folder), Some(note), "an open ring says nothing about the picture");
+        rig.say(&driver::frame(&done(first)));
+        for _ in 0..MOST_STEPS {
+            rig.step();
+        }
+        assert_eq!(read_note(&rig.folder), Some(ScreenNote { frames: true, ..note }));
+        rig.say(&driver::close(NAME));
+        rig.step();
+        assert_eq!(read_note(&rig.folder), None);
     }
 
     #[test]

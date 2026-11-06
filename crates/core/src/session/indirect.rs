@@ -10,7 +10,7 @@ use crate::frames::{
     Cursor, FrameLight, GuestSlot, IndirectRing, Landing, LiveRing, Picture, Registering, ReplyWaiting, Slots,
 };
 use guesthouse_backend::{Backend, BackendError, GuestMemory, SpaceId};
-use guesthouse_messages::indirect::{FrameDone, Outcome, Register, Reply, Request, STAMP_SIZE, Stamp};
+use guesthouse_messages::indirect::{FrameDone, Look, Outcome, Register, Reply, Request, STAMP_SIZE, Stamp};
 use std::collections::VecDeque;
 use std::os::fd::OwnedFd;
 use std::time::{Duration, Instant};
@@ -204,6 +204,8 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             light: vec![None; count],
             needs_export: true,
             export_refused: false,
+            opened_at: Instant::now(),
+            landed: false,
         });
         log::info!("the display driver has a ring: {ring:?}");
         self.reply(Outcome::Accepted, granted)
@@ -275,6 +277,13 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         }
     }
 
+    /// What the display driver's ring shows, if it has one, and whether a frame has really landed on
+    /// it. The app reads this to say what's running.
+    pub fn indirect_screen(&self) -> Option<(Picture, Look, bool)> {
+        let landed = self.frames.indirect.as_ref()?.landed;
+        self.frames.ring.as_ref().map(|ring| (ring.picture, ring.look, landed))
+    }
+
     /// The guest has restarted. Its old processes never said goodbye, so without this the ring would
     /// still belong to one of them, and the driver's new process would be refused it.
     pub fn guest_reset(&mut self) {
@@ -333,6 +342,10 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
                 frames.sequence += 1;
                 let replaced = ring.slots.finished(landing.slot, frames.sequence);
                 indirect.light[landing.slot as usize] = Some(landing.light);
+                if !indirect.landed {
+                    indirect.landed = true;
+                    log::info!("the ring's first frame took {:?}", now - indirect.opened_at);
+                }
                 frames.counts.copied += 1;
                 frames.counts.replaced += u64::from(replaced);
             } else {

@@ -12,6 +12,7 @@ pub mod clock;
 pub mod context;
 pub mod daemon;
 pub mod disk_image;
+pub mod display;
 pub mod failure;
 pub mod firmware;
 pub mod forwarded_input;

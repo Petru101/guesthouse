@@ -32,7 +32,7 @@ This repo has:
 - the socket that hands frames to a viewer as dmabufs
 - the desktop app, in `crates/app`
 - the Linux GPU route, in `linux/`, with its QEMU device in the patch
-- a display driver for Windows guests, in `drivers/windows-display/`, which isn't in the app yet
+- a display driver for Windows guests, in `drivers/windows-display/`, which the app installs by itself
 - an installer, `install.sh`, with nothing to install until there's a release
 
 A Windows GPU machine needs NVIDIA's kernel module loaded, with `/dev/nvidiactl` and `/dev/nvidia0`, and `nvidia-smi` on your PATH. It has run on one RTX 5090, with NVIDIA 615.78.08 on the host and 617.42 in Windows 11 Pro, build 26300, and on nothing else. It has never run on another card, or on a PC with two NVIDIA cards.
@@ -120,7 +120,7 @@ There are three pieces:
 
 - **A QEMU patch.** The Windows part is about 900 lines, and gives the guest the devices and the VMBus channels it expects to find on Hyper-V. The Linux device in the same patch is about 4,800 lines more.
 - **A daemon**, which answers everything Windows asks, sets up real GPU channels through the Linux driver, and rings their doorbells when the guest has work.
-- **A desktop app**, Guesthouse, so that none of this needs a terminal. It takes a Windows ISO, installs Windows unattended and brings up the GPU.
+- **A desktop app**, Guesthouse, so that none of this needs a terminal. It takes a Windows ISO, installs Windows unattended and brings up the GPU. It puts my display driver in Windows too. Microsoft hasn't signed that driver, so the app signs it on each machine with a certificate it makes there, adds the certificate to the ones Windows trusts, and deletes the private key.
 
 Apart from one small workaround, the guest's commands aren't translated. The Windows driver writes them, and the GPU runs them. Finished frames stay in video memory and reach the viewer as dmabufs.
 
@@ -167,22 +167,22 @@ I'd rather you hear this from me:
 - **It has only ever run on my PC, on an RTX 5090.** A clean clone does set itself up and pass its tests now, but that's still my machine and my card.
 - **Drivers are tied together.** Linux and Windows have to come from the same NVIDIA branch, and a new branch means new work.
 - **`nvidia-smi` shows a nonsense number for memory in Windows.** The last time I looked, Task Manager didn't show the GPU either.
-- **Sunshine doesn't work in a guest yet.** Windows' Desktop Duplication fails here, because my daemon doesn't answer one of its questions yet, and Sunshine won't start capturing without it. With that answered in a test build, the frames come out scrambled, so it needs more work. The new display driver keeps a frame channel made for Sunshine Foundation, and that works with my own test client, but Sunshine itself has never captured a usable frame here. For now, don't do a default Sunshine install in a guest.
-- **No HDR yet.** It's a must for me. The app's viewer has the code for it, but I haven't checked it on a real HDR screen, and the display driver that sends it isn't in the app yet. In tests that driver gets every frame to the host at up to 4K 240 Hz, in SDR and HDR, with none lost. That's a simple test picture reaching a test client, so a real game and a real viewer still have to prove it.
+- **Sunshine doesn't work in a guest yet.** Windows' Desktop Duplication fails here, because my daemon doesn't answer one of its questions yet, and Sunshine won't start capturing without it. With that answered in a test build, the frames come out scrambled, so it needs more work. The display driver keeps a frame channel made for Sunshine Foundation, and that works with my own test client, but Sunshine itself has never captured a usable frame here. For now, don't do a default Sunshine install in a guest.
+- **HDR hasn't met a real screen yet.** It's a must for me. The app turns it on in Windows now, through the display driver, and in tests known colours arrive exact at up to 4K 240 Hz, in SDR and HDR, with no frame lost. That's a test picture reaching a test client on a desktop with no real monitor, so I still have to try it on my own screens, and a real game still has to prove it.
 - **The viewer drops frames.** With the old viewer, at 144 Hz about 116 frames a second reached it, and about 90 at 4K. I haven't measured the new one yet. It also costs speed: Superposition scored 16,240 with it open, in one run.
 - **Several GPU VMs at once is early.** I've tested three Windows VMs together on one card, started by the app's own task program. Each one needs a video memory cap, and each sees only its own cap. They all stayed exact with Direct3D 12, Vulkan and OpenGL running at once, and when I killed one VM's QEMU, the others carried on and its memory came back. They share the card's speed fairly: a long test ran at about 4,000 frames a second alone and about 1,500 each with three. I haven't tested what a GPU fault in one VM does to the others, and I haven't tried it from the app's window.
 - **Long OpenGL lists break.** Superposition in OpenGL now scores about 11,800, with the right picture, but OpenGL lists past 2,048 entries lose their oldest entries. I can bring them back when a list follows on from the one before it. When it doesn't, the queue stops rather than fault the GPU, so Godot's OpenGL renderer doesn't get through its heavy scene. See #6.
-- **Windows runs at about 64 Hz.** It thinks it has a basic display, and the machine's row shows the rate you asked for, not the one you got. Higher rates need a hack in the guest that I'm replacing with the new display driver. See #7.
+- **A Windows password stops a start.** The app waits for the desktop, so if Windows asks for a password at logon, the start fails after about four minutes and the VM turns off. A machine the app installed logs on by itself.
+- **A build from source stays at about 64 Hz.** The display driver gets built in Windows, so a plain `cargo build` has none to install, and Windows stays on its basic display. A release will carry the driver. To build it yourself, see `drivers/windows-display/BUILDING.md`.
 
 ## What's next
 
 The full list, with what's already done, is in the [roadmap](https://github.com/xnixy/guesthouse/issues/2). The short version:
 
 1. A first release, so you can install it
-2. The new display driver in the app, for real refresh rates and HDR
-3. Find the missing third of the speed
-4. Lock down Linux guests, and put jails around the daemon and QEMU
-5. Several GPU VMs at once from the app itself
+2. Find the missing third of the speed
+3. Lock down Linux guests, and put jails around the daemon and QEMU
+4. Several GPU VMs at once from the app itself
 
 ## Trying the code
 

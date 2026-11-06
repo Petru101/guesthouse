@@ -48,6 +48,11 @@ fn formats(display: &gdk::Display) -> Vec<Format> {
     in_order(offered.collect())
 }
 
+/// Whether this build and this display can take an HDR frame at all.
+pub fn takes_hdr_frames(display: &gdk::Display) -> bool {
+    formats(display).contains(&HDR_FORMAT)
+}
+
 /// HDR is only offered if the display has it, and it comes early, as the list can be cut short.
 fn in_order(offered: Vec<Format>) -> Vec<Format> {
     let hdr = (cfg!(feature = "hdr") && offered.contains(&HDR_FORMAT)).then_some(HDR_FORMAT);

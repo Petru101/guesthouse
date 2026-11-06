@@ -9,9 +9,21 @@ $settingsFolder = 'C:\VirtualDisplayDriver'
 $storeKey = 'HKLM:\SOFTWARE\Microsoft\SystemCertificates\TrustedPublisher\Certificates'
 $hardwareId = 'Root\GuesthouseDisplay'
 $subject = 'CN=Guesthouse display driver, this machine only'
+# Windows puts the name in quotes in what it reads back, as it has a comma in it.
+$ourCertificates = '*Guesthouse display driver, this machine only*'
 $yearsValid = 10
 
 "secure boot: $(Confirm-SecureBootUEFI)"
+
+# Only the newest root is ever needed, and a run that died part way could have left a key behind, which
+# must never stay. A driver already installed keeps working, as Windows checked it when it went in.
+foreach ($store in 'Root', 'TrustedPublisher') {
+    Get-ChildItem "Cert:\LocalMachine\$store" | Where-Object Subject -like $ourCertificates | Remove-Item
+}
+# -DeleteKey only exists once Remove-Item has a path it can see, so it can't come down a pipeline.
+Get-ChildItem Cert:\LocalMachine\My | Where-Object Subject -like $ourCertificates |
+    ForEach-Object { Remove-Item "Cert:\LocalMachine\My\$($_.Thumbprint)" -DeleteKey }
+
 New-Item -ItemType Directory -Force $settingsFolder | Out-Null
 Copy-Item "$folder\vdd_settings.xml" $settingsFolder -Force
 
@@ -58,6 +70,9 @@ public class Dev {
     byte[] b = System.Text.Encoding.Unicode.GetBytes(id + "\0\0");
     if (!SetupDiSetDeviceRegistryPropertyW(s, ref d, 1, b, b.Length)) return "hwid " + Marshal.GetLastWin32Error();
     if (!SetupDiCallClassInstaller(0x19, s, ref d)) return "register " + Marshal.GetLastWin32Error();
+    return Update(id, inf);
+  }
+  public static string Update(string id, string inf) {
     bool r; bool ok = UpdateDriverForPlugAndPlayDevicesW(IntPtr.Zero, id, inf, 1, out r);
     return "update " + ok + " error " + Marshal.GetLastWin32Error() + " reboot " + r;
   }
@@ -65,6 +80,14 @@ public class Dev {
 '@
 Add-Type $source
 pnputil /add-driver "$package\GuesthouseDisplay.inf" 2>&1 | Select-Object -Last 4
-[Dev]::Make($hardwareId, "$package\GuesthouseDisplay.inf")
+# A second device would be a second monitor, so a newer build goes onto the one that's here.
+$ours = Get-PnpDevice -Class Display -ea 0 | Where-Object {
+    (Get-PnpDeviceProperty -InstanceId $_.InstanceId -KeyName DEVPKEY_Device_HardwareIds -ea 0).Data -contains $hardwareId
+}
+if ($ours) {
+    [Dev]::Update($hardwareId, "$package\GuesthouseDisplay.inf")
+} else {
+    [Dev]::Make($hardwareId, "$package\GuesthouseDisplay.inf")
+}
 Start-Sleep 6
 Get-PnpDevice -Class Display | ForEach-Object { "$($_.Status) $($_.Problem) $($_.FriendlyName) $($_.InstanceId)" }

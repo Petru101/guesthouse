@@ -6,6 +6,7 @@ mod keys;
 mod library_page;
 mod machine_row;
 mod refresh;
+mod screen_hdr;
 
 pub use machine_row::{MachineHandle, MachineRow};
 
@@ -337,6 +338,7 @@ impl Window {
     pub fn show_settings(&self, machine: MachineHandle) {
         let id = machine.borrow().id.clone();
         let status = self.0.rows.borrow().get(&id).map(MachineRow::status).unwrap_or_default();
+        self.note_screen_hdr();
         let dialog = SettingsDialog::new(self, machine);
         dialog.set_status(&status);
         dialog.present();

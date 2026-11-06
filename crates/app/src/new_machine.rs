@@ -4,6 +4,7 @@ use crate::common::{choose_file, in_background};
 use crate::rows::{number_row, row_button};
 use crate::window::Window;
 use adw::prelude::*;
+use guesthouse_app_core::display::DriverPackage;
 use guesthouse_app_core::gpu_support::{kind_offered, plain_reason, ubuntu_note};
 use guesthouse_app_core::host::{host_ram_limit, physical_cores, plain_ram_limit};
 use guesthouse_app_core::iso::{Iso, read_iso};
@@ -19,6 +20,8 @@ use std::path::Path;
 use std::rc::Rc;
 
 const NO_GPU: &str = "This machine gets no GPU acceleration. It runs on the CPU, with a basic display.";
+const DISPLAY_DRIVER_NOTE: &str =
+    "Guesthouse adds its own display driver to Windows, signed with a certificate made on this machine.";
 const WIDTH: i32 = 520;
 const HEIGHT: i32 = 620;
 const NOTE_MARGIN: i32 = 12;
@@ -243,7 +246,10 @@ impl NewMachineDialog {
             self.show_verdict(&iso.title, NO_DRIVER_FILES);
         } else if windows {
             let warning = driver_warning(&context).map_or_else(String::new, |text| format!(" {text}"));
-            self.show_verdict(&iso.title, &format!("Installs by itself and starts with GPU-PV.{warning}"));
+            // A build from source has no driver to add, so it says nothing about one.
+            let display = DriverPackage::find(&context).map_or("", |_| DISPLAY_DRIVER_NOTE);
+            let said = format!("Installs by itself and starts with GPU-PV. {display}{warning}");
+            self.show_verdict(&iso.title, said.trim());
         } else {
             self.show_verdict(
                 &format!("{}: a plain VM", iso.title),
