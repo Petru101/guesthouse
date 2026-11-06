@@ -4,6 +4,7 @@ use super::Task;
 use crate::agent::guest_script;
 use crate::context::Context;
 use crate::failure::Result;
+use crate::log::write_log;
 use crate::text::base64_encode;
 use guesthouse_daemon::slot::Slot;
 use std::fs;
@@ -20,12 +21,15 @@ const GUEST_USER: &str = "gpupv";
 const UPLOAD_SECONDS: u64 = 60;
 
 /// A script for the user's session: its name, and how many seconds it gets.
+#[derive(Clone, Copy)]
 struct SessionScript {
     name: &'static str,
     patience: u32,
     answer_seconds: u64,
 }
 
+const REFRESH: SessionScript = SessionScript { name: "set-refresh", patience: 25, answer_seconds: 35 };
+const REFRESH_SCRIPT: &str = include_str!("../../data/set-refresh.ps1");
 const DISPLAY_SCRIPT: SessionScript = SessionScript { name: "display", patience: 25, answer_seconds: 40 };
 const SET_MODE_SCRIPT: SessionScript = SessionScript { name: "setmode", patience: 40, answer_seconds: 55 };
 const DESKTOP_ATTEMPTS: u32 = 60;
@@ -67,12 +71,29 @@ pub(super) fn put_guest_file(task: &Task, local: &str, guest: &str) -> Result<()
     Ok(())
 }
 
+/// Runs a script this app holds as the logged-in user.
+fn run_text_in_session(task: &Task, script: SessionScript, text: &str) -> Result<String> {
+    let data = base64_encode(text.as_bytes());
+    let file = format!("{GUEST_FOLDER}\\{}.ps1", script.name);
+    task.ask_guest(
+        &format!("[IO.File]::WriteAllBytes('{file}', [Convert]::FromBase64String('{data}'))"),
+        UPLOAD_SECONDS,
+    );
+    run_placed_script(task, script)
+}
+
 /// Runs one of the app's scripts as the logged-in user, as session 0 has no display, and returns what
 /// it wrote. It's run as a scheduled task, which is the agent's way into that session.
 fn run_in_session(task: &Task, script: SessionScript) -> Result<String> {
+    let file = format!("{GUEST_FOLDER}\\{}.ps1", script.name);
+    put_guest_file(task, &format!("{}.ps1", script.name), &file)?;
+    run_placed_script(task, script)
+}
+
+/// The script is in the guest's folder by now.
+fn run_placed_script(task: &Task, script: SessionScript) -> Result<String> {
     let SessionScript { name, patience, answer_seconds } = script;
     let (file, result) = (format!("{GUEST_FOLDER}\\{name}.ps1"), format!("{GUEST_FOLDER}\\cap\\{name}.txt"));
-    put_guest_file(task, &format!("{name}.ps1"), &file)?;
     let arguments = format!("-NoProfile -ExecutionPolicy Bypass -File {file}");
     let run = format!(
         "Remove-Item {result} -ea 0; \
@@ -135,8 +156,19 @@ pub(super) fn wait_for_desktop(task: &Task) -> bool {
     false
 }
 
+/// A rate only a display driver has. With the basic display there's one mode, and it stays.
+fn apply_refresh(task: &mut Task) -> Result<()> {
+    let wanted = task.machine.refresh_hz;
+    task.step(&format!("Setting the display to {wanted} Hz"));
+    let script = format!("$wanted = {wanted}\n{REFRESH_SCRIPT}");
+    let said = run_text_in_session(task, REFRESH, &script)?;
+    write_log(task.context, &format!("refresh rate: {}", said.trim()))?;
+    Ok(())
+}
+
 pub(super) fn set_up_desktop(task: &mut Task) -> Result<()> {
     note_boot(task)?;
     apply_screen(task)?;
+    apply_refresh(task)?;
     apply_share(task)
 }

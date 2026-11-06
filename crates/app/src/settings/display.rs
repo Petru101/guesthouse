@@ -8,8 +8,8 @@ use guesthouse_app_core::machine::{Kind, MAX_REFRESH_HZ, MIN_REFRESH_HZ, REFRESH
 use guesthouse_app_core::tasks::Status;
 use std::rc::Rc;
 
-/// The guest keeps its own rate until a display driver can be told, so nothing applies this yet.
-const RATE_NOTE: &str = "Kept for later. The guest stays at its own rate for now.";
+const RATE_NOTE: &str = "Set each time the machine starts, if its display has this rate. Windows' basic display \
+                         doesn't, and stays at its own.";
 
 struct Parts {
     shared: Shared,
