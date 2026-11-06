@@ -5,6 +5,7 @@
 use super::arguments::words;
 use super::{Boot, DISPLAY_SOCKET, UbuntuBoot, UbuntuInstall, VmPlan};
 use crate::text::qemu_value;
+use guesthouse_daemon::slot::Slot;
 
 /// The installer asks for a confirmation unless this is on its command line, and the ISO's own menu
 /// doesn't put it there, which is why the kernel is booted directly.
@@ -13,6 +14,7 @@ const INSTALL_RAM: &str = "8G";
 /// The guest's own SSH port, forwarded to the host for each slot.
 const FIRST_SSH_PORT: u16 = 2228;
 const GUEST_SSH_PORT: u16 = 22;
+const SSH_PORT_VARIABLE: &str = "SSH_PORT";
 /// The window for mapping the host's GPU memory into the guest.
 const GPU_WINDOW: &str = "256G";
 const INPUT_PORT: &str = "nvfwd.input";
@@ -25,7 +27,17 @@ pub const FORWARDED_INPUT_SOCKET: &str = "forwarded-input.sock";
 pub const INSTALL_LOG: &str = "install-serial.log";
 const SERIAL_LOG: &str = "serial.log";
 
+/// The host's port for a guest's SSH: `SSH_PORT`, or the first one for this slot.
+pub fn ssh_port(slot: Slot) -> u16 {
+    let chosen = std::env::var(SSH_PORT_VARIABLE).ok().and_then(|text| text.parse().ok());
+    chosen.unwrap_or(FIRST_SSH_PORT + u16::from(slot.number()))
+}
+
 impl VmPlan {
+    fn ssh_port(&self) -> u16 {
+        ssh_port(self.slot)
+    }
+
     fn monitors(&self) -> Vec<String> {
         let sockets = ["qmp.sock", "watch.sock", "input.sock", DISPLAY_SOCKET];
         let each = sockets.iter().flat_map(|socket| {
@@ -113,7 +125,7 @@ impl VmPlan {
     }
 
     fn boot_ubuntu_arguments(&self, boot: &UbuntuBoot) -> Vec<String> {
-        let ssh_port = FIRST_SSH_PORT + u16::from(self.slot.number());
+        let ssh_port = self.ssh_port();
         let mut arguments = words(&[
             "-L",
             &self.qemu_files.to_string_lossy(),

@@ -10,8 +10,9 @@ use crate::linux::driver_image::{Outcome, prepare};
 use crate::linux::driver_versions::RpmHost;
 use crate::linux::guest_sources;
 use crate::linux::seed::make_seed;
+use crate::network::{Protocol, port_taken};
 use crate::start_checks::start_problems;
-use crate::vm_args::{Boot, INSTALL_LOG, UbuntuBoot, UbuntuInstall};
+use crate::vm_args::{Boot, INSTALL_LOG, UbuntuBoot, UbuntuInstall, ssh_port};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -150,6 +151,13 @@ pub fn start(task: &mut Task) -> Result<()> {
     if let Some(problem) = start_problems(task.context, &task.machine)?.into_iter().next() {
         return Err(Failure(problem));
     }
+    // QEMU's own message wouldn't say what to do about it.
+    let port = ssh_port(task.context.slot);
+    if port_taken(Protocol::Tcp, port) {
+        return Err(Failure(format!(
+            "Port {port} on this PC is in use by another program, and Ubuntu's SSH needs it. Set SSH_PORT to another one."
+        )));
+    }
     let boot = gpu_boot(task)?;
     task.step("Starting the VM");
     let plan = plan_for(task.context, &task.machine, Boot::Ubuntu(boot));
@@ -208,6 +216,21 @@ mod tests {
         let host = RecordingHost::default();
         let mut task = Task::new(&context, &host, "start", ubuntu(&context));
         assert!(off_reason(&mut task).contains("no nvfwd device"));
+    }
+
+    #[test]
+    fn a_port_in_use_is_named_before_qemu_can_fail_on_it() {
+        let scratch = Scratch::new();
+        let mut context = scratch_context(&scratch);
+        context.cpus = crate::host::stand_in::fake_cpus(&scratch, "cpus", &[32768; 8]);
+        context.meminfo = scratch.write("meminfo", "MemAvailable:   100000000 kB\n");
+        let listener = std::net::TcpListener::bind(("127.0.0.1", ssh_port(context.slot)));
+        let host = RecordingHost::default();
+        let mut task = Task::new(&context, &host, "start", ubuntu(&context));
+        let found = start(&mut task);
+        // Whoever holds the port, this test or another program, the words are the same.
+        assert!(listener.is_ok() || found.is_err());
+        assert!(found.unwrap_err().0.contains("Set SSH_PORT"));
     }
 
     #[test]

@@ -7,7 +7,7 @@ mod arguments;
 mod nic;
 mod ubuntu;
 
-pub use ubuntu::{FORWARDED_INPUT_SOCKET, FRAMES_PREFIX, INSTALL_LOG};
+pub use ubuntu::{FORWARDED_INPUT_SOCKET, FRAMES_PREFIX, INSTALL_LOG, ssh_port};
 
 use crate::context::Context;
 use crate::machine::Machine;
