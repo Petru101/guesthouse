@@ -117,7 +117,7 @@ fn main() {
         surface_height: 768,
         block: 3,
     };
-    let batch = copier.tiled(&tiled);
+    let batch = copier.tiled(&tiled).expect("these numbers fit their fields");
     copier.start(&mut device, batch);
     let batch = copier.bytes(0x3_0000, 0x4_0000, 0x1000);
     copier.start(&mut device, batch);

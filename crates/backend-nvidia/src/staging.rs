@@ -82,7 +82,7 @@ impl<R: Rm> NvidiaBackend<R> {
                     count,
                 }))
             }
-            Some(block) => Some(channel.tiled(&Tiled {
+            Some(block) => channel.tiled(&Tiled {
                 rows: Rows {
                     source: copy.source_address,
                     target: write,
@@ -96,8 +96,14 @@ impl<R: Rm> NvidiaBackend<R> {
                 surface_width: source.pitch,
                 surface_height: source.height,
                 block,
-            })),
+            }),
         }
+    }
+
+    /// The batch last started, for a test on a fake.
+    #[cfg(any(test, feature = "fake-rm"))]
+    pub fn last_copy_words(&self) -> &[u32] {
+        &self.copier.as_ref().expect("a copy has run").channel.last_words
     }
 
     /// Finishes the copy under way, for a test on a fake.
@@ -154,8 +160,8 @@ impl<R: Rm> NvidiaBackend<R> {
             width,
             count: copy.height,
         };
-        Some(match copy.source.tiling {
-            None => channel.rows(&rows(copy.source.pitch)),
+        match copy.source.tiling {
+            None => Some(channel.rows(&rows(copy.source.pitch))),
             Some(block) => channel.tiled(&Tiled {
                 rows: rows(0),
                 x: 0,
@@ -164,7 +170,7 @@ impl<R: Rm> NvidiaBackend<R> {
                 surface_height: copy.source.height,
                 block,
             }),
-        })
+        }
     }
 
     pub(crate) fn start_frame_copy(&mut self, host: &mut dyn HostServices, copy: &SlotCopy) -> StagingStart {
@@ -361,6 +367,16 @@ mod tests {
     fn addresses_past_64_bits_make_no_batch() {
         let copy = StagingCopy { target_address: u64::MAX, target_top: 1, ..staging_copy(100, 50, None) };
         assert_eq!(NvidiaBackend::<FakeRm>::batch_for(&mut channel(), &copy), None);
+    }
+
+    #[test]
+    fn a_tiled_corner_or_block_past_their_fields_makes_no_batch() {
+        let wide = StagingCopy { left: 0x4000, right: 0x4001, ..staging_copy(100, 50, Some(3)) };
+        assert_eq!(NvidiaBackend::<FakeRm>::batch_for(&mut channel(), &wide), None);
+        let low = StagingCopy { top: 0x1_0000, bottom: 0x1_0001, ..staging_copy(100, 50, Some(3)) };
+        assert_eq!(NvidiaBackend::<FakeRm>::batch_for(&mut channel(), &low), None);
+        assert_eq!(NvidiaBackend::<FakeRm>::batch_for(&mut channel(), &staging_copy(100, 50, Some(6))), None);
+        assert_eq!(NvidiaBackend::<FakeRm>::slot_batch_for(&mut channel(), &slot_copy(Some(0x13))), None);
     }
 
     #[test]
