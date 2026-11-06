@@ -26,9 +26,9 @@ script_in() {
     "$ENGINE" exec "$@"
 }
 
-# What a desktop would have already, and these images don't.
+# What a desktop would have already, and these images don't, and GTK's display for a PC with none.
 add_basics() {
-    as_root 'apt-get update -q && apt-get install -y -q --no-install-recommends xz-utils' >/dev/null
+    as_root 'apt-get update -q && apt-get install -y -q --no-install-recommends xz-utils libgtk-4-bin' >/dev/null
 }
 
 run_on() {

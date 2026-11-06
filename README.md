@@ -204,7 +204,7 @@ To update, run the script again, or `~/.local/lib/guesthouse/current/install.sh 
 
 To remove it, run `~/.local/lib/guesthouse/current/uninstall.sh`. It refuses while a VM is running, and removes what's in the manifest and nothing else, and a file that has changed since the install stays. Your machines stay too, unless you pass `--delete-machines` and then type the folder's name. Packages stay, as something else may use them, and it lists them.
 
-I run this on Fedora. Debian, Ubuntu and Arch should work, and openSUSE is best effort. Debian 13 and Ubuntu 24.04 can't run the app yet, though, as their libadwaita is older than 1.8, and the script stops and says so. Nothing here has been tried on a real install of any of them.
+I run this on Fedora. The oldest systems it's meant for are Ubuntu 24.04 and Debian 13: it needs glibc 2.39, GTK 4.14 and libadwaita 1.5, and on anything older the script stops and says why. HDR needs GTK 4.16, so Ubuntu 24.04 gets the app without it. I've installed it on those two in containers with no GPU, but not on a real desktop of either. Arch should work and openSUSE is best effort, and I haven't tried those at all.
 
 ## Bring your own
 

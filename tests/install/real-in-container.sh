@@ -14,6 +14,8 @@ T=/tmp/guesthouse-test
 H=$T/home
 HDR_GTK=4.16
 VM_SECONDS=8
+APP_SECONDS=6
+BROADWAY_DISPLAY_NUMBER=:5
 
 fail() {
     printf 'FAILED: %s\n' "$*"
@@ -21,7 +23,7 @@ fail() {
 }
 
 set_up() {
-    mkdir -p "$H" "$T/bin" "$T/runtime"
+    mkdir -p "$H" "$T/bin" "$T/runtime" "$T/app-home"
     ln -sf "$here/stand-ins/curl" "$T/bin/curl"
     version=$(sed -n 's/^version = "\(.*\)"$/\1/p' "$repo/Cargo.toml" | head -n 1)
     payload=guesthouse-$version-x86_64.tar.xz
@@ -78,37 +80,50 @@ check_programs() {
     "$current/guesthouse" --help | head -n 2
 }
 
-# The same choice as Firmware::described_in in the app, with Secure Boot and no keys.
-firmware_descriptor() {
-    for file in /usr/share/qemu/firmware/*.json; do
-        grep -q '"secure-boot"' "$file" && ! grep -q '"enrolled-keys"' "$file" && grep -q 'pc-q35' "$file" || continue
-        printf '%s' "$file"
-        return
-    done
-}
-
 boot_plain_vm() {
     if [ ! -w /dev/kvm ]; then
         echo "no KVM in this container, so no VM"
         return
     fi
-    descriptor=$(firmware_descriptor)
-    [ -n "$descriptor" ] || fail "no firmware descriptor fits"
-    code=$(grep -A 3 '"executable"' "$descriptor" | sed -n 's/.*"filename": "\(.*\)".*/\1/p')
-    vars=$(grep -A 3 '"nvram-template"' "$descriptor" | sed -n 's/.*"filename": "\(.*\)".*/\1/p')
-    printf 'firmware: %s\n' "$code"
+    # Whatever the app itself would boot on this distro.
+    "$current/guesthouse-check" --firmware >"$T/firmware"
+    code=$(cut -f 2 "$T/firmware")
+    vars=$(cut -f 3 "$T/firmware")
+    format=$(cut -f 4 "$T/firmware")
+    [ -f "$code" ] && [ -f "$vars" ] || fail "the app's firmware isn't here: $code $vars"
+    printf 'firmware the app picks: %s, %s, %s\n' "$code" "$vars" "$format"
     cp "$vars" "$T/vars.fd"
     qemu-img create -f qcow2 "$T/throwaway.qcow2" 64M >/dev/null
     status=0
     timeout "$VM_SECONDS" "$qemu" -L "$current/qemu/pc-bios" -machine q35,accel=kvm,smm=on -m 256 \
         -display none -monitor none -nodefaults -serial file:"$T/serial.txt" \
         -global driver=cfi.pflash01,property=secure,value=on \
-        -drive if=pflash,format=raw,unit=0,readonly=on,file="$code" \
-        -drive if=pflash,format=raw,unit=1,file="$T/vars.fd" \
+        -drive if=pflash,format="$format",unit=0,readonly=on,file="$code" \
+        -drive if=pflash,format="$format",unit=1,file="$T/vars.fd" \
         -drive file="$T/throwaway.qcow2",if=virtio || status=$?
     # timeout's own code, which means QEMU was still running when it ended it.
     [ "$status" -eq 124 ] || fail "the VM stopped by itself, with $status"
-    printf 'the VM ran %s seconds and wrote %s bytes to its serial port\n' "$VM_SECONDS" "$(wc -c <"$T/serial.txt")"
+    printf 'the VM ran %s seconds, and its serial port says:\n' "$VM_SECONDS"
+    tr -cd '[:print:]\n' <"$T/serial.txt" | grep . | head -n 4 | cut -c 1-100
+}
+
+# GTK's Broadway backend needs no display, so the app really starts, on this distro's GTK. It has a
+# HOME of its own, as what it writes is the app's, and the install's HOME has to come back untouched.
+start_the_app() {
+    HOME=$T/app-home XDG_RUNTIME_DIR=$T/runtime gtk4-broadwayd "$BROADWAY_DISPLAY_NUMBER" >"$T/broadway.log" 2>&1 &
+    server=$!
+    sleep 1
+    status=0
+    env HOME="$T/app-home" GDK_BACKEND=broadway BROADWAY_DISPLAY="$BROADWAY_DISPLAY_NUMBER" \
+        timeout "$APP_SECONDS" "$current/guesthouse" >"$T/app.log" 2>&1 || status=$?
+    kill "$server"
+    # timeout's own code, which means the app was still up when it ended it.
+    if [ "$status" -ne 124 ]; then
+        cat "$T/app.log"
+        fail "the app stopped by itself, with $status"
+    fi
+    printf 'the app stayed up for %s seconds on Broadway, and said:\n' "$APP_SECONDS"
+    head -n 5 "$T/app.log" | cut -c 1-140
 }
 
 set_up
@@ -127,6 +142,7 @@ export GUESTHOUSE_PROGRAM="$current"
 check_app
 check_libraries
 check_programs
+start_the_app
 boot_plain_vm
 unset GUESTHOUSE_PROGRAM
 sh "$current/uninstall.sh" </dev/null

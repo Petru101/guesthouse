@@ -56,7 +56,7 @@ Each handler has tests in `core/src/session/tests.rs`, which send whole messages
 
 `core/tests/handler_fuzz.rs`, and the same in `backend-nvidia/tests/boot.rs` on the fake RM, send random messages and fail on any panic. `FUZZ_ROUNDS=20000000 FUZZ_SEED=7 cargo test --release -p guesthouse-core --test handler_fuzz` runs one for longer.
 
-`tests/install/run.sh` tests `install.sh` and `uninstall.sh` with stand-ins for sudo, curl and the package manager. It needs bubblewrap, as each test runs with everything but its own folder read-only. `tests/install/real-run.sh` does a whole install and uninstall with a real release's files, in a fake HOME, and `tests/install/in-containers.sh` runs one on each distro image you already have.
+`tests/install/run.sh` tests `install.sh` and `uninstall.sh` with stand-ins for sudo, curl and the package manager. It needs bubblewrap, as each test runs with everything but its own folder read-only. `tests/install/real-run.sh` does a whole install and uninstall with a real release's files, in a fake HOME, and `tests/install/in-containers.sh` runs one on each distro image you already have. `tests/install/real-in-containers.sh` installs a real release on Ubuntu 24.04 and Debian 13, the oldest systems it runs on.
 
 ## Commits
 
