@@ -1,6 +1,6 @@
 # The tables come from NVIDIA's source at the host driver's version: the app makes them with a driver image.
 obj-m := nvidia.o
-nvidia-y := slots.o call.o rm.o uvm.o show.o
+nvidia-y := slots.o call.o rm.o uvm.o show.o files.o
 ccflags-y := -I$(src)
 ifdef NV_VERSION
 ccflags-y += -DNV_VERSION=\"$(NV_VERSION)\"
