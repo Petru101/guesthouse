@@ -210,3 +210,9 @@ ctrl 0x2080a618 a power reading for nvidia-smi
 ctrl 0x2080a612 a power reading for nvidia-smi
 ctrl 0x2080852e the fan count for nvidia-smi
 ctrl 0x2080852f a fan reading for nvidia-smi
+ctrl 0x800201 NV0080_CTRL_CMD_GPU_GET_CLASSLIST video encoding asks what the card offers. Read only, and the device knows its pointer
+ctrl 0x801109 NV0080_CTRL_CMD_GR_GET_CAPS_V2 video encoding reads what the card can do. Read only, no pointers
+ctrl 0x801f02 NV0080_CTRL_CMD_NVJPG_GET_CAPS_V2 video encoding reads what the card can do. Read only, no pointers
+ctrl 0x2080016c NV2080_CTRL_CMD_GPU_GET_ENCODER_CAPACITY video encoding asks how much it may use. Read only, no pointers
+ctrl 0x20808163 no public name. NVENC won't open a session without the driver's own answer. The device forwards it at 4 bytes and no other size
+class 0x2 NV01_CONTEXT_DMA video encoding wants a window on its own memory. The same object as RM_ALLOC_CONTEXT_DMA2 makes
