@@ -9,6 +9,7 @@ pub mod device;
 pub mod dmabuf;
 #[cfg(any(test, feature = "fake-rm"))]
 pub mod fake;
+pub mod linux;
 
 use std::fmt;
 use std::os::fd::OwnedFd;
