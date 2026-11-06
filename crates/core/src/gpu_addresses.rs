@@ -22,6 +22,8 @@ pub const LARGE_ALIGN: u64 = 2 << 20;
 pub enum AddressUse {
     /// The host's own, for channels and copies. These are never freed.
     Host,
+    /// A slot of the frame ring, which comes and goes with viewers and screen modes.
+    FrameRing,
     /// A whole allocation, mapped where the host chose.
     Mapped,
     /// Set aside by the guest, for mappings it places itself.
