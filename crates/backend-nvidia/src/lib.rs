@@ -8,6 +8,7 @@
 
 pub mod answers;
 pub mod channel;
+pub mod encode_sessions;
 pub mod escape;
 #[cfg(any(test, feature = "fake-rm"))]
 pub mod fake_guest;
@@ -31,6 +32,7 @@ use answers::nodes::{ENGINE_VIDEO_ENCODE, Node, node_list};
 use answers::perf_data;
 use answers::registry::AdapterRegistry;
 use channel::VideoEngine;
+use encode_sessions::EncodeSessions;
 use guesthouse_backend::{
     AdapterFacts, AllocationShape, Backend, BackendError, DriverSurvey, GpuRange, HostServices, MapRequest,
     MemoryId, PciCard, Refusal, RegistryName, RegistryValue, Setup, SlotCopy, SpaceId, StagingCopy,
@@ -107,6 +109,7 @@ pub struct NvidiaBackend<R> {
     /// The class behind each handle the guest's driver uses.
     channel_classes: Vec<(u32, u32)>,
     nodes: Vec<Node>,
+    encode_sessions: EncodeSessions,
     facts: AdapterFacts,
     answers: AdapterAnswers,
     pub(crate) spaces: HashMap<SpaceId, AddressSpace>,
@@ -192,6 +195,7 @@ impl<R: Rm> NvidiaBackend<R> {
             guest,
             channel_classes: guest_channel_classes(guest, generation),
             nodes,
+            encode_sessions: EncodeSessions::default(),
             facts: AdapterFacts {
                 card: pci_card,
                 name,
@@ -380,13 +384,36 @@ impl<R: Rm + OpenRm> Backend for NvidiaBackend<R> {
         self.device.guest_clock.restart();
     }
 
-    fn escape(&mut self, data: &mut [u8], memory: &dyn Fn() -> VideoMemoryUse) {
+    fn escape(&mut self, process: u32, data: &mut [u8], memory: &dyn Fn() -> VideoMemoryUse) {
         log::debug!("escape {:02x?}, {} bytes", data.get(0x10..0x14), data.len());
         let facts =
             escape::EscapeFacts { channel_classes: &self.channel_classes, nodes: &self.nodes, memory };
         if let Err(error) = escape::answer(&mut self.device, facts, data) {
             log::warn!("an escape failed: {error}");
         }
+        if escape::asks_to_encode(data) && self.encode_sessions.ask(&mut self.device, process) {
+            escape::allow_encoding(data);
+        }
+    }
+
+    fn context_made(&mut self, process: u32, node: u32) {
+        if self.answers.node_is_encoder(node) {
+            self.encode_sessions.context_made(process, node);
+        }
+    }
+
+    fn context_gone(&mut self, process: u32, node: u32) {
+        if self.answers.node_is_encoder(node) {
+            self.encode_sessions.context_gone(&mut self.device, process, node);
+        }
+    }
+
+    fn process_gone(&mut self, process: u32) {
+        self.encode_sessions.process_gone(&mut self.device, process);
+    }
+
+    fn all_processes_gone(&mut self) {
+        self.encode_sessions.all_gone(&mut self.device);
     }
 
     fn adapter_answer(&mut self, query: &VendorQuery<'_>, out: &mut Vec<u8>) -> Option<Status> {

@@ -165,6 +165,8 @@ A context on a video node gets a channel on that engine, in `Channel::new`, and 
 
 The guest's video runtime holds its engines and buffers with mutexes: it waits, sends work, and signals. So a sync object that has no fence has tokens, in `sync_table.rs`. A wait on a queue takes one when its gate opens, and a signal gives it back once the queue has got there. Waits stand in line, first come first served, because a copy and the encoder that reads what it wrote share a mutex and nothing else orders them. Without the tokens all the encoders run at once on shared state, and without the line an encoder now and then gets an old picture. The only sign of either is damaged video.
 
+NVIDIA limits how many encoding sessions a GeForce card runs at once, and this project doesn't lift that. When a guest asks to open one, the daemon takes a slot from the host's driver with the same control a native session uses, and passes on the driver's answer, in `encode_sessions.rs`. So the count is the driver's own, shared with the host and every other VM, and there's no number of ours to go stale. A slot goes back when its session or its process ends, when the guest restarts, and on its own when a daemon dies.
+
 ## Host sensors
 
 `backend-nvidia/src/sensors` reads the card through the vendor's management library, loaded at run time. One daemon per host does this, on its own thread, and writes a snapshot to a small shared file. The message path only reads that snapshot. With no library, or no fresh snapshot, the performance queries give their fixed answers.

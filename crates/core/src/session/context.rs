@@ -30,6 +30,8 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         let process = MessageHeader::process_of(message)?;
         self.processes_32_bit.remove(&process);
         self.process_going(process);
+        self.context_processes.retain(|_, owner| *owner != process);
+        self.backend.process_gone(process);
         if let Some(space) = self.spaces.remove(&process) {
             let action = DeferredAction::CloseSpace(space);
             self.deferred.push(crate::deferred::Deferred { waits: Vec::new(), action });
@@ -107,6 +109,9 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         log::debug!("context {handle:#x} on node {}, hint {:#x}", request.node, request.client_hint);
         self.context_nodes.insert(handle, request.node);
         self.context_hints.insert(handle, request.client_hint);
+        let process = MessageHeader::process_of(message)?;
+        self.context_processes.insert(handle, process);
+        self.backend.context_made(process, request.node);
         let answer_at = out.len();
         request.answer(message, handle, out);
         if let Some(private) = out.get_mut(answer_at + CreateContext::PRIVATE..) {
@@ -122,8 +127,11 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             self.close_queue(queue);
         }
         self.context_queues.remove(&context);
-        self.context_nodes.remove(&context);
+        let node = self.context_nodes.remove(&context);
         self.context_hints.remove(&context);
+        if let (Some(node), Some(process)) = (node, self.context_processes.remove(&context)) {
+            self.backend.context_gone(process, node);
+        }
         answer_status(Status::SUCCESS, out);
         Ok(())
     }

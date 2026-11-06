@@ -8,7 +8,9 @@ use guesthouse_backend_nvidia::fake_guest::{
 };
 use guesthouse_backend_nvidia::profile::{BLACKWELL, GUEST_617};
 use guesthouse_backend_nvidia::pushbuffer::{increasing, ring_entry};
-use guesthouse_backend_nvidia::rm::classes::{CHANNEL_GROUP, ENGINE_COPY_0};
+use guesthouse_backend_nvidia::rm::classes::{
+    CHANNEL_GROUP, CONTROL_ENCODE_SLOT_GIVE_BACK, CONTROL_ENCODE_SLOT_TAKE, ENGINE_COPY_0,
+};
 use guesthouse_backend_nvidia::rm::fake::{Call, FakeRm};
 use guesthouse_backend_nvidia::rm::fake_card::{FAKE_CLASSES, FAKE_GPU_ID, FAKE_NAME};
 use guesthouse_backend_nvidia::sensors::{Snapshot, SnapshotReader};
@@ -678,6 +680,82 @@ fn performance_queries_keep_working_with_no_readings() {
     session.backend_mut().set_sensors(Box::new(FixedReadings(None)));
     assert_eq!(send(&mut session, &adapter_speed_query()), before);
     assert_eq!(u32_at(&before, 0), Ok(SUCCESS));
+}
+
+const ENCODE_NODES: [u32; 2] = [5, 6];
+const ENCODE_ASKS: [u32; 3] = [0x0100_0128, 0x0100_0119, 0x0100_011A];
+const ENCODE_ANSWER: usize = 0x30;
+/// What the host's driver says when the card has no slot left, as measured.
+const NO_SLOT: u32 = 0x69;
+
+/// A guest on a card whose driver has slots.
+fn encoding_guest() -> Guest {
+    let mut session = guest();
+    let rm = &mut session.backend_mut().device_mut().rm;
+    rm.answer(CONTROL_ENCODE_SLOT_TAKE, |_| 0);
+    rm.answer(CONTROL_ENCODE_SLOT_GIVE_BACK, |_| 0);
+    session
+}
+
+fn ask_to_encode(session: &mut Guest, function: u32) -> u8 {
+    let mut escape = message(Command::DriverEscape, HEADER_SIZE + 24);
+    set_u32(&mut escape, HEADER_SIZE + 16, 0x40);
+    let mut data = [0; 0x40];
+    data[0x10..0x14].copy_from_slice(&function.to_le_bytes());
+    escape.extend_from_slice(&data);
+    send(session, &escape)[ENCODE_ANSWER]
+}
+
+fn slots_given_back(session: &Guest) -> usize {
+    let calls = session.backend().device().rm.calls.iter();
+    calls.filter(|call| matches!(call, Call::Control { command: CONTROL_ENCODE_SLOT_GIVE_BACK, .. })).count()
+}
+
+#[test]
+fn every_way_of_asking_to_encode_gets_the_drivers_answer() {
+    for function in ENCODE_ASKS {
+        let mut session = encoding_guest();
+        assert_eq!(ask_to_encode(&mut session, function), 1, "{function:#x}");
+        session.backend_mut().device_mut().rm.answer(CONTROL_ENCODE_SLOT_TAKE, |_| NO_SLOT);
+        assert_eq!(ask_to_encode(&mut session, function), 0, "{function:#x}");
+    }
+}
+
+#[test]
+fn a_session_ending_gives_its_slot_back() {
+    let mut session = encoding_guest();
+    ask_to_encode(&mut session, ENCODE_ASKS[0]);
+    let contexts = ENCODE_NODES.map(|node| context(&mut session, node));
+    for context in contexts {
+        let mut request = message(Command::DestroyContext, HEADER_SIZE + 8);
+        set_u32(&mut request, HEADER_SIZE, context);
+        send(&mut session, &request);
+    }
+    assert_eq!(slots_given_back(&session), 1);
+}
+
+#[test]
+fn a_process_ending_gives_its_slots_back() {
+    let mut session = encoding_guest();
+    ask_to_encode(&mut session, ENCODE_ASKS[0]);
+    ask_to_encode(&mut session, ENCODE_ASKS[0]);
+    for node in ENCODE_NODES {
+        context(&mut session, node);
+    }
+    send(&mut session, &message(Command::DestroyProcess, HEADER_SIZE));
+    assert_eq!(slots_given_back(&session), 2);
+}
+
+#[test]
+fn decoding_takes_no_slot() {
+    let mut session = guest();
+    context(&mut session, DECODE_NODE);
+    let calls = session.backend().device().rm.calls.iter();
+    assert!(
+        !calls
+            .into_iter()
+            .any(|call| matches!(call, Call::Control { command: CONTROL_ENCODE_SLOT_TAKE, .. }))
+    );
 }
 
 #[test]

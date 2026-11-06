@@ -90,6 +90,11 @@ impl AdapterAnswers {
         self.engines.get(node as usize) == Some(&ENGINE_3D)
     }
 
+    /// Whether a node is one of the card's video encoders.
+    pub fn node_is_encoder(&self, node: u32) -> bool {
+        self.engines.get(node as usize) == Some(&ENGINE_VIDEO_ENCODE)
+    }
+
     /// Whether a node is one of the card's video decoders or encoders.
     pub fn node_is_video(&self, node: u32) -> bool {
         let engine = self.engines.get(node as usize);

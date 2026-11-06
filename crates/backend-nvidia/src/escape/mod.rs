@@ -43,8 +43,8 @@ const FUNCTION_RM_ALLOC: u32 = 0x0500_002A;
 const FUNCTION_VIDEO_MEMORY: u32 = 0x0100_0012;
 /// Which node is which engine, for the video runtime.
 const FUNCTION_LIST_NODES: u32 = 0x0100_000F;
-/// Seen in traffic when a guest encodes. We always answer yes, and NVENC runs with that answer.
-const FUNCTION_ENCODE_ASK: u32 = 0x0100_0128;
+/// Asked before an encoding session opens, and the session is refused unless one says yes.
+const FUNCTIONS_ENCODE_ASK: [u32; 3] = [0x0100_0128, 0x0100_0119, 0x0100_011A];
 const ENCODE_ANSWER: usize = 0x30;
 const ENCODE_YES: u8 = 1;
 
@@ -74,6 +74,18 @@ pub struct EscapeFacts<'a> {
     pub memory: &'a dyn Fn() -> VideoMemoryUse,
 }
 
+/// Whether this escape asks to open an encoding session.
+pub fn asks_to_encode(data: &[u8]) -> bool {
+    get(data, FUNCTION).is_some_and(|function| FUNCTIONS_ENCODE_ASK.contains(&function))
+}
+
+/// Says yes to that. No is what any escape's answer leaves there.
+pub fn allow_encoding(data: &mut [u8]) {
+    if let Some(answer) = data.get_mut(ENCODE_ANSWER) {
+        *answer = ENCODE_YES;
+    }
+}
+
 /// Answers an escape in place.
 pub fn answer<R: Rm>(device: &mut Device<R>, facts: EscapeFacts<'_>, data: &mut [u8]) -> Result<(), RmError> {
     let Some(function) = get(data, FUNCTION) else { return Ok(()) };
@@ -93,11 +105,6 @@ pub fn answer<R: Rm>(device: &mut Device<R>, facts: EscapeFacts<'_>, data: &mut 
         FUNCTION_RUNTIME_GPU_RANGE => gpu_range::answer(data),
         FUNCTION_VIDEO_MEMORY => video_memory::answer((facts.memory)(), data),
         FUNCTION_LIST_NODES => node_list::answer(facts.nodes, data),
-        FUNCTION_ENCODE_ASK => {
-            if let Some(answer) = data.get_mut(ENCODE_ANSWER) {
-                *answer = ENCODE_YES;
-            }
-        }
         FUNCTION_RM_ALLOC => {
             put(data, HEADER_SIZE_FIELD, HEADER_SIZE);
             client_alloc::answer(data);
@@ -180,10 +187,15 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn the_encoders_question_gets_a_yes() {
-        let mut data = escape(FUNCTION_ENCODE_ASK, ENCODE_ANSWER + 1);
-        answer(&mut device(), NO_FACTS, &mut data).unwrap();
-        assert_eq!(data[ENCODE_ANSWER], ENCODE_YES);
+    fn every_way_of_asking_to_encode_is_a_no_unless_allowed() {
+        for function in FUNCTIONS_ENCODE_ASK {
+            let mut data = escape(function, ENCODE_ANSWER + 1);
+            assert!(asks_to_encode(&data));
+            answer(&mut device(), NO_FACTS, &mut data).unwrap();
+            assert_eq!(data[ENCODE_ANSWER], 0, "{function:#x}");
+            allow_encoding(&mut data);
+            assert_eq!(data[ENCODE_ANSWER], ENCODE_YES);
+        }
     }
 
     #[test]
