@@ -6,10 +6,11 @@ use crate::channel::{AREA_SIZE, COPY_AREA_EXTRA, COPY_WINDOW, Channel, ChannelPl
 use crate::rm::device::Mapping;
 use crate::rm::{Handle, Rm, RmError};
 use crate::{CHANNEL_ADDRESS_ALIGN, NvidiaBackend, memory_error};
-use guesthouse_backend::{BackendError, HostServices, SlotCopy, SpaceId, StagingCopy, StagingStart, Status};
+use guesthouse_backend::{
+    BackendError, COPY_PIXEL_BYTES, HostServices, SlotCopy, SpaceId, StagingCopy, StagingStart, Status,
+};
 use std::time::Instant;
 
-const BYTES_PER_PIXEL: i64 = 4;
 const SMALL_PAGE: u64 = 0x1000;
 /// What a guest's 10-bit surfaces carry here, as a Direct3D 11 `R10G10B10A2` swap chain's do. The ring
 /// holds 8-bit pictures, and a plain copy can't narrow one.
@@ -56,27 +57,32 @@ impl<R: Rm> NvidiaBackend<R> {
         Ok(self.copier.as_mut().expect("made just above"))
     }
 
-    fn batch_for(channel: &mut CopyChannel, copy: &StagingCopy) -> Vec<u32> {
+    /// The core has checked these numbers against the memory, so `None` here means something is
+    /// wrong in that check, and no copy is better than one built from a number cut down to size.
+    fn batch_for(channel: &mut CopyChannel, copy: &StagingCopy) -> Option<Vec<u32>> {
+        let pixel = i64::from(COPY_PIXEL_BYTES);
         let (left, top) = (i64::from(copy.left), i64::from(copy.top));
         let (source, target) = (&copy.source, &copy.target);
-        let offset = i64::from(copy.target_top) * i64::from(target.pitch)
-            + i64::from(copy.target_left) * BYTES_PER_PIXEL;
-        let write = copy.target_address.wrapping_add_signed(offset);
-        let width = ((i64::from(copy.right) - left) * BYTES_PER_PIXEL) as u32;
-        let count = (i64::from(copy.bottom) - top) as u32;
+        let offset = i64::from(copy.target_top)
+            .checked_mul(i64::from(target.pitch))?
+            .checked_add(i64::from(copy.target_left).checked_mul(pixel)?)?;
+        let write = copy.target_address.checked_add_signed(offset)?;
+        let width = u32::try_from((i64::from(copy.right) - left).checked_mul(pixel)?).ok()?;
+        let count = u32::try_from(i64::from(copy.bottom) - top).ok()?;
         match source.tiling {
             None => {
-                let start = top * i64::from(source.pitch) + left * BYTES_PER_PIXEL;
-                channel.rows(&Rows {
-                    source: copy.source_address.wrapping_add_signed(start),
+                let start =
+                    top.checked_mul(i64::from(source.pitch))?.checked_add(left.checked_mul(pixel)?)?;
+                Some(channel.rows(&Rows {
+                    source: copy.source_address.checked_add_signed(start)?,
                     target: write,
                     source_pitch: source.pitch,
                     target_pitch: target.pitch,
                     width,
                     count,
-                })
+                }))
             }
-            Some(block) => channel.tiled(&Tiled {
+            Some(block) => Some(channel.tiled(&Tiled {
                 rows: Rows {
                     source: copy.source_address,
                     target: write,
@@ -85,12 +91,12 @@ impl<R: Rm> NvidiaBackend<R> {
                     width,
                     count,
                 },
-                x: (left * BYTES_PER_PIXEL) as u32,
-                y: top as u32,
+                x: u32::try_from(left.checked_mul(pixel)?).ok()?,
+                y: u32::try_from(top).ok()?,
                 surface_width: source.pitch,
                 surface_height: source.height,
                 block,
-            }),
+            })),
         }
     }
 
@@ -127,7 +133,10 @@ impl<R: Rm> NvidiaBackend<R> {
                 return StagingStart::Finished(Status::UNSUCCESSFUL);
             }
         };
-        let words = Self::batch_for(&mut copier.channel, copy);
+        let Some(words) = Self::batch_for(&mut copier.channel, copy) else {
+            log::warn!("a copy's numbers don't fit its batch: {copy:?}");
+            return StagingStart::Finished(Status::UNSUCCESSFUL);
+        };
         copier.running = true;
         copier.retried = false;
         let channel = &mut self.copier.as_mut().expect("read above").channel;
@@ -135,16 +144,17 @@ impl<R: Rm> NvidiaBackend<R> {
         StagingStart::Running
     }
 
-    fn slot_batch_for(channel: &mut CopyChannel, copy: &SlotCopy) -> Vec<u32> {
+    fn slot_batch_for(channel: &mut CopyChannel, copy: &SlotCopy) -> Option<Vec<u32>> {
+        let width = copy.width.checked_mul(COPY_PIXEL_BYTES)?;
         let rows = |source_pitch| Rows {
             source: copy.source_address,
             target: copy.slot_address,
             source_pitch,
             target_pitch: copy.slot_pitch,
-            width: copy.width * BYTES_PER_PIXEL as u32,
+            width,
             count: copy.height,
         };
-        match copy.source.tiling {
+        Some(match copy.source.tiling {
             None => channel.rows(&rows(copy.source.pitch)),
             Some(block) => channel.tiled(&Tiled {
                 rows: rows(0),
@@ -154,7 +164,7 @@ impl<R: Rm> NvidiaBackend<R> {
                 surface_height: copy.source.height,
                 block,
             }),
-        }
+        })
     }
 
     pub(crate) fn start_frame_copy(&mut self, host: &mut dyn HostServices, copy: &SlotCopy) -> StagingStart {
@@ -168,7 +178,10 @@ impl<R: Rm> NvidiaBackend<R> {
                 return StagingStart::Finished(Status::UNSUCCESSFUL);
             }
         };
-        let words = Self::slot_batch_for(&mut copier.channel, copy);
+        let Some(words) = Self::slot_batch_for(&mut copier.channel, copy) else {
+            log::warn!("a picture's numbers don't fit its batch: {copy:?}");
+            return StagingStart::Finished(Status::UNSUCCESSFUL);
+        };
         copier.running = true;
         copier.retried = false;
         let channel = &mut self.copier.as_mut().expect("read above").channel;
@@ -299,15 +312,60 @@ mod tests {
     #[test]
     fn a_linear_picture_goes_row_by_row_at_each_sides_pitch() {
         let copy = SlotCopy { slot_pitch: 768, ..slot_copy(None) };
-        let words = NvidiaBackend::<FakeRm>::slot_batch_for(&mut channel(), &copy);
+        let words = NvidiaBackend::<FakeRm>::slot_batch_for(&mut channel(), &copy).unwrap();
         assert_eq!(words[3..11], [0, 0x1000_0000, 0, 0x2000_0000, 512, 768, 400, 50]);
     }
 
     #[test]
     fn a_tiled_picture_is_read_from_its_corner() {
-        let words = NvidiaBackend::<FakeRm>::slot_batch_for(&mut channel(), &slot_copy(Some(3)));
+        let words = NvidiaBackend::<FakeRm>::slot_batch_for(&mut channel(), &slot_copy(Some(3))).unwrap();
         assert_eq!(words[7..11], [0, 512, 400, 50], "the engine works out the source's own pitch");
         assert_eq!(words[17..19], [512, 50]);
         assert_eq!(words[21], 0);
+    }
+
+    fn staging_copy(right: i32, bottom: i32, tiling: Option<u32>) -> StagingCopy {
+        let surface = slot_copy(tiling).source;
+        StagingCopy {
+            source: surface,
+            target: SurfaceShape { tiling: None, ..surface },
+            source_address: 0x1000_0000,
+            target_address: 0x2000_0000,
+            left: 0,
+            top: 0,
+            right,
+            bottom,
+            target_left: 0,
+            target_top: 0,
+            target_guest_address: None,
+            is_screen: false,
+            own_space: SpaceId(1),
+        }
+    }
+
+    #[test]
+    fn a_batch_says_what_the_rectangle_says() {
+        let words = NvidiaBackend::<FakeRm>::batch_for(&mut channel(), &staging_copy(100, 50, None)).unwrap();
+        assert_eq!(words[9..11], [400, 50]);
+    }
+
+    #[test]
+    fn a_row_too_wide_for_the_engines_field_makes_no_batch() {
+        let copy = staging_copy(i32::MAX, 1, None);
+        assert_eq!(NvidiaBackend::<FakeRm>::batch_for(&mut channel(), &copy), None);
+        let copy = staging_copy(i32::MAX, 1, Some(3));
+        assert_eq!(NvidiaBackend::<FakeRm>::batch_for(&mut channel(), &copy), None);
+    }
+
+    #[test]
+    fn addresses_past_64_bits_make_no_batch() {
+        let copy = StagingCopy { target_address: u64::MAX, target_top: 1, ..staging_copy(100, 50, None) };
+        assert_eq!(NvidiaBackend::<FakeRm>::batch_for(&mut channel(), &copy), None);
+    }
+
+    #[test]
+    fn a_picture_too_wide_for_the_engines_field_makes_no_batch() {
+        let copy = SlotCopy { width: u32::MAX, ..slot_copy(None) };
+        assert_eq!(NvidiaBackend::<FakeRm>::slot_batch_for(&mut channel(), &copy), None);
     }
 }
