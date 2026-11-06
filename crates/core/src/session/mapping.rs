@@ -310,10 +310,32 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
     /// Runs an update that waited, and raises its fence for the next.
     pub(crate) fn finish_update(&mut self, operations: &[u8], space: SpaceId, fence: u32, value: u64) {
         if let Err(failure) = self.apply_updates(operations, space) {
-            log::warn!("a waiting address update failed: {failure}");
-            return;
+            log::error!("a waiting address update failed: {failure}");
+            self.stop_space(space);
         }
         self.write_fence(fence, value.saturating_add(1));
+    }
+
+    /// Takes every queue of an address space off the GPU, after an update that didn't happen.
+    ///
+    /// The guest has no way to hear this: the update's own reply went long ago, and it believes the
+    /// addresses are there. Its commands are already on the GPU behind the update's fence, so holding
+    /// the fence down only lasts until a queue times out and that raises it. Closing the channels
+    /// first means nothing of this process can run, so its fences can go up, and the guest isn't left
+    /// waiting. The app draws nothing from here on, and other processes carry on. It doesn't count
+    /// towards the failures that stop all work, as a process can have more queues than that.
+    fn stop_space(&mut self, space: SpaceId) {
+        let in_space = self.queues.iter().filter(|(_, queue)| queue.space == space && !queue.failed);
+        let handles: Vec<u32> = in_space.map(|(&handle, _)| handle).collect();
+        for handle in handles {
+            self.backend.close_queue(handle);
+            let queue = self.queues.get_mut(&handle).expect("just found");
+            queue.failed = true;
+            if let Some(value) = queue.last_fence {
+                let fence = queue.fence;
+                self.store_fence(fence, value);
+            }
+        }
     }
 
     /// Updates on a fence run in turn, each raising it for the next. The guest's driver has the queue
@@ -323,7 +345,12 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         let space = self.space_for(MessageHeader::process_of(message)?)?;
         let (fence, value) = (request.fence, request.fence_value);
         if self.fence_reached(fence, value) {
-            self.apply_updates(request.raw_operations(), space)?;
+            let applied = self.apply_updates(request.raw_operations(), space);
+            if applied.is_err() {
+                self.stop_space(space);
+                self.write_fence(fence, value.saturating_add(1));
+            }
+            applied?;
             if !request.is_complete() {
                 return Err(Malformed.into());
             }
