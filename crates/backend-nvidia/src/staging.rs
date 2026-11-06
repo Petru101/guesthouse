@@ -259,7 +259,11 @@ impl<R: Rm> NvidiaBackend<R> {
         let space = self.spaces.get(&own_space).ok_or_else(|| BackendError::new("no address space"))?.clone();
         let map = Mapping { length, small_pages: true, ..Mapping::default() };
         self.device.map(&space, &Mapping { memory: to, address: window, ..map }).map_err(memory_error)?;
-        self.device.map(&space, &Mapping { memory: from, address: source, ..map }).map_err(memory_error)?;
+        if let Err(error) = self.device.map(&space, &Mapping { memory: from, address: source, ..map }) {
+            // The window is one place, so a mapping left in it would stop every later move.
+            self.device.unmap(&space, to, window, length).map_err(memory_error)?;
+            return Err(memory_error(error));
+        }
         let copier = self.copier.as_mut().expect("made above");
         let words = copier.channel.bytes(source, window, size as u32);
         copier.channel.start(&mut self.device, words);
@@ -383,5 +387,59 @@ mod tests {
     fn a_picture_too_wide_for_the_engines_field_makes_no_batch() {
         let copy = SlotCopy { width: u32::MAX, ..slot_copy(None) };
         assert_eq!(NvidiaBackend::<FakeRm>::slot_batch_for(&mut channel(), &copy), None);
+    }
+
+    const AREA: u64 = 0x800_0000;
+
+    /// Nothing but a place for the copy channel, as a move asks for no more of the host.
+    struct AreaOnly;
+
+    impl HostServices for AreaOnly {
+        fn take_gpu_addresses(&mut self, _: u64, _: u64) -> Result<u64, BackendError> {
+            Ok(AREA)
+        }
+        fn read_at_gpu_address(&self, _: SpaceId, _: u64, _: &mut [u8]) -> Option<usize> {
+            None
+        }
+        fn shared_span(&self, _: SpaceId, _: u64) -> Option<guesthouse_backend::SharedSpan> {
+            None
+        }
+        fn guest_span(&self, _: SpaceId, _: u64) -> Option<guesthouse_backend::GuestSpan> {
+            None
+        }
+        fn read_guest_span(&self, _: SpaceId, _: u64, _: &mut [u8]) -> Option<usize> {
+            None
+        }
+        fn write_guest_span(&mut self, _: SpaceId, _: u64, _: u32) -> bool {
+            false
+        }
+        fn write_u32(&mut self, _: u64, _: u32) -> Result<(), guesthouse_backend::MemoryError> {
+            Ok(())
+        }
+        fn write_u64(&mut self, _: u64, _: u64) -> Result<(), guesthouse_backend::MemoryError> {
+            Ok(())
+        }
+        fn read_guest(&self, _: u64, _: &mut [u8]) -> usize {
+            0
+        }
+        fn fence_value(&self, _: u64) -> Result<u64, guesthouse_backend::MemoryError> {
+            Ok(0)
+        }
+    }
+
+    #[test]
+    fn a_move_that_cannot_map_its_source_leaves_no_window_behind() {
+        use guesthouse_backend::{Backend, GpuRange};
+        let window = AREA + AREA_SIZE as u64;
+        let mut rm = FakeRm::new();
+        rm.refuse_map_at = Some(window + COPY_WINDOW);
+        let mut backend = crate::fake_guest::fake_backend(rm);
+        let range = GpuRange { start: 0x400_0000, end: 0x1_0000_0000 };
+        let space = backend.create_address_space(&[range]).unwrap();
+        let (from, _) = backend.allocate_video_memory(0x1000).unwrap();
+        let (to, _) = backend.allocate_video_memory(0x1000).unwrap();
+        let moved = backend.preserve_contents(&mut AreaOnly, space, from, to, 0x1000);
+        assert!(moved.is_err());
+        assert_eq!(backend.device().rm.memory_at(window), None);
     }
 }
