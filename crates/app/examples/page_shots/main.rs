@@ -3,6 +3,8 @@
 //!
 //! Usage: `page_shots FOLDER`, with the store and the XDG folders already pointing somewhere harmless.
 
+mod fake_frames;
+
 use adw::prelude::*;
 use gtk::glib;
 use guesthouse_app::application::application;
@@ -18,6 +20,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::Duration;
 
@@ -241,14 +244,22 @@ async fn running_pages(window: Window, folder: PathBuf, failures: Rc<Cell<u32>>,
     close_dialogs(&window).await;
 }
 
-async fn viewer_page(window: Window, folder: PathBuf, failures: Rc<Cell<u32>>, machine: MachineHandle) {
+async fn viewer_page(
+    window: Window,
+    folder: PathBuf,
+    failures: Rc<Cell<u32>>,
+    machine: MachineHandle,
+    released: Arc<AtomicU64>,
+) {
     window.show_screen(machine);
     glib::timeout_future(LONG).await;
     let page = window.open_screen().unwrap();
     let before = page.frames_shown();
-    glib::timeout_future(SETTLE).await;
+    glib::timeout_future(LONG).await;
     let after = page.frames_shown();
     check(&failures, after > before, &format!("frames keep coming: {before} then {after}"));
+    let came_back = released.load(Ordering::Relaxed);
+    check(&failures, came_back > 0, &format!("slots come back when GTK is done: {came_back}"));
     shot_after_paint(&window, &folder, "15-viewer-stand-in").await;
     page.toggle_overlay();
     glib::timeout_future(LONG).await;
@@ -287,9 +298,11 @@ async fn walk_pages(window: Window, context: Arc<Context>, folder: PathBuf) {
     glib::timeout_future(SETTLE).await;
     shot_after_paint(&window, &folder, "19-log").await;
     close_dialogs(&window).await;
-    let mut vm = pretend_vm(&context, &machines[0].borrow());
-    running_pages(window.clone(), folder.clone(), failures.clone(), machines[0].clone()).await;
-    viewer_page(window.clone(), folder, failures.clone(), machines[0].clone()).await;
+    let released = Arc::new(AtomicU64::new(0));
+    fake_frames::serve(&context.run_folder(None), released.clone());
+    let mut vm = pretend_vm(&context, &machines[1].borrow());
+    running_pages(window.clone(), folder.clone(), failures.clone(), machines[1].clone()).await;
+    viewer_page(window.clone(), folder, failures.clone(), machines[1].clone(), released).await;
     let _ = vm.kill();
     let _ = vm.wait();
     println!("failures: {}", failures.get());

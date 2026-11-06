@@ -9,10 +9,12 @@ PROGRAM=${CARGO_TARGET_DIR:-$HERE/../../target}/debug/examples/page_shots
 BROADWAY_DISPLAY=:49
 BROADWAY_PORT=28949
 rm -rf "$FOLDER"
-mkdir -p "$FOLDER/home" "$FOLDER/run" "$FOLDER/shm" "$FOLDER/program/guest" "$FOLDER/shots"
-chmod 700 "$FOLDER/run"
+mkdir -p "$FOLDER/home" "$FOLDER/shm" "$FOLDER/program/guest" "$FOLDER/shots"
+# Its own place, as a socket's path can't be long, and FOLDER's might be.
+RUNTIME=$(mktemp -d)
+trap 'rm -rf "$RUNTIME"' EXIT
 ln -s "$HERE/data" "$FOLDER/program/data"
-exec env -i HOME="$FOLDER/home" PATH=/usr/bin XDG_RUNTIME_DIR="$FOLDER/run" \
+env -i HOME="$FOLDER/home" PATH=/usr/bin XDG_RUNTIME_DIR="$RUNTIME" \
   GUESTHOUSE_SHARED_MEMORY="$FOLDER/shm" GUESTHOUSE_PROGRAM="$FOLDER/program" \
   GDK_BACKEND=broadway BROADWAY_DISPLAY=$BROADWAY_DISPLAY GSK_RENDERER=cairo GTK_A11Y=none \
   dbus-run-session -- bash -c "

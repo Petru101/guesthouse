@@ -1,11 +1,11 @@
 //! The guest's screen in a widget, and the keyboard and mouse going the other way.
 //!
-//! Frames come from a [`FrameSource`]. Each one shown gets a new texture, because GTK can keep a copy
-//! of one that's reused and go on showing the old picture.
+//! Frames come from a [`FrameSource`], with a new texture for each one.
 
-use super::frames::{Frame, FrameOrigin, FrameSource, frame_source};
+use super::frames::{FrameSource, thumbnail};
 use super::overlay::PerformanceOverlay;
 use super::pointer_lock::{PointerLock, pointer_lock};
+use super::socket_frames::SocketFrames;
 use adw::prelude::*;
 use gtk::{gdk, glib};
 use guesthouse_app_core::input::{Guest, INPUT_SOCKET};
@@ -25,26 +25,18 @@ const STYLE: &str = ".guest-screen { background: black; color: white; }
 .performance-overlay { background: rgba(0, 0, 0, 0.65); color: white; padding: 6px 10px; border-radius: 6px;
   font-size: smaller; font-feature-settings: \"tnum\"; }";
 
-fn texture_of(frame: &Frame) -> gdk::MemoryTexture {
-    gdk::MemoryTexture::new(
-        frame.width as i32,
-        frame.height as i32,
-        gdk::MemoryFormat::B8g8r8x8,
-        &glib::Bytes::from(&frame.data),
-        frame.stride(),
-    )
-}
-
 pub(super) struct Inner {
     pub(super) root: gtk::Overlay,
     pub(super) picture: gtk::Picture,
     pub(super) aspect: gtk::AspectFrame,
     pub(super) spinner: adw::Spinner,
-    pub(super) source: RefCell<Box<dyn FrameSource>>,
+    pub(super) run_folder: RefCell<PathBuf>,
+    /// The guest's frames from the GPU, when it has any.
+    pub(super) gpu: RefCell<Option<Box<dyn FrameSource>>>,
     pub(super) gpu_frames: Cell<bool>,
     pub(super) input_socket: RefCell<PathBuf>,
     pub(super) guest: RefCell<Option<Guest>>,
-    pub(super) latest: RefCell<Option<Frame>>,
+    pub(super) latest: RefCell<Option<gdk::Texture>>,
     /// A frame was handed to GTK and hasn't reached the screen yet.
     pub(super) waiting: Cell<bool>,
     pub(super) frames: Cell<u64>,
@@ -99,9 +91,10 @@ impl Screen {
             picture,
             aspect,
             spinner,
-            source: RefCell::new(frame_source(&FrameOrigin::new(&run_folder, gpu_frames))),
+            gpu: RefCell::default(),
             gpu_frames: Cell::new(gpu_frames),
             input_socket: RefCell::new(run_folder.join(INPUT_SOCKET)),
+            run_folder: RefCell::new(run_folder),
             guest: RefCell::default(),
             latest: RefCell::default(),
             waiting: Cell::new(false),
@@ -154,7 +147,8 @@ impl Screen {
     pub fn follow_machine(&self, run_folder: PathBuf, gpu_frames: bool) {
         let socket = run_folder.join(INPUT_SOCKET);
         if self.0.gpu_frames.replace(gpu_frames) != gpu_frames || *self.0.input_socket.borrow() != socket {
-            *self.0.source.borrow_mut() = frame_source(&FrameOrigin::new(&run_folder, gpu_frames));
+            *self.0.run_folder.borrow_mut() = run_folder;
+            self.0.gpu.borrow_mut().take();
             *self.0.input_socket.borrow_mut() = socket;
             self.close_guest();
             self.follow_guest();
@@ -193,6 +187,8 @@ impl Screen {
         self.0.overlay.borrow_mut().take();
         self.let_go();
         self.close_guest();
+        self.0.gpu.borrow_mut().take();
+        self.0.latest.borrow_mut().take();
         self.0.picture.set_paintable(None::<&gdk::Paintable>);
     }
 
@@ -201,11 +197,10 @@ impl Screen {
         if let Some(guest) = self.0.guest.borrow_mut().as_mut() {
             guest.flush();
         }
-        if !self.0.waiting.get() {
-            let frame = self.0.source.borrow_mut().newest();
-            if let Some(frame) = frame {
-                self.show(frame);
-            }
+        if !self.0.waiting.get()
+            && let Some(texture) = self.next_texture()
+        {
+            self.show(texture);
         }
         if self.0.followed_at.get().elapsed() >= FOLLOW_GUEST {
             self.follow_guest();
@@ -213,27 +208,50 @@ impl Screen {
         }
     }
 
-    fn show(&self, frame: Frame) {
-        let texture = texture_of(&frame);
+    fn next_texture(&self) -> Option<gdk::Texture> {
+        self.0.gpu.borrow_mut().as_mut()?.newest()
+    }
+
+    fn show(&self, texture: gdk::Texture) {
         self.0.picture.set_paintable(Some(&texture));
-        self.0.aspect.set_ratio(frame.width as f32 / frame.height as f32);
+        self.0.aspect.set_ratio(texture.width() as f32 / texture.height() as f32);
         self.0.spinner.set_visible(false);
         self.0.waiting.set(true);
         self.0.frames.set(self.0.frames.get() + 1);
-        *self.0.latest.borrow_mut() = Some(frame);
+        *self.0.latest.borrow_mut() = Some(texture);
     }
 
     /// The newest frame as a small PNG, or `None` if nothing has been shown.
     pub fn thumbnail(&self, width: usize) -> Option<Vec<u8>> {
-        let frame = self.0.latest.borrow().as_ref()?.shrunk(width);
-        Some(texture_of(&frame).save_to_png_bytes().to_vec())
+        Some(thumbnail(self.0.latest.borrow().as_ref()?, width))
     }
 
     pub fn frames_shown(&self) -> u64 {
         self.0.frames.get()
     }
 
+    fn monitor_refresh(&self) -> u32 {
+        let native = self.0.root.native().and_then(|native| native.surface());
+        let monitor = native.and_then(|surface| surface.display().monitor_at_surface(&surface));
+        monitor.map_or(0, |monitor| monitor.refresh_rate() as u32)
+    }
+
+    /// Picks up the guest's frames once they're on offer, and a restarted daemon's.
+    fn follow_gpu(&self) {
+        let mut gpu = self.0.gpu.borrow_mut();
+        if gpu.as_ref().is_some_and(|source| !source.alive()) {
+            *gpu = None;
+        }
+        if gpu.is_none() && self.0.gpu_frames.get() {
+            let display = WidgetExt::display(&self.0.root);
+            let connected =
+                SocketFrames::connect(&self.0.run_folder.borrow(), &display, self.monitor_refresh());
+            *gpu = connected.ok().map(|source| Box::new(source) as Box<dyn FrameSource>);
+        }
+    }
+
     fn follow_guest(&self) {
+        self.follow_gpu();
         let mut guest = self.0.guest.borrow_mut();
         if guest.as_ref().is_some_and(|found| !found.alive()) {
             *guest = None;

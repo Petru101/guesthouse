@@ -1,14 +1,16 @@
-//! The page that shows a guest's screen. This is its shell: the toolbar, the mouse, fullscreen and the
-//! thumbnail, around a [`frames::FrameSource`] that for now only draws a stand-in pattern.
+//! The page that shows a guest's screen, with its toolbar, the mouse, fullscreen and the thumbnail.
 
 mod capture;
 mod clipboard;
-pub mod frames;
+mod frames;
+mod import;
 mod input;
 mod monitors;
 mod overlay;
 mod pointer_lock;
+mod ring;
 mod screen;
+mod socket_frames;
 
 use crate::common::in_background;
 use crate::window::{MachineHandle, Window};

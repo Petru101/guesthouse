@@ -16,7 +16,7 @@ path = "src/main.rs"
 guesthouse-app-core.workspace = true
 # The UI, and the features each version brings: spinners and dialogs from libadwaita 1.8.
 adw = { package = "libadwaita", version = "0.9", features = ["v1_8"] }
-gtk = { package = "gtk4", version = "0.11", features = ["v4_18"] }
+gtk = { package = "gtk4", version = "0.11", features = ["v4_20"] }
 # Progress from a thread to GTK's main loop, which glib no longer has a channel for.
 async-channel = "2"
 # Local time for snapshot dates.
@@ -28,8 +28,16 @@ guesthouse-daemon.workspace = true
 gdk-wayland = { package = "gdk4-wayland", version = "0.11", features = ["wayland_crate"] }
 wayland-client = "0.31"
 wayland-protocols = { version = "0.32", features = ["client", "unstable"] }
+# How frames arrive.
+guesthouse-frame-socket.workspace = true
+# Reading a shared buffer, without `unsafe`.
+rustix = { version = "1", features = ["fs"] }
 # What the app remembers is a small JSON file.
 serde_json = "1"
+
+[[example]]
+name = "page_shots"
+path = "examples/page_shots/main.rs"
 
 [lints]
 workspace = true
