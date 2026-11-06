@@ -38,6 +38,16 @@ fn the_answer_file_holds_no_password() {
 }
 
 #[test]
+fn only_the_host_reaches_the_agent() {
+    let setup = fs::read_to_string(guest_file("setup.ps1")).unwrap();
+    assert!(setup.contains("-RemoteAddress 10.0.2.2"));
+    let agent = fs::read_to_string(guest_file("agent.ps1")).unwrap();
+    assert!(agent.contains("$hostAddress = '10.0.2.2'"));
+    assert!(agent.contains("RemoteEndPoint"));
+    assert!(agent.contains("ReadTimeout"));
+}
+
+#[test]
 fn no_token_is_kept_in_the_folder() {
     assert!(!guest_file(".token").exists());
     assert!(!guest_file("token.txt").exists());

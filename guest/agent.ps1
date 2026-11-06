@@ -1,5 +1,7 @@
-# Runs PowerShell sent by the host. Only QEMU's port forward on the host's loopback reaches it, and
-# each request has to start with this machine's token.
+# Runs PowerShell sent by the host, which always comes through QEMU's user network, so the gateway of
+# that network is the only address it talks to. Each request has to start with this machine's token.
+$hostAddress = '10.0.2.2'
+$readMilliseconds = 10000
 
 # Vulkan won't use a display unless it looks like a remote session's, and it goes by the name. The
 # key can show up after setup or on a later boot, so this looks every time. Windows reads it at boot.
@@ -15,7 +17,9 @@ $listener.Start()
 while ($true) {
     $client = $listener.AcceptTcpClient()
     try {
+        if ($client.Client.RemoteEndPoint.Address.ToString() -ne $hostAddress) { continue }
         $stream = $client.GetStream()
+        $stream.ReadTimeout = $readMilliseconds
         $reader = [System.IO.StreamReader]::new($stream)
         $writer = [System.IO.StreamWriter]::new($stream)
         $parts = $reader.ReadLine().Split(' ', 2)
