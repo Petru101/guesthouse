@@ -27,6 +27,8 @@ const INSTALLED_PROGRAM: &str = "/usr/libexec/guesthouse";
 const USER_PROGRAM: &str = ".local/lib/guesthouse/current";
 /// What the program folder holds besides the binaries, which tells it from any other folder.
 const PROGRAM_MARK: &str = "guest";
+/// Where the program folder keeps a build of the display driver. A build from source has none.
+const DISPLAY_DRIVER_FOLDER: &str = "display-driver";
 /// A file that tells the repo's guest folder from any other folder of that name.
 const REPO_GUEST_MARK: &str = "setup.ps1";
 const SHARED_MEMORY: &str = "/dev/shm";
@@ -175,6 +177,11 @@ impl Paths {
     /// The files that go into a Windows guest.
     pub fn guest_files(&self) -> PathBuf {
         self.guest.clone()
+    }
+
+    /// The built display driver, if this program folder has one.
+    pub fn display_driver(&self) -> PathBuf {
+        self.program.join(DISPLAY_DRIVER_FOLDER)
     }
 
     /// The sources of a Linux guest.

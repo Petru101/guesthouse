@@ -2,6 +2,7 @@
 //! the app watches the small file it leaves.
 
 mod desktop;
+mod display;
 mod gpu_check;
 mod guest_files;
 mod install;
@@ -301,6 +302,8 @@ fn run_action(task: &mut Task, arguments: &[String]) -> Result<()> {
         "resume" => resume(task),
         "clean_up" => clean_up(task),
         "after_reboot" => after_reboot(task),
+        "apply_display" => display::apply_display(task),
+        "install_display" => display::install_display(task),
         "install" if task.machine.kind == Kind::Linux => ubuntu::install(task),
         "install" => install(task),
         "take_snapshot" => take_snapshot(task, text),
@@ -347,4 +350,4 @@ pub fn run_task(context: &Context, host: &dyn VmHost, action: &str, machine_id: 
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
