@@ -85,3 +85,22 @@ t_an_unknown_distro_gets_a_list_and_no_commands() {
     check_said "I don't know your distro's names"
     check_not_said "sudo sh"
 }
+
+t_a_closed_kvm_joins_the_one_root_block_and_comes_back_out() {
+    release 1.0
+    give_everything
+    KVM_CLOSED=yes
+    : >"$T/closed-kvm"
+    chmod 000 "$T/closed-kvm"
+    snapshot >"$T/empty"
+    install_version 1.0
+    check_exit 0
+    check_said "sudo sh -c 'usermod -aG kvm"
+    check_said "Log out and in again"
+    [ "$(grep -c '^sudo' "$T/log")" -eq 1 ] || fail "sudo ran more than once"
+    answering 'yes\n' "$SHELL_UNDER_TEST" "$(uninstaller)"
+    check_exit 0
+    check_said "sudo gpasswd -d"
+    check_log "gpasswd -d"
+    check_home_is "$T/empty"
+}

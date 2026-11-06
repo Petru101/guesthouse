@@ -9,6 +9,7 @@ t_it_installs_where_the_app_looks() {
     [ "$(readlink "$root/current")" = 1.0 ] || fail "current isn't 1.0"
     check_there "$root/1.0/qemu/build/qemu-system-x86_64"
     check_there "$root/1.0/guest/setup.ps1"
+    check_there "$root/1.0/uninstall.sh"
     check_there "$root/manifest"
     check_there "$H/.local/share/applications/net.gpupv.Guesthouse.desktop"
     check_there "$H/.local/share/icons/hicolor/scalable/apps/net.gpupv.Guesthouse.svg"
@@ -22,6 +23,20 @@ t_the_launcher_finds_the_program_with_no_help_from_path() {
     install_version 1.0
     grep -qxF "Exec=env \"GUESTHOUSE_PROGRAM=$H/.local/lib/guesthouse/current\" \"$H/.local/lib/guesthouse/current/guesthouse\"" \
         "$H/.local/share/applications/net.gpupv.Guesthouse.desktop" || fail "the launcher's Exec is wrong"
+}
+
+t_a_home_with_a_space_works() {
+    release 1.0
+    give_everything
+    H="$T/my home"
+    mkdir -p "$H"
+    snapshot >"$T/before"
+    install_version 1.0
+    check_exit 0
+    check_there "$H/.local/lib/guesthouse/current/guesthouse"
+    answering 'yes\n' "$SHELL_UNDER_TEST" "$H/.local/lib/guesthouse/current/uninstall.sh"
+    check_exit 0
+    check_home_is "$T/before"
 }
 
 t_a_card_that_cannot_run_still_installs_plain_vms() {
