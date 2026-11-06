@@ -2,12 +2,13 @@
 
 use super::{Handled, Session, answer_status};
 use crate::deferred::{DeferredAction, FreedAllocation};
-use crate::gpu_addresses::{ALLOCATION_ALIGN, GpuAddresses, LARGE_ALIGN};
+use crate::gpu_addresses::{ALLOCATION_ALIGN, AddressUse, GpuAddresses, LARGE_ALIGN};
 use crate::pending::Pending;
-use crate::tables::Mapping;
+use crate::tables::{Mapping, ReservedRange};
 use guesthouse_backend::{Backend, BackendError, GuestMemory, MapRequest, MemoryId, SpaceId, UnmapRequest};
 use guesthouse_messages::address::{
-    MapRequest as GuestMap, PAGE_SIZE, UpdateOperation, UpdateRequest, reserve_size, two_values_and_status,
+    MapRequest as GuestMap, PAGE_SIZE, UpdateOperation, UpdateRequest, freed_address, reserve_size,
+    two_values_and_status,
 };
 use guesthouse_messages::wire::{Malformed, align_up, put_u64};
 use guesthouse_messages::{MessageHeader, Status};
@@ -54,8 +55,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
                 map_answer(0, Status::UNSUCCESSFUL, out);
                 return Ok(());
             }
-            let mapping = Mapping { address: request.address, first, length, space };
-            self.allocations.get_mut(&handle).expect("read above").mappings.push(mapping);
+            self.add_mapping(handle, Mapping { address: request.address, first, length, space });
             map_answer(request.address, Status::SUCCESS, out);
             return Ok(());
         }
@@ -70,7 +70,8 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         // small ones. So each allocation is mapped whole, once, and addresses come from inside that.
         let size = allocation.size;
         let align = if size >= LARGE_PAGES_FROM { LARGE_ALIGN } else { ALLOCATION_ALIGN };
-        let base = self.gpu_addresses.take(align_up(size, ALLOCATION_ALIGN), align)?;
+        let whole = align_up(size, ALLOCATION_ALIGN);
+        let base = self.gpu_addresses.take(whole, align, AddressUse::Mapped)?;
         let gpu_cached = allocation.gpu_cached;
         let map = MapRequest {
             space,
@@ -83,21 +84,52 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         };
         if let Err(error) = self.backend.map(&map) {
             log::warn!("mapping {handle:#x}: {error}");
+            self.gpu_addresses.give_back(base, whole, align, AddressUse::Mapped);
             map_answer(0, Status::UNSUCCESSFUL, out);
             return Ok(());
         }
-        let mapping = Mapping { address: base, first: 0, length: size, space };
-        self.allocations.get_mut(&handle).expect("read above").mappings.push(mapping);
+        self.mapped_addresses.insert(base, (whole, align));
+        self.add_mapping(handle, Mapping { address: base, first: 0, length: size, space });
         map_answer(base + first, Status::SUCCESS, out);
         Ok(())
     }
 
     pub(super) fn reserve_gpu_addresses(&mut self, message: &[u8], out: &mut Vec<u8>) -> Handled {
         let size = align_up(reserve_size(message)?, ALLOCATION_ALIGN);
-        let address = self.gpu_addresses.take(size, ALLOCATION_ALIGN)?;
+        let address = self.gpu_addresses.take(size, ALLOCATION_ALIGN, AddressUse::Reserved)?;
+        let space = self.space_for(MessageHeader::process_of(message)?)?;
+        self.reserved_addresses.push(ReservedRange { address, size, space });
         put_u64(out, address);
         put_u64(out, 0);
         Ok(())
+    }
+
+    /// Takes back only what was reserved here, and not until the GPU has finished with it.
+    pub(super) fn free_gpu_addresses(&mut self, message: &[u8], out: &mut Vec<u8>) -> Handled {
+        let address = freed_address(message)?;
+        if let Some(index) = self.reserved_addresses.iter().position(|range| range.address == address) {
+            let size = self.reserved_addresses.remove(index).size;
+            self.defer(DeferredAction::GiveBackReserved { address, size });
+        }
+        answer_status(Status::SUCCESS, out);
+        Ok(())
+    }
+
+    /// Notes a mapping. Which allocation was mapped first decides the order they are closed in.
+    fn add_mapping(&mut self, handle: u32, mapping: Mapping) {
+        let allocation = self.allocations.get_mut(&handle).expect("the caller has just used it");
+        if allocation.first_mapped.is_none() {
+            allocation.first_mapped = Some(self.mapped_so_far);
+            self.mapped_so_far += 1;
+        }
+        allocation.mappings.push(mapping);
+    }
+
+    /// Frees the addresses of a mapping that has gone, if the host chose them.
+    pub(crate) fn give_back_mapping(&mut self, address: u64) {
+        if let Some((size, align)) = self.mapped_addresses.remove(&address) {
+            self.gpu_addresses.give_back(address, size, align, AddressUse::Mapped);
+        }
     }
 
     /// Maps at an address the guest chose. If it is taken, the guest has finished with what is there:
@@ -132,7 +164,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         offset: u64,
         space: SpaceId,
     ) -> Result<(), BackendError> {
-        let allocation = self.allocations.get_mut(&handle).ok_or(UNKNOWN_ALLOCATION)?;
+        let allocation = self.allocations.get(&handle).ok_or(UNKNOWN_ALLOCATION)?;
         let memory = allocation.memory.ok_or(UNKNOWN_ALLOCATION)?;
         let gpu_cached = allocation.gpu_cached;
         self.backend.map(&MapRequest {
@@ -144,7 +176,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             small_pages: true,
             gpu_cached,
         })?;
-        allocation.mappings.push(Mapping { address, first: offset, length, space });
+        self.add_mapping(handle, Mapping { address, first: offset, length, space });
         Ok(())
     }
 
@@ -286,7 +318,8 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             return Ok(mapping.address - mapping.first);
         }
         let (size, memory) = (allocation.size, allocation.memory);
-        let address = self.gpu_addresses.take(align_up(size, ALLOCATION_ALIGN), ALLOCATION_ALIGN)?;
+        let whole = align_up(size, ALLOCATION_ALIGN);
+        let address = self.gpu_addresses.take(whole, ALLOCATION_ALIGN, AddressUse::Host)?;
         // Checked after taking addresses, so a guest-backed surface with no pages yet uses some up.
         let memory = memory.ok_or(UNKNOWN_ALLOCATION)?;
         self.backend.map(&MapRequest {
@@ -298,8 +331,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             small_pages: true,
             gpu_cached: false,
         })?;
-        let mapping = Mapping { address, first: 0, length: size, space };
-        self.allocations.get_mut(&handle).expect("read above").mappings.push(mapping);
+        self.add_mapping(handle, Mapping { address, first: 0, length: size, space });
         Ok(address)
     }
 }

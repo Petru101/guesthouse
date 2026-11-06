@@ -20,7 +20,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         }
         let host_address = self.memory.host_address(self.io_space_start);
         let memory = self.backend.adopt_host_pages(host_address, crate::FENCE_AREA)?;
-        let gpu_address = self.gpu_addresses.take(crate::FENCE_AREA, crate::ALLOCATION_ALIGN)?;
+        let gpu_address = self.take_gpu_addresses(crate::FENCE_AREA, crate::ALLOCATION_ALIGN)?;
         let block = FenceBlock { memory, gpu_address };
         self.fences.block = Some(block);
         Ok(block)

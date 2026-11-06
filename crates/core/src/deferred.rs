@@ -13,6 +13,7 @@ pub enum DeferredAction {
     ReturnFence(Fence),
     FreeAllocation(FreedAllocation),
     CloseSpace(SpaceId),
+    GiveBackReserved { address: u64, size: u64 },
 }
 
 /// What is left of a destroyed allocation.

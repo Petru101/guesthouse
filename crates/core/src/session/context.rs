@@ -2,6 +2,7 @@
 
 use super::{Handled, Session, answer_status, services};
 use crate::deferred::DeferredAction;
+use crate::gpu_addresses::{ALLOCATION_ALIGN, AddressUse};
 use crate::tables::Queue;
 use guesthouse_backend::{Backend, GuestMemory, SpaceId, StagingCopy, UnmapRequest, WorkSource};
 use guesthouse_messages::queue::{
@@ -44,19 +45,21 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         // Oldest first, as each gives back a fence and the order decides who gets which one next.
         owned.sort_unstable();
         owned.into_iter().for_each(|queue| self.close_queue(queue));
-        for allocation in self.allocations.values_mut() {
-            let Some(memory) = allocation.memory else { continue };
-            allocation.mappings.retain(|mapping| {
-                if mapping.space != space {
-                    return true;
-                }
-                let unmap = UnmapRequest { space, memory, address: mapping.address, length: mapping.length };
-                if let Err(error) = self.backend.unmap(&unmap) {
-                    log::warn!("closing an address space: {error}");
-                }
-                false
-            });
+        // Oldest first again, as each gives back addresses.
+        let mut mapped: Vec<(u64, u32)> = self
+            .allocations
+            .iter()
+            .filter(|(_, allocation)| allocation.mappings.iter().any(|mapping| mapping.space == space))
+            .filter_map(|(&handle, allocation)| Some((allocation.first_mapped?, handle)))
+            .collect();
+        mapped.sort_unstable();
+        for (_, handle) in mapped {
+            self.close_mappings(handle, space);
         }
+        for range in self.reserved_addresses.iter().filter(|range| range.space == space) {
+            self.gpu_addresses.give_back(range.address, range.size, ALLOCATION_ALIGN, AddressUse::Reserved);
+        }
+        self.reserved_addresses.retain(|range| range.space != space);
         self.closed_spaces.insert(space);
         if let Some(block) = self.fences.block {
             let unmap = UnmapRequest {
@@ -70,6 +73,23 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             }
         }
         self.backend.destroy_address_space(space);
+    }
+
+    /// Removes an allocation's mappings in one address space.
+    fn close_mappings(&mut self, handle: u32, space: SpaceId) {
+        let allocation = self.allocations.get_mut(&handle).expect("the caller found it");
+        let Some(memory) = allocation.memory else { return };
+        let (closing, kept) = std::mem::take(&mut allocation.mappings)
+            .into_iter()
+            .partition(|mapping: &crate::tables::Mapping| mapping.space == space);
+        allocation.mappings = kept;
+        for mapping in closing {
+            let unmap = UnmapRequest { space, memory, address: mapping.address, length: mapping.length };
+            if let Err(error) = self.backend.unmap(&unmap) {
+                log::warn!("closing an address space: {error}");
+            }
+            self.give_back_mapping(mapping.address);
+        }
     }
 
     pub(super) fn create_context(&mut self, message: &[u8], out: &mut Vec<u8>) -> Handled {

@@ -46,6 +46,12 @@ pub fn reserve_size(message: &[u8]) -> Result<u64, Malformed> {
     u64_at(message, 0x38)
 }
 
+/// The start of a range the guest gives back.
+pub fn freed_address(message: &[u8]) -> Result<u64, Malformed> {
+    u64_at(message, 0x28)?;
+    u64_at(message, 0x20)
+}
+
 /// A batch of address changes, which waits for a fence to reach a value.
 #[derive(Debug, Clone, Copy)]
 pub struct UpdateRequest<'a> {

@@ -36,6 +36,8 @@ pub struct Allocation {
     pub view: Option<PagesView>,
     pub resource: u32,
     pub mappings: Vec<Mapping>,
+    /// When it was first mapped, counting mapped allocations.
+    pub first_mapped: Option<u64>,
     pub gpu_cached: bool,
     pub surface: Option<SurfaceShape>,
 }
@@ -52,4 +54,12 @@ pub struct Queue {
     pub last_fence: Option<u64>,
     /// The GPU stopped answering on this queue, so nothing waits for it any more.
     pub failed: bool,
+}
+
+/// A range the guest set aside.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReservedRange {
+    pub address: u64,
+    pub size: u64,
+    pub space: SpaceId,
 }

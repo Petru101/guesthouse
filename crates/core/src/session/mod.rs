@@ -12,12 +12,12 @@ mod waiting;
 use crate::config::Config;
 use crate::deferred::Deferred;
 use crate::fences::FencePool;
-use crate::gpu_addresses::GpuAddresses;
+use crate::gpu_addresses::{AddressUse, GpuAddresses};
 use crate::guest_ranges::GuestRanges;
 use crate::handles::HandleCounter;
 use crate::pending::{Gate, Pending};
 use crate::sync_table::SyncTable;
-use crate::tables::{Allocation, Queue};
+use crate::tables::{Allocation, Queue, ReservedRange};
 use guesthouse_backend::{Backend, BackendError, GuestMemory, HostServices, SpaceId};
 use guesthouse_messages::notice::Notice;
 use guesthouse_messages::wire::{Malformed, put_u32};
@@ -92,6 +92,12 @@ pub struct Session<B, M> {
     pub(crate) work_started: u64,
     pub(crate) queue_failures: u32,
 
+    /// Where a mapping the host placed sits: address to size and alignment.
+    pub(crate) mapped_addresses: HashMap<u64, (u64, u64)>,
+    pub(crate) mapped_so_far: u64,
+    /// In the order the guest asked, which decides who gets a freed range next.
+    pub(crate) reserved_addresses: Vec<ReservedRange>,
+
     pub(crate) deferred: Vec<Deferred>,
     pub(crate) pending: Vec<Pending>,
     pub(crate) pending_spare: Vec<Pending>,
@@ -127,6 +133,9 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             queues_made: 0,
             work_started: 0,
             queue_failures: 0,
+            mapped_addresses: HashMap::new(),
+            mapped_so_far: 0,
+            reserved_addresses: Vec::new(),
             deferred: Vec::new(),
             pending: Vec::new(),
             pending_spare: Vec::new(),
@@ -152,7 +161,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
 
     /// Takes GPU addresses as a backend would, for a replay standing in for one.
     pub fn take_gpu_addresses(&mut self, size: u64, align: u64) -> Result<u64, BackendError> {
-        self.gpu_addresses.take(size, align)
+        self.gpu_addresses.take(size, align, AddressUse::Host)
     }
 
     /// Answers one message. The reply replaces what is in `out`, which the caller should reuse. A
@@ -231,6 +240,8 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             Some(C::PresentToken) => self.present_token(message, out)?,
             Some(C::CopyToStaging) => self.copy_to_staging(message, out)?,
 
+            Some(C::FreeGpuAddresses) => self.free_gpu_addresses(message, out)?,
+
             Some(
                 C::DestroyDevice
                 | C::CloseAdapter
@@ -238,7 +249,6 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
                 | C::FlushAdapter
                 | C::FlushDevice
                 | C::FlushHeapTransitions
-                | C::FreeGpuAddresses
                 | C::UnlockForCpu
                 | C::SetContextPriority
                 | C::SetFlipFenceValue
@@ -289,7 +299,7 @@ pub(crate) struct Services<'a, M> {
 
 impl<M: GuestMemory> HostServices for Services<'_, M> {
     fn take_gpu_addresses(&mut self, size: u64, align: u64) -> Result<u64, BackendError> {
-        self.gpu_addresses.take(size, align)
+        self.gpu_addresses.take(size, align, AddressUse::Host)
     }
 
     fn read_at_gpu_address(&self, address: u64, out: &mut [u8]) -> bool {

@@ -666,6 +666,7 @@ mod mappings {
         let mut session = session();
         let mut request = message(Command::ReserveGpuAddresses, 0x40);
         set_u64(&mut request, 0x38, 1);
+        send(&mut session, &request);
         let first = u64_at(&send(&mut session, &request), 0).unwrap();
         let second = u64_at(&send(&mut session, &request), 0).unwrap();
         assert_eq!(second - first, crate::ALLOCATION_ALIGN);
@@ -1237,5 +1238,82 @@ mod queues {
         let copies = &session.backend().copies;
         assert!(copies[0].is_screen);
         assert!(!copies[1].is_screen);
+    }
+}
+
+mod address_reuse {
+    use super::*;
+
+    fn reserve(session: &mut TestSession, size: u64) -> u64 {
+        let mut request = message(Command::ReserveGpuAddresses, 0x40);
+        set_u64(&mut request, 0x38, size);
+        u64_at(&send(session, &request), 0).unwrap()
+    }
+
+    fn free(session: &mut TestSession, address: u64) {
+        let mut request = message(Command::FreeGpuAddresses, 0x30);
+        set_u64(&mut request, 0x20, address);
+        assert_eq!(status_of(&send(session, &request)), SUCCESS);
+    }
+
+    #[test]
+    fn a_range_given_back_is_reserved_again() {
+        let mut session = session();
+        let first = reserve(&mut session, 0x10000);
+        free(&mut session, first);
+        assert_eq!(reserve(&mut session, 0x10000), first);
+    }
+
+    #[test]
+    fn a_range_of_another_size_stays_apart() {
+        let mut session = session();
+        let first = reserve(&mut session, 0x10000);
+        free(&mut session, first);
+        assert_ne!(reserve(&mut session, 0x20000), first);
+    }
+
+    #[test]
+    fn freeing_what_was_not_reserved_changes_nothing() {
+        let mut session = session();
+        free(&mut session, 0x5000_0000);
+        assert!(session.reserved_addresses.is_empty());
+    }
+
+    #[test]
+    fn a_range_comes_back_only_after_the_gpu_has_finished() {
+        let mut session = session();
+        session.backend_mut().run_work = true;
+        let context = create_context(&mut session, 0);
+        let (queue, _, fence) = create_queue(&mut session, context);
+        let first = reserve(&mut session, 0x10000);
+        submit(&mut session, queue, 1);
+        free(&mut session, first);
+        assert_ne!(reserve(&mut session, 0x10000), first);
+        session.memory_mut().write_u64(fence, 1);
+        submit(&mut session, queue, 1);
+        assert_eq!(reserve(&mut session, 0x10000), first);
+    }
+
+    #[test]
+    fn a_mapping_address_comes_back_when_its_allocation_goes() {
+        let mut session = session();
+        let (resource, handle) = allocate(&mut session, private(0x1000));
+        let (first, _) = map(&mut session, handle, 0, 0, 0);
+        destroy(&mut session, resource, &[]);
+        let (_, handle) = allocate(&mut session, private(0x1000));
+        assert_eq!(map(&mut session, handle, 0, 0, 0).0, first);
+    }
+
+    #[test]
+    fn a_closed_process_gives_back_its_reservations_and_mappings() {
+        let mut session = session();
+        let reserved = reserve(&mut session, 0x10000);
+        let (_, handle) = allocate(&mut session, private(0x1000));
+        let (mapped, _) = map(&mut session, handle, 0, 0, 0);
+        send(&mut session, &message(Command::DestroyProcess, HEADER_SIZE));
+        submit(&mut session, 0x999, 1);
+        assert_eq!(reserve(&mut session, 0x10000), reserved);
+        let (_, handle) = allocate(&mut session, private(0x1000));
+        assert_eq!(map(&mut session, handle, 0, 0, 0).0, mapped);
     }
 }
