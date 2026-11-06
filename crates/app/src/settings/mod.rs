@@ -1,21 +1,71 @@
-//! A machine's settings. Not here yet.
+//! A machine's settings. Each group of rows is a module of its own, and gets the same three things:
+//! the window, the machine, and this dialog to put its own dialogs over.
+
+mod display;
+mod hardware;
 
 use crate::window::{MachineHandle, Window};
-use guesthouse_app_core::tasks::Status;
+use adw::prelude::*;
+use guesthouse_app_core::tasks::{State, Status};
+use std::rc::Rc;
+
+/// What every group of rows works with.
+#[derive(Clone)]
+pub struct Shared {
+    window: Window,
+    machine: MachineHandle,
+    dialog: adw::PreferencesDialog,
+}
+
+impl Shared {
+    fn save(&self) {
+        self.window.save_machine(&self.machine.borrow());
+        self.window.refresh();
+    }
+}
+
+/// Whether the VM is off, with nothing going on.
+fn is_off(status: &Status) -> bool {
+    status.state == State::Off && !status.busy
+}
+
+struct Parts {
+    shared: Shared,
+    hardware: hardware::Hardware,
+    display: display::Display,
+}
 
 #[derive(Clone)]
-pub struct SettingsDialog(MachineHandle);
+pub struct SettingsDialog(Rc<Parts>);
 
 impl SettingsDialog {
-    pub fn new(_window: &Window, machine: MachineHandle) -> Self {
-        Self(machine)
+    pub fn new(window: &Window, machine: MachineHandle) -> Self {
+        let dialog = adw::PreferencesDialog::new();
+        dialog.set_title(&format!("{} Settings", machine.borrow().name));
+        let page = adw::PreferencesPage::new();
+        dialog.add(&page);
+        let shared = Shared { window: window.clone(), machine, dialog };
+        let this = Self(Rc::new(Parts {
+            hardware: hardware::Hardware::new(&shared, &page),
+            display: display::Display::new(&shared, &page),
+            shared,
+        }));
+        let window = window.clone();
+        this.0.shared.dialog.connect_closed(move |_| window.settings_closed());
+        this
     }
 
     pub fn machine_id(&self) -> String {
-        self.0.borrow().id.clone()
+        self.0.shared.machine.borrow().id.clone()
     }
 
-    pub fn present(&self) {}
+    pub fn present(&self) {
+        self.0.shared.dialog.present(Some(self.0.shared.window.widget()));
+    }
 
-    pub fn set_status(&self, _status: &Status) {}
+    pub fn set_status(&self, status: &Status) {
+        let parts = &self.0;
+        parts.hardware.set_status(status);
+        parts.display.set_status(status);
+    }
 }
