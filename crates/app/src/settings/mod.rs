@@ -1,8 +1,10 @@
 //! A machine's settings. Each group of rows is a module of its own, and gets the same three things:
 //! the window, the machine, and this dialog to put its own dialogs over.
 
+mod disk;
 mod display;
 mod hardware;
+mod snapshots;
 
 use crate::window::{MachineHandle, Window};
 use adw::prelude::*;
@@ -22,6 +24,17 @@ impl Shared {
         self.window.save_machine(&self.machine.borrow());
         self.window.refresh();
     }
+
+    /// Runs a change that can be refused, and shows the refusal.
+    fn change(
+        &self,
+        action: impl FnOnce(&mut guesthouse_app_core::machine::Machine) -> guesthouse_app_core::Result<()>,
+    ) {
+        if let Err(failure) = action(&mut self.machine.borrow_mut()) {
+            self.window.problem(&failure.0);
+        }
+        self.window.refresh();
+    }
 }
 
 /// Whether the VM is off, with nothing going on.
@@ -33,6 +46,8 @@ struct Parts {
     shared: Shared,
     hardware: hardware::Hardware,
     display: display::Display,
+    disk: disk::Disk,
+    snapshots: snapshots::Snapshots,
 }
 
 #[derive(Clone)]
@@ -48,6 +63,8 @@ impl SettingsDialog {
         let this = Self(Rc::new(Parts {
             hardware: hardware::Hardware::new(&shared, &page),
             display: display::Display::new(&shared, &page),
+            disk: disk::Disk::new(&shared, &page),
+            snapshots: snapshots::Snapshots::new(&shared, &page),
             shared,
         }));
         let window = window.clone();
@@ -67,5 +84,7 @@ impl SettingsDialog {
         let parts = &self.0;
         parts.hardware.set_status(status);
         parts.display.set_status(status);
+        parts.disk.set_status(status);
+        parts.snapshots.set_status(status);
     }
 }
