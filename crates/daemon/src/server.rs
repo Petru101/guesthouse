@@ -26,6 +26,9 @@ const FENCE_POLL: Duration = Duration::from_micros(20);
 const BACKGROUND_POLL: Duration = Duration::from_millis(1);
 /// How often to log where submissions spend their time, when asked to measure that.
 const TIMING_REPORT: Duration = Duration::from_secs(10);
+/// How long every channel can stay closed before QEMU counts as gone. A QEMU that's alive connects
+/// again within half a second.
+const QEMU_GONE_AFTER: Duration = Duration::from_secs(5);
 /// The kernel may stretch a sleep by this much, which by default is more than the sleep itself.
 const TIMER_SLACK_NANOS: libc::c_ulong = 1;
 const NO_DESCRIPTOR: i32 = -1;
@@ -76,6 +79,11 @@ pub struct Server<B, M> {
     waiting: Waiting,
     urgent_since: Option<Instant>,
     scratch: Vec<u8>,
+    /// QEMU has connected at some point, so a closed channel means something.
+    qemu_seen: bool,
+    /// When the last channel closed, if they're all closed.
+    all_closed_since: Option<Instant>,
+    qemu_gone_after: Duration,
 }
 
 impl<B: Backend, M: GuestMemory> Server<B, M> {
@@ -101,7 +109,20 @@ impl<B: Backend, M: GuestMemory> Server<B, M> {
             waiting: Waiting::Nothing,
             urgent_since: None,
             scratch: Vec::new(),
+            qemu_seen: false,
+            all_closed_since: None,
+            qemu_gone_after: QEMU_GONE_AFTER,
         })
+    }
+
+    /// Whether QEMU counts as gone at this moment, for a test.
+    pub fn qemu_is_gone_now(&mut self) -> bool {
+        self.qemu_has_gone(Instant::now())
+    }
+
+    /// For a test, which has no reason to wait.
+    pub fn set_qemu_gone_after(&mut self, time: Duration) {
+        self.qemu_gone_after = time;
     }
 
     pub fn router(&self) -> &Router<B, M> {
@@ -112,7 +133,8 @@ impl<B: Backend, M: GuestMemory> Server<B, M> {
         &mut self.router
     }
 
-    /// Serves until an error nothing can recover from.
+    /// Serves until QEMU has gone, however it went, or an error nothing can recover from. Ending is
+    /// what gives everything back: the guest's memory, and all it held on the GPU.
     pub fn run(&mut self) -> io::Result<()> {
         // SAFETY: this changes one number the kernel keeps for this thread.
         unsafe { libc::prctl(libc::PR_SET_TIMERSLACK, TIMER_SLACK_NANOS) };
@@ -121,6 +143,10 @@ impl<B: Backend, M: GuestMemory> Server<B, M> {
             let now = Instant::now();
             let timeout = self.next_timeout(now);
             self.step(timeout)?;
+            if self.qemu_has_gone(Instant::now()) {
+                log::info!("QEMU has gone, so this VM is over");
+                return Ok(());
+            }
             let timings = self.router.session().timings();
             if timings.is_enabled() && now - last_report > TIMING_REPORT {
                 log::info!("where submissions spend their time:\n{timings}");
@@ -131,8 +157,25 @@ impl<B: Backend, M: GuestMemory> Server<B, M> {
         }
     }
 
-    /// How long to wait for the next message, given what is waiting on fences.
+    /// Notes which channels are open, and says whether they've all been closed for long enough.
+    fn qemu_has_gone(&mut self, now: Instant) -> bool {
+        if self.ports.iter().any(|port| port.connection.is_some()) {
+            self.all_closed_since = None;
+        } else if self.qemu_seen {
+            self.all_closed_since.get_or_insert(now);
+        }
+        self.all_closed_since.is_some_and(|since| now - since >= self.qemu_gone_after)
+    }
+
+    /// How long to wait for the next message: what's waiting on fences, or the end of the wait for QEMU.
     fn next_timeout(&mut self, now: Instant) -> Option<Duration> {
+        let for_fences = self.fence_timeout(now);
+        let Some(since) = self.all_closed_since else { return for_fences };
+        let left = self.qemu_gone_after.saturating_sub(now - since);
+        Some(for_fences.map_or(left, |timeout| timeout.min(left)))
+    }
+
+    fn fence_timeout(&mut self, now: Instant) -> Option<Duration> {
         match self.waiting {
             Waiting::Nothing => {
                 self.urgent_since = None;
@@ -171,6 +214,7 @@ impl<B: Backend, M: GuestMemory> Server<B, M> {
             if pair[0].revents != 0 {
                 let (stream, _) = self.ports[index].listener.accept()?;
                 log::info!("QEMU connected to {:?}", self.ports[index].channel);
+                self.qemu_seen = true;
                 self.ports[index].connection = Some(Connection { stream, frames: FrameStream::new() });
             }
         }
