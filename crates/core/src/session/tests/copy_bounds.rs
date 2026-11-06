@@ -328,3 +328,14 @@ fn a_map_that_fails_gives_its_addresses_back() {
         "the spare is reused"
     );
 }
+
+#[test]
+fn every_refusal_is_answered_and_counted_however_many_there_are() {
+    let mut session = session();
+    let (source, target) = (plain(&mut session), plain(&mut session));
+    let refused = copy(source, target, [0, 0, 256, 257], [0, 0]);
+    for count in 1..=100 {
+        assert_eq!(outcome(&mut session, &refused), (UNSUCCESSFUL, 0));
+        assert_eq!(session.copies_refused, count);
+    }
+}

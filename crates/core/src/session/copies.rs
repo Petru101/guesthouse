@@ -13,7 +13,7 @@
 //! A screen's frame then has a copy into the frame ring too, in `frame_ring.rs`. It reads the same
 //! image, so in either order the guest's reply waits for it, and all of the above covers it.
 
-use super::copy_bounds::{Rows, copy_fits};
+use super::copy_bounds::{Rows, copy_fits, refusal_level};
 use super::{Answer, Handled, HeldReply, ReplyTicket, Session, answer_status, services};
 use crate::config::CopyOrder;
 use crate::frames::SlotInFlight;
@@ -71,7 +71,9 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         });
         if !fits {
             // The GPU would take a size like this as a very long copy, which nothing can interrupt.
-            log::warn!(
+            self.copies_refused += 1;
+            log::log!(
+                refusal_level(self.copies_refused),
                 "refused a copy of {rectangle:?} to ({}, {}) from {source:?} in {:#x} bytes to {target:?} in {:#x} bytes",
                 request.target_left,
                 request.target_top,

@@ -154,6 +154,8 @@ pub struct Session<B, M> {
     pub(crate) queues_made: u32,
     /// Statistics have been refused once, which is worth saying once.
     pub(crate) statistics_refused: bool,
+    /// Copies refused so far, as only the first few are worth a warning.
+    pub(crate) copies_refused: u64,
     pub(crate) work_started: u64,
     /// How many queues of each address space have stopped answering since it last came off the GPU.
     pub(crate) failed_queues: HashMap<SpaceId, u32>,
@@ -215,6 +217,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             gates: HashMap::new(),
             queues_made: 0,
             statistics_refused: false,
+            copies_refused: 0,
             work_started: 0,
             failed_queues: HashMap::new(),
             faults: FaultRate::new(),

@@ -8,6 +8,16 @@
 use crate::frames::Picture;
 use guesthouse_backend::{Backend, COPY_PIXEL_BYTES, SurfaceShape};
 use guesthouse_messages::queue::Rectangle;
+use log::Level;
+
+/// How many refused copies the log gets as warnings. A guest can send these as fast as it likes, and
+/// the rest still go to the debug log and are still refused.
+const REFUSALS_TO_WARN_OF: u64 = 16;
+
+/// How to log the refusal that makes this many.
+pub(super) fn refusal_level(count: u64) -> Level {
+    if count <= REFUSALS_TO_WARN_OF { Level::Warn } else { Level::Debug }
+}
 
 /// Some rows of a surface, in bytes across and rows down.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -131,6 +141,13 @@ mod tests {
 
     fn rows(x: u64, y: u64, width: u64, count: u64) -> Rows {
         Rows { x, y, width, count }
+    }
+
+    #[test]
+    fn only_the_first_refusals_are_warnings() {
+        assert_eq!(refusal_level(1), Level::Warn);
+        assert_eq!(refusal_level(REFUSALS_TO_WARN_OF), Level::Warn);
+        assert_eq!(refusal_level(REFUSALS_TO_WARN_OF + 1), Level::Debug);
     }
 
     #[test]
