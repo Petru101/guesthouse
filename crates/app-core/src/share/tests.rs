@@ -1,5 +1,6 @@
 use super::*;
 use crate::testing::Scratch;
+use std::fs;
 use std::io::Cursor;
 use std::os::unix::fs::symlink;
 
@@ -244,4 +245,20 @@ fn a_request_with_too_many_header_bytes_is_dropped() {
     }
     request.extend(b"\r\n");
     assert!(dav(&root, &[request]).is_empty());
+}
+
+#[test]
+fn a_path_checked_before_a_link_moved_in_stays_inside() {
+    let scratch = Scratch::new();
+    let root = scratch.path("outer/shared");
+    fs::create_dir_all(root.join("x")).unwrap();
+    fs::create_dir_all(root.join("d")).unwrap();
+    symlink("..", root.join("d/l")).unwrap();
+    let folder = inside::Folder::new(&root).unwrap();
+    let checked = folder.path_of("/x/f").unwrap();
+    fs::remove_dir(root.join("x")).unwrap();
+    fs::rename(root.join("d/l"), root.join("x")).unwrap();
+    folder.files.create(&checked).unwrap();
+    assert!(!scratch.path("outer/f").exists(), "nothing may appear outside the folder");
+    assert!(root.join("f").exists(), "the link's way up stops at the folder");
 }
