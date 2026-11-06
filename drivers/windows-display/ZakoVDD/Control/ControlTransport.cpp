@@ -1,5 +1,7 @@
 #include "ControlTransport.h"
 
+#include "..\Core\DriverState.h"
+
 #include "CommandDispatcher.h"
 #include "..\Device\IndirectDeviceContextWrapper.h"
 #include "..\Logging\Logger.h"
