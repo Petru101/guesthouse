@@ -9,6 +9,7 @@ mod network;
 mod remove;
 mod sharing;
 mod snapshots;
+mod usb;
 
 use crate::window::{MachineHandle, Window};
 use adw::prelude::*;
@@ -54,6 +55,7 @@ struct Parts {
     snapshots: snapshots::Snapshots,
     sharing: sharing::Sharing,
     network: network::Network,
+    usb: usb::Usb,
     remove: remove::Remove,
 }
 
@@ -74,6 +76,7 @@ impl SettingsDialog {
             snapshots: snapshots::Snapshots::new(&shared, &page),
             sharing: sharing::Sharing::new(&shared, &page),
             network: network::Network::new(&shared, &page),
+            usb: usb::Usb::new(&shared, &page),
             remove: remove::Remove::new(&shared, &page),
             shared,
         }));
@@ -98,6 +101,7 @@ impl SettingsDialog {
         parts.snapshots.set_status(status);
         parts.sharing.set_status(status);
         parts.network.set_status(status);
+        parts.usb.set_status(status);
         parts.remove.set_status(status);
     }
 }
