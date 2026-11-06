@@ -3,7 +3,8 @@
 //!
 //! Each line is `check`, the state, the title, what was found and the fix. A `gtk` line has the version
 //! of GTK, if there is one, so the script can choose the app that runs on it. The last is `gpu` and
-//! `yes` or `no`, all split by tabs. The script prints these words and never runs them.
+//! `yes` or `no`, all split by tabs. The script prints these words and never runs them. `--firmware`
+//! prints the firmware a plain VM would boot, and nothing else.
 
 use guesthouse_app_core::context::Context;
 use guesthouse_app_core::firmware::format_of;

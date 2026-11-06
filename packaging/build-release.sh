@@ -98,10 +98,11 @@ library_package() {
     fi
 }
 
-# Libraries are copied under their sonames, which is what the loader asks for.
+# Libraries are copied under their sonames, which is what the loader asks for. This reads the program
+# where it was built, as a staged one finds the libraries of the last run through its rpath.
 bundle_libraries() {
     program=$1
-    folder=$(dirname "$program")/lib
+    folder=$2
     list=$OUT/stage/LIBRARIES.txt
     mkdir -p "$folder"
     : >"$list"
@@ -124,7 +125,7 @@ stage_qemu() {
     cp "$OUT/qemu-build/qemu-system-$ARCH" "$target/"
     [ ! -f "$OUT/qemu-build/hw/misc/nvfwd/nvfwd-sensord" ] ||
         cp "$OUT/qemu-build/hw/misc/nvfwd/nvfwd-sensord" "$target/"
-    bundle_libraries "$target/qemu-system-$ARCH"
+    bundle_libraries "$OUT/qemu-build/qemu-system-$ARCH" "$target/lib"
     # The build folder holds what was generated, like the keymaps, and the source the rest.
     cp -R "$QEMU_TREE/pc-bios/." "$OUT/stage/qemu/pc-bios/"
     cp -RL "$OUT/qemu-build/pc-bios/." "$OUT/stage/qemu/pc-bios/"
