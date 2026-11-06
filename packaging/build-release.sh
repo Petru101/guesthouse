@@ -211,7 +211,7 @@ stage_bundled() {
     cp "$REPO/packaging/Containerfile.qemu" "$REPO/packaging/qemu-configure-flags" \
         "$REPO/packaging/build-release.sh" "$bundle/recipes/"
     write_sources_note >"$bundle/SOURCES.txt"
-    tar -C "$bundle" --transform "s,^\.,$name," --owner=0 --group=0 --sort=name -cf "$OUT/$name.tar" .
+    tar -C "$bundle" --transform "s,^\.,$name,S" --owner=0 --group=0 --sort=name -cf "$OUT/$name.tar" .
     rm -rf "${bundle:?}"
     say "the bundled source is $OUT/$name.tar"
 }
@@ -304,7 +304,7 @@ release_parts() {
 
 # Packs the stage under a folder of the archive's own name, without leaving a second copy behind.
 pack_stage() {
-    tar -C "$OUT/stage" --transform "s,^\.,$1," --owner=0 --group=0 --sort=name -cJf "$OUT/$1.tar.xz" .
+    tar -C "$OUT/stage" --transform "s,^\.,$1,S" --owner=0 --group=0 --sort=name -cJf "$OUT/$1.tar.xz" .
 }
 
 stage_payload() {
@@ -336,7 +336,7 @@ stage_source() {
     tar -C "$(qemu_tree)" --exclude=.git -cf - . | tar -C "$bundle/qemu-source" -xf -
     # The crates are linked into the programs, and carry their licences with them here.
     (cd "$REPO" && cargo vendor --locked --quiet "$bundle/vendor" >/dev/null)
-    tar -C "$bundle" --transform "s,^\.,$name," --owner=0 --group=0 --sort=name -cJf "$OUT/$name.tar.xz" .
+    tar -C "$bundle" --transform "s,^\.,$name,S" --owner=0 --group=0 --sort=name -cJf "$OUT/$name.tar.xz" .
     rm -rf "${bundle:?}"
     bundled=guesthouse-$version-bundled-source.tar
     [ -f "$OUT/$bundled" ] || bundled=""
