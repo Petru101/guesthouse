@@ -35,7 +35,7 @@ const GROUP_PARAM_ADDRESS_SPACE: usize = 0x08;
 const GROUP_PARAM_ENGINE: usize = 0x0C;
 const SHARE_PARAM_ADDRESS_SPACE: usize = 0x00;
 const SHARE_PARAM_FLAGS: usize = 0x04;
-/// Graphics and video only work on the synchronous subcontext.
+/// Graphics and video channels go on the synchronous subcontext, and copy channels on the other.
 const SHARE_SYNCHRONOUS: u32 = 0;
 const SHARE_ASYNCHRONOUS: u32 = 1;
 const CHANNEL_PARAM_ERROR_CONTEXT: usize = 0x00;

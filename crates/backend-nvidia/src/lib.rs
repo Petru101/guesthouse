@@ -65,7 +65,8 @@ const UNFINISHED_ENTRIES_LIMIT: u64 = 4000;
 /// transfer, and it uses them for plain copies, so its contexts on video nodes get copy channels.
 const CLIENT_HINT_VULKAN: u32 = 4;
 
-const CONTEXT_READY: usize = 0xD7C;
+/// A word in a video context's private data, which we set to one.
+const VIDEO_CONTEXT_WORD: usize = 0xD7C;
 
 const RECORD_QUEUE_TOKEN: usize = 0x40;
 const RECORD_QUEUE_HEAP: usize = 0x5C;
@@ -410,11 +411,10 @@ impl<R: Rm + OpenRm> Backend for NvidiaBackend<R> {
         self.answers.node_has_channel(node) || self.answers.node_is_video(node)
     }
 
-    /// A context on a video node has no hardware queue of its own. Its runtime checks that the answer
-    /// says the context can take work, and a zero stops it.
+    /// A context on a video node gets a one in its answer, and decode and encode run with that.
     fn finish_context_data(&mut self, node: u32, private: &mut [u8]) {
         if self.answers.node_is_video(node)
-            && let Some(field) = private.get_mut(CONTEXT_READY..CONTEXT_READY + 4)
+            && let Some(field) = private.get_mut(VIDEO_CONTEXT_WORD..VIDEO_CONTEXT_WORD + 4)
         {
             field.copy_from_slice(&1u32.to_le_bytes());
         }

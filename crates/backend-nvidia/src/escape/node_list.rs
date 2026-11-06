@@ -1,7 +1,7 @@
 //! The list of engine nodes the video runtime asks for.
 //!
-//! It finds out which node is which engine from this, by the same node types as the record's list.
-//! With an empty list it has no engines and gives up before making any context.
+//! Each entry gives a node's type, the same types as the record's list, and whether it's scheduled.
+//! Video decode and encode run with this answer.
 
 use super::put;
 use crate::answers::nodes::Node;

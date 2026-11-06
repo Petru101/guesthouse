@@ -87,8 +87,8 @@ const FLAG_VIDEO_DECODE: u32 = 1 << 20;
 /// can be made but its first frame fails as out of memory.
 const FLAGS_VIDEO_FRAMES: u32 = 0x40_0030;
 
-/// As a real install's record has it. Measured: with either bit clear, making a Direct3D 11 decoder
-/// fails as out of memory.
+/// As a real install's record has it. Measured: with this byte at zero, making a Direct3D 11 decoder
+/// fails.
 const DECODER_FLAGS: u8 = 0x48;
 
 /// The identifiers the guest's adapter goes by, which the core's identity answer repeats.

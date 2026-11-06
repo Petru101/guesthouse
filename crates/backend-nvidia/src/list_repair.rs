@@ -1,23 +1,21 @@
 //! Lists longer than the ring the guest's driver builds them in.
 //!
-//! A guest's OpenGL driver writes a submission's list into a ring of 2,048 entries, and it can have
-//! more to say than that. It carries on round the ring, so the list that reaches us has lost its
-//! oldest entries, and the count says how many. Those first entries are often the ones that set up
-//! everything after them: a test that cleared a target and drew 2,100 times lost the clear and 53
-//! draws. Run as it stands, the rest can fault the GPU.
+//! A guest's OpenGL submission can count more entries than the 2,048 a list holds. The list that
+//! reaches us then has only the newest of them, and the count says how many went before. Those first
+//! entries are often the ones that set up everything after them: a test that cleared a target and
+//! drew 2,100 times lost the clear and 53 draws. Run as it stands, the rest can fault the GPU.
 //!
-//! The commands themselves are still there. The driver lays each list's commands out in order in
-//! one buffer, with zeros between them, and zero is the GPU's word for doing nothing. So everything
-//! from the end of the last list to the oldest entry left is what the lost entries pointed at, and
-//! one entry can stand for all of it.
+//! So this takes everything from the end of the last list to the oldest entry left as what the lost
+//! entries pointed at, and one entry stands for all of it. Zero is the GPU's word for doing nothing,
+//! so any zeros in that stretch cost nothing.
 
 use crate::pushbuffer::{ENTRY_SIZE, RingEntry, ring_entry};
 
 /// The most entries a list is taken to hold. Past this it has wrapped.
 pub(crate) const LIST_RING_ENTRIES: usize = 0x800;
 
-/// More than this between two lists means they aren't neighbours in one buffer, which also keeps a
-/// made-up entry to a size the GPU can take.
+/// More than this between two lists is left alone, which also keeps a made-up entry to a size the
+/// GPU can take.
 const MOST_RECOVERED_BYTES: u64 = 4 << 20;
 const WORD_SIZE: u64 = 4;
 /// Asks the GPU to finish what came before. The lost entries may have held one, so this keeps it.

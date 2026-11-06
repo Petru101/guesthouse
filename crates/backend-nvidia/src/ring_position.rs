@@ -1,10 +1,10 @@
 //! Submissions that say only where the guest's ring has got to.
 //!
 //! Some of the guest's runtimes keep a ring of their own and send a new position with each
-//! submission. There's no ring address in this form and no list, and the bytes where a list would
-//! be are whatever was on the sender's stack. Taking those for ring entries would put rubbish on a
-//! real channel, on the card that runs the host's desktop, so this form must never reach the list
-//! path. A flag in the private data marks it.
+//! submission. There's no ring address in this form and no list, and nothing is read from the bytes
+//! where a list would be. Taking those for ring entries could put rubbish on a real channel, on the
+//! card that runs the host's desktop, so this form must never reach the list path. A flag in the
+//! private data marks it.
 //!
 //! What such a submission means is in the guest's ring, whose place is in the queue's private data.
 //! The new entries are read from there and go on a list channel like any list, which brings the
@@ -30,7 +30,7 @@ pub(crate) fn has_ring_position_flag(private: &[u8]) -> bool {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct GuestRing {
     address: u64,
-    /// In bytes. Measured: with 0x2000 here, positions go from 1023 back to 0.
+    /// In bytes. Positions wrap at this size over the size of an entry.
     size: u32,
 }
 

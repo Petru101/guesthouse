@@ -31,10 +31,10 @@ const FUNCTION_UNSUPPORTED: u32 = 0x0100_0152;
 const FUNCTION_RM_CONTROL: u32 = 0x0500_002B;
 /// Asked of each display. It needs its own size back in the reply.
 const FUNCTION_CHECK_DISPLAY: u32 = 0x0100_0001;
-/// The first two questions the vendor's own API asks: which GPUs there are.
+/// Which GPUs there are.
 const FUNCTION_LIST_GPUS: u32 = 0x0700_0002;
 const FUNCTION_LIST_COMPUTE_GPUS: u32 = 0x0700_0003;
-/// The third question: how those GPUs are grouped.
+/// How those GPUs are grouped.
 const FUNCTION_LIST_GPU_GROUPS: u32 = 0x0700_0004;
 /// Which GPU addresses the compute runtime may treat as its own.
 const FUNCTION_RUNTIME_GPU_RANGE: u32 = 0x0100_0113;
@@ -43,7 +43,7 @@ const FUNCTION_RM_ALLOC: u32 = 0x0500_002A;
 const FUNCTION_VIDEO_MEMORY: u32 = 0x0100_0012;
 /// Which node is which engine, for the video runtime.
 const FUNCTION_LIST_NODES: u32 = 0x0100_000F;
-/// Asked before an encoding session opens, and the session is refused unless the answer is yes.
+/// Seen in traffic when a guest encodes. We always answer yes, and NVENC runs with that answer.
 const FUNCTION_ENCODE_ASK: u32 = 0x0100_0128;
 const ENCODE_ANSWER: usize = 0x30;
 const ENCODE_YES: u8 = 1;

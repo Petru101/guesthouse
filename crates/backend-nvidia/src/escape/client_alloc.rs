@@ -1,10 +1,10 @@
 //! A guest's request to make an RM client, answered here.
 //!
-//! With a client of zero the guest asks again on every call. Nothing is made on the host: controls never use the guest's handles, so a number that isn't zero is all
-//! that is needed. A guest's allocation never reaches the RM.
+//! Nothing is made on the host: controls never use the guest's handles, so the answer is a fixed
+//! number that isn't zero. A guest's allocation never reaches the RM.
 //!
-//! Two layouts share this escape. Both start the same, and one has a mark in the next field that
-//! moves its answer further along.
+//! The status and handle go in one of two places, further along when the word at `LAYOUT_MARK`
+//! holds `MARKED_LAYOUT`.
 
 use super::{get, put};
 use crate::rm::Handle;

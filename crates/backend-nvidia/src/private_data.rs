@@ -47,9 +47,9 @@ fn round_up(value: u64, grain: u64) -> u64 {
     value.div_ceil(grain).saturating_mul(grain)
 }
 
-/// The size field, or what a compute allocation really wants. Those have their page size in the size
-/// field, and say the same bigger number in the two others, which means all of the block. Video
-/// buffers leave it empty, and say they are one row of so many bytes.
+/// The size field, with two exceptions. If it's set and the two whole-block fields hold the same
+/// bigger number, that number is used. If it's empty and the request is one row whose width, pitch
+/// and total agree, the total is used.
 fn stated_size(layout: &AllocationLayout, data: &[u8]) -> u32 {
     let (size, whole) = (word(data, layout.size), word(data, layout.whole_size));
     let (width, total) = (word(data, layout.width), word(data, layout.total_size));

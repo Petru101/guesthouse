@@ -1,13 +1,10 @@
-//! How the vendor's API learns which GPUs work together.
-//!
-//! A GPU this answer leaves out fails every later call by its handle, even when the GPU list named
-//! it.
+//! The answer to the GPU groups escape: one group, holding this card.
 
 use super::{GPU_KIND_DISPLAY_DRIVER, put};
 
 const GROUP_COUNT: usize = 0x34;
 const GROUP_GPU_IDS: usize = 0x3C;
-/// One word per GPU, whose meaning is not known. Zero is the guess for a group of one.
+/// One word per GPU, which we leave at zero.
 const GROUP_GPU_DETAILS: usize = 0x13C;
 const GROUP_GPU_COUNT: usize = 0x23C;
 const GROUP_KEY: usize = 0x240;
@@ -34,7 +31,7 @@ mod tests {
     use super::super::{FUNCTION_LIST_GPU_GROUPS, RESULT, answer as answer_escape, get};
     use super::*;
 
-    /// The size the guest's API really asks with.
+    /// A size with room for the whole answer.
     const WHOLE_ANSWER: usize = 0x8538;
 
     #[test]

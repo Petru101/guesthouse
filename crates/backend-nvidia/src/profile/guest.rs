@@ -66,7 +66,7 @@ pub struct RecordLayout {
     pub tpc_masks: usize,
     pub zcull: usize,
     pub ecid: usize,
-    /// The RM's number for this card. A count of cards sits before it, and zero there means one.
+    /// The RM's number for this card. The word before it stays at zero.
     pub gpu_id: usize,
     pub dedicated: usize,
     pub memory: usize,

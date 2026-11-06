@@ -1,17 +1,18 @@
 //! The short answer the guest's video runtime asks for, in place of the whole record.
 //!
-//! It's the record query with a smaller size. What it wants is the block of engine capabilities from
-//! near the record's start, moved down, then the class list. A class count taken from the wrong
-//! place here walks the runtime off the end of its buffer.
+//! It's the record query with a smaller size. The answer keeps the guest's header, copies a block of
+//! the record down to `BLOCK_AT`, sets the engine mask, and puts the class list after them. Measured:
+//! with the record's first bytes here instead, the class count was a number from another field, and
+//! the runtime read off the end of its buffer.
 
 use crate::profile::RecordLayout;
 
 /// The size this answer is asked for with.
 pub const CAPS_SIZE: usize = 0x40D;
 
-/// The guest's header, kept as it sent it, with what it's asking for in the last word.
+/// The guest's header, kept as it sent it.
 const HEADER_SIZE: usize = 0x14;
-/// The capabilities block, in the answer and in the record.
+/// The block copied from the record, where it goes and where it comes from.
 const BLOCK_AT: usize = 0x18;
 const BLOCK_IN_RECORD: usize = 0x105;
 const BLOCK_SIZE: usize = 0xD1;
