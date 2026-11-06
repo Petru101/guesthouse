@@ -25,6 +25,22 @@ fn ubuntu_install_ready(context: &Context) -> bool {
     guest_sources(context).join(SEED_FOLDER).is_dir()
 }
 
+/// What the empty library says, which is what this install can run.
+pub fn what_machines_are(context: &Context) -> &'static str {
+    let ubuntu_gpu = ubuntu_install_ready(context) && sensor_daemon(context).exists();
+    match (gpu_ready(context), ubuntu_gpu) {
+        (true, true) => {
+            "A machine is Windows with GPU-PV, Ubuntu with its GPU, or anything else that boots from an ISO."
+        }
+        (true, false) => "A machine is Windows with GPU-PV, or anything else that boots from an ISO.",
+        (false, true) => "A machine is Ubuntu with its GPU, or anything else that boots from an ISO.",
+        (false, false) => {
+            "A machine is anything that boots from an ISO. It runs on the CPU for now, as GPU \
+                           machines aren't available yet."
+        }
+    }
+}
+
 /// What an Ubuntu machine gets here, which depends on the QEMU.
 pub fn ubuntu_note(context: &Context) -> &'static str {
     if sensor_daemon(context).exists() { UBUNTU_WITH_GPU } else { UBUNTU_WITHOUT_GPU }
@@ -85,6 +101,19 @@ mod tests {
         assert_eq!(ubuntu_note(&context), UBUNTU_WITHOUT_GPU);
         scratch.write("bin/nvfwd-sensord", "");
         assert_eq!(ubuntu_note(&context), UBUNTU_WITH_GPU);
+    }
+
+    #[test]
+    fn the_library_names_each_route_this_install_has() {
+        let scratch = Scratch::new();
+        let mut context = scratch_context(&scratch);
+        context.paths.qemu = scratch.path("bin/qemu");
+        assert!(what_machines_are(&context).starts_with("A machine is Windows with GPU-PV, or"));
+        scratch.write("bin/nvfwd-sensord", "");
+        fs::create_dir_all(guest_sources(&context).join(SEED_FOLDER)).unwrap();
+        assert!(what_machines_are(&context).contains("Ubuntu with its GPU"));
+        fs::remove_dir_all(context.paths.guest_files()).unwrap();
+        assert!(what_machines_are(&context).starts_with("A machine is Ubuntu"));
     }
 
     #[test]

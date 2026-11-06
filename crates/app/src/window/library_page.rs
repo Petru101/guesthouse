@@ -5,10 +5,6 @@ use crate::application::APP_ID;
 use adw::prelude::*;
 use gtk::gio;
 
-const WITH_GPU: &str = "A machine is Windows with GPU-PV, Ubuntu, or anything else that boots from an ISO.";
-const WITHOUT_GPU: &str = "A machine is anything that boots from an ISO. It runs on the CPU for now, as GPU \
-                           machines aren't available yet.";
-
 const COLUMN_SPACING: i32 = 12;
 const COLUMN_MARGIN: i32 = 24;
 const SIDE_MARGIN: i32 = 12;
@@ -37,7 +33,7 @@ fn main_menu() -> gio::Menu {
 }
 
 impl LibraryPage {
-    pub fn new(gpu_machines: bool) -> Self {
+    pub fn new(description: &str) -> Self {
         let list = gtk::ListBox::builder()
             .selection_mode(gtk::SelectionMode::None)
             .valign(gtk::Align::Start)
@@ -63,7 +59,7 @@ impl LibraryPage {
         let empty = adw::StatusPage::builder()
             .icon_name(APP_ID)
             .title("No Machines")
-            .description(if gpu_machines { WITH_GPU } else { WITHOUT_GPU })
+            .description(description)
             .child(&start)
             .build();
         let stack = gtk::Stack::new();

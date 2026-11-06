@@ -18,7 +18,7 @@ use crate::wizard;
 use adw::prelude::*;
 use gtk::glib;
 use guesthouse_app_core::context::Context;
-use guesthouse_app_core::gpu_support::{NO_GPU_YET, gpu_ready};
+use guesthouse_app_core::gpu_support::{NO_GPU_YET, gpu_ready, what_machines_are};
 use guesthouse_app_core::library::{delete, import_existing, remove_entry};
 use guesthouse_app_core::log::write_log;
 use guesthouse_app_core::machine::{Machine, load_all};
@@ -81,7 +81,7 @@ impl Window {
         let pages = adw::NavigationView::new();
         toasts.set_child(Some(&pages));
         window.set_content(Some(&toasts));
-        let library = LibraryPage::new(gpu_ready(&context));
+        let library = LibraryPage::new(what_machines_are(&context));
         pages.add(&library.page);
         let this = Self(Rc::new(Inner {
             context,
