@@ -4782,3 +4782,516 @@ index 0000000..3d1d25f
 -- 
 2.56.0
 
+From 367ccf5ac81deff398e166a48413f9e136bfd84c Mon Sep 17 00:00:00 2001
+From: xnixy <x@ruxn.com>
+Date: Thu, 5 Nov 2026 22:59:41 -0800
+Subject: [PATCH 18/21] hw/misc/nvfwd: forward a call from its private copy
+
+The filter, the fields, the limits and the ioctl, in that order.
+---
+ hw/misc/nvfwd/forward.c   | 480 ++++++++++++++++++++++++++++++++++++++
+ hw/misc/nvfwd/meson.build |   1 +
+ 2 files changed, 481 insertions(+)
+ create mode 100644 hw/misc/nvfwd/forward.c
+
+diff --git a/hw/misc/nvfwd/forward.c b/hw/misc/nvfwd/forward.c
+new file mode 100644
+index 0000000..f095856
+--- /dev/null
++++ b/hw/misc/nvfwd/forward.c
+@@ -0,0 +1,480 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++/* Forwards one call from its private copy: the filter, the fields, the limits, the ioctl. See nvfwd.h. */
++#include "qemu/osdep.h"
++#include "qemu/units.h"
++#include "qapi/error.h"
++#include "hw/core/boards.h"
++#include "system/address-spaces.h"
++#include "system/ramblock.h"
++#include <sys/ioctl.h>
++#include <sys/mman.h>
++#include "clients.h"
++#include "nvfwd.h"
++#include "rm_layout.h"
++#include "rmargs.h"
++#include "runs.h"
++
++#define UVM_INITIALIZE 0x30000001
++#define UVM_INITIALIZE_FLAGS 0
++#define UVM_INIT_DISABLE_PAGEABLE_ACCESS 0x4ull
++#define MAP_ACCESS_MASK 3 /* the access field of a map call's flags */
++#define MAP_ACCESS_READ_ONLY 1
++#define CLASS_DISPLAY_COMMON 0x73
++#define CLASS_DISP_SW 0x9072
++#define CLASS_MEMORY_REGISTERS 0x3f /* answered in answer_display() */
++#define NOT_USED_BY_CLIENTS 0xffffffffull /* the limit the driver reports for that class */
++#define CLASS_SENSOR_PAGE 0xde
++#define CTRL_SENSOR_POLL 0xde0001
++
++/* ---- guest pages as one host range ---- */
++
++static void *map_run(const struct nvfwd_run *run, uint8_t *at)
++{
++    MemoryRegionSection sec = memory_region_find(get_system_memory(), run->gpa, run->len);
++    void *p = MAP_FAILED;
++
++    if (sec.mr && memory_region_is_ram(sec.mr) && memory_region_get_fd(sec.mr) >= 0 &&
++        int128_get64(sec.size) >= run->len) {
++        p = mmap(at, run->len, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED,
++                 memory_region_get_fd(sec.mr),
++                 qemu_ram_get_fd_offset(sec.mr->ram_block) + sec.offset_within_region);
++    }
++    if (sec.mr) {
++        memory_region_unref(sec.mr);
++    }
++    return p;
++}
++
++/* `needed` is how much the host driver will touch, from the list's first offset. */
++static uint64_t map_runs(const struct nvfwd_runs *runs, uint32_t room, uint64_t needed,
++                         AccountCall *account)
++{
++    uint64_t total, done = 0;
++    uint8_t *base;
++    uint32_t i;
++
++    if (!runs_check(runs, room, current_machine->ram_size, needed, &total)) {
++        return 0;
++    }
++    base = mmap(NULL, total, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
++    if (base == MAP_FAILED) {
++        return 0;
++    }
++    for (i = 0; i < runs->count; i++) {
++        if (map_run(&runs->run[i], base + done) == MAP_FAILED) {
++            munmap(base, total);
++            return 0;
++        }
++        done += runs->run[i].len;
++    }
++    account->host_range = base;
++    account->host_bytes = total;
++    return (uint64_t)base + runs->first_offset;
++}
++
++/* The driver has let go of these pages, or never took them. */
++void unmap_runs(void *opaque, void *range, uint64_t bytes)
++{
++    munmap(range, bytes);
++}
++
++/* ---- the filter ---- */
++
++/* 0 to forward, 1 when answered here with an RM status in the arguments, or a negative errno. */
++static int filter_rm(NvfwdState *s, uint32_t nr, uint8_t *arg, uint32_t size)
++{
++    uint32_t status_at, hclass;
++    char name[32];
++
++    switch (nr) {
++    case ESC_RM_CONTROL: {
++        uint32_t cmd;
++        if (size < 32) {
++            return -EINVAL;
++        }
++        memcpy(&cmd, arg + 8, 4);
++        if (set_has(qatomic_read(&s->allow), KEY(K_EMUCTRL, cmd))) {
++            /* Answered here with success: unknown or unwanted on the host. */
++            uint32_t st = 0;
++            note_local(s, "ctrl", K_EMUCTRL, cmd);
++            memcpy(arg + 28, &st, 4);
++            return 1;
++        }
++        if (cmd == CTRL_SENSOR_POLL) { /* not a list entry, and sensors.c answers it: a mistake in the list must not send it to the host */
++            note_local(s, "ctrl", K_CTRL, cmd);
++            return 0;
++        }
++        if (allowed(s, "ctrl", K_CTRL, cmd)) {
++            return 0;
++        }
++        status_at = 28;
++        break;
++    }
++    case ESC_RM_ALLOC:
++        if (size < 32) {
++            return -EINVAL;
++        }
++        memcpy(&hclass, arg + 12, 4);
++        if (hclass == CLASS_SENSOR_PAGE) { /* likewise: see sensors.h */
++            note_local(s, "class", K_CLASS, hclass);
++            return 0;
++        }
++        if (allowed(s, "class", K_CLASS, hclass)) {
++            return 0;
++        }
++        status_at = size == 32 ? 28 : 40;
++        break;
++    case ESC_RM_ALLOC_MEMORY:
++        if (size != RM_MEMORY_BYTES) {
++            return -EINVAL;
++        }
++        memcpy(&hclass, arg + 12, 4);
++        if (allowed(s, "memclass", K_MEMCLASS, hclass)) {
++            return 0;
++        }
++        status_at = 40;
++        break;
++    default:
++        snprintf(name, sizeof(name), "ioctl");
++        return allowed(s, name, K_IOCTL, nr) ? 0 : -EPERM;
++    }
++    {
++        uint32_t st = STATUS_NOT_SUPPORTED;
++        memcpy(arg + status_at, &st, 4);
++    }
++    return 1;
++}
++
++/*
++ * Guest pages go to the driver in one place only, the rules in rmargs.c have seen to that: the
++ * memory of an OS descriptor allocation. Its limit is what the driver will pin, so the list has to
++ * cover that much.
++ */
++static uint64_t fix_pages(const struct nvfwd_fix *f, const uint8_t *arg, uint8_t *data, uint32_t len,
++                          AccountCall *account)
++{
++    uint64_t limit;
++
++    memcpy(&limit, arg + RM_MEMORY_LIMIT, sizeof(limit));
++    if (f->target >= len || account->host_range || limit == UINT64_MAX) {
++        return 0;
++    }
++    return map_runs((const struct nvfwd_runs *)(data + f->target), len - f->target, limit + 1, account);
++}
++
++
++static void undo_runs(AccountCall *account)
++{
++    if (account->host_range) {
++        munmap(account->host_range, account->host_bytes);
++        account->host_range = NULL;
++    }
++}
++
++/* Answers made here without the host: returns true if the call is finished. */
++static bool answer_display(NvfwdState *s, struct nvfwd_req *r, uint32_t nr, uint8_t *arg, uint32_t size)
++{
++    if (nr == ESC_RM_ALLOC && size >= RM_ALLOC_SHORT_BYTES) {
++        uint32_t hclass, st = STATUS_OK;
++        memcpy(&hclass, arg + RM_ALLOC_CLASS, 4);
++        if (hclass == CLASS_DISPLAY_COMMON || hclass == CLASS_DISP_SW) {
++            /* The driver insists on this object, and display classes never reach the host. */
++            ObjectClaim claim = { MEMORY_NONE, 0 };
++            ObjectInfo info = { .file = r->fdid, .local = true };
++            memcpy(&info.client, arg + RM_ALLOC_ROOT, 4);
++            memcpy(&info.parent, arg + RM_ALLOC_PARENT, 4);
++            memcpy(&info.object, arg + RM_ALLOC_OBJECT, 4);
++            note_local(s, "class", K_CLASS, hclass);
++            if (objects_claim(s->objects, &claim)) {
++                objects_add(s->objects, &claim, 0, &info);
++            } else {
++                st = STATUS_INSUFFICIENT_RESOURCES;
++            }
++            memcpy(arg + account_status_at(nr, size), &st, 4);
++            r->ret = 0;
++            return true;
++        }
++    }
++    if (nr == ESC_RM_FREE && size >= RM_FREE_BYTES) {
++        uint32_t client, object, st = STATUS_OK;
++        memcpy(&client, arg + RM_FREE_ROOT, 4);
++        memcpy(&object, arg + RM_FREE_OBJECT, 4);
++        if (objects_is_local(s->objects, client, object)) {
++            objects_remove(s->objects, client, object);
++            memcpy(arg + RM_FREE_STATUS, &st, 4);
++            r->ret = 0;
++            return true;
++        }
++    }
++    if (nr == ESC_RM_ALLOC_MEMORY && size >= RM_MEMORY_BYTES) {
++        uint32_t hclass, st = STATUS_OK;
++        uint64_t limit = NOT_USED_BY_CLIENTS;
++        memcpy(&hclass, arg + RM_MEMORY_CLASS, 4);
++        if (hclass == CLASS_MEMORY_REGISTERS) {
++            /* A handle the driver asks for at start and never uses, so the host need not make one. */
++            ObjectClaim claim = { MEMORY_NONE, 0 };
++            ObjectInfo info = { .file = r->fdid, .local = true };
++            memcpy(&info.client, arg + RM_MEMORY_ROOT, 4);
++            memcpy(&info.parent, arg + RM_MEMORY_PARENT, 4);
++            memcpy(&info.object, arg + RM_MEMORY_OBJECT, 4);
++            note_local(s, "memclass", K_MEMCLASS, hclass);
++            if (objects_claim(s->objects, &claim)) {
++                objects_add(s->objects, &claim, 0, &info);
++            } else {
++                st = STATUS_INSUFFICIENT_RESOURCES;
++            }
++            memcpy(arg + RM_MEMORY_LIMIT, &limit, 8);
++            memcpy(arg + RM_MEMORY_STATUS, &st, 4);
++            r->ret = 0;
++            return true;
++        }
++    }
++    if (nr == ESC_SYS_PARAMS) { /* stores into driver globals: answered here, never forwarded */
++        note_local(s, "ioctl", K_IOCTL, nr);
++        r->ret = 0;
++        return true;
++    }
++    return false;
++}
++
++/*
++ * Puts host values into the fields the rules found, and clears those the guest left alone. Files
++ * named are held in `held`, for the caller to release. Returns 0 or a negative errno.
++ */
++static int apply_fields(NvfwdState *s, Bounce *b, const RmField *fields, const int *matched, int count,
++                        const uint8_t *arg, AccountCall *account, uint32_t *held, uint32_t *nheld)
++{
++    struct nvfwd_req *r = &b->req;
++    uint8_t *data = b->data;
++
++    for (int i = 0; i < count; i++) {
++        const RmField *field = &fields[i];
++        const struct nvfwd_fix *f = matched[i] >= 0 ? &r->fix[matched[i]] : NULL;
++        uint64_t value;
++        int32_t hfd;
++
++        if (!f) {
++            int32_t no_file = -1;
++            uint64_t no_pointer = 0;
++            /* Not through bounce_patch: the driver may answer in this field, and that must get home. */
++            memcpy(data + field->at, field->kind == NVFWD_FIX_FD ? (void *)&no_file : (void *)&no_pointer,
++                   field->kind == NVFWD_FIX_FD ? sizeof(no_file) : sizeof(no_pointer));
++            continue;
++        }
++        switch (field->kind) {
++        case NVFWD_FIX_PTR:
++            value = (uint64_t)(data + f->target);
++            bounce_patch(b, field->at, &value, sizeof(value));
++            break;
++        case NVFWD_FIX_PAGES:
++            value = fix_pages(f, arg, data, r->len, account);
++            if (!value) {
++                return -EFAULT;
++            }
++            bounce_patch(b, field->at, &value, sizeof(value));
++            break;
++        case NVFWD_FIX_FD:
++            if (!fd_hold(s, f->target)) {
++                return -EBADF;
++            }
++            held[(*nheld)++] = f->target;
++            hfd = host_fd(s, f->target);
++            bounce_patch(b, field->at, &hfd, sizeof(hfd));
++            break;
++        }
++    }
++    return 0;
++}
++
++/*
++ * A UVM file belongs to the mm that set it up, and here that is QEMU's rather than a guest program's.
++ * Pageable access is about that mm, so it has nothing to offer a guest and is always off.
++ */
++static void refuse_pageable_access(Bounce *b)
++{
++    uint64_t flags;
++
++    memcpy(&flags, b->data + UVM_INITIALIZE_FLAGS, sizeof(flags));
++    flags |= UVM_INIT_DISABLE_PAGEABLE_ACCESS;
++    bounce_patch(b, UVM_INITIALIZE_FLAGS, &flags, sizeof(flags));
++}
++
++/* The driver checks a mapping against this too. Here it costs nothing. */
++static void note_map_access(NvfwdState *s, const struct nvfwd_req *r, const uint8_t *arg)
++{
++    uint32_t flags, status, file = r->fdid;
++
++    for (uint32_t i = 0; i < r->nfix; i++) {
++        if (r->fix[i].kind == NVFWD_FIX_FD) {
++            file = r->fix[i].target;
++        }
++    }
++    memcpy(&flags, arg + RM_MAP_FLAGS, sizeof(flags));
++    memcpy(&status, arg + RM_MAP_STATUS, sizeof(status));
++    if (status == STATUS_OK && file < MAX_FDS) {
++        s->fd_read_only[file] = (flags & MAP_ACCESS_MASK) == MAP_ACCESS_READ_ONLY;
++    }
++}
++
++static bool client_known(void *opaque, uint32_t client)
++{
++    NvfwdState *s = opaque;
++
++    return objects_has_client(s->objects, client);
++}
++
++static void forward_ioctl(NvfwdState *s, Bounce *b, uint32_t *held, uint32_t *nheld)
++{
++    struct nvfwd_req *r = &b->req;
++    uint8_t *data = b->data;
++    int fd = host_fd(s, r->fdid);
++    bool uvm = s->fd_kind[r->fdid] == NVFWD_DEV_UVM;
++    RmCall call = { 0 };
++    RmField fields[RMARGS_MAX_FIELDS];
++    int matched[RMARGS_MAX_FIELDS], count;
++    uint32_t i, nr = 0, size = 0;
++    uint8_t *arg = data;
++    int rc;
++    int64_t t0 = 0;
++    AccountCall account = { .file = r->fdid, .data = data, .data_size = r->len };
++    AccountHold hold = { .held = false };
++
++    if (uvm) {
++        if (!allowed(s, "uvm", K_UVM, r->cmd)) {
++            r->ret = -EPERM;
++            return;
++        }
++        count = rmargs_uvm_fields(r->cmd, r->len, r->fix, r->nfix, fields, matched);
++        if (count >= 0 && r->cmd == UVM_INITIALIZE) {
++            refuse_pageable_access(b);
++        }
++    } else {
++        if (!rmargs_parse(&call, r->cmd, data, r->len, r->fix, r->nfix)) {
++            r->ret = -EINVAL;
++            return;
++        }
++        nr = call.nr;
++        arg = data + call.arg_at;
++        size = call.size;
++        if (answer_display(s, r, nr, arg, size)) {
++            return;
++        }
++        rc = filter_rm(s, nr, arg, size);
++        if (rc < 0) {
++            r->ret = rc;
++            return;
++        }
++        if (rc > 0) {
++            r->ret = 0;
++            s->counters[1]++;
++            return;
++        }
++        count = rmargs_fields(&call, fields, matched);
++    }
++    if (count < 0) {
++        r->ret = count;
++        return;
++    }
++    if (!(uvm ? clients_uvm_known(r->cmd, data, r->len, client_known, s)
++              : clients_rm_known(&call, client_known, s))) {
++        note_once(s, "REFUSED", "client of another", KEY(K_CLIENT, nr), nr);
++        r->ret = -EPERM;
++        return;
++    }
++    rc = apply_fields(s, b, fields, matched, count, arg, &account, held, nheld);
++    if (rc < 0) {
++        undo_runs(&account);
++        r->ret = rc;
++        return;
++    }
++    if (s->sensors && !uvm) {
++        SensorCall sensor_call = { .nr = nr, .arg = arg, .size = size, .file = r->fdid,
++                                   .map_file = r->fdid, .data = data, .data_size = r->len };
++        for (i = 0; i < r->nfix; i++) {
++            if (r->fix[i].kind == NVFWD_FIX_FD) {
++                sensor_call.map_file = r->fix[i].target;
++            }
++        }
++        if (sensors_answer(s->sensors, &sensor_call)) {
++            r->ret = 0;
++            return;
++        }
++    }
++    if (nr == ESC_RM_CONTROL) {
++        uint32_t cmd, hclient, hobj, params_size;
++        uint64_t params;
++        memcpy(&hclient, arg + RM_CONTROL_CLIENT, 4);
++        memcpy(&cmd, arg + RM_CONTROL_CMD, 4);
++        memcpy(&params, arg + RM_CONTROL_PARAMS, 8);
++        memcpy(&params_size, arg + RM_CONTROL_PARAMS_SIZE, 4);
++        /* By now this pointer is ours or null, and fits the size it claims. */
++        if (cmd == 0x906f0101 && params && params_size >= sizeof(hobj)) { /* which engine owns this object? */
++            memcpy(&hobj, (const void *)params, sizeof(hobj));
++            if (objects_is_local(s->objects, hclient, hobj)) {
++                /*
++                 * Saying this object exists makes the driver send it methods, and the host has no
++                 * such object. Fail as the host would, without the noise in its log.
++                 */
++                uint32_t st = 0x57;
++                memcpy(arg + RM_CONTROL_STATUS, &st, 4);
++                r->ret = 0;
++                return;
++            }
++        }
++    }
++    if (!uvm) {
++        uint32_t refused;
++
++        account.nr = nr;
++        account.arg = arg;
++        account.size = size;
++        refused = account_before(s->objects, &account, &hold);
++        if (refused) {
++            undo_runs(&account);
++            memcpy(arg + account_status_at(nr, size), &refused, sizeof(refused));
++            note_once(s, "OVER", "limit", KEY(K_LIMIT, nr), nr);
++            r->ret = 0;
++            return;
++        }
++    }
++    throttle(s);
++    if (s->trace) {
++        t0 = g_get_monotonic_time();
++    }
++    do {
++        rc = ioctl(fd, r->cmd, data);
++    } while (rc < 0 && errno == EINTR);
++    r->ret = rc < 0 ? -errno : rc;
++    s->counters[0]++;
++    if (!uvm && nr == ESC_RM_MAP_MEMORY && rc == 0) {
++        note_map_access(s, r, arg);
++    }
++    if (account.arg) {
++        account.failed = rc < 0;
++        if (!account_after(s->objects, &account, &hold)) {
++            undo_runs(&account); /* the object that would have owned these pages does not exist */
++        }
++    }
++    if (s->trace) {
++        uint32_t a[10] = { 0 };
++        memcpy(a, arg, MIN(size, sizeof(a)));
++        fprintf(s->log, "T nr=%#x cmd=%#x ret=%d us=%lld arg=%x %x %x %x %x %x %x %x %x %x\n",
++                nr, r->cmd, r->ret, (long long)(g_get_monotonic_time() - t0),
++                a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8], a[9]);
++        fflush(s->log);
++    }
++}
++
++void do_ioctl(NvfwdState *s, Bounce *b)
++{
++    uint32_t held[NVFWD_MAX_FIX], nheld = 0;
++
++    if (host_fd(s, b->req.fdid) < 0) {
++        b->req.ret = -EBADF;
++        return;
++    }
++    forward_ioctl(s, b, held, &nheld);
++    while (nheld) {
++        fd_release(s, held[--nheld]);
++    }
++}
+diff --git a/hw/misc/nvfwd/meson.build b/hw/misc/nvfwd/meson.build
+index 5851bc2..ce7c443 100644
+--- a/hw/misc/nvfwd/meson.build
++++ b/hw/misc/nvfwd/meson.build
+@@ -11,6 +11,7 @@ nvfwd_ss = files(
+   'sensors.c',
+   'allow.c',
+   'fds.c',
++  'forward.c',
+ )
+ system_ss.add(when: 'CONFIG_PCI', if_true: nvfwd_ss)
+ 
+-- 
+2.56.0
+
