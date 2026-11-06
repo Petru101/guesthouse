@@ -64,7 +64,7 @@ fn message(command: Command, size: usize) -> Vec<u8> {
 fn only_their_owner_can_reach_the_sockets() {
     let folder = run_folder("modes");
     let server = server(&folder);
-    for name in [Channel::Global.socket_name(), Channel::Vgpu.socket_name()] {
+    for name in [Channel::Global.socket_name(), Channel::Vgpu.socket_name(), "frames.sock"] {
         let mode = fs::metadata(folder.join(name)).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600, "{name}");
     }
