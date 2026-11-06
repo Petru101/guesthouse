@@ -8,9 +8,10 @@ use crate::viewer::ViewerPort;
 use guesthouse_backend::{Backend, GuestMemory};
 use guesthouse_core::Waiting;
 use guesthouse_transport::{FrameHeader, FrameStream};
-use std::fs;
+use std::fs::{self, Permissions};
 use std::io::{self, ErrorKind, Write};
 use std::os::fd::AsRawFd;
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
 use std::ptr;
@@ -33,6 +34,8 @@ const CHANNEL_PLACES: usize = 2 * Channel::ALL.len();
 const VIEWER_LISTENER: usize = CHANNEL_PLACES;
 const VIEWER_SOCKET: usize = CHANNEL_PLACES + 1;
 const ALL_PLACES: usize = CHANNEL_PLACES + 2;
+/// QEMU runs as the same user, and nobody else has business with these.
+pub(crate) const OWNER_ONLY: u32 = 0o600;
 
 struct Connection {
     stream: UnixStream,
@@ -86,7 +89,9 @@ impl<B: Backend, M: GuestMemory> Server<B, M> {
                 Err(error) if error.kind() != ErrorKind::NotFound => return Err(error),
                 _ => {}
             }
-            ports.push(Port { channel, listener: UnixListener::bind(path)?, connection: None });
+            let listener = UnixListener::bind(&path)?;
+            fs::set_permissions(&path, Permissions::from_mode(OWNER_ONLY))?;
+            ports.push(Port { channel, listener, connection: None });
         }
         let viewers = ViewerPort::bind(run_folder)?;
         Ok(Self {

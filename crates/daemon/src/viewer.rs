@@ -5,13 +5,16 @@
 //! trouble with one drops it and nothing else. The session keeps the books on slots, and this file
 //! only moves messages.
 
+use crate::server::OWNER_ONLY;
 use guesthouse_backend::{Backend, GuestMemory};
 use guesthouse_core::{Delivery, Frame as ReadyFrame, FrameRing, FrameSink, Session};
 use guesthouse_frame_socket::{
     Colour, Descriptor, Format, Frame, FrameListener, FrameSocket, Hello, Message, Packet, Ring, SOCKET_NAME,
 };
+use std::fs::{self, Permissions};
 use std::io::{self, ErrorKind};
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
 /// DRM's name for 8-bit pixels, blue first in memory, in rows from top to bottom. That's what an
@@ -45,7 +48,9 @@ fn can_show(hello: &Hello) -> bool {
 impl ViewerPort {
     /// Listens in `run_folder`, replacing a socket a previous daemon left behind.
     pub fn bind(run_folder: &Path) -> io::Result<Self> {
-        let listener = FrameListener::bind(&run_folder.join(SOCKET_NAME))?;
+        let path = run_folder.join(SOCKET_NAME);
+        let listener = FrameListener::bind(&path)?;
+        fs::set_permissions(path, Permissions::from_mode(OWNER_ONLY))?;
         listener.set_nonblocking(true)?;
         Ok(Self { listener, viewer: None })
     }

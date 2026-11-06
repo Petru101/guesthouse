@@ -11,6 +11,7 @@ use guesthouse_transport::{FrameFlags, FrameHeader, FrameKind, HEADER_SIZE as FR
 use std::env;
 use std::fs;
 use std::io::{Read, Write};
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process;
@@ -57,6 +58,18 @@ fn message(command: Command, size: usize) -> Vec<u8> {
     let mut bytes = vec![0; size];
     set_u32(&mut bytes, 16, command.to_wire());
     bytes
+}
+
+#[test]
+fn only_their_owner_can_reach_the_sockets() {
+    let folder = run_folder("modes");
+    let server = server(&folder);
+    for name in [Channel::Global.socket_name(), Channel::Vgpu.socket_name()] {
+        let mode = fs::metadata(folder.join(name)).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "{name}");
+    }
+    drop(server);
+    fs::remove_dir_all(folder).unwrap();
 }
 
 #[test]
