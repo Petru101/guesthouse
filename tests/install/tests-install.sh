@@ -88,3 +88,40 @@ t_a_glibc_too_old_is_said_plainly() {
 
 
 # A source bundle whose build script just packs what make-release made, to prove the path around it.
+fake_source_bundle() {
+    local bundle=$T/releases/guesthouse-1.0-source
+    mkdir -p "$bundle/packaging"
+    cat >"$bundle/packaging/build-release.sh" <<EOF
+#!/bin/sh
+mkdir -p "\$2"
+cp "$T/releases/built.tar.xz" "\$2/guesthouse-1.0-x86_64.tar.xz"
+echo "built from source"
+EOF
+    tar -C "$T/releases" -cJf "$T/releases/v1.0/guesthouse-1.0-source.tar.xz" guesthouse-1.0-source
+    wanted=$(sha256sum "$T/releases/v1.0/guesthouse-1.0-source.tar.xz" | cut -d ' ' -f 1)
+    sed -i "s/^SOURCE_SHA256=.*/SOURCE_SHA256=\"$wanted\"/" "$(script_for 1.0)"
+}
+
+t_from_source_builds_and_installs_the_same_way() {
+    release 1.0
+    give_everything
+    give_tools cargo ninja
+    mv "$T/releases/v1.0/guesthouse-1.0-x86_64.tar.xz" "$T/releases/built.tar.xz"
+    fake_source_bundle
+    install_version 1.0 --from-source
+    check_exit 0
+    check_said "built from source"
+    check_there "$H/.local/lib/guesthouse/current/guesthouse"
+    check_not_log "x86_64.tar.xz"
+}
+
+t_from_source_with_no_tools_says_what_it_needs() {
+    release 1.0
+    give_everything
+    fake_source_bundle
+    snapshot >"$T/before"
+    install_version 1.0 --from-source
+    check_exit 1
+    check_said "building needs cargo and ninja"
+    check_home_is "$T/before"
+}

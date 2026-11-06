@@ -37,6 +37,7 @@ TAB=$(printf '\t')
 DRY_RUN=no
 UPDATE=no
 CHECK_UPDATE=no
+FROM_SOURCE=no
 
 STAGING=""
 CREATED_DIRS=""
@@ -72,6 +73,7 @@ updates to that one.
   --update        Bring an install to the latest release, whichever copy of this script you run
   --check-update  Say whether a newer release exists, and change nothing
   --dry-run       Check everything, download and verify, show the plan, and stop
+  --from-source   Build the release's source on this PC, and install that
   --help          Show this
 EOF
 }
@@ -82,6 +84,7 @@ parse_arguments() {
             --dry-run) DRY_RUN=yes ;;
             --update) UPDATE=yes ;;
             --check-update) CHECK_UPDATE=yes ;;
+            --from-source) FROM_SOURCE=yes ;;
             --help)
                 usage
                 exit 0
@@ -364,9 +367,32 @@ download_verified() {
     say "Verified $name"
 }
 
+# The toolchain on this PC matches this PC, which is the point of a source build. A container is the
+# next best thing, but its glibc is the release's, so it can't help a system older than that.
+build_from_source() {
+    source_name=guesthouse-$RELEASE_VERSION-source
+    download_verified "$source_name.tar.xz" "$SOURCE_SHA256"
+    tar -xJf "$STAGING/$source_name.tar.xz" -C "$STAGING"
+    bundle=$STAGING/$source_name
+    if command -v cargo >/dev/null 2>&1 && command -v ninja >/dev/null 2>&1; then
+        sh "$bundle/packaging/build-release.sh" --out "$STAGING/built" qemu app payload
+    else
+        engine=$(command -v podman || command -v docker) ||
+            die "building needs cargo and ninja, or podman or docker, and this PC has none of those."
+        "$engine" build -t guesthouse-release -f "$bundle/packaging/Containerfile" "$bundle/packaging"
+        "$engine" run --rm --security-opt label=disable -v "$STAGING:$STAGING" -w "$bundle" \
+            guesthouse-release sh packaging/build-release.sh --out "$STAGING/built" qemu app payload
+    fi
+    mv "$STAGING/built/guesthouse-$RELEASE_VERSION-$ARCH.tar.xz" "$STAGING/"
+}
+
 get_payload() {
     payload=guesthouse-$RELEASE_VERSION-$ARCH.tar.xz
-    download_verified "$payload" "$PAYLOAD_SHA256"
+    if [ "$FROM_SOURCE" = yes ]; then
+        build_from_source
+    else
+        download_verified "$payload" "$PAYLOAD_SHA256"
+    fi
     tar -xJf "$STAGING/$payload" -C "$STAGING" --no-same-owner || die "$payload wouldn't unpack."
     TREE=$STAGING/guesthouse-$RELEASE_VERSION-$ARCH
     [ -f "$TREE/RELEASE" ] || die "$payload has no RELEASE file, so it's not a Guesthouse release."
