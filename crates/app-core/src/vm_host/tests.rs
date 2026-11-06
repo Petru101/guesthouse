@@ -4,13 +4,6 @@ use crate::slots;
 use crate::testing::{Scratch, scratch_context};
 use crate::vm_args::{Boot, OUTPUT_FILE};
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
-
-fn program(scratch: &Scratch, name: &str, text: &str) -> std::path::PathBuf {
-    let path = scratch.write(name, text);
-    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
-    path
-}
 
 #[test]
 fn a_second_instance_never_reaches_what_finds_vms_by_program() {
@@ -29,7 +22,7 @@ fn a_second_instance_never_reaches_what_finds_vms_by_program() {
 fn a_qemu_that_exits_at_once_says_why() {
     let scratch = Scratch::new();
     let mut context = scratch_context(&scratch);
-    context.paths.qemu = program(&scratch, "not-qemu", "#!/bin/sh\necho 'could not open disk' >&2\nexit 1\n");
+    context.paths.qemu = scratch.program("not-qemu", "#!/bin/sh\necho 'could not open disk' >&2\nexit 1\n");
     let host = LocalHost { context: &context };
     let machine = Machine { kind: Kind::Plain, ..Machine::new("vm", "VM", "/d", "/v") };
     let plan = VmPlan::new(&context, &machine, Boot::Plain { iso: String::new() }, slots::first(), 0);
@@ -43,8 +36,8 @@ fn a_daemon_that_stops_says_why_and_no_qemu_is_started() {
     let mut context = scratch_context(&scratch);
     context.paths.binaries = scratch.path("bin");
     let marker = scratch.path("qemu-ran");
-    context.paths.qemu = program(&scratch, "not-qemu", &format!("#!/bin/sh\ntouch {}\n", marker.display()));
-    program(&scratch, "bin/guesthouse-daemon", "#!/bin/sh\necho 'no card here'\nexit 1\n");
+    context.paths.qemu = scratch.program("not-qemu", &format!("#!/bin/sh\ntouch {}\n", marker.display()));
+    scratch.program("bin/guesthouse-daemon", "#!/bin/sh\necho 'no card here'\nexit 1\n");
     let host = LocalHost { context: &context };
     let machine = Machine::new("vm", "VM", "/d", "/v");
     let plan = VmPlan::new(&context, &machine, Boot::Gpu, slots::first(), 0);

@@ -4,7 +4,9 @@ use crate::context::Context;
 use crate::firmware::Firmware;
 use crate::paths::{Paths, Variables};
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};
 
 static NEXT: AtomicU32 = AtomicU32::new(0);
@@ -26,6 +28,23 @@ impl Scratch {
 
     pub fn root(&self) -> &Path {
         &self.0
+    }
+
+    /// Writes a program that can be run. A child writes it and not this process: a file this process
+    /// has open for writing can be held open for a moment by a fork in another test, and then a run of
+    /// it fails.
+    pub fn program(&self, name: &str, text: &str) -> PathBuf {
+        let path = self.path(name);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut writer = Command::new("sh")
+            .args(["-c", "cat > \"$0\" && chmod 755 \"$0\""])
+            .arg(&path)
+            .stdin(Stdio::piped())
+            .spawn()
+            .unwrap();
+        writer.stdin.take().unwrap().write_all(text.as_bytes()).unwrap();
+        assert!(writer.wait().unwrap().success());
+        path
     }
 
     /// Writes a file, making its folder.
