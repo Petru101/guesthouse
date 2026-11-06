@@ -55,17 +55,6 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         for (_, handle) in mapped {
             self.close_mappings(handle, space);
         }
-        if let Some(block) = self.fences.block {
-            let unmap = UnmapRequest {
-                space,
-                memory: block.memory,
-                address: block.gpu_address,
-                length: crate::FENCE_AREA,
-            };
-            if let Err(error) = self.backend.unmap(&unmap) {
-                log::warn!("closing an address space: {error}");
-            }
-        }
         for range in self.reserved_addresses.iter().filter(|range| range.space == space) {
             self.gpu_addresses.give_back(range.address, range.size, ALLOCATION_ALIGN, AddressUse::Reserved);
         }
