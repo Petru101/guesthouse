@@ -5,6 +5,9 @@
 //! card. `linux.rs` is the real one, and `fake.rs` plays its part in tests.
 
 pub mod classes;
+pub mod device;
+#[cfg(any(test, feature = "fake-rm"))]
+pub mod fake;
 
 use std::fmt;
 use std::os::fd::OwnedFd;
