@@ -50,6 +50,8 @@ The prototype is the reference, bugs included, until the replay tool has proved 
 
 Each handler has tests in `core/src/session/tests.rs`, which send whole messages through a `Session` with the stand-in backend. Name a test after what must be true, like `fences_only_go_up`.
 
+`core/tests/handler_fuzz.rs` sends random messages and fails on any panic. `FUZZ_ROUNDS=20000000 FUZZ_SEED=7 cargo test --release -p guesthouse-core --test handler_fuzz` runs one for longer.
+
 ## Commits
 
 Small steps, each of which builds and passes its tests. Say what changed and why, in a line a stranger can follow.

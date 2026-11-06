@@ -53,6 +53,17 @@ Nothing tells the host when a fence moves, so it has to look. `Session::poll` sa
 
 The tests hold this path to a standard: `core/tests/no_allocation.rs` fails if a steady flow of submissions and signals touches the allocator, and `cargo bench -p guesthouse-core` gives the time per message. Those numbers cover parsing, bookkeeping and building the reply, and not the socket, QEMU or the guest. `daemon/examples/round_trip.rs` times a round trip through the socket against any running daemon.
 
+## What a message can ask for
+
+A handler answers everything, and nothing a message says may stop the daemon. So a size the host makes room for goes through `declared_size` or `declared_count` in `messages/src/wire.rs`, shared memory access returns `MemoryError` and never panics, and address arithmetic is checked. Release builds keep overflow checks on, as a stop is better than a wrong sum. The limits are the ones a real guest can't reach:
+
+- an answer is at most 128 KiB, the most the guest's channel carries in a packet
+- the IO space must hold the whole fence area, on a page, inside the shared window, and can't move once fences exist
+- video memory stops at the end of the GPU address ranges, and memory waiting for its page list stops at the guest's RAM
+- a list stops at a channel's ring
+
+Past these the port is stricter than the prototype, which took such messages and did something else with them. For anything a guest really sends, the two still give the same replies.
+
 ## Slots
 
 `GUESTHOUSE_SLOT` names the VM, from 0 to 3, and unset means 0. Everything the daemon touches is named from it in `daemon/src/slot.rs`: the run folder, the shared memory files, the ports. Slot 0 has the plain names, and other slots add their number. Anything else in the variable stops the daemon, because a guess could reach another VM's files.

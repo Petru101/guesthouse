@@ -263,6 +263,7 @@ mod tests {
     use super::*;
     use std::env;
     use std::fs;
+    use std::os::unix::fs::PermissionsExt;
     use std::process;
 
     fn temporary_file(name: &str, bytes: &[u8]) -> PathBuf {
@@ -276,6 +277,16 @@ mod tests {
         assert_eq!(ram_offset(0x1000), Some(0x1000));
         assert_eq!(ram_offset(RAM_BELOW_HOLE), None);
         assert_eq!(ram_offset(HOLE_END), Some(RAM_BELOW_HOLE));
+    }
+
+    #[test]
+    fn files_only_their_owner_can_reach_still_open() {
+        let window = temporary_file("private", &[0; 0x1000]);
+        fs::set_permissions(&window, fs::Permissions::from_mode(0o600)).unwrap();
+        let mut memory = SharedMemory::open(&window, window.clone()).unwrap();
+        memory.write_u64(WINDOW_BASE, 1).unwrap();
+        assert!(memory.ram().is_ok());
+        fs::remove_file(window).unwrap();
     }
 
     #[test]
