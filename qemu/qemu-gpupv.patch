@@ -1,7 +1,7 @@
 From 65ab7380804588f7c67aa737cb2ce303e143f3c8 Mon Sep 17 00:00:00 2001
 From: xnixy <x@ruxn.com>
 Date: Tue, 3 Nov 2026 18:56:28 -0800
-Subject: [PATCH 1/5] hw/hyperv: add GPU-PV transport for Windows guests
+Subject: [PATCH 01/21] hw/hyperv: add GPU-PV transport for Windows guests
 
 Add the three things a Hyper-V GPU-PV partition sees: the global and per-vGPU
 DXGK VMBus channels, and the 1414:008E virtual render PCI function whose config
@@ -541,7 +541,7 @@ index 2cf7307..d0a6722 100644
 From 3011d38e424521b58e7585d26eb989536ff8a7e7 Mon Sep 17 00:00:00 2001
 From: xnixy <x@ruxn.com>
 Date: Wed, 4 Nov 2026 10:50:40 -0800
-Subject: [PATCH 2/5] hw/hyperv: map shared memory for GPU-PV fences
+Subject: [PATCH 02/21] hw/hyperv: map shared memory for GPU-PV fences
 
 Let gpupv-global map a memory backend over the VMBus MMIO window, so the guest can map
 fence storage that the backend can also reach.
@@ -602,7 +602,7 @@ index 9a8aed5..f5531b8 100644
 From d79190ce8dbfcb9fb59ef2ef8e3814fd97d6b27b Mon Sep 17 00:00:00 2001
 From: xnixy <x@ruxn.com>
 Date: Thu, 5 Nov 2026 02:30:11 -0800
-Subject: [PATCH 3/5] hw/usb: poll the high-speed usb-mouse every millisecond
+Subject: [PATCH 03/21] hw/usb: poll the high-speed usb-mouse every millisecond
 
 At 8 ms a guest's game sees mouse movement arrive in steps. The tablet already polls at 1 ms.
 ---
@@ -629,7 +629,7 @@ index ae19d60..9576925 100644
 From 592e306d07c9d975970e5459f32abe14c6f3e278 Mon Sep 17 00:00:00 2001
 From: xnixy <x@ruxn.com>
 Date: Thu, 5 Nov 2026 08:37:32 -0800
-Subject: [PATCH 4/5] hw/hyperv: let the GPU-PV backend hand over memory by
+Subject: [PATCH 04/21] hw/hyperv: let the GPU-PV backend hand over memory by
  file descriptor
 
 A backend can send GPUPV_EVT_ARENA with a base, a size and a file. QEMU maps
@@ -773,7 +773,7 @@ index f5531b8..f0b0f3a 100644
 From 9ef2d718c6b114df5df85ab09553f58dfa44374c Mon Sep 17 00:00:00 2001
 From: xnixy <x@ruxn.com>
 Date: Thu, 5 Nov 2026 12:13:11 -0800
-Subject: [PATCH 5/5] hw/hyperv: keep reading a GPU-PV channel until a pass
+Subject: [PATCH 05/21] hw/hyperv: keep reading a GPU-PV channel until a pass
  finds nothing
 
 A guest signals only when it finds the ring empty, so a packet written after
@@ -828,6 +828,184 @@ index f0b0f3a..6a3bfbd 100644
  }
  
  static void gpupv_drop_arena(GpupvChannel *s)
+-- 
+2.56.0
+
+From b875d88c5cc0a0ec915aaf31d2d8a99a5d88a115 Mon Sep 17 00:00:00 2001
+From: xnixy <x@ruxn.com>
+Date: Thu, 5 Nov 2026 22:59:41 -0800
+Subject: [PATCH 06/21] hw/misc/nvfwd: the call format, and a limit on calls a
+ second
+
+nvfwd forwards NVIDIA driver calls from a Linux guest to the host's driver.
+These are the first of its parts: how a call looks in a slot, and a rate with a
+burst on top, for keeping one VM from flooding the driver.
+---
+ hw/misc/meson.build         |  1 +
+ hw/misc/nvfwd/callrate.c    | 29 +++++++++++++++++
+ hw/misc/nvfwd/callrate.h    | 23 +++++++++++++
+ hw/misc/nvfwd/meson.build   |  5 +++
+ hw/misc/nvfwd/nvfwd_proto.h | 64 +++++++++++++++++++++++++++++++++++++
+ 5 files changed, 122 insertions(+)
+ create mode 100644 hw/misc/nvfwd/callrate.c
+ create mode 100644 hw/misc/nvfwd/callrate.h
+ create mode 100644 hw/misc/nvfwd/meson.build
+ create mode 100644 hw/misc/nvfwd/nvfwd_proto.h
+
+diff --git a/hw/misc/meson.build b/hw/misc/meson.build
+index 23265f6..a85128a 100644
+--- a/hw/misc/meson.build
++++ b/hw/misc/meson.build
+@@ -1,3 +1,4 @@
++subdir('nvfwd')
+ system_ss.add(when: 'CONFIG_APPLESMC', if_true: files('applesmc.c'))
+ system_ss.add(when: 'CONFIG_EDU', if_true: files('edu.c'))
+ system_ss.add(when: 'CONFIG_FW_CFG_DMA', if_true: files('vmcoreinfo.c'))
+diff --git a/hw/misc/nvfwd/callrate.c b/hw/misc/nvfwd/callrate.c
+new file mode 100644
+index 0000000..ff1ffdb
+--- /dev/null
++++ b/hw/misc/nvfwd/callrate.c
+@@ -0,0 +1,29 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++/* See callrate.h. */
++#include "callrate.h"
++
++#include <stdbool.h>
++
++#define NS_PER_SECOND 1000000000ull
++
++void callrate_init(CallRate *r, uint32_t calls_per_second, uint32_t burst_calls)
++{
++    r->call_ns = calls_per_second ? NS_PER_SECOND / calls_per_second : 0;
++    r->burst_ns = r->call_ns * burst_calls;
++    r->next_ns = 0;
++}
++
++uint64_t callrate_wait_ns(CallRate *r, uint64_t now_ns)
++{
++    uint64_t next = __atomic_load_n(&r->next_ns, __ATOMIC_RELAXED), after;
++
++    if (!r->call_ns) {
++        return 0;
++    }
++    /* Lockless because vCPUs call this at once, and a lost race only means trying again. */
++    do {
++        after = (next > now_ns ? next : now_ns) + r->call_ns;
++    } while (!__atomic_compare_exchange_n(&r->next_ns, &next, after, true, __ATOMIC_RELAXED,
++                                          __ATOMIC_RELAXED));
++    return after > now_ns + r->burst_ns ? after - now_ns - r->burst_ns : 0;
++}
+diff --git a/hw/misc/nvfwd/callrate.h b/hw/misc/nvfwd/callrate.h
+new file mode 100644
+index 0000000..3446779
+--- /dev/null
++++ b/hw/misc/nvfwd/callrate.h
+@@ -0,0 +1,23 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++/*
++ * A limit on calls a second for one VM, with a burst on top: starting a program makes thousands of
++ * calls at once and then goes quiet, and that must not be slowed. Time is passed in, so the logic
++ * can be tested without a clock.
++ */
++#ifndef NVFWD_CALLRATE_H
++#define NVFWD_CALLRATE_H
++
++#include <stdint.h>
++
++typedef struct CallRate {
++    uint64_t call_ns;  /* one call's share of a second; 0 means no limit */
++    uint64_t burst_ns; /* how far ahead of the rate calls may run */
++    uint64_t next_ns;  /* when the rate would allow the next call */
++} CallRate;
++
++void callrate_init(CallRate *r, uint32_t calls_per_second, uint32_t burst_calls);
++
++/* Counts a call made at `now_ns`, and says how long it has to wait. Safe from any thread. */
++uint64_t callrate_wait_ns(CallRate *r, uint64_t now_ns);
++
++#endif
+diff --git a/hw/misc/nvfwd/meson.build b/hw/misc/nvfwd/meson.build
+new file mode 100644
+index 0000000..1c13d58
+--- /dev/null
++++ b/hw/misc/nvfwd/meson.build
+@@ -0,0 +1,5 @@
++# SPDX-License-Identifier: GPL-2.0-or-later
++nvfwd_ss = files(
++  'callrate.c',
++)
++system_ss.add(when: 'CONFIG_PCI', if_true: nvfwd_ss)
+diff --git a/hw/misc/nvfwd/nvfwd_proto.h b/hw/misc/nvfwd/nvfwd_proto.h
+new file mode 100644
+index 0000000..969db62
+--- /dev/null
++++ b/hw/misc/nvfwd/nvfwd_proto.h
+@@ -0,0 +1,64 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++/* Wire format between the guest's nvidia.ko stand-in and QEMU's nvfwd device. */
++#ifndef NVFWD_PROTO_H
++#define NVFWD_PROTO_H
++#ifndef __KERNEL__
++#include <stdint.h>
++#include <sys/ioctl.h>
++#endif
++
++#define NVFWD_SLOT_SIZE  (2u << 20)
++#define NVFWD_SLOTS      16u
++#define NVFWD_HDR_SIZE   8192u
++#define NVFWD_DATA_SIZE  (NVFWD_SLOT_SIZE - NVFWD_HDR_SIZE)
++#define NVFWD_MAX_FIX    128u
++#define NVFWD_MAGIC      0x6e766664u
++
++enum { NVFWD_OP_OPEN = 1, NVFWD_OP_CLOSE, NVFWD_OP_IOCTL, NVFWD_OP_MMAP, NVFWD_OP_MUNMAP, NVFWD_OP_POLL,
++       NVFWD_OP_SHOW_BUFFER, NVFWD_OP_SHOW_NEXT, NVFWD_OP_SHOW_FRAME, NVFWD_OP_SHOW_SURFACE, NVFWD_OP_SHOW_READING, NVFWD_OP_SHOW_RATE };
++/* First argument of SHOW_SURFACE: which surface, and how its memory is laid out, as NVKMS describes it. */
++#define NVFWD_SURFACE_ID(id, layout, generic, gobs_y, pitch_blocks) \
++    ((id) | (uint64_t)(layout) << 8 | (uint64_t)!!(generic) << 9 | (uint64_t)(gobs_y) << 12 | (uint64_t)(pitch_blocks) << 32)
++enum { NVFWD_DEV_CTL = 0, NVFWD_DEV_GPU = 1, NVFWD_DEV_UVM = 2 };
++enum {
++    NVFWD_FIX_PTR = 0,   /* u64 at `at` becomes the host address of data + target */
++    NVFWD_FIX_FD = 1,    /* s32 at `at` becomes the host fd of table entry `target` */
++    NVFWD_FIX_PAGES = 2, /* u64 at `at` becomes a host address made from the run list at data + target */
++};
++
++struct nvfwd_fix {
++    uint32_t kind, at, target, pad;
++};
++
++struct nvfwd_run {
++    uint64_t gpa, len;
++};
++
++/* At data + target for NVFWD_FIX_PAGES. */
++struct nvfwd_runs {
++    uint32_t count, pad;
++    uint64_t first_offset;
++    struct nvfwd_run run[];
++};
++
++struct nvfwd_req {
++    uint32_t op, fdid, cmd, nfix, len;
++    int32_t ret;
++    uint64_t a0, a1, a2, a3;
++    struct nvfwd_fix fix[NVFWD_MAX_FIX];
++};
++
++/* The "show this surface" call. The fd is one vkGetMemoryFdKHR made, so the host side holds the exported object. */
++#define NVFWD_SHOW_MAX_SURFACES 32u /* a compositor's framebuffers, with no fixed set */
++#define NVFWD_SHOW_SLOTS 5u /* the viewer holds up to 3, one is the newest, and the next frame needs one more */
++struct nvfwd_show_buffer {
++    int32_t fd;
++    uint32_t slot, width, height, pitch, format;
++    uint64_t size;
++};
++#define NVFWD_SHOW_IOC_BUFFER _IOW('S', 1, struct nvfwd_show_buffer)
++#define NVFWD_SHOW_IOC_NEXT _IOR('S', 2, uint32_t)
++/* low 8 bits the slot, the rest the present number of this frame, for checking */
++#define NVFWD_SHOW_IOC_FRAME _IOW('S', 3, uint64_t)
++
++#endif
 -- 
 2.56.0
 
