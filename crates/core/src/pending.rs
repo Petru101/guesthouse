@@ -30,6 +30,8 @@ pub enum QueueAction {
     WakeEvent { event: u64, release: u64 },
     WriteFences(Vec<Signal>),
     PresentDone([u64; 3]),
+    /// Handles a message again, whose reply has been held for this.
+    Retry { message: Vec<u8>, ticket: Option<ReplyTicket>, started: Instant },
 }
 
 /// One thing that is waiting.

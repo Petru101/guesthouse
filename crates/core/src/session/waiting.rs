@@ -140,7 +140,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
     }
 
     /// Whether no queue behind these handles has work the GPU has not finished.
-    fn queues_idle(&self, mut handles: impl Iterator<Item = u32>) -> bool {
+    pub(crate) fn queues_idle(&self, mut handles: impl Iterator<Item = u32>) -> bool {
         handles.all(|handle| {
             self.visit_live_queues(handle, |queue| {
                 queue.last_fence.is_none_or(|value| self.fence_value(queue.fence) >= value)
@@ -148,7 +148,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         })
     }
 
-    fn after_queues(&mut self, handles: impl Iterator<Item = u32> + Clone, action: QueueAction) {
+    pub(crate) fn after_queues(&mut self, handles: impl Iterator<Item = u32> + Clone, action: QueueAction) {
         if self.queues_idle(handles.clone()) {
             self.run_queue_action(action);
         } else {
@@ -167,6 +167,9 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
                 signals.into_iter().for_each(|(handle, value)| self.write_fence(handle, value));
             }
             QueueAction::PresentDone(token) => self.notices.push(Notice::PresentDone { token }),
+            QueueAction::Retry { message, ticket, started } => {
+                self.pending.push(Pending::Retry { message, ticket, started });
+            }
         }
     }
 

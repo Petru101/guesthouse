@@ -598,6 +598,28 @@ mod allocations {
     }
 
     #[test]
+    fn a_first_lock_waits_for_the_gpu_to_finish_in_its_space() {
+        let mut session = session();
+        session.backend_mut().run_work = true;
+        let (_, mapped) = allocate(&mut session, private(0x1000));
+        map(&mut session, mapped, 0, 0, 0);
+        let context = create_context(&mut session, 0);
+        let (queue, _, fence) = create_queue(&mut session, context);
+        submit(&mut session, queue, 1);
+        let mut request = message(Command::LockForCpu, 0x20);
+        set_u32(&mut request, 0x1C, mapped);
+        let mut out = Vec::new();
+        let answer = session.handle_message(&request, Some(ReplyTicket::default()), &mut out);
+        assert_eq!(answer, Answer::Held);
+        assert!(session.backend().preserved.is_empty(), "the engine may still be writing it");
+        session.memory_mut().write_u64(fence, 1).unwrap();
+        let _ = session.poll(Instant::now());
+        let _ = session.poll(Instant::now());
+        assert_eq!(session.backend().preserved.len(), 1);
+        assert_eq!(session.take_replies().count(), 1);
+    }
+
+    #[test]
     fn contents_move_only_once_work_has_run() {
         let mut session = session();
         session.backend_mut().run_work = true;
@@ -605,12 +627,13 @@ mod allocations {
         let (_, mapped) = allocate(&mut session, private(0x1000));
         map(&mut session, mapped, 0, 0, 0);
         let context = create_context(&mut session, 0);
-        let (queue, _, _) = create_queue(&mut session, context);
+        let (queue, _, fence) = create_queue(&mut session, context);
         lock(&mut session, mapped);
         assert!(session.backend().preserved.is_empty());
         let (_, again) = allocate(&mut session, private(0x1000));
         map(&mut session, again, 0, 0, 0);
         submit(&mut session, queue, 1);
+        session.memory_mut().write_u64(fence, 1).unwrap();
         lock(&mut session, unmapped);
         assert!(session.backend().preserved.is_empty(), "nothing was mapped, so nothing was written");
         lock(&mut session, again);
