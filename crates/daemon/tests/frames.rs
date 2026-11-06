@@ -623,12 +623,18 @@ mod display_driver {
         let mut rig = Rig::new();
         assert_eq!(read_note(&rig.folder), None);
         rig.stamped_buffers();
-        rig.say(&driver::register(&ring(Look::HDR)));
+        let first = rig.say(&driver::register(&ring(Look::HDR))).1.expect("a slot");
         for _ in 0..MOST_STEPS {
             rig.step();
         }
-        let note = ScreenNote { width: WIDTH, height: HEIGHT, hdr: true, daemon: process::id() };
-        assert_eq!(read_note(&rig.folder), Some(note));
+        let note =
+            ScreenNote { width: WIDTH, height: HEIGHT, hdr: true, daemon: process::id(), frames: false };
+        assert_eq!(read_note(&rig.folder), Some(note), "an open ring says nothing about the picture");
+        rig.say(&driver::frame(&done(first)));
+        for _ in 0..MOST_STEPS {
+            rig.step();
+        }
+        assert_eq!(read_note(&rig.folder), Some(ScreenNote { frames: true, ..note }));
         rig.say(&driver::close(NAME));
         rig.step();
         assert_eq!(read_note(&rig.folder), None);

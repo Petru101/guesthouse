@@ -8,6 +8,8 @@ use std::path::Path;
 const NOTE_FILE: &str = "display-ring";
 const HDR_WORD: &str = "hdr";
 const SDR_WORD: &str = "sdr";
+const FRAMES_WORD: &str = "frames";
+const NO_FRAMES_WORD: &str = "empty";
 
 /// What the display driver's ring holds now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -17,21 +19,29 @@ pub struct ScreenNote {
     pub hdr: bool,
     /// Who wrote it. A daemon that dies leaves its note behind, so a reader has to see it's alive.
     pub daemon: u32,
+    /// A frame has landed on this ring. It's open from the moment the driver registers it.
+    pub frames: bool,
 }
 
 impl ScreenNote {
     fn text(self) -> String {
         let look = if self.hdr { HDR_WORD } else { SDR_WORD };
-        format!("{}x{} {look} {}\n", self.width, self.height, self.daemon)
+        let frames = if self.frames { FRAMES_WORD } else { NO_FRAMES_WORD };
+        format!("{}x{} {look} {} {frames}\n", self.width, self.height, self.daemon)
     }
 
     fn parse(text: &str) -> Option<Self> {
         let mut words = text.split_whitespace();
-        let (size, look, daemon) = (words.next()?, words.next()?, words.next()?);
+        let (size, look, daemon, frames) = (words.next()?, words.next()?, words.next()?, words.next()?);
         let (width, height) = size.split_once('x')?;
         let hdr = match look {
             HDR_WORD => true,
             SDR_WORD => false,
+            _ => return None,
+        };
+        let frames = match frames {
+            FRAMES_WORD => true,
+            NO_FRAMES_WORD => false,
             _ => return None,
         };
         Some(Self {
@@ -39,6 +49,7 @@ impl ScreenNote {
             height: height.parse().ok()?,
             hdr,
             daemon: daemon.parse().ok()?,
+            frames,
         })
     }
 }
@@ -71,9 +82,12 @@ mod tests {
         fs::create_dir_all(&folder).unwrap();
         assert_eq!(read_note(&folder), None);
         write_note(&folder, None).unwrap();
-        let note = ScreenNote { width: 3840, height: 2160, hdr: true, daemon: 7 };
+        let note = ScreenNote { width: 3840, height: 2160, hdr: true, daemon: 7, frames: false };
         write_note(&folder, Some(note)).unwrap();
         assert_eq!(read_note(&folder), Some(note));
+        let landed = ScreenNote { frames: true, ..note };
+        write_note(&folder, Some(landed)).unwrap();
+        assert_eq!(read_note(&folder), Some(landed));
         write_note(&folder, None).unwrap();
         assert_eq!(read_note(&folder), None);
         fs::remove_dir_all(&folder).unwrap();

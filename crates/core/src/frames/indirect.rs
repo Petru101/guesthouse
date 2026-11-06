@@ -70,6 +70,10 @@ pub(crate) struct IndirectRing {
     pub needs_export: bool,
     /// An export failed, which isn't worth trying on every turn of the loop.
     pub export_refused: bool,
+    /// When it opened, for saying how long its first frame took.
+    pub opened_at: Instant,
+    /// A frame has really finished on this ring. Opening one proves nothing about the picture.
+    pub landed: bool,
 }
 
 impl IndirectRing {

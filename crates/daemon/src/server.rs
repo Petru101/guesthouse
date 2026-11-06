@@ -255,11 +255,12 @@ impl<B: Backend, M: GuestMemory> Server<B, M> {
                 log::warn!("writing the GPU note for the app: {error}");
             }
         }
-        let screen = self.router.session().indirect_screen().map(|(picture, look)| ScreenNote {
+        let screen = self.router.session().indirect_screen().map(|(picture, look, frames)| ScreenNote {
             width: picture.width,
             height: picture.height,
             hdr: look == Look::HDR,
             daemon: std::process::id(),
+            frames,
         });
         if screen != self.said_screen {
             self.said_screen = screen;

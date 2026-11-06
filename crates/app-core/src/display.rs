@@ -256,7 +256,7 @@ mod tests {
     #[test]
     fn the_size_and_the_look_come_from_the_frames_and_the_rate_from_windows() {
         let state = DisplayState { running: Some(ON_DRIVER), ..DisplayState::default() };
-        let ring = ScreenNote { width: 3840, height: 2160, hdr: true, daemon: 7 };
+        let ring = ScreenNote { width: 3840, height: 2160, hdr: true, daemon: 7, frames: true };
         assert_eq!(screen_text(&state, Some(ring)), "3840x2160 at 240 Hz, HDR");
         assert_eq!(screen_text(&state, None), "no picture from the display driver");
     }
@@ -274,7 +274,7 @@ mod tests {
         let scratch = Scratch::new();
         let context = scratch_context(&scratch);
         fs::create_dir_all(context.run_folder(None)).unwrap();
-        let note = ScreenNote { width: 1920, height: 1080, hdr: false, daemon: 77 };
+        let note = ScreenNote { width: 1920, height: 1080, hdr: false, daemon: 77, frames: true };
         write_note(&context.run_folder(None), Some(note)).unwrap();
         assert_eq!(ring_in(&context, None), None, "that daemon has gone");
         fake_daemon(&context, 77);

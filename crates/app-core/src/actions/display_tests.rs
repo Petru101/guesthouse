@@ -55,7 +55,7 @@ impl Guest {
     }
 
     fn show_frames(&self) {
-        let note = ScreenNote { width: 1920, height: 1080, hdr: false, daemon: DAEMON_PID };
+        let note = ScreenNote { width: 1920, height: 1080, hdr: false, daemon: DAEMON_PID, frames: true };
         let shown = self.sends_frames.load(Ordering::Relaxed).then_some(note);
         write_note(&self.run_folder, shown).unwrap();
     }
