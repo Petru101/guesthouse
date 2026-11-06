@@ -7,6 +7,7 @@
 
 use super::frames::FrameSource;
 use super::import::texture;
+use super::ring::file_size;
 use gtk::gdk;
 use guesthouse_app_core::vm_args::FRAMES_PREFIX;
 use guesthouse_frame_socket::{Colour, Descriptor, Format};
@@ -48,11 +49,16 @@ fn word(bytes: &[u8], at: usize) -> u32 {
     u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap_or_default())
 }
 
+/// The slot a word names, if it's one a device can have.
+fn known_slot(word: u64) -> Option<usize> {
+    Some((word & u64::from(SLOT_MASK)) as usize).filter(|slot| *slot < MOST_SLOTS)
+}
+
 /// What one message from the device says, as the buffers it replaces.
 fn take_message(bytes: &[u8], fds: Vec<OwnedFd>, buffers: &mut Vec<Option<Buffer>>, recent: &mut Vec<usize>) {
     if bytes.len() == SURFACE_MESSAGE {
         let Some(fd) = fds.into_iter().next() else { return };
-        let slot = (word(bytes, 12) & SLOT_MASK) as usize;
+        let Some(slot) = known_slot(u64::from(word(bytes, 12))) else { return };
         let modifier = u64::from(word(bytes, 24)) << 32 | u64::from(word(bytes, 20));
         let format = Format { fourcc: word(bytes, 16), modifier };
         let (width, height, stride) = (word(bytes, 0), word(bytes, 4), word(bytes, 8));
@@ -168,7 +174,8 @@ impl FrameSource for ForwardedFrames {
     fn newest(&mut self) -> Option<gdk::Texture> {
         self.receive();
         let latest = self.read_word(LATEST);
-        let (sequence, slot) = (latest >> 8, (latest & u64::from(SLOT_MASK)) as usize);
+        let sequence = latest >> 8;
+        let slot = known_slot(latest)?;
         let buffer = self.buffers.get(slot).cloned().flatten()?;
         if sequence == self.shown || !self.hold(slot, latest) {
             return None;
@@ -182,6 +189,9 @@ impl FrameSource for ForwardedFrames {
             format: buffer.format,
             colour: Colour::SRGB,
         };
+        if !file_size(&*buffer.file).is_some_and(|size| descriptor.fits(size)) {
+            return None;
+        }
         texture(&self.display, buffer.file, &descriptor, Box::new(|| {}))
     }
 
@@ -201,6 +211,12 @@ mod tests {
 
     fn message(words: &[u32]) -> Vec<u8> {
         words.iter().flat_map(|word| word.to_le_bytes()).collect()
+    }
+
+    #[test]
+    fn a_slot_no_device_has_is_refused() {
+        assert_eq!(known_slot(0x1_03), Some(3));
+        assert_eq!(known_slot(200), None);
     }
 
     #[test]

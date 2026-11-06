@@ -95,6 +95,9 @@ pub fn available_ram(context: &Context) -> u64 {
 
 /// The most RAM a GPU machine can have now.
 pub fn host_ram_limit(context: &Context) -> Result<u64> {
+    if let Some(limit) = context.ram_limit {
+        return Ok(limit);
+    }
     let disk = statvfs(&context.paths.shared_memory).map_err(std::io::Error::from)?;
     let ours = shared_memory_used(context, context.slot, &QEMU_FILES);
     let (size, free) = (disk.f_blocks * disk.f_frsize, disk.f_bfree * disk.f_frsize);

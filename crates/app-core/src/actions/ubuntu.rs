@@ -1,7 +1,7 @@
 //! Installing and starting an Ubuntu guest. If the host can't honestly offer its driver, the guest
 //! boots without the GPU and is told why.
 
-use super::{KEY_POLL, Task, plan_for};
+use super::{KEY_POLL, Task, plan_for, start_if_there_is_room};
 use crate::disk_image::disk_size_gib;
 use crate::failure::{Failure, Result};
 use crate::iso::kernel_package;
@@ -10,8 +10,9 @@ use crate::linux::driver_host::LoaderHost;
 use crate::linux::driver_image::{Outcome, prepare};
 use crate::linux::forwarding::forwarding_problem;
 use crate::linux::gpu_off::{GUEST_NO_IMAGE, GUEST_TURNED_OFF, GpuOff};
-use crate::linux::guest_sources;
+use crate::linux::layout::ALLOW_LIST;
 use crate::linux::seed::make_seed;
+use crate::linux::{guest_sources, sensor_daemon};
 use crate::network::{Protocol, port_taken};
 use crate::start_checks::start_problems;
 use crate::vm_args::{Boot, INSTALL_LOG, UbuntuBoot, UbuntuInstall, ssh_port};
@@ -24,8 +25,6 @@ use std::time::Duration;
 const INSTALL_FINISHED: &[u8] = b"nvfwd-install-finished";
 const INSTALL_HOURS: u64 = 2;
 const REASON_FILE: &str = "gpu-off-reason";
-const SENSOR_DAEMON: &str = "nvfwd-sensord";
-const ALLOW_LIST: &str = "allow.txt";
 
 fn isoinfo_files(iso: &str) -> Result<String> {
     let listing = Command::new("isoinfo").args(["-R", "-f", "-i", iso]).output()?;
@@ -93,7 +92,7 @@ pub fn install(task: &mut Task) -> Result<()> {
     task.machine.installing = false;
     task.machine.iso.clear();
     task.machine.save(context)?;
-    start(task)
+    start_if_there_is_room(task, "Ubuntu")
 }
 
 fn wait_for_poweroff(task: &Task) -> Result<()> {
@@ -113,7 +112,7 @@ fn gpu_boot(task: &mut Task) -> Result<UbuntuBoot> {
     let context = task.context;
     let reason_file = task.run_file(REASON_FILE);
     let refused = |task: &mut Task, off: GpuOff| -> Result<UbuntuBoot> {
-        fs::create_dir_all(task.context.run_folder(None))?;
+        task.context.make_run_folder(None)?;
         fs::write(&reason_file, off.guest_text())?;
         Ok(UbuntuBoot::NoGpu { reason_file: reason_file.clone() })
     };
@@ -127,7 +126,7 @@ fn gpu_boot(task: &mut Task) -> Result<UbuntuBoot> {
         return refused(task, off);
     }
     // It's fine if this isn't there: the device goes on without sensors, and logs why.
-    let sensor_daemon = context.paths.qemu.with_file_name(SENSOR_DAEMON);
+    let sensor_daemon = sensor_daemon(context);
     task.step("Getting the driver image ready");
     let store = &context.paths.store;
     let tree = env_folder("NVIDIA_SOURCE").unwrap_or_else(|| store.join("src/open-gpu-kernel-modules"));

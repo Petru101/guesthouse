@@ -4,7 +4,7 @@ use crate::common::{choose_file, in_background};
 use crate::rows::{number_row, row_button};
 use crate::window::Window;
 use adw::prelude::*;
-use guesthouse_app_core::gpu_support::{NO_GPU_YET, gpu_ready, kind_offered};
+use guesthouse_app_core::gpu_support::{kind_offered, plain_reason, ubuntu_note};
 use guesthouse_app_core::host::{host_ram_limit, physical_cores, plain_ram_limit};
 use guesthouse_app_core::iso::{Iso, read_iso};
 use guesthouse_app_core::library::{
@@ -19,8 +19,6 @@ use std::path::Path;
 use std::rc::Rc;
 
 const NO_GPU: &str = "This machine gets no GPU acceleration. It runs on the CPU, with a basic display.";
-const UBUNTU_NOTE: &str =
-    "Installs by itself. Its GPU is a preview, and if the GPU can't start it boots with a plain screen.";
 const WIDTH: i32 = 520;
 const HEIGHT: i32 = 620;
 const NOTE_MARGIN: i32 = 12;
@@ -174,7 +172,11 @@ impl NewMachineDialog {
 
     pub fn set_vm_running(&self, running: bool) {
         self.0.vm_running.set(running);
-        let note = if running { format!("{} Shut one down first.", no_slot_text()) } else { String::new() };
+        let note = if running {
+            format!("{} Shut one down first.", no_slot_text(&self.0.window.context()))
+        } else {
+            String::new()
+        };
         self.0.note.set_label(&note);
         self.update();
     }
@@ -228,11 +230,12 @@ impl NewMachineDialog {
         verdict.set_subtitle(&gtk::glib::markup_escape_text(subtitle));
     }
 
-    fn describe(&self, iso: &Iso) {
+    /// `reason` says why this disc is only a plain VM here, if it is.
+    fn describe(&self, iso: &Iso, reason: &str) {
         let context = self.0.window.context();
         let windows = iso.kind == Kind::Windows;
         if iso.kind == Kind::Linux {
-            self.show_verdict(&iso.title, UBUNTU_NOTE);
+            self.show_verdict(&iso.title, ubuntu_note(&context));
             return;
         }
         self.0.no_driver.set(windows && !driver_folder(&context).is_dir());
@@ -242,10 +245,9 @@ impl NewMachineDialog {
             let warning = driver_warning(&context).map_or_else(String::new, |text| format!(" {text}"));
             self.show_verdict(&iso.title, &format!("Installs by itself and starts with GPU-PV.{warning}"));
         } else {
-            let later = if gpu_ready(&context) { "" } else { NO_GPU_YET };
             self.show_verdict(
                 &format!("{}: a plain VM", iso.title),
-                format!("You install it by hand. {NO_GPU} {later}").trim(),
+                format!("You install it by hand. {NO_GPU} {reason}").trim(),
             );
         }
     }
@@ -273,9 +275,10 @@ impl NewMachineDialog {
     }
 
     fn show_iso(&self, path: &str, iso: Iso) {
-        let kind = kind_offered(&self.0.window.context(), iso.kind);
-        let iso = Iso { kind, ..iso };
-        self.describe(&iso);
+        let context = self.0.window.context();
+        let reason = plain_reason(&context, iso.kind);
+        let iso = Iso { kind: kind_offered(&context, iso.kind), ..iso };
+        self.describe(&iso, reason);
         self.set_sizes(iso.kind);
         let suggestion = suggested_name(iso.kind, path);
         if keeps_following_the_disc(&self.0.name.text(), &self.0.suggested.borrow()) {

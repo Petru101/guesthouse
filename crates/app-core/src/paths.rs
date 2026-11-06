@@ -4,8 +4,9 @@
 //! disk. A VM's sockets go in the runtime folder, the log in the state folder, and QEMU and the
 //! guest's files in the program folder.
 
+use crate::firmware::Firmware;
+use crate::linux::layout::{SOURCES_FOLDER, SOURCES_MARK};
 use guesthouse_daemon::slot::Slot;
-use serde_json::Value;
 use std::collections::HashMap;
 use std::env;
 use std::fs;
@@ -26,12 +27,11 @@ const INSTALLED_PROGRAM: &str = "/usr/libexec/guesthouse";
 const USER_PROGRAM: &str = ".local/lib/guesthouse/current";
 /// What the program folder holds besides the binaries, which tells it from any other folder.
 const PROGRAM_MARK: &str = "guest";
-/// What tells the repo's guest folder from any other folder of that name.
+/// A file that tells the repo's guest folder from any other folder of that name.
 const REPO_GUEST_MARK: &str = "setup.ps1";
 const SHARED_MEMORY: &str = "/dev/shm";
 const QEMU_PROGRAM: &str = "qemu/build/qemu-system-x86_64";
 /// Where each distribution's firmware package says what it installed, in QEMU's own format.
-const FIRMWARE_DESCRIPTORS: &str = "/usr/share/qemu/firmware";
 const SYSTEM_QEMU: &str = "qemu-system-x86_64";
 
 /// The environment, as a value, so that a test can say what it holds.
@@ -76,8 +76,11 @@ pub struct Paths {
     pub state: PathBuf,
     /// The folder that holds each slot's run folder, and what the daemon is given as its base.
     pub runtime: PathBuf,
-    /// The files that go into a Windows guest. See [`guest_folder`].
+    /// The files that go into a Windows guest. See [`shipped_folder`].
     guest: PathBuf,
+    /// The sources of a Linux guest. See [`shipped_folder`].
+    linux: PathBuf,
+    pub home: PathBuf,
     /// The program folder: QEMU and the guest's files. It isn't in this repo, and the app runs plain
     /// VMs without it.
     pub program: PathBuf,
@@ -89,96 +92,6 @@ pub struct Paths {
     pub own_run: Option<PathBuf>,
     pub own_agent_port: Option<u16>,
     pub firmware: Firmware,
-}
-
-/// The firmware files, which come from the distribution.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Firmware {
-    pub code: PathBuf,
-    /// Goes with `vars`.
-    pub vars: PathBuf,
-    /// The 4 MiB firmware, the one with TPM drivers.
-    pub code_secure: PathBuf,
-    /// With Microsoft's keys, so Secure Boot is on. It goes with `code_secure`.
-    pub vars_secure: PathBuf,
-    /// How `code` and `vars` are stored, in QEMU's word for it.
-    pub format: String,
-    /// The same for `code_secure` and `vars_secure`.
-    pub format_secure: String,
-}
-
-impl Default for Firmware {
-    fn default() -> Self {
-        const FOLDER: &str = "/usr/share/edk2/ovmf";
-        let file = |name: &str| Path::new(FOLDER).join(name);
-        Self {
-            code: file("OVMF_CODE.secboot.fd"),
-            vars: file("OVMF_VARS.fd"),
-            code_secure: file("OVMF_CODE_4M.secboot.qcow2"),
-            vars_secure: file("OVMF_VARS_4M.secboot.qcow2"),
-            format: "raw".to_owned(),
-            format_secure: "qcow2".to_owned(),
-        }
-    }
-}
-
-impl Firmware {
-    /// Fedora's files are the ones this has run on, so they win if they're here. Elsewhere the names
-    /// differ, and the distribution's descriptors say what they are.
-    pub fn find() -> Self {
-        Self::find_in(Path::new(FIRMWARE_DESCRIPTORS))
-    }
-
-    fn find_in(descriptors: &Path) -> Self {
-        let known = Self::default();
-        if known.code.exists() { known } else { Self::described_in(descriptors).unwrap_or(known) }
-    }
-
-    fn described_in(folder: &Path) -> Option<Self> {
-        let mut names: Vec<PathBuf> =
-            fs::read_dir(folder).ok()?.flatten().map(|entry| entry.path()).collect();
-        // Descriptors are numbered so that the first of a kind is the distribution's preference.
-        names.sort();
-        let usable: Vec<Value> = names.iter().filter_map(|path| read_descriptor(path)).collect();
-        let secure = |enrolled: bool| usable.iter().find(|found| has_features(found, enrolled));
-        let plain = secure(false)?;
-        // Arch ships no firmware with keys. A VM with no TPM never uses it, and one with a TPM gets
-        // Secure Boot off.
-        let keys = secure(true).unwrap_or(plain);
-        Some(Self {
-            code: flash_file(plain, "executable")?.0,
-            vars: flash_file(plain, "nvram-template")?.0,
-            format: flash_file(plain, "executable")?.1,
-            code_secure: flash_file(keys, "executable")?.0,
-            vars_secure: flash_file(keys, "nvram-template")?.0,
-            format_secure: flash_file(keys, "executable")?.1,
-        })
-    }
-}
-
-/// Only a split flash image for x86_64's q35 machine fits how a VM is started.
-fn read_descriptor(path: &Path) -> Option<Value> {
-    let found: Value = serde_json::from_str(&fs::read_to_string(path).ok()?).ok()?;
-    let is_split = found["mapping"]["device"] == "flash" && found["mapping"]["mode"] == "split";
-    let targets = found["targets"].as_array()?;
-    let is_q35 = targets.iter().any(|target| {
-        let machines = target["machines"].as_array();
-        let q35 = machines.is_some_and(|all| all.iter().any(|name| name == "pc-q35-*"));
-        target["architecture"] == "x86_64" && q35
-    });
-    (is_split && is_q35).then_some(found)
-}
-
-/// Both firmwares have Secure Boot, and the one with the keys has them enrolled.
-fn has_features(descriptor: &Value, enrolled: bool) -> bool {
-    let features = descriptor["features"].as_array();
-    let has = |wanted: &str| features.is_some_and(|all| all.iter().any(|name| name == wanted));
-    has("secure-boot") && has("enrolled-keys") == enrolled
-}
-
-fn flash_file(descriptor: &Value, part: &str) -> Option<(PathBuf, String)> {
-    let file = &descriptor["mapping"][part];
-    Some((file["filename"].as_str()?.into(), file["format"].as_str()?.to_owned()))
 }
 
 impl Paths {
@@ -203,7 +116,9 @@ impl Paths {
             .map_or_else(|| state.join("runtime"), |folder| folder.join(APP_FOLDER));
         let program = program_folder(variables, running_from);
         Self {
-            guest: guest_folder(&program, running_from),
+            guest: shipped_folder(&program, running_from, PROGRAM_MARK, REPO_GUEST_MARK),
+            linux: shipped_folder(&program, running_from, SOURCES_FOLDER, SOURCES_MARK),
+            home: variables.home(),
             qemu: variables.folder(QEMU_VARIABLE).unwrap_or_else(|| qemu_program(variables, &program)),
             binaries: running_from.map_or_else(|| program.clone(), Path::to_owned),
             store,
@@ -217,7 +132,7 @@ impl Paths {
                 .unwrap_or_else(|| PathBuf::from(SHARED_MEMORY)),
             own_run: variables.folder(RUN_VARIABLE),
             own_agent_port: variables.get(AGENT_PORT_VARIABLE).and_then(|text| text.parse().ok()),
-            firmware: Firmware::find(),
+            firmware: Firmware::default(),
         }
     }
 
@@ -263,6 +178,11 @@ impl Paths {
         self.guest.clone()
     }
 
+    /// The sources of a Linux guest.
+    pub fn linux_sources(&self) -> PathBuf {
+        self.linux.clone()
+    }
+
     /// Whether the program folder brought the guest's files, rather than a build of the repo. A
     /// program folder comes with the rest of what a GPU needs, and the repo doesn't.
     pub fn guest_files_in_program(&self) -> bool {
@@ -301,16 +221,16 @@ fn qemu_program(variables: &Variables, program: &Path) -> PathBuf {
     system.unwrap_or(own)
 }
 
-/// The program folder's guest files, or else the repo's if this is a build of it, which is found by
-/// going up from the running program.
-fn guest_folder(program: &Path, running_from: Option<&Path>) -> PathBuf {
-    let own = program.join(PROGRAM_MARK);
+/// The program folder's `name`, or else the repo's if this is a build of it, which is found by going
+/// up from the running program. `mark` is a file that says it's the repo's folder of that name.
+fn shipped_folder(program: &Path, running_from: Option<&Path>, name: &str, mark: &str) -> PathBuf {
+    let own = program.join(name);
     if own.is_dir() {
         return own;
     }
-    let is_repo = |folder: &&Path| folder.join(PROGRAM_MARK).join(REPO_GUEST_MARK).is_file();
+    let is_repo = |folder: &&Path| folder.join(name).join(mark).is_file();
     let repo = running_from.and_then(|start| start.ancestors().find(is_repo));
-    repo.map_or(own, |folder| folder.join(PROGRAM_MARK))
+    repo.map_or(own, |folder| folder.join(name))
 }
 
 fn program_folder(variables: &Variables, running_from: Option<&Path>) -> PathBuf {
@@ -331,41 +251,6 @@ mod tests {
 
     fn slot(number: &str) -> Slot {
         Slot::parse(Some(number)).unwrap()
-    }
-
-    fn descriptor(features: &str, code: &str, vars: &str) -> String {
-        format!(
-            r#"{{"mapping": {{"device": "flash", "mode": "split",
-                "executable": {{"filename": "{code}", "format": "raw"}},
-                "nvram-template": {{"filename": "{vars}", "format": "raw"}}}},
-              "targets": [{{"architecture": "x86_64", "machines": ["pc-q35-*"]}}],
-              "features": [{features}]}}"#
-        )
-    }
-
-    #[test]
-    fn another_distributions_firmware_comes_from_its_descriptors() {
-        let scratch = Scratch::new();
-        scratch.write(
-            "d/40-keys.json",
-            descriptor(r#""secure-boot", "enrolled-keys""#, "/s/CODE", "/s/VARS.ms"),
-        );
-        scratch.write("d/50-secure.json", descriptor(r#""secure-boot""#, "/s/CODE", "/s/VARS"));
-        scratch.write("d/60-plain.json", descriptor("", "/s/PLAIN", "/s/PLAIN_VARS"));
-        scratch.write("d/70-not-json.json", "nothing");
-        let found = Firmware::described_in(&scratch.path("d")).unwrap();
-        assert_eq!(found.vars, Path::new("/s/VARS"));
-        assert_eq!(found.vars_secure, Path::new("/s/VARS.ms"));
-        assert_eq!((found.format.as_str(), found.format_secure.as_str()), ("raw", "raw"));
-    }
-
-    #[test]
-    fn with_no_firmware_with_keys_the_plain_one_stands_in() {
-        let scratch = Scratch::new();
-        scratch.write("d/50-secure.json", descriptor(r#""secure-boot""#, "/s/CODE", "/s/VARS"));
-        let found = Firmware::described_in(&scratch.path("d")).unwrap();
-        assert_eq!(found.vars_secure, Path::new("/s/VARS"));
-        assert_eq!(Firmware::described_in(&scratch.path("nothing")), None);
     }
 
     #[test]
@@ -436,6 +321,39 @@ mod tests {
         let paths = Paths::new(&variables, Some(&release));
         assert_eq!(paths.guest_files(), scratch.path("repo/guest"));
         assert!(!paths.guest_files_in_program());
+    }
+
+    #[test]
+    fn a_build_of_the_repo_finds_its_linux_sources() {
+        let scratch = Scratch::new();
+        let release = scratch.path("repo/target/release");
+        fs::create_dir_all(&release).unwrap();
+        scratch.write("repo/linux/allow.txt", "ioctl 1 NAME\n");
+        let paths = Paths::new(&Variables::of(&[("HOME", "/h")]), Some(&release));
+        assert_eq!(paths.linux_sources(), scratch.path("repo/linux"));
+    }
+
+    #[test]
+    fn a_folder_called_linux_that_isnt_ours_doesnt_count() {
+        let scratch = Scratch::new();
+        let release = scratch.path("repo/target/release");
+        fs::create_dir_all(&release).unwrap();
+        fs::create_dir_all(scratch.path("repo/linux")).unwrap();
+        let paths = Paths::new(&Variables::of(&[("HOME", "/h")]), Some(&release));
+        assert!(!paths.linux_sources().starts_with(scratch.path("repo")));
+    }
+
+    #[test]
+    fn a_program_folders_sources_win_over_the_repos() {
+        let scratch = Scratch::new();
+        let release = scratch.path("repo/target/release");
+        fs::create_dir_all(&release).unwrap();
+        scratch.write("repo/linux/allow.txt", "ioctl 1 NAME\n");
+        scratch.write("program/linux/allow.txt", "ioctl 2 NAME\n");
+        let program = scratch.path("program").display().to_string();
+        let variables = Variables::of(&[("HOME", "/h"), ("GUESTHOUSE_PROGRAM", &program)]);
+        let paths = Paths::new(&variables, Some(&release));
+        assert_eq!(paths.linux_sources(), scratch.path("program/linux"));
     }
 
     #[test]

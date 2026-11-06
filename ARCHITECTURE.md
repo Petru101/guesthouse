@@ -168,6 +168,8 @@ The guest's driver calls go through `nvfwd`, a device in the QEMU patch, to the 
 
 The viewer only knows `FrameSource`, which has three kinds. `SocketFrames` takes a guest's frames from the frame socket, with a new texture for each frame, and gives a slot back when GTK lets go of its texture. `ForwardedFrames` takes an Ubuntu guest's frames from its QEMU device. `DbusFrames` listens to QEMU's D-Bus display, which is all that firmware, an install and a plain VM have, and a guest on a GPU has it too until its first frame and again after a reset.
 
+A guest's driver can send HDR frames and its hardware cursor over the same socket. The viewer offers `XB30` only if the display has it, so an SDR desktop never meets an HDR frame. GTK needs `GDK_DEBUG=color-mgmt` for Wayland's colour management, so `main.rs` sets it before GTK starts. It's a debug flag, so a new GTK could change it. The cursor is the host's pointer wearing the guest's picture, as that moves with no delay. While the mouse is captured there's no pointer, so `cursor_layer` draws it in the window.
+
 ## Not here yet
 
 Not ported yet: the arena (video memory the guest's CPU can reach), the experiment switches in the prototype's run folder, and turning 10-bit frames into 8-bit ones for an app's staging surface.

@@ -404,8 +404,7 @@ mod tests {
         let found = check_qemu(&context);
         assert!(found.state == CheckState::Failed && found.fix.contains("qemu/README.md"));
         let script = "#!/bin/sh\necho 'error while loading shared libraries: libslirp.so.0' >&2\nexit 127\n";
-        scratch.write("qemu", script);
-        fs::set_permissions(&context.paths.qemu, fs::Permissions::from_mode(0o755)).unwrap();
+        scratch.program("qemu", script);
         let found = check_qemu(&context);
         assert!(
             found.state == CheckState::Failed

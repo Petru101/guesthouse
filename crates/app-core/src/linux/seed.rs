@@ -3,6 +3,7 @@
 //! as they are if they're already there.
 
 use super::guest_sources;
+use super::layout::{FIRST_BOOT_FILES, GUEST_SETUP, META_DATA, USER_DATA_TEMPLATE};
 use crate::context::Context;
 use crate::failure::{Failure, Result};
 use crate::iso::iso_maker;
@@ -19,7 +20,6 @@ const PASSWORD_BYTES: &str = "12";
 const PRIVATE: u32 = 0o600;
 /// The folder's mode becomes that of `/usr/lib/nvfwd`, which the desktop's user must enter.
 const OPEN_FOLDER: u32 = 0o755;
-const CAST_FILES: [&str; 2] = ["cast/Xwayland", "cast/firefox.desktop"];
 
 pub fn seed_folder(context: &Context, machine: &Machine) -> PathBuf {
     machine.folder(context).join("seed")
@@ -81,10 +81,10 @@ pub fn fill_template(template: &str, hash: &str, key: &str, kernel_package: &str
 fn make_payload(sources: &Path, folder: &Path) -> Result<PathBuf> {
     let payload = folder.join("payload");
     let _ = fs::remove_dir_all(&payload);
-    copy_tree(&sources.join("setup/guest"), &payload)?;
+    copy_tree(&sources.join(GUEST_SETUP), &payload)?;
     fs::set_permissions(&payload, fs::Permissions::from_mode(OPEN_FOLDER))?;
     // These two are needed before any driver image has been seen.
-    for name in CAST_FILES {
+    for name in FIRST_BOOT_FILES {
         let file = Path::new(name).file_name().unwrap_or_default();
         fs::copy(sources.join(name), payload.join(file))?;
     }
@@ -108,11 +108,11 @@ pub fn make_seed(context: &Context, machine: &Machine, kernel_package: &str) -> 
     fs::create_dir_all(&folder)?;
     let key = ssh_key(&machine.folder(context).join("ssh"))?;
     let hash = password_hash(&password_file(context, machine))?;
-    let template = fs::read_to_string(sources.join("setup/seed/user-data.template"))?;
+    let template = fs::read_to_string(sources.join(USER_DATA_TEMPLATE))?;
     let user_data = folder.join("user-data");
     fs::write(&user_data, fill_template(&template, &hash, &key, kernel_package) + "\n")?;
     let meta_data = folder.join("meta-data");
-    fs::copy(sources.join("setup/seed/meta-data"), &meta_data)?;
+    fs::copy(sources.join(META_DATA), &meta_data)?;
     let archive = make_payload(&sources, &folder)?;
     let disc = seed_disc(context, machine);
     output(

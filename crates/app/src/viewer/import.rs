@@ -4,7 +4,9 @@
 use super::ring::read_pixels;
 use gtk::prelude::*;
 use gtk::{gdk, glib};
-use guesthouse_frame_socket::{Colour, Descriptor};
+#[cfg(feature = "hdr")]
+use guesthouse_frame_socket::Colour;
+use guesthouse_frame_socket::Descriptor;
 use std::io;
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::sync::Arc;
@@ -22,6 +24,7 @@ fn memory_format(fourcc: u32) -> Option<gdk::MemoryFormat> {
     }
 }
 
+#[cfg(feature = "hdr")]
 fn colour_state(colour: Colour) -> Option<gdk::ColorState> {
     let params = gdk::CicpParams::new();
     params.set_color_primaries(colour.primaries.into());
@@ -31,6 +34,20 @@ fn colour_state(colour: Colour) -> Option<gdk::ColorState> {
     params.build_color_state().ok()
 }
 
+#[cfg(feature = "hdr")]
+fn with_colour(builder: gdk::DmabufTextureBuilder, descriptor: &Descriptor) -> gdk::DmabufTextureBuilder {
+    match colour_state(descriptor.colour).filter(|_| descriptor.colour != Colour::SRGB) {
+        Some(state) => builder.set_color_state(Some(&state)),
+        None => builder,
+    }
+}
+
+/// A build with no HDR only ever gets sRGB frames, which is what a texture is by default.
+#[cfg(not(feature = "hdr"))]
+fn with_colour(builder: gdk::DmabufTextureBuilder, _: &Descriptor) -> gdk::DmabufTextureBuilder {
+    builder
+}
+
 /// A texture on the buffer itself. `released` runs when GTK has finished with it.
 fn dmabuf_texture(
     display: &gdk::Display,
@@ -38,7 +55,7 @@ fn dmabuf_texture(
     descriptor: &Descriptor,
     released: Box<dyn FnOnce() + Send>,
 ) -> Result<gdk::Texture, Box<dyn FnOnce() + Send>> {
-    let mut builder = gdk::DmabufTextureBuilder::new()
+    let builder = gdk::DmabufTextureBuilder::new()
         .set_display(display)
         .set_width(descriptor.width)
         .set_height(descriptor.height)
@@ -47,11 +64,7 @@ fn dmabuf_texture(
         .set_n_planes(SINGLE_PLANE)
         .set_offset(0, descriptor.offset as u32)
         .set_stride(0, descriptor.stride);
-    if descriptor.colour != Colour::SRGB
-        && let Some(state) = colour_state(descriptor.colour)
-    {
-        builder = builder.set_color_state(Some(&state));
-    }
+    let builder = with_colour(builder, descriptor);
     let fd = file.as_raw_fd();
     let shared = Arc::new(std::sync::Mutex::new(Some(released)));
     let on_release = shared.clone();

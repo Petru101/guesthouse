@@ -46,6 +46,7 @@ pub fn application(context: Arc<Context>, started: impl Fn(&Window) + 'static) -
             let window = Window::new(application, context.clone());
             window.present();
             window.offer_setup();
+            window.say_if_there_is_an_update();
             started(&window);
             window
         });

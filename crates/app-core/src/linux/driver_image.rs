@@ -9,6 +9,7 @@ use super::driver_versions::{
 use super::gpu_off::{
     GUEST_DRIVER_FILES, GUEST_NO_SOURCE, GUEST_TABLES_DIFFER, GUEST_UNKNOWN_DRIVER, GpuOff,
 };
+use super::layout::BUILT_SOURCES;
 use super::tables::{TABLE_FILES, match_the_device, write_tables};
 use crate::failure::Result;
 use crate::iso::iso_maker;
@@ -20,8 +21,6 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 const VOLUME_LABEL: &str = "NVFWD_DRIVER";
-/// What a guest builds.
-const OUR_SOURCES: [&str; 5] = ["guest", "kapi", "layer", "cast", "tests"];
 /// The folders the guest's modules include from, and only their headers.
 const HEADER_FOLDERS: [&str; 8] = [
     "src/nvidia-modeset/kapi/interface",
@@ -66,7 +65,7 @@ fn walk(root: &Path, name: &str, found: &mut Vec<String>) {
 
 fn our_files(sources: &Path) -> Vec<String> {
     let mut found = Vec::new();
-    for name in OUR_SOURCES {
+    for name in BUILT_SOURCES {
         walk(sources, name, &mut found);
     }
     found.sort();

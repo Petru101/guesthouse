@@ -2,8 +2,8 @@
 
 use crate::context::Context;
 use crate::failure::{Failure, Result};
-use crate::gpu_support::{NO_GPU_YET, gpu_ready};
-use crate::host::free_gib;
+use crate::gpu_support::{NO_GPU_PART, gpu_ready};
+use crate::host::{free_gib, host_ram_limit, plain_ram_limit};
 use crate::machine::{Kind, Machine, load_all, sorted_names};
 use crate::monitor::{Command, failed};
 use crate::network;
@@ -28,6 +28,7 @@ pub const MAX_DISK_GIB: u32 = 16384;
 pub const INSTALL_ROOM_GIB: u64 = 40;
 pub const NO_DRIVER_FILES: &str = "Windows needs NVIDIA's driver first. Run Setup Again from the menu.";
 const SHUT_DOWN_FIRST: &str = "Shut the VM down first.";
+const NO_FIRMWARE: &str = "QEMU's UEFI firmware isn't installed. Install ovmf, which Fedora calls edk2-ovmf.";
 /// The file a disk is called in its machine's folder.
 const DISK_FILE: &str = "disk.qcow2";
 const FIRMWARE_FILE: &str = "vars.fd";
@@ -91,9 +92,23 @@ pub fn create_problems(context: &Context, machine: &Machine, disk_gib: u32) -> R
     if !Path::new(&machine.iso).is_file() {
         found.push("Choose an ISO first.".to_owned());
     }
+    // What counts is what it will boot with after the install, and Windows needs more then.
+    let limit =
+        if machine.kind == Kind::Windows { host_ram_limit(context)? } else { plain_ram_limit(context) };
+    if u64::from(machine.ram_gib) > limit {
+        found.push(format!(
+            "This PC has room for {limit} GiB right now. Give the machine that much, or stop another VM."
+        ));
+    }
+    let firmware = &context.paths.firmware;
+    if !machine.vars.is_empty()
+        && !(if machine.tpm { &firmware.vars_secure } else { &firmware.vars }).exists()
+    {
+        found.push(NO_FIRMWARE.to_owned());
+    }
     fs::create_dir_all(&context.paths.machines)?;
     if machine.kind == Kind::Windows && !gpu_ready(context) {
-        found.push(NO_GPU_YET.to_owned());
+        found.push(NO_GPU_PART.to_owned());
     }
     if machine.kind == Kind::Windows {
         let room = free_gib(&context.paths.machines)?;
@@ -305,6 +320,29 @@ mod tests {
         let second = create(&context, &plain(&scratch, "Tiny Linux", None)).unwrap();
         assert_eq!(second.id, "tiny-linux-2", "a second machine with this name gets its own folder");
         assert_eq!(new_id(&context, "???"), "machine");
+    }
+
+    #[test]
+    fn an_install_that_wouldnt_fit_offers_a_number_that_would() {
+        let scratch = Scratch::new();
+        let mut context = scratch_context(&scratch);
+        context.install_room = Some(0);
+        context.ram_limit = Some(6);
+        fs::create_dir_all(crate::settings::driver_folder(&context)).unwrap();
+        let iso = scratch.write("win.iso", "disc").display().to_string();
+        let new =
+            NewMachine { name: "Win".into(), iso, kind: Kind::Windows, cores: 8, ram_gib: 16, disk_gib: 80 };
+        assert!(create(&context, &new).unwrap_err().0.contains("room for 6 GiB"));
+    }
+
+    #[test]
+    fn with_no_firmware_it_says_what_to_install() {
+        let scratch = Scratch::new();
+        let mut context = scratch_context(&scratch);
+        context.paths.firmware.vars = scratch.path("not-installed");
+        let iso = scratch.write("disc.iso", "disc").display().to_string();
+        let new = NewMachine { name: "VM".into(), iso, kind: Kind::Plain, cores: 2, ram_gib: 2, disk_gib: 4 };
+        assert_eq!(create(&context, &new).unwrap_err().0, NO_FIRMWARE);
     }
 
     #[test]

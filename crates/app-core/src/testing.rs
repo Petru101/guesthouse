@@ -1,10 +1,16 @@
 //! What the tests share: scratch folders, and contexts that can't reach the real PC.
 
 use crate::context::Context;
-use crate::paths::{Firmware, Paths, Variables};
+use crate::firmware::Firmware;
+use crate::paths::{Paths, Variables};
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};
+
+/// So that no test depends on how much this PC has free. One about the limit sets its own.
+const PLENTY_OF_GIB: u64 = 64;
 
 static NEXT: AtomicU32 = AtomicU32::new(0);
 
@@ -25,6 +31,23 @@ impl Scratch {
 
     pub fn root(&self) -> &Path {
         &self.0
+    }
+
+    /// Writes a program that can be run. A child writes it and not this process: a file this process
+    /// has open for writing can be held open for a moment by a fork in another test, and then a run of
+    /// it fails.
+    pub fn program(&self, name: &str, text: &str) -> PathBuf {
+        let path = self.path(name);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut writer = Command::new("sh")
+            .args(["-c", "cat > \"$0\" && chmod 755 \"$0\""])
+            .arg(&path)
+            .stdin(Stdio::piped())
+            .spawn()
+            .unwrap();
+        writer.stdin.take().unwrap().write_all(text.as_bytes()).unwrap();
+        assert!(writer.wait().unwrap().success());
+        path
     }
 
     /// Writes a file, making its folder.
@@ -68,7 +91,7 @@ pub fn scratch_paths(scratch: &Scratch) -> Paths {
     paths.firmware = Firmware {
         code: scratch.path("firmware/code"),
         vars: scratch.write("firmware/vars", "blank firmware settings"),
-        code_secure: scratch.path("firmware/code-secure"),
+        code_secure: scratch.path("firmware/code-secure.qcow2"),
         vars_secure: scratch.write("firmware/vars-secure", "firmware settings with keys"),
         ..Firmware::default()
     };
@@ -80,5 +103,7 @@ pub fn scratch_context(scratch: &Scratch) -> Context {
     let mut context = Context::new(scratch_paths(scratch), crate::slots::first());
     context.processes = scratch.path("proc");
     fs::create_dir_all(&context.processes).unwrap();
+    context.reserve_memory = |_, _| Ok(());
+    context.ram_limit = Some(PLENTY_OF_GIB);
     context
 }

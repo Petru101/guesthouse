@@ -18,13 +18,14 @@ use crate::wizard;
 use adw::prelude::*;
 use gtk::glib;
 use guesthouse_app_core::context::Context;
-use guesthouse_app_core::gpu_support::{NO_GPU_YET, gpu_ready};
+use guesthouse_app_core::gpu_support::{NO_GPU_PART, gpu_ready, what_machines_are};
 use guesthouse_app_core::library::{delete, import_existing, remove_entry};
 use guesthouse_app_core::log::write_log;
 use guesthouse_app_core::machine::{Machine, load_all};
 use guesthouse_app_core::settings::{Fields, read_prefs, write_prefs};
 use guesthouse_app_core::setup::setup_done;
 use guesthouse_app_core::tasks::launch;
+use guesthouse_app_core::update_check::newer_release;
 use guesthouse_daemon::slot::Slot;
 use library_page::LibraryPage;
 use refresh::RefreshState;
@@ -40,7 +41,7 @@ const SMALLEST_WINDOW: (i32, i32) = (360, 300);
 const TOAST_SECONDS: u32 = 6;
 const PROBLEM_SECONDS: u32 = 10;
 /// In fullscreen the viewer's header lies over the picture, and it has no background of its own.
-const STYLE: &str = ".screen-header { background: var(--headerbar-bg-color); }
+const STYLE: &str = ".screen-header { background: @headerbar_bg_color; }
 .machine-thumbnail { border-radius: 6px; }";
 
 struct Inner {
@@ -81,7 +82,7 @@ impl Window {
         let pages = adw::NavigationView::new();
         toasts.set_child(Some(&pages));
         window.set_content(Some(&toasts));
-        let library = LibraryPage::new(gpu_ready(&context));
+        let library = LibraryPage::new(what_machines_are(&context));
         pages.add(&library.page);
         let this = Self(Rc::new(Inner {
             context,
@@ -294,11 +295,28 @@ impl Window {
     }
 
     /// Setup is all about the GPU, so with no GPU support there's nothing it could finish.
+    /// Asked once as the app opens. This is the only thing it does on the network by itself.
+    pub fn say_if_there_is_an_update(&self) {
+        let context = self.0.context.clone();
+        let asking = context.clone();
+        let this = self.clone();
+        in_background(
+            &context,
+            move || Ok(newer_release(&asking)),
+            move |found| {
+                if let Ok(Some(version)) = found {
+                    let text = format!("Guesthouse {version} is out. Run install.sh --update to get it.");
+                    this.toast(&text, adw::ToastPriority::Normal);
+                }
+            },
+        );
+    }
+
     pub fn show_setup(&self) {
         if gpu_ready(&self.0.context) {
             wizard::show(self);
         } else {
-            self.problem(NO_GPU_YET);
+            self.problem(NO_GPU_PART);
         }
     }
 

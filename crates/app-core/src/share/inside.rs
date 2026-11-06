@@ -1,6 +1,8 @@
-//! Turning a URL into a path, and refusing any that leads out of the shared folder. Links count: a
-//! path is judged by where it really goes, even if what it points at doesn't exist yet.
+//! Turning a URL into a path in the shared folder, and refusing any that leads out of it. Links count:
+//! a path is judged by where it really goes, even if what it points at doesn't exist yet. The file
+//! system is only ever touched through `anchored`, so this is a filter and not what keeps a path inside.
 
+use super::anchored::Root;
 use std::collections::VecDeque;
 use std::ffi::{OsStr, OsString};
 use std::fs;
@@ -13,22 +15,24 @@ const MOST_LINKS: u32 = 40;
 
 pub struct Folder {
     root: PathBuf,
+    pub files: Root,
 }
 
 impl Folder {
     pub fn new(root: &Path) -> io::Result<Self> {
-        Ok(Self { root: fs::canonicalize(root)? })
+        let root = fs::canonicalize(root)?;
+        Ok(Self { files: Root::new(&root)?, root })
     }
 
     pub fn is_root(&self, path: &Path) -> bool {
-        path == self.root
+        path.as_os_str().is_empty()
     }
 
     fn holds(&self, path: &Path) -> bool {
         path.starts_with(&self.root)
     }
 
-    /// The path of a URL, or `None` if it leads out of the folder.
+    /// The path of a URL from the folder's root, or `None` if it leads out of the folder.
     pub fn path_of(&self, target: &str) -> Option<PathBuf> {
         let url = url_path(target);
         let parts: Vec<&[u8]> =
@@ -40,7 +44,16 @@ impl Folder {
         let path = parts.iter().fold(self.root.clone(), |path, part| path.join(OsStr::from_bytes(part)));
         let parent_inside =
             parts.is_empty() || real_path(path.parent()?).is_some_and(|real| self.holds(&real));
-        (parent_inside && real_path(&path).is_some_and(|real| self.holds(&real))).then_some(path)
+        let inside = parent_inside && real_path(&path).is_some_and(|real| self.holds(&real));
+        inside.then(|| path.strip_prefix(&self.root).unwrap_or(&path).to_owned())
+    }
+
+    /// Where a URL really leads, for what follows links. An absolute link means nothing to `anchored`,
+    /// which treats the folder as the root of everything, so it gets the path with its links undone.
+    pub fn followed_path_of(&self, target: &str) -> Option<PathBuf> {
+        let path = self.path_of(target)?;
+        let real = real_path(&self.root.join(path))?;
+        Some(real.strip_prefix(&self.root).ok()?.to_owned())
     }
 }
 

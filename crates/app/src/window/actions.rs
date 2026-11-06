@@ -13,6 +13,8 @@ const HOST_ACCELS: [(&str, &str); 4] = [
     ("quit", "<Control>q"),
     ("shortcuts", "<Control>question"),
 ];
+const SHORTCUTS_WIDTH: i32 = 480;
+const SHORTCUTS_HEIGHT: i32 = 520;
 const SCREEN_SHORTCUTS: [(&str, &str); 4] = [
     ("Give Back the Keyboard and Leave Fullscreen", "<Control><Alt>g"),
     ("Fullscreen", "<Control><Alt>Return"),
@@ -93,7 +95,7 @@ fn show_shortcuts(window: &Window) {
     if has_dialog(window) {
         return;
     }
-    let library = adw::ShortcutsSection::new(Some("Library"));
+    let library = adw::PreferencesGroup::builder().title("Library").build();
     let items = [
         ("New Machine", "new-machine"),
         ("Settings of the Selected Machine", "settings"),
@@ -101,16 +103,31 @@ fn show_shortcuts(window: &Window) {
         ("Quit", "quit"),
     ];
     for (title, action) in items {
-        library.add(adw::ShortcutsItem::new(title, accel_of(action)));
+        library.add(&shortcut_row(title, accel_of(action)));
     }
-    let screen = adw::ShortcutsSection::new(Some("Guest Screen"));
+    let screen = adw::PreferencesGroup::builder().title("Guest Screen").build();
     for (title, keys) in SCREEN_SHORTCUTS {
-        screen.add(adw::ShortcutsItem::new(title, keys));
+        screen.add(&shortcut_row(title, keys));
     }
-    let dialog = adw::ShortcutsDialog::new();
-    dialog.add(library);
-    dialog.add(screen);
+    let page = adw::PreferencesPage::new();
+    page.add(&library);
+    page.add(&screen);
+    let content = adw::ToolbarView::new();
+    content.add_top_bar(&adw::HeaderBar::new());
+    content.set_content(Some(&page));
+    let dialog = adw::Dialog::builder()
+        .title("Keyboard Shortcuts")
+        .content_width(SHORTCUTS_WIDTH)
+        .content_height(SHORTCUTS_HEIGHT)
+        .child(&content)
+        .build();
     dialog.present(Some(window.widget()));
+}
+
+fn shortcut_row(title: &str, keys: &str) -> adw::ActionRow {
+    let row = adw::ActionRow::builder().title(title).build();
+    row.add_suffix(&gtk::ShortcutLabel::new(keys));
+    row
 }
 
 fn show_about(window: &Window) {

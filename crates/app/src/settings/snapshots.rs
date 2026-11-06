@@ -6,7 +6,7 @@ use crate::rows::{boxed_rows, confirm, icon_button, on_yes, question, row_button
 use adw::prelude::*;
 use chrono::{Local, TimeZone};
 use guesthouse_app_core::machine::Kind;
-use guesthouse_app_core::snapshots::{MAX_SNAPSHOT_NAME, Snapshot, list_snapshots};
+use guesthouse_app_core::snapshots::{Snapshot, list_snapshots};
 use guesthouse_app_core::tasks::Status;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -108,7 +108,7 @@ impl Snapshots {
     }
 
     fn on_take(&self) {
-        let name = adw::EntryRow::builder().title("Name").max_length(MAX_SNAPSHOT_NAME as i32).build();
+        let name = adw::EntryRow::builder().title("Name").build();
         let dialog = question(
             "Take a Snapshot",
             "This keeps the disk and the firmware settings as they are now.",

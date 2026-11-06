@@ -1,4 +1,5 @@
 use super::desktop::{BOOTS_FILE, SERIAL_FILE};
+use super::guest_files::place_driver_files;
 use super::*;
 use crate::agent::stand_in::ScriptedAgent;
 use crate::clock::Clock;
@@ -228,7 +229,9 @@ fn only_one_task_holds_the_lock() {
     fs::create_dir_all(context.run_folder(None)).unwrap();
     let held = take_lock(&context).unwrap();
     assert!(take_lock(&context).unwrap_err().0.contains("still in progress"));
-    drop(held);
+    // Not a drop: a child another test is forking can hold a copy of the file for a moment, and with
+    // that the lock. Unlocking goes for every copy.
+    flock(&held, FlockOperation::Unlock).unwrap();
     take_lock(&context).unwrap();
 }
 
@@ -244,4 +247,102 @@ fn a_reboot_is_seen_from_the_serial_log() {
     assert!(!rebooted(&context, None));
     fs::write(folder.join(SERIAL_FILE), "BdsDxe: starting\nBdsDxe: starting\n").unwrap();
     assert!(rebooted(&context, None));
+}
+
+fn with_driver_files(scratch: &Scratch, context: &Context) {
+    use crate::settings::{driver_folder, write_setup};
+    fs::create_dir_all(driver_folder(context)).unwrap();
+    let inf = crate::setup::guest_files::stand_in::FILES_INF;
+    fs::write(driver_folder(context).join("nv_dispi.inf"), inf).unwrap();
+    let card = serde_json::json!({"card": {"device": 0x2B85}});
+    write_setup(context, card.as_object().cloned().unwrap()).unwrap();
+    scratch.write("program/guest/nv-files.ps1", "copies files");
+}
+
+fn placing_task<'a>(context: &'a Context, host: &'a RecordingHost) -> Task<'a> {
+    let vm = machine(context);
+    crate::agent::make_token(context, &vm).unwrap();
+    Task::new(context, host, "start", vm)
+}
+
+#[test]
+fn a_guest_with_all_the_drivers_files_is_left_alone() {
+    let scratch = Scratch::new();
+    let mut context = plain_task_context(&scratch);
+    with_driver_files(&scratch, &context);
+    let agent = Arc::new(ScriptedAgent::answering(&["", "missing 0\r\n"]));
+    context.agent = agent.clone();
+    let host = RecordingHost::default();
+    place_driver_files(&mut placing_task(&context, &host)).unwrap();
+    let asked = agent.requests.lock().unwrap();
+    assert_eq!(asked.len(), 2, "only the list and the count");
+}
+
+#[test]
+fn missing_files_are_placed_with_the_guests_script() {
+    let scratch = Scratch::new();
+    let mut context = plain_task_context(&scratch);
+    with_driver_files(&scratch, &context);
+    let agent =
+        Arc::new(ScriptedAgent::answering(&["", "missing 4\r\n", "", "copied System32\\one.dll\r\n"]));
+    context.agent = agent.clone();
+    let host = RecordingHost::default();
+    let mut task = placing_task(&context, &host);
+    place_driver_files(&mut task).unwrap();
+    assert_eq!(task.error, "");
+    let asked = agent.requests.lock().unwrap();
+    assert!(asked[2].2.contains("nv-files.ps1"), "the script goes to the guest");
+    assert!(asked[3].2.contains("nv-files.txt"), "and is given the list");
+}
+
+#[test]
+fn a_file_that_fails_is_said_and_the_start_goes_on() {
+    let scratch = Scratch::new();
+    let mut context = plain_task_context(&scratch);
+    with_driver_files(&scratch, &context);
+    let agent =
+        Arc::new(ScriptedAgent::answering(&["", "missing 1\r\n", "", "FAILED System32\\one.dll\r\n"]));
+    context.agent = agent.clone();
+    let host = RecordingHost::default();
+    let mut task = placing_task(&context, &host);
+    place_driver_files(&mut task).unwrap();
+    assert!(task.error.contains("did not reach Windows"));
+}
+
+#[test]
+fn with_no_card_known_the_guest_is_not_asked() {
+    let scratch = Scratch::new();
+    let mut context = plain_task_context(&scratch);
+    let agent = Arc::new(ScriptedAgent::answering(&[]));
+    context.agent = agent.clone();
+    let host = RecordingHost::default();
+    place_driver_files(&mut placing_task(&context, &host)).unwrap();
+    assert!(agent.requests.lock().unwrap().is_empty());
+}
+
+#[test]
+fn with_no_script_the_start_goes_on_and_says_so() {
+    let scratch = Scratch::new();
+    let mut context = plain_task_context(&scratch);
+    with_driver_files(&scratch, &context);
+    fs::remove_file(scratch.path("program/guest/nv-files.ps1")).unwrap();
+    context.agent = Arc::new(ScriptedAgent::answering(&["", "missing 4\r\n"]));
+    let host = RecordingHost::default();
+    let mut task = placing_task(&context, &host);
+    place_driver_files(&mut task).unwrap();
+    assert!(task.error.contains("no script"));
+}
+
+#[test]
+fn an_install_with_no_room_to_boot_ends_well_and_stays_off() {
+    let scratch = Scratch::new();
+    let mut context = plain_task_context(&scratch);
+    context.ram_limit = Some(1);
+    let host = RecordingHost::default();
+    let mut vm = machine(&context);
+    vm.installing = false;
+    let mut task = Task::new(&context, &host, "install", vm);
+    start_if_there_is_room(&mut task, "Windows").unwrap();
+    assert_eq!(task.error, "Windows is installed. There isn't room to start it right now.");
+    assert!(host.said().is_empty(), "nothing may start");
 }

@@ -2,11 +2,13 @@
 
 mod capture;
 mod clipboard;
+mod cursor_layer;
 mod dbus_frames;
 mod display_attach;
 mod display_surface;
 mod forwarded_frames;
 mod frames;
+mod guest_cursor;
 mod import;
 mod input;
 mod monitors;
@@ -17,6 +19,7 @@ mod screen;
 mod socket_frames;
 
 use crate::common::in_background;
+use crate::rows::name_for_readers;
 use crate::window::{MachineHandle, Window};
 use adw::prelude::*;
 use clipboard::SharedClipboard;
@@ -70,10 +73,12 @@ impl ScreenPage {
             .icon_name("view-fullscreen-symbolic")
             .tooltip_text(format!("Fullscreen ({FULLSCREEN_KEYS})"))
             .build();
+        name_for_readers(&fullscreen_button, "Fullscreen");
         header.pack_end(&fullscreen_button);
         // A button that took the focus from the screen would end the capture it starts.
         let capture_button =
             gtk::Button::builder().icon_name("input-mouse-symbolic").focus_on_click(false).build();
+        name_for_readers(&capture_button, "Capture Mouse");
         header.pack_end(&capture_button);
         let toolbar = adw::ToolbarView::new();
         toolbar.add_top_bar(&header);

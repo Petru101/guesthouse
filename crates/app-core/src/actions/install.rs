@@ -1,7 +1,7 @@
 //! Installing Windows: the answer disc, the wait for setup, and the check of what it made.
 
 use super::desktop::{BOOT_LINE, SERIAL_FILE, count, wait_for_desktop};
-use super::{KEY_POLL, Task, plan_for, start};
+use super::{KEY_POLL, Task, plan_for, start_if_there_is_room};
 use crate::agent::{QUICK_SECONDS, guest_script, make_password, make_token};
 use crate::context::Context;
 use crate::disk_image::disk_size_gib;
@@ -246,7 +246,7 @@ pub fn install(task: &mut Task) -> Result<()> {
     task.machine.installing = false;
     task.machine.iso.clear();
     task.machine.save(context)?;
-    if context.second_instance() { Ok(()) } else { start(task) }
+    if context.second_instance() { Ok(()) } else { start_if_there_is_room(task, "Windows") }
 }
 
 #[cfg(test)]

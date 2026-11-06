@@ -1,5 +1,6 @@
 use super::*;
 use crate::testing::Scratch;
+use std::fs;
 use std::io::Cursor;
 use std::os::unix::fs::symlink;
 
@@ -220,4 +221,44 @@ fn a_client_that_asks_is_told_to_go_on() {
     let put = request("PUT", "/new.txt", &[("Expect", "100-continue")], b"data");
     Share::new(&root).unwrap().serve(Cursor::new(put), &mut output).unwrap();
     assert!(output.starts_with(b"HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 201"));
+}
+
+#[test]
+fn a_request_with_too_many_headers_is_dropped() {
+    let scratch = Scratch::new();
+    let root = shared(&scratch);
+    let mut request = b"GET /a.txt HTTP/1.1\r\n".to_vec();
+    for number in 0..100_000 {
+        request.extend(format!("X-Field-{number}: value\r\n").as_bytes());
+    }
+    request.extend(b"\r\n");
+    assert!(dav(&root, &[request]).is_empty());
+}
+
+#[test]
+fn a_request_with_too_many_header_bytes_is_dropped() {
+    let scratch = Scratch::new();
+    let root = shared(&scratch);
+    let mut request = b"GET /a.txt HTTP/1.1\r\n".to_vec();
+    for _ in 0..40 {
+        request.extend(format!("X-Field: {}\r\n", "a".repeat(10_000)).as_bytes());
+    }
+    request.extend(b"\r\n");
+    assert!(dav(&root, &[request]).is_empty());
+}
+
+#[test]
+fn a_path_checked_before_a_link_moved_in_stays_inside() {
+    let scratch = Scratch::new();
+    let root = scratch.path("outer/shared");
+    fs::create_dir_all(root.join("x")).unwrap();
+    fs::create_dir_all(root.join("d")).unwrap();
+    symlink("..", root.join("d/l")).unwrap();
+    let folder = inside::Folder::new(&root).unwrap();
+    let checked = folder.path_of("/x/f").unwrap();
+    fs::remove_dir(root.join("x")).unwrap();
+    fs::rename(root.join("d/l"), root.join("x")).unwrap();
+    folder.files.create(&checked).unwrap();
+    assert!(!scratch.path("outer/f").exists(), "nothing may appear outside the folder");
+    assert!(root.join("f").exists(), "the link's way up stops at the folder");
 }

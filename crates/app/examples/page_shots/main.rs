@@ -30,6 +30,8 @@ use std::time::Duration;
 const SETTLE: Duration = Duration::from_millis(900);
 const DIALOGS_AT_MOST: u32 = 2;
 const LONG: Duration = Duration::from_millis(2500);
+/// How many times `SETTLE` a page gets to show what it should.
+const PATIENCE: u32 = 20;
 const PRETEND_VM_LIFE: Duration = Duration::from_secs(60);
 
 fn check(failures: &Cell<u32>, good: bool, text: &str) {
@@ -98,6 +100,17 @@ fn shot(window: &Window, folder: &Path, name: &str) {
 
 /// Takes the picture right after a paint, as only then is nothing waiting for layout, and a widget
 /// with layout to do draws nothing.
+/// Whether the text comes up, for a page that takes its time on a busy PC.
+async fn shows(window: &Window, text: &str) -> bool {
+    for _ in 0..PATIENCE {
+        if text_of(window).contains(text) {
+            return true;
+        }
+        glib::timeout_future(SETTLE).await;
+    }
+    false
+}
+
 async fn shot_after_paint(window: &Window, folder: &Path, name: &str) {
     let Some(clock) = window.widget().frame_clock() else { return };
     let painted = window.widget().clone();
@@ -248,8 +261,7 @@ async fn running_pages(window: Window, folder: PathBuf, failures: Rc<Cell<u32>>,
     check(&failures, text_of(&window).contains("Running."), "a running VM shows in the library");
     shot_after_paint(&window, &folder, "14-library-running").await;
     window.show_settings(machine);
-    glib::timeout_future(LONG).await;
-    check(&failures, text_of(&window).contains("The VM must be off"), "settings say what can't change now");
+    check(&failures, shows(&window, "The VM must be off").await, "settings say what can't change now");
     shot_after_paint(&window, &folder, "20-settings-while-running").await;
     close_dialogs(&window).await;
 }
@@ -305,8 +317,7 @@ async fn ubuntu_pages(window: Window, context: Arc<Context>, folder: PathBuf, fa
     glib::timeout_future(LONG).await;
     check(&failures, text_of(&window).contains("GPU preview"), "the library marks Ubuntu's GPU as a preview");
     window.show_settings(machine.clone());
-    glib::timeout_future(LONG).await;
-    check(&failures, text_of(&window).contains("hasn't been proven"), "its settings say so plainly");
+    check(&failures, shows(&window, "This is a preview").await, "its settings say so plainly");
     check(&failures, !text_of(&window).contains("Port Forwards"), "what it doesn't have isn't shown");
     scroll_to(&window, "Ubuntu");
     shot_after_paint(&window, &folder, "24-ubuntu-settings").await;

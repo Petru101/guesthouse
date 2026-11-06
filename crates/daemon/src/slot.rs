@@ -4,6 +4,7 @@
 //! other slot adds its number. QEMU and the scripts name things the same way.
 
 use std::fmt;
+use std::fs;
 use std::path::{Path, PathBuf};
 
 /// The environment variable that names the slot.
@@ -14,6 +15,7 @@ pub const SLOTS: u8 = 4;
 const SHARED_MEMORY: &str = "/dev/shm";
 const RUN_FOLDER: &str = "run";
 const SHARED_FILE_PREFIX: &str = "gpupv";
+const SHARED_FILES: [&str; 3] = ["iomem", "ram", "display"];
 const AGENT_PORT: u16 = 18765;
 const DEBUG_PORT: u16 = 1234;
 const VNC_DISPLAY: u16 = 77;
@@ -66,6 +68,14 @@ impl Slot {
     /// A file in shared memory, like `ram` or `iomem`.
     pub fn shared_file(self, name: &str) -> PathBuf {
         Path::new(SHARED_MEMORY).join(format!("{SHARED_FILE_PREFIX}-{name}{}", self.suffix()))
+    }
+
+    /// Gives back what QEMU left in shared memory. A file some other process still has mapped stays
+    /// until that process lets go, as it would for any file.
+    pub fn remove_shared_files(self) {
+        for name in SHARED_FILES {
+            let _ = fs::remove_file(self.shared_file(name));
+        }
     }
 
     pub fn agent_port(self) -> u16 {
