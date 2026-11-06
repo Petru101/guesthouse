@@ -24,7 +24,8 @@
         <InstallFrom><MetaData wcm:action="add"><Key>/IMAGE/NAME</Key><Value>Windows 11 Pro</Value></MetaData></InstallFrom>
         <InstallTo><DiskID>0</DiskID><PartitionID>3</PartitionID></InstallTo>
       </OSImage></ImageInstall>
-      <UserData><AcceptEula>true</AcceptEula><FullName>gpupv</FullName><Organization>Guesthouse</Organization></UserData>
+      <!-- This is the KMS client key Microsoft publishes for Windows 11 Pro. It picks the edition, so Setup doesn't stop and ask. Windows stays unactivated until you add your own licence. -->
+      <UserData><ProductKey><Key>W269N-WFGWX-YVC9B-4J6C9-T83GX</Key><WillShowUI>OnError</WillShowUI></ProductKey><AcceptEula>true</AcceptEula><FullName>gpupv</FullName><Organization>Guesthouse</Organization></UserData>
     </component>
   </settings>
   <settings pass="specialize">

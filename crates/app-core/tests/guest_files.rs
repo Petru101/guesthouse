@@ -31,9 +31,8 @@ fn everything_the_app_sends_is_in_the_repo() {
 }
 
 #[test]
-fn the_answer_file_holds_no_key_and_no_password() {
+fn the_answer_file_holds_no_password() {
     let answers = fs::read_to_string(guest_file("autounattend.xml")).unwrap();
-    assert!(!answers.contains("<ProductKey>"));
     assert_eq!(answers.matches("<Value>@PASSWORD@</Value>").count(), 2);
     assert_eq!(answers.matches("<PlainText>true</PlainText>").count(), 2);
 }
