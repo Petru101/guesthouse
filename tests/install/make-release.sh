@@ -32,7 +32,7 @@ CHECK
 chmod +x "$tree"/guesthouse* "$tree/qemu/build/qemu-system-x86_64"
 cp "$repo/crates/app/data/net.gpupv.Guesthouse.desktop" "$tree/share/"
 cp -R "$repo/crates/app/data/icons" "$tree/share/"
-cp "$repo/install.sh" "$tree/"
+cp "$repo/install.sh" "$repo/uninstall.sh" "$tree/"
 printf 'adw_new_thing\ngtk_new_thing\n' >"$tree/needs-symbols"
 for part in $parts; do
     case $part in
