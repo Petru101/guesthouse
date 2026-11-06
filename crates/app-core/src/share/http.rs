@@ -8,6 +8,9 @@ const SERVER: &str = "Guesthouse";
 /// Longer than any length a file can have, and what an honest client sends fits.
 const MOST_LENGTH_DIGITS: usize = 19;
 const MOST_LINE: u64 = 1 << 16;
+/// Far more than Windows' WebDAV client sends, and what keeps a request's memory small.
+const MOST_HEADERS: usize = 64;
+const MOST_HEADER_BYTES: usize = 256 << 10;
 
 pub struct Request {
     pub method: String,
@@ -31,9 +34,14 @@ impl Request {
         let [method, target, version] = words[..] else { return Ok(None) };
         let (method, target) = (method.to_owned(), target.to_owned());
         let mut headers = Vec::new();
+        let mut bytes = 0;
         loop {
             let line = read_line(input)?;
             let Some((name, value)) = line.split_once(':') else { break };
+            bytes += line.len();
+            if headers.len() == MOST_HEADERS || bytes > MOST_HEADER_BYTES {
+                return Ok(None);
+            }
             headers.push((name.to_owned(), value.trim().to_owned()));
         }
         let mut request = Self { method, target, headers, close: version != "HTTP/1.1" };

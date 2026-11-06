@@ -221,3 +221,27 @@ fn a_client_that_asks_is_told_to_go_on() {
     Share::new(&root).unwrap().serve(Cursor::new(put), &mut output).unwrap();
     assert!(output.starts_with(b"HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 201"));
 }
+
+#[test]
+fn a_request_with_too_many_headers_is_dropped() {
+    let scratch = Scratch::new();
+    let root = shared(&scratch);
+    let mut request = b"GET /a.txt HTTP/1.1\r\n".to_vec();
+    for number in 0..100_000 {
+        request.extend(format!("X-Field-{number}: value\r\n").as_bytes());
+    }
+    request.extend(b"\r\n");
+    assert!(dav(&root, &[request]).is_empty());
+}
+
+#[test]
+fn a_request_with_too_many_header_bytes_is_dropped() {
+    let scratch = Scratch::new();
+    let root = shared(&scratch);
+    let mut request = b"GET /a.txt HTTP/1.1\r\n".to_vec();
+    for _ in 0..40 {
+        request.extend(format!("X-Field: {}\r\n", "a".repeat(10_000)).as_bytes());
+    }
+    request.extend(b"\r\n");
+    assert!(dav(&root, &[request]).is_empty());
+}
