@@ -26,6 +26,9 @@ const CORE_ADDRESS_CALLERS: [&str; 4] =
 /// Bytes of the clock answer that hold the host's CPU clock, which can never repeat.
 const CLOCK_ANSWER_CPU_CLOCK: std::ops::Range<usize> = 20..28;
 
+/// Past every deadline, for what is still waiting when the recording ends.
+const END_OF_RECORDING: Duration = Duration::from_secs(60);
+
 type ReplaySession = Session<RecordedAnswers, SparseMemory>;
 
 fn channel_of(number: u8) -> Result<Channel, BadRecording> {
@@ -39,14 +42,14 @@ fn channel_of(number: u8) -> Result<Channel, BadRecording> {
 /// Keeps what the router sends.
 #[derive(Default)]
 struct Sink {
-    reply: Option<Vec<u8>>,
+    replies: Vec<(Channel, u64, Vec<u8>)>,
     notices: Vec<Vec<u8>>,
 }
 
 impl FrameSink for Sink {
-    fn send(&mut self, _channel: Channel, header: FrameHeader, payload: &[u8]) -> io::Result<()> {
+    fn send(&mut self, channel: Channel, header: FrameHeader, payload: &[u8]) -> io::Result<()> {
         if header.kind == FrameKind::Completion {
-            self.reply = Some(payload.to_vec());
+            self.replies.push((channel, header.transaction, payload.to_vec()));
         } else {
             self.notices.push(payload.to_vec());
         }
@@ -180,6 +183,7 @@ pub fn replay(recording: &Recording<'_>) -> Result<Report, BadRecording> {
     let mut unmatched = recorded_notices(recording);
     let mut report = Report::default();
     let mut sink = Sink::default();
+    let mut awaited = HashMap::new();
     // A fixed time: deadlines would otherwise depend on how fast the replay runs.
     let now = Instant::now();
 
@@ -205,9 +209,22 @@ pub fn replay(recording: &Recording<'_>) -> Result<Report, BadRecording> {
         };
         let channel = channel_of(frame.channel)?;
         let sent = Frame { header, payload: frame.payload };
+        let wanted = Awaited {
+            message_index: report.messages,
+            command: MessageHeader::parse(message).map_or(Command::Unknown(0), |header| header.command),
+            expected,
+            provenance: Provenance::Worked,
+        };
+        if FrameFlags(frame.flags).wants_completion() {
+            awaited.insert((channel, frame.transaction), wanted);
+        }
         router
             .handle_frame(channel, sent, &mut sink)
             .map_err(|error| BadRecording(format!("message {}: {error}", report.messages)))?;
+        let provenance = router.session().backend().provenance();
+        if let Some(wanted) = awaited.get_mut(&(channel, frame.transaction)) {
+            wanted.provenance = provenance;
+        }
         for (size, align) in shaped_by.vendor_addresses {
             let taken = router.session_mut().take_gpu_addresses(size, u64::from(align));
             taken.map_err(|error| BadRecording(error.to_string()))?;
@@ -216,36 +233,56 @@ pub fn replay(recording: &Recording<'_>) -> Result<Report, BadRecording> {
             router.session_mut().memory_mut().write_u64(address, value);
         }
         router.poll(now, &mut sink).map_err(|error| BadRecording(error.to_string()))?;
-
-        let provenance = router.session().backend().provenance();
-        compare(message, frame, expected, sink.reply.take(), provenance, &mut report);
         report.messages += 1;
-        for notice in sink.notices.drain(..) {
-            match unmatched.get_mut(notice.as_slice()) {
-                Some(count) if *count > 0 => {
-                    *count -= 1;
-                    report.notices_matched += 1;
-                }
-                _ => report.notices_extra += 1,
-            }
-        }
+        settle(&mut sink, &mut awaited, &mut unmatched, &mut report);
+    }
+    // What is still held got its reply in the recording when its time ran out.
+    router.poll(now + END_OF_RECORDING, &mut sink).map_err(|error| BadRecording(error.to_string()))?;
+    // Waits that ran out here would have ended after the session did, so they have no record.
+    sink.notices.clear();
+    settle(&mut sink, &mut awaited, &mut unmatched, &mut report);
+    for ((_, transaction), wanted) in awaited {
+        compare(wanted, transaction, None, &mut report);
     }
     report.notices_missing = unmatched.values().sum();
     Ok(report)
 }
 
-fn compare(
-    message: &[u8],
-    frame: &RecordedFrame<'_>,
-    expected: Option<&[u8]>,
-    actual: Option<Vec<u8>>,
+/// A message whose reply has not come yet.
+struct Awaited<'a> {
+    message_index: usize,
+    command: Command,
+    expected: Option<&'a [u8]>,
     provenance: Provenance,
+}
+
+/// Compares what the router has sent since the last look.
+fn settle<'a>(
+    sink: &mut Sink,
+    awaited: &mut HashMap<(Channel, u64), Awaited<'a>>,
+    unmatched: &mut HashMap<&'a [u8], usize>,
     report: &mut Report,
 ) {
-    let header = MessageHeader::parse(message);
-    let command = header.map_or(Command::Unknown(0), |header| header.command);
+    for (channel, transaction, reply) in sink.replies.drain(..) {
+        if let Some(wanted) = awaited.remove(&(channel, transaction)) {
+            compare(wanted, transaction, Some(reply), report);
+        }
+    }
+    for notice in sink.notices.drain(..) {
+        match unmatched.get_mut(notice.as_slice()) {
+            Some(count) if *count > 0 => {
+                *count -= 1;
+                report.notices_matched += 1;
+            }
+            _ => report.notices_extra += 1,
+        }
+    }
+}
+
+fn compare(wanted: Awaited<'_>, transaction: u64, actual: Option<Vec<u8>>, report: &mut Report) {
+    let command = wanted.command;
     *report.by_command.entry(format!("{command:?}")).or_insert(0) += 1;
-    let (expected, mut actual) = match (expected, actual) {
+    let (mut expected, mut actual) = match (wanted.expected, actual) {
         (Some(expected), Some(actual)) => (expected.to_vec(), actual),
         (None, None) => return,
         (None, Some(_)) => {
@@ -254,19 +291,20 @@ fn compare(
         }
         (Some(expected), None) => (expected.to_vec(), Vec::new()),
     };
-    let mut expected = expected;
     mask_volatile(command, &mut expected);
     mask_volatile(command, &mut actual);
     let Some(offset) = first_difference(&expected, &actual) else {
-        report.count(provenance);
+        report.count(wanted.provenance);
         return;
     };
     report.different += 1;
-    if report.first_difference.is_none() {
+    let earliest =
+        report.first_difference.as_ref().is_none_or(|first| wanted.message_index < first.message_index);
+    if earliest {
         report.first_difference = Some(Difference {
-            message_index: report.messages,
+            message_index: wanted.message_index,
             command: format!("{command:?}"),
-            transaction: frame.transaction,
+            transaction,
             offset,
             reason: explain(command, offset, &expected, &actual),
             expected_bytes: expected,

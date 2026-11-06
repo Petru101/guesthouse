@@ -4,10 +4,13 @@ use super::{Handled, Session, answer_status, services};
 use crate::deferred::{Deferred, DeferredAction, FreedAllocation};
 use crate::gpu_addresses::{ALLOCATION_ALIGN, AddressUse};
 use crate::pending::{
-    GATE_TIMEOUT, GateStep, MOST_QUEUE_FAILURES, Pending, QUEUE_TIMEOUT, QueueAction, Signal, Target,
+    GATE_TIMEOUT, GateStep, MOST_QUEUE_FAILURES, Pending, QUEUE_TIMEOUT, QueueAction, RING_ROOM_TIMEOUT,
+    Signal, Target, Waiting,
 };
+use crate::session::{Answer, HeldReply, ReplyTicket};
 use crate::tables::Queue;
-use guesthouse_backend::{Backend, GuestMemory, UnmapRequest};
+use crate::timing::Stage;
+use guesthouse_backend::{Backend, GuestMemory, UnmapRequest, WorkStart};
 use guesthouse_messages::Status;
 use guesthouse_messages::notice::Notice;
 use guesthouse_messages::queue::PresentToken;
@@ -17,6 +20,13 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 const FRAME_WAIT_STEP: Duration = Duration::from_micros(100);
+
+/// What became of a submission.
+pub(crate) enum GpuTook {
+    Nothing,
+    NoRoom,
+    Work(u32),
+}
 
 impl<B: Backend, M: GuestMemory> Session<B, M> {
     /// Does something once the GPU has finished what it has been given so far, or now if it has.
@@ -266,8 +276,8 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
 
     fn ring(&mut self, queue: u32, doorbell: u64, fence: u64, value: u64) {
         self.backend.ring_doorbell(queue, doorbell);
-        let deadline = Instant::now() + QUEUE_TIMEOUT;
-        self.pending.push(Pending::Watch { queue, fence, value, deadline });
+        self.timings.mark(Stage::Rung);
+        self.pending.push(Pending::Watch { queue, fence, value, rung: Instant::now() });
     }
 
     /// Whether queues may still be given work.
@@ -290,9 +300,47 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         self.memory.write_u64(fence, value);
     }
 
-    /// Checks everything that is waiting. Returns true if anything still is, and the caller should
-    /// call again soon. `now` decides deadlines, and tests pass their own.
-    pub fn poll(&mut self, now: Instant) -> bool {
+    /// Adds to a queue's backlog, and holds the reply if too much of it is unfinished.
+    ///
+    /// When the guest's driver finds its ring full, it waits very briefly and then tries to build a
+    /// bigger one, which can't work here and costs the device. Its thread waits for this reply, so
+    /// holding it stops the ring filling. Only that thread waits, and other queues go on.
+    pub(super) fn hold_if_ring_is_full(&mut self, handle: u32, value: u64, work: u32) {
+        let Some(limit) = self.backend.unfinished_work_limit() else { return };
+        let Some(queue) = self.queues.get_mut(&handle) else { return };
+        queue.backlog.push_back((value, work));
+        queue.unfinished += u64::from(work);
+        let fence = queue.fence;
+        if let Some(ticket) = self.ticket
+            && self.unfinished_work(handle) > limit
+        {
+            self.pending.push(Pending::RingRoom { queue: handle, fence, ticket, started: Instant::now() });
+            self.hold_reply();
+        }
+    }
+
+    /// What the GPU has yet to finish on a queue. A queue that has gone has nothing left.
+    fn unfinished_work(&mut self, handle: u32) -> u64 {
+        let Some(queue) = self.queues.get_mut(&handle) else { return 0 };
+        let finished = self.memory.read_u64(queue.fence);
+        while let Some(&(value, work)) = queue.backlog.front()
+            && value <= finished
+        {
+            queue.backlog.pop_front();
+            queue.unfinished -= u64::from(work);
+        }
+        queue.unfinished
+    }
+
+    fn release_reply(&mut self, ticket: ReplyTicket, started: Instant) {
+        self.timings.reply_released(started.elapsed());
+        let bytes = Status::SUCCESS.0.to_le_bytes().to_vec();
+        self.replies.push(HeldReply { ticket, bytes });
+    }
+
+    /// Checks everything that is waiting, and says how soon to look again. `now` decides deadlines,
+    /// and tests pass their own.
+    pub fn poll(&mut self, now: Instant) -> Waiting {
         // The two lists swap places, so polling does not allocate.
         let spare = std::mem::take(&mut self.pending_spare);
         let mut items = std::mem::replace(&mut self.pending, spare);
@@ -302,7 +350,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             }
         }
         self.pending_spare = items;
-        !self.pending.is_empty()
+        Waiting::of(self.pending.iter())
     }
 
     /// Finishes an item if it can. Otherwise hands it back.
@@ -333,49 +381,85 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
                     Some(Pending::Update { fence, value, space, operations })
                 }
             }
-            Pending::Watch { queue, fence, value, deadline } => {
-                // A queue that has gone may have passed its fence page on to someone else.
-                if !self.queues.contains_key(&queue) || self.fence_value(fence) >= value {
+            Pending::Retry { message, ticket } => {
+                let mut out = Vec::new();
+                let answer = self.handle_message(&message, ticket, &mut out);
+                if let (Answer::Now, Some(ticket)) = (answer, ticket) {
+                    self.replies.push(HeldReply { ticket, bytes: out });
+                }
+                None
+            }
+            Pending::RingRoom { queue, fence, ticket, started } => {
+                let limit = self.backend.unfinished_work_limit().unwrap_or(u64::MAX);
+                if self.unfinished_work(queue) <= limit || now.duration_since(started) > RING_ROOM_TIMEOUT {
+                    self.release_reply(ticket, started);
                     None
-                } else if now > deadline {
+                } else {
+                    Some(Pending::RingRoom { queue, fence, ticket, started })
+                }
+            }
+            Pending::Watch { queue, fence, value, rung } => {
+                // A queue that has gone may have passed its fence page on to someone else.
+                if !self.queues.contains_key(&queue) {
+                    None
+                } else if self.fence_value(fence) >= value {
+                    self.timings.fence_seen(now.saturating_duration_since(rung));
+                    None
+                } else if now.saturating_duration_since(rung) > QUEUE_TIMEOUT {
                     self.queue_timed_out(queue, fence, value);
                     None
                 } else {
-                    Some(Pending::Watch { queue, fence, value, deadline })
+                    Some(Pending::Watch { queue, fence, value, rung })
                 }
             }
         }
     }
 
-    /// Hands a submission to the backend. True if the GPU now owns the fence.
+    /// Sets a submission aside for another try, as the backend had no room for it.
+    pub(super) fn retry_later(&mut self, message: &[u8]) {
+        let ticket = self.ticket;
+        self.pending.push(Pending::Retry { message: message.to_vec(), ticket });
+        self.hold_reply();
+    }
+
+    /// Hands a submission to the backend.
     pub(crate) fn start_on_gpu(
         &mut self,
         queue: u32,
         source: guesthouse_backend::WorkSource,
         private: &[u8],
         value: u64,
-    ) -> bool {
-        let Some(&record) = self.queues.get(&queue) else {
-            return false;
-        };
+    ) -> GpuTook {
+        let Some(record) = self.queues.get(&queue) else { return GpuTook::Nothing };
+        let (fence, fence_gpu_address) = (record.fence, record.fence_gpu_address);
         let work = guesthouse_backend::Work {
             source,
             queue,
             space: record.space,
             node: self.context_nodes.get(&record.context).copied().unwrap_or(0),
             private,
-            fence: record.fence,
-            fence_gpu_address: record.fence_gpu_address,
+            fence,
+            fence_gpu_address,
             fence_value: value,
             may_run: self.work_allowed(),
+            queue_failed: record.failed,
         };
+        self.timings.mark(Stage::Started);
         let start = self.backend.start_work(&mut services!(self), &work);
-        let guesthouse_backend::WorkStart::Started { doorbell } = start else {
-            return false;
-        };
-        self.work_started += 1;
-        self.queues.get_mut(&queue).expect("read above").last_fence = Some(value);
-        self.ring_or_hold(queue, doorbell, record.fence, value);
-        true
+        self.timings.mark(Stage::Prepared);
+        match start {
+            WorkStart::Finished => GpuTook::Nothing,
+            WorkStart::Busy => GpuTook::NoRoom,
+            WorkStart::QueueFailed => {
+                self.queues.get_mut(&queue).expect("read above").failed = true;
+                GpuTook::Nothing
+            }
+            WorkStart::Started { doorbell, work } => {
+                self.work_started += 1;
+                self.queues.get_mut(&queue).expect("read above").last_fence = Some(value);
+                self.ring_or_hold(queue, doorbell, fence, value);
+                GpuTook::Work(work)
+            }
+        }
     }
 }

@@ -1,6 +1,7 @@
 //! Allocations, queues and the other per-guest records.
 
 use guesthouse_backend::{MemoryId, PagesView, SpaceId, SurfaceShape};
+use std::collections::VecDeque;
 
 /// Where an allocation is mapped in one address space.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,7 +44,7 @@ pub struct Allocation {
 }
 
 /// A hardware queue, or the queue the host makes for a context that has none.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct Queue {
     /// Its progress fence, by guest physical address.
     pub fence: u64,
@@ -54,6 +55,25 @@ pub struct Queue {
     pub last_fence: Option<u64>,
     /// The GPU stopped answering on this queue, so nothing waits for it any more.
     pub failed: bool,
+    /// What the GPU has yet to finish, as (fence value, work), oldest first.
+    pub backlog: VecDeque<(u64, u32)>,
+    /// All the work in `backlog`.
+    pub unfinished: u64,
+}
+
+impl Queue {
+    pub fn new(fence: u64, fence_gpu_address: u64, space: SpaceId, context: u32) -> Self {
+        Self {
+            fence,
+            fence_gpu_address,
+            space,
+            context,
+            last_fence: None,
+            failed: false,
+            backlog: VecDeque::new(),
+            unfinished: 0,
+        }
+    }
 }
 
 /// A range the guest set aside.

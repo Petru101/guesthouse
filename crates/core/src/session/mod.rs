@@ -18,12 +18,38 @@ use crate::handles::HandleCounter;
 use crate::pending::{Gate, Pending};
 use crate::sync_table::SyncTable;
 use crate::tables::{Allocation, Mapping, Queue, ReservedRange};
+use crate::timing::Timings;
 use guesthouse_backend::{Backend, BackendError, GuestMemory, HostServices, SharedSpan, SpaceId};
 use guesthouse_messages::notice::Notice;
 use guesthouse_messages::wire::{Malformed, put_u32};
 use guesthouse_messages::{Command, MessageHeader, Status};
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
+
+/// Where a reply goes, which only the caller can read. The core just hands it back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ReplyTicket {
+    pub channel: u8,
+    pub transaction: u64,
+}
+
+/// What became of a message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[must_use]
+pub enum Answer {
+    /// The reply is in the buffer.
+    Now,
+    /// The reply will come from [`Session::take_replies`]. The guest thread that sent this waits,
+    /// and every other message goes on being served.
+    Held,
+}
+
+/// A reply that was held.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeldReply {
+    pub ticket: ReplyTicket,
+    pub bytes: Vec<u8>,
+}
 
 /// Why a handler gave up. The guest gets a bare failure status either way.
 #[derive(Debug)]
@@ -98,6 +124,11 @@ pub struct Session<B, M> {
     /// In the order the guest asked, which decides who gets a freed range next.
     pub(crate) reserved_addresses: Vec<ReservedRange>,
 
+    pub(crate) ticket: Option<ReplyTicket>,
+    pub(crate) held: bool,
+    pub(crate) replies: Vec<HeldReply>,
+    pub(crate) timings: Timings,
+
     pub(crate) deferred: Vec<Deferred>,
     pub(crate) pending: Vec<Pending>,
     pub(crate) pending_spare: Vec<Pending>,
@@ -136,6 +167,10 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             mapped_addresses: HashMap::new(),
             mapped_so_far: 0,
             reserved_addresses: Vec::new(),
+            ticket: None,
+            held: false,
+            replies: Vec::new(),
+            timings: Timings::new(false),
             deferred: Vec::new(),
             pending: Vec::new(),
             pending_spare: Vec::new(),
@@ -164,21 +199,50 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         self.gpu_addresses.take(size, align, AddressUse::Host)
     }
 
-    /// Answers one message. The reply replaces what is in `out`, which the caller should reuse. A
-    /// handler that fails answers with a bare failure status, as the guest must never be left waiting.
-    pub fn handle_message(&mut self, message: &[u8], out: &mut Vec<u8>) {
+    pub fn timings(&self) -> &Timings {
+        &self.timings
+    }
+
+    pub fn timings_mut(&mut self) -> &mut Timings {
+        &mut self.timings
+    }
+
+    /// Answers one message. `ticket` is `None` if the guest wants no reply.
+    ///
+    /// The reply replaces what is in `out`, which the caller should reuse. A handler that fails
+    /// answers with a bare failure status, as the guest must never be left waiting.
+    pub fn handle_message(
+        &mut self,
+        message: &[u8],
+        ticket: Option<ReplyTicket>,
+        out: &mut Vec<u8>,
+    ) -> Answer {
         out.clear();
+        self.ticket = ticket;
+        self.held = false;
         let command = MessageHeader::parse(message).map(|header| header.command);
         if let Err(failure) = self.dispatch(command, message, out) {
             log::warn!("{command:?} failed: {failure}");
             out.clear();
             put_u32(out, Status::UNSUCCESSFUL.0);
+            return Answer::Now;
         }
+        if self.held { Answer::Held } else { Answer::Now }
     }
 
     /// Messages the host starts by itself, waiting to go out on the global channel.
     pub fn take_notices(&mut self) -> impl Iterator<Item = Notice> + '_ {
         self.notices.drain(..)
+    }
+
+    /// Replies that were held and now can go.
+    pub fn take_replies(&mut self) -> impl Iterator<Item = HeldReply> + '_ {
+        self.replies.drain(..)
+    }
+
+    /// The reply to the message at hand will come later.
+    pub(crate) fn hold_reply(&mut self) {
+        self.held = true;
     }
 
     fn dispatch(&mut self, command: Option<Command>, message: &[u8], out: &mut Vec<u8>) -> Handled {

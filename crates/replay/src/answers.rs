@@ -9,7 +9,7 @@ use guesthouse_backend_standin::StandIn;
 use guesthouse_messages::adapter::AdapterQuery;
 use guesthouse_messages::address::PAGE_SIZE;
 use guesthouse_messages::allocation::{CreateAllocation, CreateAllocationAnswer};
-use guesthouse_messages::queue::CreateHardwareQueue;
+use guesthouse_messages::queue::{CreateHardwareQueue, SubmitToQueue};
 use guesthouse_messages::standard::StandardRecord;
 use guesthouse_messages::wire::{align_up, u32_at, u64_at};
 use guesthouse_messages::{Command, HEADER_SIZE, MessageHeader};
@@ -34,6 +34,15 @@ const CLOCK_ANSWER_GPU_CLOCK: usize = 12;
 /// So large that any cap refuses it, for a request the recording shows was refused.
 const OVER_ANY_CAP: u64 = 1 << 50;
 
+/// Where a submission's count of ring entries is, which the vendor reads.
+const PRIVATE_ENTRIES: usize = 0x14;
+/// The reference daemon's limit on what a queue may have unfinished.
+const RING_ROOM_LIMIT: u64 = 4000;
+
+fn submission_private(message: &[u8]) -> &[u8] {
+    SubmitToQueue::parse(message).map_or(&[], |request| request.private)
+}
+
 /// How much of a reply came from the recording and not from the core.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Provenance {
@@ -54,6 +63,8 @@ pub struct RecordedAnswers {
     next_described: usize,
     next_finished: usize,
     work: VecDeque<bool>,
+    work_entries: u32,
+    work_limit: u64,
     provenance: Provenance,
 }
 
@@ -66,6 +77,8 @@ impl RecordedAnswers {
             next_described: 0,
             next_finished: 0,
             work: VecDeque::new(),
+            work_entries: 0,
+            work_limit: RING_ROOM_LIMIT,
             provenance: Provenance::Worked,
         }
     }
@@ -78,6 +91,7 @@ impl RecordedAnswers {
         self.next_finished = 0;
         self.work.clear();
         self.work.extend(work);
+        self.work_entries = u32_at(submission_private(message), PRIVATE_ENTRIES).unwrap_or(0);
         self.provenance = Provenance::Worked;
         self.vendor_entries.clear();
         let is_create =
@@ -242,7 +256,7 @@ impl Backend for RecordedAnswers {
     /// What the recording says became of this submission.
     fn start_work(&mut self, _host: &mut dyn HostServices, _work: &Work<'_>) -> WorkStart {
         match self.work.pop_front() {
-            Some(true) => WorkStart::Started { doorbell: 0 },
+            Some(true) => WorkStart::Started { doorbell: 0, work: self.work_entries },
             _ => WorkStart::Finished,
         }
     }
@@ -252,7 +266,6 @@ impl Backend for RecordedAnswers {
     fn close_queue(&mut self, _queue: u32) {}
 
     fn copy_to_staging(&mut self, _host: &mut dyn HostServices, _copy: &StagingCopy) -> Status {
-        self.note(Provenance::PartlyRecorded);
         u32_at(&self.expected, 0).map_or(Status::UNSUCCESSFUL, Status)
     }
 
@@ -263,5 +276,9 @@ impl Backend for RecordedAnswers {
             self.note(Provenance::PartlyRecorded);
         }
         !refused
+    }
+
+    fn unfinished_work_limit(&self) -> Option<u64> {
+        Some(self.work_limit)
     }
 }

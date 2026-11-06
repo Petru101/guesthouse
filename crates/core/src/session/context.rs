@@ -1,5 +1,6 @@
 //! Handlers for processes, contexts, queues and work.
 
+use super::waiting::GpuTook;
 use super::{Handled, Session, answer_status, services};
 use crate::deferred::DeferredAction;
 use crate::gpu_addresses::{ALLOCATION_ALIGN, AddressUse};
@@ -55,6 +56,17 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         mapped.sort_unstable();
         for (_, handle) in mapped {
             self.close_mappings(handle, space);
+        }
+        if let Some(block) = self.fences.block {
+            let unmap = UnmapRequest {
+                space,
+                memory: block.memory,
+                address: block.gpu_address,
+                length: crate::FENCE_AREA,
+            };
+            if let Err(error) = self.backend.unmap(&unmap) {
+                log::warn!("closing an address space: {error}");
+            }
         }
         for range in self.reserved_addresses.iter().filter(|range| range.space == space) {
             self.gpu_addresses.give_back(range.address, range.size, ALLOCATION_ALIGN, AddressUse::Reserved);
@@ -126,15 +138,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         let progress = self.handles.take();
         let (fence, fence_gpu_address) = self.take_fence()?;
         let space = self.space_for(MessageHeader::process_of(message)?)?;
-        let record = Queue {
-            fence,
-            fence_gpu_address,
-            space,
-            context: request.context,
-            last_fence: None,
-            failed: false,
-        };
-        self.queues.insert(queue, record);
+        self.queues.insert(queue, Queue::new(fence, fence_gpu_address, space, request.context));
         self.context_queues.entry(request.context).or_default().push(queue);
         self.queue_progress.insert(progress, fence);
         self.queues_made += 1;
@@ -164,11 +168,19 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
     pub(super) fn submit_to_hardware_queue(&mut self, message: &[u8], out: &mut Vec<u8>) -> Handled {
         self.run_deferred();
         let request = SubmitToQueue::parse(message)?;
-        let started =
-            self.start_on_gpu(request.queue, WorkSource::HardwareQueue, request.private, request.fence_value);
-        if !started && let Some(queue) = self.queues.get(&request.queue) {
-            // Nothing ran, so stand in for the GPU where the guest would notice.
-            self.memory.write_u64(queue.fence, request.fence_value);
+        let value = request.fence_value;
+        match self.start_on_gpu(request.queue, WorkSource::HardwareQueue, request.private, value) {
+            GpuTook::Work(work) => self.hold_if_ring_is_full(request.queue, value, work),
+            GpuTook::NoRoom => {
+                self.retry_later(message);
+                return Ok(());
+            }
+            GpuTook::Nothing => {
+                if let Some(queue) = self.queues.get(&request.queue) {
+                    // Nothing ran, so stand in for the GPU where the guest would notice.
+                    self.memory.write_u64(queue.fence, value);
+                }
+            }
         }
         answer_status(Status::SUCCESS, out);
         Ok(())
@@ -182,15 +194,19 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             let (fence, fence_gpu_address) = self.take_fence()?;
             let space = self.space_for(MessageHeader::process_of(message)?)?;
             let context = request.context;
-            let record = Queue { fence, fence_gpu_address, space, context, last_fence: None, failed: false };
-            self.queues.insert(handle, record);
+            self.queues.insert(handle, Queue::new(fence, fence_gpu_address, space, context));
             self.context_queues.entry(context).or_default().push(handle);
         }
         let queue = self.context_queues[&request.context][0];
-        let record = *self.queues.get(&queue).ok_or(Malformed)?;
-        let value = record.last_fence.unwrap_or(0) + 1;
-        if !self.start_on_gpu(queue, WorkSource::Context, request.private, value) {
-            self.memory.write_u64(record.fence, value);
+        let record = self.queues.get(&queue).ok_or(Malformed)?;
+        let (fence, value) = (record.fence, record.last_fence.unwrap_or(0) + 1);
+        match self.start_on_gpu(queue, WorkSource::Context, request.private, value) {
+            GpuTook::Work(_) => {}
+            GpuTook::NoRoom => {
+                self.retry_later(message);
+                return Ok(());
+            }
+            GpuTook::Nothing => self.memory.write_u64(fence, value),
         }
         answer_status(Status::SUCCESS, out);
         Ok(())

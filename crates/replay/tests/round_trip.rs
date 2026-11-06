@@ -2,7 +2,7 @@
 
 use guesthouse_backend::Backend;
 use guesthouse_backend_standin::{SparseMemory, StandIn};
-use guesthouse_core::{Config, MemoryLimits, Session};
+use guesthouse_core::{Config, MemoryLimits, ReplyTicket, Session};
 use guesthouse_messages::wire::{set_u32, set_u64};
 use guesthouse_messages::{Command, HEADER_SIZE};
 use guesthouse_replay::recording::{RecordedFrame, Recording, RecordingWriter};
@@ -69,7 +69,7 @@ fn record() -> Vec<u8> {
         let transaction = index as u64 + 1;
         let frame = |kind, flags, payload| RecordedFrame { channel: VGPU, flags, kind, transaction, payload };
         writer.incoming(frame(INBAND, WANTS_COMPLETION, message));
-        session.handle_message(message, &mut out);
+        let _ = session.handle_message(message, Some(ReplyTicket::default()), &mut out);
         writer.outgoing(frame(COMPLETION, 0, &out));
     }
     writer.finish()

@@ -107,6 +107,12 @@ pub trait Backend: Sized {
     /// nowhere to run, and sent to the wrong engine it would be a fault on a card the host is using.
     fn node_has_channel(&mut self, node: u32) -> bool;
 
+    /// How much of a queue may be unfinished before the guest's next submission is held back. In the
+    /// vendor's own units, the ones [`WorkStart::Started`] counts in. `None` means no limit.
+    fn unfinished_work_limit(&self) -> Option<u64> {
+        None
+    }
+
     /// Prepares work without letting it run. [`WorkStart::Finished`] says nothing reached the GPU,
     /// and the backend has done what the guest would otherwise wait for, except the queue's fence.
     fn start_work(&mut self, host: &mut dyn HostServices, work: &Work<'_>) -> WorkStart;

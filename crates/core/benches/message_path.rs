@@ -6,13 +6,14 @@
 
 use guesthouse_backend::{Backend, GuestMemory, PagesView};
 use guesthouse_backend_standin::StandIn;
-use guesthouse_core::{Config, MemoryLimits, Session};
+use guesthouse_core::{Config, MemoryLimits, ReplyTicket, Session};
 use guesthouse_messages::wire::{set_u32, set_u64, u32_at};
 use guesthouse_messages::{Command, HEADER_SIZE};
 use std::hint::black_box;
 use std::io;
 use std::time::{Duration, Instant};
 
+const TICKET: Option<ReplyTicket> = Some(ReplyTicket { channel: 1, transaction: 1 });
 const ROUNDS: usize = 200;
 const MESSAGES_PER_ROUND: usize = 10_000;
 const WINDOW: u64 = 1 << 30;
@@ -68,18 +69,18 @@ fn new_session() -> Session<StandIn, FlatMemory> {
     let mut out = Vec::new();
     let mut request = message(Command::SetIoSpace, HEADER_SIZE + 16);
     set_u64(&mut request, HEADER_SIZE, IO_SPACE);
-    session.handle_message(&request, &mut out);
+    let _ = session.handle_message(&request, TICKET, &mut out);
     session
 }
 
 /// Makes a context and queue, as the guest would before submitting. Returns the queue.
 fn queue(session: &mut Session<StandIn, FlatMemory>) -> (u32, u32) {
     let mut out = Vec::new();
-    session.handle_message(&message(Command::CreateContext, 0x38), &mut out);
+    let _ = session.handle_message(&message(Command::CreateContext, 0x38), TICKET, &mut out);
     let context = u32_at(&out, 0x18).unwrap();
     let mut request = message(Command::CreateHardwareQueue, 0x48);
     set_u32(&mut request, 0x38, context);
-    session.handle_message(&request, &mut out);
+    let _ = session.handle_message(&request, TICKET, &mut out);
     (context, u32_at(&out, 0x1C).unwrap())
 }
 
@@ -87,7 +88,7 @@ fn fence(session: &mut Session<StandIn, FlatMemory>) -> u32 {
     let mut out = Vec::new();
     let mut request = message(Command::CreateSyncObject, 0x30);
     set_u32(&mut request, 0x20, 5);
-    session.handle_message(&request, &mut out);
+    let _ = session.handle_message(&request, TICKET, &mut out);
     u32_at(&out, 0).unwrap()
 }
 
@@ -118,7 +119,7 @@ fn main() {
     measure("submit (no GPU)", || {
         value += 1;
         set_u64(&mut submission, 0x20, value);
-        session.handle_message(black_box(&submission), &mut out);
+        let _ = session.handle_message(black_box(&submission), TICKET, &mut out);
         black_box(&out);
     });
 
@@ -128,7 +129,7 @@ fn main() {
     measure("signal a fence", || {
         value += 1;
         set_u64(&mut signal, 0x3C, value);
-        session.handle_message(black_box(&signal), &mut out);
+        let _ = session.handle_message(black_box(&signal), TICKET, &mut out);
         black_box(&out);
     });
 
@@ -136,7 +137,7 @@ fn main() {
     set_u32(&mut wait, 0x1C, 1);
     set_u32(&mut wait, 0x38, sync);
     measure("wait that is already done", || {
-        session.handle_message(black_box(&wait), &mut out);
+        let _ = session.handle_message(black_box(&wait), TICKET, &mut out);
         session.take_notices().for_each(|notice| {
             black_box(notice);
         });
@@ -144,7 +145,7 @@ fn main() {
 
     let flush = message(Command::FlushDevice, HEADER_SIZE);
     measure("plain status answer", || {
-        session.handle_message(black_box(&flush), &mut out);
+        let _ = session.handle_message(black_box(&flush), TICKET, &mut out);
         black_box(&out);
     });
 }

@@ -165,6 +165,8 @@ pub struct Work<'a> {
     pub fence_value: u64,
     /// False once too many queues have failed: the backend must not let this run.
     pub may_run: bool,
+    /// This queue has stopped, so its work can only be stood in for.
+    pub queue_failed: bool,
 }
 
 /// What became of a submission.
@@ -172,8 +174,13 @@ pub struct Work<'a> {
 pub enum WorkStart {
     /// Nothing will reach the GPU, so the core must complete the fence itself.
     Finished,
-    /// The GPU now owns the fence, once [`crate::Backend::ring_doorbell`] gets this value.
-    Started { doorbell: u64 },
+    /// The GPU now owns the fence, once [`crate::Backend::ring_doorbell`] gets `doorbell`. `work`
+    /// says how much was added, in the units of [`crate::Backend::unfinished_work_limit`].
+    Started { doorbell: u64, work: u32 },
+    /// This queue cannot run any more. Nothing reached the GPU, and nothing should wait for it.
+    QueueFailed,
+    /// No room right now. Nothing changed, and the submission should come again soon.
+    Busy,
 }
 
 /// Where a GPU address lies in memory shared with the guest.

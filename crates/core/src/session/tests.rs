@@ -43,7 +43,8 @@ fn session() -> TestSession {
 
 fn send(session: &mut TestSession, message: &[u8]) -> Vec<u8> {
     let mut out = Vec::new();
-    session.handle_message(message, &mut out);
+    let answer = session.handle_message(message, Some(ReplyTicket::default()), &mut out);
+    assert_eq!(answer, Answer::Now, "use send_held for what may be held");
     out
 }
 
@@ -755,10 +756,10 @@ mod mappings {
         let (sync, _, fence) = create_fence(&mut session, 1);
         let operations = [operation(0, 0x5000_0000, 0x1000, u64::from(handle), 0)];
         assert_eq!(status_of(&update(&mut session, sync, 3, &operations)), SUCCESS);
-        assert!(session.poll(Instant::now()));
+        assert!(session.poll(Instant::now()).any());
         assert!(session.allocations[&handle].mappings.is_empty());
         session.memory_mut().write_u64(fence, 3);
-        assert!(!session.poll(Instant::now()));
+        assert!(!session.poll(Instant::now()).any());
         assert_eq!(session.allocations[&handle].mappings.len(), 1);
         assert_eq!(session.memory().read_u64(fence), 4);
     }
@@ -899,10 +900,10 @@ mod fences {
         let (second, _, second_fence) = create_fence(&mut session, 0);
         send(&mut session, &wait_message(&[first, second], &[1, 1], false, 0xE));
         session.memory_mut().write_u64(first_fence, 1);
-        assert!(session.poll(Instant::now()));
+        assert!(session.poll(Instant::now()).any());
         assert_eq!(session.take_notices().count(), 0);
         session.memory_mut().write_u64(second_fence, 1);
-        assert!(!session.poll(Instant::now()));
+        assert!(!session.poll(Instant::now()).any());
         assert_eq!(session.take_notices().count(), 1);
     }
 
@@ -914,7 +915,7 @@ mod fences {
         send(&mut session, &wait_message(&[first, second], &[1, 1], true, 0xE));
         assert_eq!(session.take_notices().count(), 0);
         session.memory_mut().write_u64(fence, 1);
-        session.poll(Instant::now());
+        let _ = session.poll(Instant::now());
         assert_eq!(session.take_notices().count(), 1);
     }
 
@@ -935,7 +936,7 @@ mod fences {
         send(&mut session, &wait_message(&[progress], &[2], false, 0xE));
         assert_eq!(session.take_notices().count(), 0);
         session.memory_mut().write_u64(fence, 2);
-        session.poll(Instant::now());
+        let _ = session.poll(Instant::now());
         assert_eq!(session.take_notices().count(), 1);
     }
 
@@ -1048,9 +1049,9 @@ mod queues {
         gpu_wait(&mut session, context, sync, 4);
         submit(&mut session, queue, 1);
         assert!(session.backend().doorbells.is_empty());
-        assert!(session.poll(Instant::now()));
+        assert!(session.poll(Instant::now()).any());
         session.memory_mut().write_u64(fence, 4);
-        session.poll(Instant::now());
+        let _ = session.poll(Instant::now());
         assert_eq!(session.backend().doorbells, [(queue, 1)]);
         assert!(session.gates.is_empty());
     }
@@ -1074,7 +1075,7 @@ mod queues {
         let (sync, _, _) = create_fence(&mut session, 0);
         gpu_wait(&mut session, context, sync, 4);
         submit(&mut session, queue, 1);
-        session.poll(Instant::now() + crate::pending::GATE_TIMEOUT + Duration::from_secs(1));
+        let _ = session.poll(Instant::now() + crate::pending::GATE_TIMEOUT + Duration::from_secs(1));
         assert_eq!(session.backend().doorbells, [(queue, 1)]);
     }
 
@@ -1089,7 +1090,7 @@ mod queues {
         send(&mut session, &signal_message(&[sync], &[context], &[7]));
         assert_eq!(session.memory().read_u64(fence), 0);
         session.memory_mut().write_u64(queue_fence, 1);
-        session.poll(Instant::now());
+        let _ = session.poll(Instant::now());
         assert_eq!(session.memory().read_u64(fence), 7);
     }
 
@@ -1108,7 +1109,7 @@ mod queues {
         send(&mut session, &request);
         assert_eq!(session.take_notices().count(), 0);
         session.memory_mut().write_u64(queue_fence, 1);
-        session.poll(Instant::now());
+        let _ = session.poll(Instant::now());
         let notices: Vec<_> = session.take_notices().collect();
         assert_eq!(notices, [Notice::PresentDone { token: [1, 2, 3] }]);
     }
@@ -1149,8 +1150,8 @@ mod queues {
         let context = create_context(&mut session, 0);
         let (queue, _, fence) = create_queue(&mut session, context);
         submit(&mut session, queue, 3);
-        assert!(session.poll(Instant::now()));
-        assert!(!session.poll(Instant::now() + crate::pending::QUEUE_TIMEOUT + Duration::from_secs(1)));
+        assert!(session.poll(Instant::now()).any());
+        assert!(!session.poll(Instant::now() + crate::pending::QUEUE_TIMEOUT + Duration::from_secs(1)).any());
         assert_eq!(session.memory().read_u64(fence), 3);
         assert!(session.queues[&queue].failed);
     }

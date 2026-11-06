@@ -2,7 +2,7 @@
 
 use guesthouse_backend::{Backend, GuestMemory};
 use guesthouse_backend_standin::{SparseMemory, StandIn};
-use guesthouse_core::{Config, MemoryLimits, Session};
+use guesthouse_core::{Config, MemoryLimits, ReplyTicket, Session};
 use guesthouse_messages::wire::{set_u32, set_u64, u32_at, u64_at};
 use guesthouse_messages::{Command, HEADER_SIZE};
 use std::alloc::{GlobalAlloc, Layout, System};
@@ -30,6 +30,7 @@ unsafe impl GlobalAlloc for Counting {
 #[global_allocator]
 static COUNTING: Counting = Counting;
 
+const TICKET: Option<ReplyTicket> = Some(ReplyTicket { channel: 1, transaction: 1 });
 const WARM_UP: u64 = 100;
 const ROUNDS: u64 = 1_000;
 
@@ -60,15 +61,15 @@ fn prepared() -> Prepared {
     let mut out = Vec::new();
     let mut io_space = message(Command::SetIoSpace, HEADER_SIZE + 16);
     set_u64(&mut io_space, HEADER_SIZE, 1 << 40);
-    session.handle_message(&io_space, &mut out);
-    session.handle_message(&message(Command::CreateContext, 0x38), &mut out);
+    let _ = session.handle_message(&io_space, TICKET, &mut out);
+    let _ = session.handle_message(&message(Command::CreateContext, 0x38), TICKET, &mut out);
     let mut queue = message(Command::CreateHardwareQueue, 0x48);
     set_u32(&mut queue, 0x38, u32_at(&out, 0x18).unwrap());
-    session.handle_message(&queue, &mut out);
+    let _ = session.handle_message(&queue, TICKET, &mut out);
     let (queue, fence) = (u32_at(&out, 0x1C).unwrap(), u64_at(&out, 0x28).unwrap());
     let mut sync = message(Command::CreateSyncObject, 0x30);
     set_u32(&mut sync, 0x20, 5);
-    session.handle_message(&sync, &mut out);
+    let _ = session.handle_message(&sync, TICKET, &mut out);
     Prepared { queue, fence, sync: u32_at(&out, 0).unwrap(), session }
 }
 
@@ -82,7 +83,7 @@ fn the_message_path_does_not_allocate() {
     set_u32(&mut submission, 0x18, queue);
     let count = allocations_during(|round| {
         set_u64(&mut submission, 0x20, round);
-        session.handle_message(&submission, &mut out);
+        let _ = session.handle_message(&submission, TICKET, &mut out);
     });
     assert_eq!(count, 0, "a submission that finishes at once");
 
@@ -91,7 +92,7 @@ fn the_message_path_does_not_allocate() {
     set_u32(&mut signal, 0x38, sync);
     let count = allocations_during(|round| {
         set_u64(&mut signal, 0x3C, round);
-        session.handle_message(&signal, &mut out);
+        let _ = session.handle_message(&signal, TICKET, &mut out);
     });
     assert_eq!(count, 0, "a signal");
 
@@ -100,9 +101,9 @@ fn the_message_path_does_not_allocate() {
     let now = Instant::now();
     let count = allocations_during(|round| {
         set_u64(&mut submission, 0x20, round + 1);
-        session.handle_message(&submission, &mut out);
+        let _ = session.handle_message(&submission, TICKET, &mut out);
         session.memory_mut().write_u64(fence, round + 1);
-        session.poll(now);
+        let _ = session.poll(now);
     });
     assert_eq!(count, 0, "a submission on the GPU, and watching its fence");
 }

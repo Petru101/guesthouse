@@ -50,6 +50,8 @@ pub struct StandIn {
     pub copies: Vec<StagingCopy>,
     /// Addresses taken through [`HostServices`] by the first submission.
     pub channel_address: Option<u64>,
+    pub work_per_submission: u32,
+    pub unfinished_limit: Option<u64>,
 }
 
 #[derive(Debug, Default)]
@@ -92,6 +94,8 @@ impl StandIn {
             preserved: Vec::new(),
             copies: Vec::new(),
             channel_address: None,
+            work_per_submission: 1,
+            unfinished_limit: None,
         }
     }
 
@@ -288,7 +292,7 @@ impl Backend for StandIn {
         if self.channel_address.is_none() {
             self.channel_address = host.take_gpu_addresses(0x10000, 0x10000).ok();
         }
-        WorkStart::Started { doorbell: work.fence_value }
+        WorkStart::Started { doorbell: work.fence_value, work: self.work_per_submission }
     }
 
     fn ring_doorbell(&mut self, queue: u32, doorbell: u64) {
@@ -306,6 +310,10 @@ impl Backend for StandIn {
 
     fn node_has_channel(&mut self, node: u32) -> bool {
         node != NODE_WITHOUT_CHANNEL
+    }
+
+    fn unfinished_work_limit(&self) -> Option<u64> {
+        self.unfinished_limit
     }
 }
 

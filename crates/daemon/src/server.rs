@@ -5,6 +5,7 @@
 
 use crate::router::{Channel, FrameSink, Router};
 use guesthouse_backend::{Backend, GuestMemory};
+use guesthouse_core::Waiting;
 use guesthouse_transport::{FrameHeader, FrameStream};
 use std::fs;
 use std::io::{self, ErrorKind, Write};
@@ -14,8 +15,17 @@ use std::path::Path;
 use std::ptr;
 use std::time::{Duration, Instant};
 
-/// How often to look at fences while something waits on them. The GPU gives no signal we can sleep on.
-const FENCE_POLL: Duration = Duration::from_micros(100);
+/// How long to go on looking at fences without sleeping, once the guest is waiting on one. A sleep
+/// costs tens of microseconds even at its best, so a wait shorter than this costs a core and no time.
+const SPIN_LIMIT: Duration = Duration::from_micros(200);
+/// How often to look at fences after that. The GPU gives no signal this can sleep on.
+const FENCE_POLL: Duration = Duration::from_micros(20);
+/// How often to look when only the GPU's health is being watched.
+const BACKGROUND_POLL: Duration = Duration::from_millis(1);
+/// How often to log where submissions spend their time, when asked to measure that.
+const TIMING_REPORT: Duration = Duration::from_secs(10);
+/// The kernel may stretch a sleep by this much, which by default is more than the sleep itself.
+const TIMER_SLACK_NANOS: libc::c_ulong = 1;
 const NO_DESCRIPTOR: i32 = -1;
 
 struct Connection {
@@ -53,7 +63,8 @@ impl FrameSink for Connections<'_> {
 pub struct Server<B, M> {
     router: Router<B, M>,
     ports: Vec<Port>,
-    waiting: bool,
+    waiting: Waiting,
+    urgent_since: Option<Instant>,
     scratch: Vec<u8>,
 }
 
@@ -70,7 +81,7 @@ impl<B: Backend, M: GuestMemory> Server<B, M> {
             }
             ports.push(Port { channel, listener: UnixListener::bind(path)?, connection: None });
         }
-        Ok(Self { router, ports, waiting: false, scratch: Vec::new() })
+        Ok(Self { router, ports, waiting: Waiting::Nothing, urgent_since: None, scratch: Vec::new() })
     }
 
     pub fn router(&self) -> &Router<B, M> {
@@ -79,9 +90,36 @@ impl<B: Backend, M: GuestMemory> Server<B, M> {
 
     /// Serves until an error nothing can recover from.
     pub fn run(&mut self) -> io::Result<()> {
+        // SAFETY: this changes one number the kernel keeps for this thread.
+        unsafe { libc::prctl(libc::PR_SET_TIMERSLACK, TIMER_SLACK_NANOS) };
+        let mut last_report = Instant::now();
         loop {
-            let timeout = self.waiting.then_some(FENCE_POLL);
+            let now = Instant::now();
+            let timeout = self.next_timeout(now);
             self.step(timeout)?;
+            let timings = self.router.session().timings();
+            if timings.is_enabled() && now - last_report > TIMING_REPORT {
+                log::info!("where submissions spend their time:\n{timings}");
+                last_report = now;
+            }
+        }
+    }
+
+    /// How long to wait for the next message, given what is waiting on fences.
+    fn next_timeout(&mut self, now: Instant) -> Option<Duration> {
+        match self.waiting {
+            Waiting::Nothing => {
+                self.urgent_since = None;
+                None
+            }
+            Waiting::Background => {
+                self.urgent_since = None;
+                Some(BACKGROUND_POLL)
+            }
+            Waiting::Urgent => {
+                let since = *self.urgent_since.get_or_insert(now);
+                Some(if now - since < SPIN_LIMIT { Duration::ZERO } else { FENCE_POLL })
+            }
         }
     }
 
