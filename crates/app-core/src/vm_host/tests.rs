@@ -99,3 +99,20 @@ fn no_qemu_at_all_says_so() {
     let plan = VmPlan::new(&context, &machine, Boot::Plain { iso: String::new() }, slots::first(), 0);
     assert!(host.start(&plan, &machine).unwrap_err().0.contains("isn't installed"));
 }
+
+#[test]
+fn memory_that_doesnt_fit_stops_a_start_before_anything_runs() {
+    let scratch = Scratch::new();
+    let mut context = scratch_context(&scratch);
+    context.reserve_memory = |_, _| Err(crate::Failure::new("no room for it"));
+    context.paths.binaries = scratch.path("bin");
+    let marker = scratch.path("ran");
+    let daemon = format!("#!/bin/sh\ntouch {}\n", marker.display());
+    scratch.program("bin/guesthouse-daemon", &daemon);
+    context.paths.qemu = scratch.program("not-qemu", &daemon);
+    let host = LocalHost { context: &context };
+    let machine = Machine::new("vm", "VM", "/d", "/v");
+    let plan = VmPlan::new(&context, &machine, Boot::Gpu, slots::first(), 0);
+    assert_eq!(host.start(&plan, &machine).unwrap_err().0, "no room for it");
+    assert!(!marker.exists(), "neither the daemon nor QEMU may start");
+}

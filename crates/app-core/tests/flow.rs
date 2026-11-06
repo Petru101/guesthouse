@@ -217,6 +217,7 @@ fn task_with_room(arguments: &[String]) {
     let mut context = Context::from_process().unwrap();
     context.meminfo = env::var_os(MEMINFO_VARIABLE).unwrap().into();
     context.ram_limit = Some(PLENTY_OF_GIB);
+    context.reserve_memory = |_, _| Ok(());
     run_task(&context, &LocalHost { context: &context }, action, machine, rest);
 }
 

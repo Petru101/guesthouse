@@ -6,7 +6,7 @@ use crate::host::QEMU_FILES;
 use crate::machine::{Machine, sorted_names};
 use crate::monitor::MAIN_SOCKET;
 use crate::slots;
-use crate::tasks::task_path;
+use crate::tasks::{read_task, task_alive, task_path};
 use crate::text::qemu_value;
 use guesthouse_daemon::slot::Slot;
 use std::collections::BTreeMap;
@@ -108,9 +108,12 @@ pub fn leftovers(context: &Context, slot: Option<Slot>) -> Option<u64> {
 }
 
 /// Each slot's leftovers, by slot number, for this install to clear up. Another install's VM can be in
-/// a slot too, so only the slots this one has run something in count.
+/// a slot too, so only the slots this one has run something in count. A task that's still going may
+/// have just reserved the memory for a VM that's on its way.
 pub fn all_leftovers(context: &Context) -> BTreeMap<u8, u64> {
-    let ours = slots::all().filter(|slot| task_path(context, Some(*slot)).exists());
+    let ours = slots::all().filter(|slot| {
+        task_path(context, Some(*slot)).exists() && !task_alive(context, &read_task(context, Some(*slot)))
+    });
     ours.filter_map(|slot| Some((slot.number(), leftovers(context, Some(slot))?))).collect()
 }
 

@@ -17,6 +17,7 @@ pub mod firmware;
 pub mod forwarded_input;
 pub mod gpu_sample;
 pub mod gpu_support;
+pub mod guest_memory;
 pub mod host;
 pub mod input;
 pub mod iso;

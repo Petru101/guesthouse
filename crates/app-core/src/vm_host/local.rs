@@ -4,6 +4,7 @@ use super::{Stopped, VmHost};
 use crate::context::Context;
 use crate::daemon::{self, DaemonStart, detached, is_own_daemon};
 use crate::failure::{Failure, Result};
+use crate::host::GIB;
 use crate::machine::{Machine, sorted_names};
 use crate::monitor::Command as Qmp;
 use crate::processes::{memory_taken, qemu_pid};
@@ -31,7 +32,8 @@ const AGENT_RETRY: Duration = Duration::from_secs(3);
 const DAEMON_STOP_ATTEMPTS: u32 = 100;
 const DAEMON_STOP_POLL: Duration = Duration::from_millis(100);
 const SOUND_CHECK_SECONDS: &str = "3";
-const SHARED_FILES: [&str; 3] = ["iomem", "ram", "display"];
+const RAM_FILE: &str = "ram";
+const SHARED_FILES: [&str; 3] = ["iomem", RAM_FILE, "display"];
 /// These can only be left by an earlier run, and a stale socket would pass for a ready daemon.
 const STALE_FILES: [&str; 3] = ["vgpu.sock", "global.sock", "screen.sock"];
 /// The last run's logs are the only evidence of whatever made someone restart.
@@ -184,6 +186,8 @@ impl LocalHost<'_> {
         }
         self.clear_run_folder()?;
         self.remove_shared_memory();
+        let ram_file = self.context.paths.shared_file(RAM_FILE, plan.slot);
+        (self.context.reserve_memory)(&ram_file, u64::from(machine.ram_gib) * GIB)?;
         let start = DaemonStart::new(self.context, plan.slot, &plan.ram, plan.vram.as_deref());
         let mut daemon = start.spawn(&plan.run_folder)?;
         self.wait_for_daemon(&mut daemon)?;

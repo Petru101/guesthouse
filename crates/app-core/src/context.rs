@@ -36,6 +36,8 @@ pub struct Context {
     pub kvm: PathBuf,
     pub driver_version_file: PathBuf,
     pub meminfo: PathBuf,
+    /// Claims a guest's memory. A test has no gigabytes to spare.
+    pub reserve_memory: fn(&Path, u64) -> crate::Result<()>,
     /// Stands in for what this PC can give a GPU machine, which depends on everything else running.
     pub ram_limit: Option<u64>,
     pub bridge: BridgeHost,
@@ -60,6 +62,7 @@ impl Context {
             kvm: "/dev/kvm".into(),
             driver_version_file: "/sys/module/nvidia/version".into(),
             meminfo: "/proc/meminfo".into(),
+            reserve_memory: crate::guest_memory::reserve,
             ram_limit: None,
             bridge: BridgeHost::default(),
             monitor: Arc::new(QmpMonitor),

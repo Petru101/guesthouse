@@ -99,5 +99,6 @@ pub fn scratch_context(scratch: &Scratch) -> Context {
     let mut context = Context::new(scratch_paths(scratch), crate::slots::first());
     context.processes = scratch.path("proc");
     fs::create_dir_all(&context.processes).unwrap();
+    context.reserve_memory = |_, _| Ok(());
     context
 }
