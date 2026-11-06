@@ -83,6 +83,10 @@ const FIFO_NO_PIPELINED_PAGE_TABLE_BLIT: (usize, u8) = (0, 0x80);
 /// Measured: with this bit clear, Direct3D 11 offers no video decoders at all.
 const FLAG_VIDEO_DECODE: u32 = 1 << 20;
 
+/// The next word, as a real install's record has it. Measured: without it, a Direct3D 11 decoder
+/// can be made but its first frame fails as out of memory.
+const FLAGS_VIDEO_FRAMES: u32 = 0x40_0030;
+
 /// As a real install's record has it. Measured: with either bit clear, making a Direct3D 11 decoder
 /// fails as out of memory.
 const DECODER_FLAGS: u8 = 0x48;
@@ -325,7 +329,7 @@ pub fn build<R: Rm>(
         record.word(layout.memory_low + index * 4, size as u32);
     }
 
-    record.word(layout.flags, FLAG_VIDEO_DECODE);
+    record.words(layout.flags, &[FLAG_VIDEO_DECODE, FLAGS_VIDEO_FRAMES]);
     record.put(layout.decoder_flags, &[DECODER_FLAGS]);
     record.counted_words(layout.classes, &card.classes().map_err(card_failed)?)?;
 

@@ -46,7 +46,7 @@ pub struct RecordLayout {
     pub pci: usize,
     pub cpu_short: usize,
     pub ram_megabytes: [usize; 3],
-    /// A word of flags whose meanings aren't known, bar the one in the builder.
+    /// Two words of flags whose meanings aren't known, bar what the builder says of them.
     pub flags: usize,
     /// A byte of flags whose meaning isn't known, as with the word above.
     pub decoder_flags: usize,
