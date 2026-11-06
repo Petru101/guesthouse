@@ -5,7 +5,7 @@ HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 BUILD=$HERE/build
 mkdir -p "$BUILD"
 FLAGS="-std=c++17 -Wall -Wextra -Werror -O1 -g -fsanitize=address,undefined -I$HERE/../Common/Include"
-GUESTHOUSE=$HERE/../ZakoVDD/Guesthouse
+GUESTHOUSE=$HERE/../GuesthouseDisplay/Guesthouse
 
 clang++ $FLAGS "$HERE/host_link_test.cpp" "$GUESTHOUSE/HostLink.cpp" "$GUESTHOUSE/CursorLink.cpp" -o "$BUILD/host_link_test"
 "$BUILD/host_link_test"

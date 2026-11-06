@@ -93,7 +93,7 @@
     </FxCompile>
   </ItemGroup>
   <ItemGroup>
-    <Inf Include="ZakoVDD.inf">
+    <Inf Include="GuesthouseDisplay.inf">
       <SpecifyDriverVerDirectiveVersion>true</SpecifyDriverVerDirectiveVersion>
       <TimeStamp>$(DriverPackageVersion)</TimeStamp>
     </Inf>
@@ -105,7 +105,7 @@
     <MinimumVisualStudioVersion>12.0</MinimumVisualStudioVersion>
     <Configuration>Debug</Configuration>
     <Platform Condition="'$(Platform)' == ''">x64</Platform>
-    <RootNamespace>ZakoVDD</RootNamespace>
+    <RootNamespace>GuesthouseDisplay</RootNamespace>
     <DriverPackageVersion Condition="'$(DriverPackageVersion)' == ''">*</DriverPackageVersion>
   </PropertyGroup>
   <PropertyGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
@@ -163,7 +163,7 @@
     <ClCompile>
       <ExceptionHandling>Async</ExceptionHandling>
       <EnablePREfast>true</EnablePREfast>
-      <!-- Newer compilers' analysis flags zako's code in places I haven't touched. Keep the warnings, don't fail on them. -->
+      <!-- Newer compilers' analysis flags the forked code in places I haven't touched. Keep the warnings, don't fail on them. -->
       <TreatWarningAsError>false</TreatWarningAsError>
       <AdditionalOptions>/D_ATL_NO_WIN_SUPPORT /DUMDF_DRIVER /DIDDCX_VERSION_MAJOR=1 /DIDDCX_VERSION_MINOR=10 /DIDDCX_MINIMUM_VERSION_REQUIRED=3 %(AdditionalOptions)</AdditionalOptions>
       <AdditionalIncludeDirectories>$(ProjectDir)..\Common\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -176,14 +176,14 @@
       <FileDigestAlgorithm>SHA256</FileDigestAlgorithm>
     </DriverSign>
     <PostBuildEvent>
-      <Command>copy "$(ProjectDir)..\vdd_settings.xml" "$(TargetDir)\ZakoVDD"</Command>
+      <Command>copy "$(ProjectDir)..\vdd_settings.xml" "$(TargetDir)\GuesthouseDisplay"</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <ClCompile>
       <ExceptionHandling>Async</ExceptionHandling>
       <EnablePREfast>true</EnablePREfast>
-      <!-- Newer compilers' analysis flags zako's code in places I haven't touched. Keep the warnings, don't fail on them. -->
+      <!-- Newer compilers' analysis flags the forked code in places I haven't touched. Keep the warnings, don't fail on them. -->
       <TreatWarningAsError>false</TreatWarningAsError>
       <AdditionalOptions>/D_ATL_NO_WIN_SUPPORT /DUMDF_DRIVER /DIDDCX_VERSION_MAJOR=1 /DIDDCX_VERSION_MINOR=10 /DIDDCX_MINIMUM_VERSION_REQUIRED=3 %(AdditionalOptions)</AdditionalOptions>
       <AdditionalIncludeDirectories>$(ProjectDir)..\Common\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -195,7 +195,7 @@
       <FileDigestAlgorithm>SHA256</FileDigestAlgorithm>
     </DriverSign>
     <PostBuildEvent>
-      <Command>copy "$(ProjectDir)..\vdd_settings.xml" "$(TargetDir)\ZakoVDD"</Command>
+      <Command>copy "$(ProjectDir)..\vdd_settings.xml" "$(TargetDir)\GuesthouseDisplay"</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>

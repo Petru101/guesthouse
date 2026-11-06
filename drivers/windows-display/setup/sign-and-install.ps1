@@ -1,13 +1,13 @@
 # Signs a build on this machine and installs it. The certificate is made here, trusted only here, and its private key is deleted
 # before the install, so nothing can be signed with it afterwards. BUILDING.md says what that means for the machine.
-# Usage, as an administrator: sign-and-install.ps1 FOLDER, which holds vdd_settings.xml, and pkg with ZakoVDD.dll and ZakoVDD.inf.
+# Usage, as an administrator: sign-and-install.ps1 FOLDER, which holds vdd_settings.xml, and pkg with GuesthouseDisplay.dll and GuesthouseDisplay.inf.
 param([Parameter(Mandatory)][string]$Folder)
 $ErrorActionPreference = 'Continue'
 $folder = $Folder
 $package = "$folder\pkg"
 $settingsFolder = 'C:\VirtualDisplayDriver'
 $storeKey = 'HKLM:\SOFTWARE\Microsoft\SystemCertificates\TrustedPublisher\Certificates'
-$hardwareId = 'Root\ZakoVDD'
+$hardwareId = 'Root\GuesthouseDisplay'
 $subject = 'CN=Guesthouse display driver, this machine only'
 $yearsValid = 10
 
@@ -16,10 +16,10 @@ New-Item -ItemType Directory -Force $settingsFolder | Out-Null
 Copy-Item "$folder\vdd_settings.xml" $settingsFolder -Force
 
 # The catalog names every file in the folder, so it's made outside and moved in.
-$catalog = "$folder\ZakoVDD.cat"
-Remove-Item "$package\ZakoVDD.cat", $catalog -ErrorAction SilentlyContinue
+$catalog = "$folder\GuesthouseDisplay.cat"
+Remove-Item "$package\GuesthouseDisplay.cat", $catalog -ErrorAction SilentlyContinue
 New-FileCatalog -Path $package -CatalogFilePath $catalog -CatalogVersion 2.0 | Out-Null
-Move-Item $catalog "$package\ZakoVDD.cat" -Force
+Move-Item $catalog "$package\GuesthouseDisplay.cat" -Force
 
 $certificate = New-SelfSignedCertificate -Type CodeSigningCert -Subject $subject -CertStoreLocation Cert:\LocalMachine\My `
     -KeyExportPolicy NonExportable -NotAfter (Get-Date).AddYears($yearsValid)
@@ -36,7 +36,7 @@ foreach ($name in 'Root', 'TrustedPublisher') {
 "in Root: $(Test-Path "Cert:\LocalMachine\Root\$($certificate.Thumbprint)")"
 "in TrustedPublisher: $(Test-Path "Cert:\LocalMachine\TrustedPublisher\$($certificate.Thumbprint)")"
 
-$signed = Set-AuthenticodeSignature -FilePath "$package\ZakoVDD.cat" -Certificate $certificate -HashAlgorithm SHA256
+$signed = Set-AuthenticodeSignature -FilePath "$package\GuesthouseDisplay.cat" -Certificate $certificate -HashAlgorithm SHA256
 "signing: $($signed.Status) $($signed.StatusMessage)"
 Remove-Item "Cert:\LocalMachine\My\$($certificate.Thumbprint)" -DeleteKey
 "private key still there: $(Test-Path "Cert:\LocalMachine\My\$($certificate.Thumbprint)")"
@@ -64,7 +64,7 @@ public class Dev {
 }
 '@
 Add-Type $source
-pnputil /add-driver "$package\ZakoVDD.inf" 2>&1 | Select-Object -Last 4
-[Dev]::Make($hardwareId, "$package\ZakoVDD.inf")
+pnputil /add-driver "$package\GuesthouseDisplay.inf" 2>&1 | Select-Object -Last 4
+[Dev]::Make($hardwareId, "$package\GuesthouseDisplay.inf")
 Start-Sleep 6
 Get-PnpDevice -Class Display | ForEach-Object { "$($_.Status) $($_.Problem) $($_.FriendlyName) $($_.InstanceId)" }

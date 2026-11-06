@@ -1,8 +1,8 @@
 #include "check.h"
 #include "fake_daemon.h"
-#include "../ZakoVDD/Guesthouse/CursorLink.h"
-#include "../ZakoVDD/Guesthouse/HdrMetadataTracker.h"
-#include "../ZakoVDD/Guesthouse/HostLink.h"
+#include "../GuesthouseDisplay/Guesthouse/CursorLink.h"
+#include "../GuesthouseDisplay/Guesthouse/HdrMetadataTracker.h"
+#include "../GuesthouseDisplay/Guesthouse/HostLink.h"
 
 #include <cstring>
 #include <vector>

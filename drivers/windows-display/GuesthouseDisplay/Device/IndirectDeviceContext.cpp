@@ -151,9 +151,9 @@ void IndirectDeviceContext::InitAdapter()
 	AdapterCaps.EndPointDiagnostics.Size = sizeof(AdapterCaps.EndPointDiagnostics);
 	AdapterCaps.EndPointDiagnostics.GammaSupport = IDDCX_FEATURE_IMPLEMENTATION_NONE;
 	AdapterCaps.EndPointDiagnostics.TransmissionType = IDDCX_TRANSMISSION_TYPE_WIRED_OTHER;
-	AdapterCaps.EndPointDiagnostics.pEndPointFriendlyName = L"ZakoVdd Device";
-	AdapterCaps.EndPointDiagnostics.pEndPointManufacturerName = L"ZakoTech";
-	AdapterCaps.EndPointDiagnostics.pEndPointModelName = L"ZakoVdd Model";
+	AdapterCaps.EndPointDiagnostics.pEndPointFriendlyName = L"Guesthouse Display";
+	AdapterCaps.EndPointDiagnostics.pEndPointManufacturerName = L"Guesthouse";
+	AdapterCaps.EndPointDiagnostics.pEndPointModelName = L"Guesthouse Display";
 
 	IDDCX_ENDPOINT_VERSION Version = {};
 	Version.Size = sizeof(Version);

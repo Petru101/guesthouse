@@ -16,7 +16,7 @@ namespace
 {
 
 constexpr UINT GroupSize = 8; // numthreads in the shader.
-constexpr UINT CursorSide = 256; // The largest cursor zako's own export takes.
+constexpr UINT CursorSide = 256; // The largest cursor the shared export takes.
 constexpr UINT CursorBytesPerPixel = 4;
 constexpr UINT WordBytes = 4;
 
@@ -162,7 +162,7 @@ HRESULT FramePass::SetCursorShape(const CursorImage::Snapshot& cursor)
 	return S_OK;
 }
 
-// Nothing in Microsoft's docs says the surface can be bound to a shader. Zako only ever copies it. If it can't be, one
+// Nothing in Microsoft's docs says the surface can be bound to a shader. The code I forked only ever copies it. If it can't be, one
 // CopyResource into a texture of our own makes it readable, at the cost of one more pass over the frame.
 HRESULT FramePass::ReadableView(ID3D11Texture2D* surface, ComPtr<ID3D11ShaderResourceView>& view)
 {

@@ -55,7 +55,7 @@ bool initpath()
 {
 	// Prefer an explicit config path provided by the environment.
 	wchar_t envPath[MAX_PATH] = {0};
-	DWORD envLen = GetEnvironmentVariableW(L"ZAKOVDDPATH", envPath, MAX_PATH);
+	DWORD envLen = GetEnvironmentVariableW(L"GUESTHOUSE_DISPLAY_PATH", envPath, MAX_PATH);
 	if (envLen > 0 && envLen < MAX_PATH)
 	{
 		confpath = envPath;
@@ -67,7 +67,7 @@ bool initpath()
 	wchar_t szPath[MAX_PATH] = {0};
 	DWORD dwBufferSize = sizeof(szPath);
 	LONG lResult;
-	lResult = RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\ZakoTech\\ZakoDisplayAdapter", 0, KEY_READ, &hKey);
+	lResult = RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Guesthouse\\Display", 0, KEY_READ, &hKey);
 	if (lResult != ERROR_SUCCESS)
 	{
 		// Registry path is unavailable.

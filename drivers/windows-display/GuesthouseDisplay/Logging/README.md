@@ -1,23 +1,23 @@
-# ZakoVDD Logging
+# GuesthouseDisplay Logging
 
-ZakoVDD uses TraceLogging ETW as the only driver logging backend.
+GuesthouseDisplay uses TraceLogging ETW as the only driver logging backend.
 
-- Provider name: `ZakoTech.VDD`
-- Provider GUID: `{B254994F-46E6-4719-80A0-0A3AA50D6CE5}`
+- Provider name: `Guesthouse.Display`
+- Provider GUID: `{796F9ADF-3077-5F37-8589-777C9F74F647}`
 - Event name: `Log`
 - Event fields: `Level`, `Category`, `Message`, `SourceFile`, `Function`, `Line`
 
 Capture a trace:
 
 ```powershell
-$traceDir = Join-Path $env:TEMP "ZakoVDD"
+$traceDir = Join-Path $env:TEMP "GuesthouseDisplay"
 New-Item -ItemType Directory -Force -Path $traceDir | Out-Null
-$etlPath = Join-Path $traceDir "ZakoVDDTrace.etl"
-$csvPath = Join-Path $traceDir "ZakoVDDTrace.csv"
+$etlPath = Join-Path $traceDir "GuesthouseDisplayTrace.etl"
+$csvPath = Join-Path $traceDir "GuesthouseDisplayTrace.csv"
 
-logman start ZakoVDDTrace -ets -p "{B254994F-46E6-4719-80A0-0A3AA50D6CE5}" 0xFFFFFFFF 0x5 -o $etlPath
+logman start GuesthouseDisplayTrace -ets -p "{796F9ADF-3077-5F37-8589-777C9F74F647}" 0xFFFFFFFF 0x5 -o $etlPath
 # Reproduce the issue.
-logman stop ZakoVDDTrace -ets
+logman stop GuesthouseDisplayTrace -ets
 tracerpt $etlPath -of CSV -o $csvPath
 ```
 

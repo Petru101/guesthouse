@@ -1,8 +1,8 @@
 tests/build/
 x64/
-ZakoVDD/x64/
+GuesthouseDisplay/x64/
 *.exe
 *.dll
 *.cat
 *.pdb
-ZakoVDD/Guesthouse/Shaders/*.generated.h
+GuesthouseDisplay/Guesthouse/Shaders/*.generated.h

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../ZakoVDD/Guesthouse/EscapeChannel.h"
+#include "../GuesthouseDisplay/Guesthouse/EscapeChannel.h"
 
 #include <guesthouse_display_protocol.h>
 

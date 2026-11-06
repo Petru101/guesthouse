@@ -231,7 +231,7 @@ _Use_decl_annotations_
 		VDD_LOG_ERROR_STREAM("WdfDeviceCreateDeviceInterface failed with status: " << Status);
 		return Status;
 	}
-	VDD_LOG_DEBUG("Registered Zako VDD control device interface");
+	VDD_LOG_DEBUG("Registered the control device interface");
 
 	// Create a new device context object and attach it to the WDF device object
 	/*

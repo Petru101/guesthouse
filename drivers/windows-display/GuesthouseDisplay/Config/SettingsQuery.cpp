@@ -73,7 +73,7 @@ bool TryReadRegistryDword(const wstring &regName, DWORD &value)
 	HKEY hKey = nullptr;
 	DWORD bufferSize = sizeof(value);
 
-	LONG result = RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\ZakoTech\\ZakoDisplayAdapter", 0, KEY_READ, &hKey);
+	LONG result = RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Guesthouse\\Display", 0, KEY_READ, &hKey);
 	if (result != ERROR_SUCCESS)
 	{
 		return false;
@@ -90,7 +90,7 @@ bool TryReadRegistryString(const wstring &regName, wstring &value)
 	wchar_t buffer[MAX_PATH] = {};
 	DWORD bufferSize = sizeof(buffer);
 
-	LONG result = RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\ZakoTech\\ZakoDisplayAdapter", 0, KEY_READ, &hKey);
+	LONG result = RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Guesthouse\\Display", 0, KEY_READ, &hKey);
 	if (result != ERROR_SUCCESS)
 	{
 		return false;

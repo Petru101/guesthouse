@@ -353,7 +353,7 @@ _Use_decl_annotations_
 		// are authoritative for that state.
 		pContext->pContext->UpdateMonitorHdrLuminanceMetadata(MonitorObject, maxNits, minNits, maxFALL);
 
-		// Frames can say "use the default", so the real values have to be kept. The luminance above is zako's own.
+		// Frames can say "use the default", so the real values have to be kept. The luminance above is the driver's own.
 		if (pInArgs && pInArgs->Type == IDDCX_HDRMETADATA_TYPE_HDR10 && pInArgs->Data.pHdr10 &&
 		    pInArgs->Size >= sizeof(IDDCX_HDR10_METADATA))
 		{

@@ -1,4 +1,4 @@
-; ZakoVDD.inf
+; GuesthouseDisplay.inf
 ;
 
 [Version]
@@ -8,18 +8,18 @@ ClassGUID = {4D36E968-E325-11CE-BFC1-08002BE10318}
 Class = Display
 ClassVer = 2.0
 Provider=%ManufacturerName%
-CatalogFile=ZakoVDD.cat
+CatalogFile=GuesthouseDisplay.cat
 DriverVer=10/16/2024,0.0.1.0
 
 [Manufacturer]
 %ManufacturerName%=Standard,NT$ARCH$
 
 [Standard.NT$ARCH$]
-%DeviceName%=MyDevice_Install, Root\ZakoVDD
-%DeviceName%=MyDevice_Install, ZakoVDD
+%DeviceName%=MyDevice_Install, Root\GuesthouseDisplay
+%DeviceName%=MyDevice_Install, GuesthouseDisplay
 
 [SourceDisksFiles]
-ZakoVDD.dll=1
+GuesthouseDisplay.dll=1
 
 [SourceDisksNames]
 1 = %DiskName%
@@ -34,7 +34,7 @@ AddReg = MyDevice_HardwareDeviceSettings, MyDevice_DeviceSecurity
 
 [MyDevice_HardwareDeviceSettings]
 HKR,, "UpperFilters",  %REG_MULTI_SZ%, "IndirectKmd"
-HKR, "WUDF", "DeviceGroupId", %REG_SZ%, "ZakoVDDGroup"
+HKR, "WUDF", "DeviceGroupId", %REG_SZ%, "GuesthouseDisplayGroup"
 
 [MyDevice_DeviceSecurity]
 HKR,, "Security", %REG_SZ%, "D:P(A;;GA;;;SY)(A;;GA;;;BA)"
@@ -43,14 +43,14 @@ HKR,, "Security", %REG_SZ%, "D:P(A;;GA;;;SY)(A;;GA;;;BA)"
 AddService=WUDFRd,0x000001fa,WUDFRD_ServiceInstall
 
 [MyDevice_Install.NT.Wdf]
-UmdfService=ZakoVDD,ZakoVDD_Install
-UmdfServiceOrder=ZakoVDD
+UmdfService=GuesthouseDisplay,GuesthouseDisplay_Install
+UmdfServiceOrder=GuesthouseDisplay
 UmdfKernelModeClientPolicy = AllowKernelModeClients
 UmdfImpersonationLevel=Impersonation
 
-[ZakoVDD_Install]
+[GuesthouseDisplay_Install]
 UmdfLibraryVersion=$UMDFVERSION$
-ServiceBinary=%12%\UMDF\ZakoVDD.dll
+ServiceBinary=%12%\UMDF\GuesthouseDisplay.dll
 UmdfExtensions = IddCx0102
 
 [WUDFRD_ServiceInstall]
@@ -64,7 +64,7 @@ ServiceBinary = %12%\WUDFRd.sys
 UMDriverCopy=12,UMDF ; copy to drivers\umdf
 
 [UMDriverCopy]
-ZakoVDD.dll
+GuesthouseDisplay.dll
 
 ; =================== Generic ==================================
 

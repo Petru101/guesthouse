@@ -1,7 +1,7 @@
 #include "check.h"
 #include "hlsl_shim.h"
-#include "../ZakoVDD/Guesthouse/Shaders/ColourMath.hlsli"
-#include "../ZakoVDD/Guesthouse/ColourTransform.h"
+#include "../GuesthouseDisplay/Guesthouse/Shaders/ColourMath.hlsli"
+#include "../GuesthouseDisplay/Guesthouse/ColourTransform.h"
 
 using namespace Guesthouse;
 

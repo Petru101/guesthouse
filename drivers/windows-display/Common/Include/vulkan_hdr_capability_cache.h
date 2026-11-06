@@ -7,7 +7,7 @@
 #include <string>
 #include <vector>
 
-namespace zako::vulkan_hdr {
+namespace guesthouse::vulkan_hdr {
 
 inline constexpr std::uint32_t kCapabilityCacheMagic = 0x5A564843;  // 'ZVHC'
 inline constexpr std::uint16_t kCapabilityCacheVersion = 1;
@@ -81,4 +81,4 @@ inline void upsert_capability(std::vector<CapabilityCacheEntry>& entries, const 
   else *found = value;
 }
 
-}  // namespace zako::vulkan_hdr
+}  // namespace guesthouse::vulkan_hdr

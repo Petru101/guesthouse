@@ -4,7 +4,7 @@
 #include <cstdint>
 #include <vector>
 
-namespace zako::vulkan_hdr {
+namespace guesthouse::vulkan_hdr {
 
 struct FormatPair {
   std::int32_t format {};
@@ -27,4 +27,4 @@ inline void append_missing_verified_pairs(std::vector<FormatPair>& formats, bool
   if (allow_hdr10 && !contains_pair(formats, kHdr10Pair)) formats.push_back(kHdr10Pair);
 }
 
-}  // namespace zako::vulkan_hdr
+}  // namespace guesthouse::vulkan_hdr

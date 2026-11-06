@@ -2,7 +2,7 @@
 
 This is the indirect display driver for Windows guests. It gives Windows a real monitor at the host's refresh rate, with HDR, and sends each frame to the host with no CPU copy.
 
-It's a fork of [zako-vdd](https://github.com/qiin2333/zako-vdd), by qiin2333 and its other authors, at v0.18.2, commit abadb3a. Nearly all of it is their work. Their README is [README-zako.md](README-zako.md). I left their folders and names alone so that their fixes stay easy to take.
+It's a fork of [zako-vdd](https://github.com/qiin2333/zako-vdd), by qiin2333 and its other authors, at v0.18.2, commit abadb3a. Nearly all of it is their work, and the original copyright is in [LICENSE](LICENSE). Their README is [README-upstream.md](README-upstream.md). I gave the driver its own name so that nobody mistakes this for their driver or blames them for mine, and left their folder layout alone so that their fixes stay easy to take.
 
 This folder is under the MIT licence, in [LICENSE](LICENSE), and it stays that way, unlike the rest of this repo. Building it uses Microsoft's kit, and I don't want a question over those terms and the GPL.
 
@@ -10,7 +10,7 @@ To build and install it, see [BUILDING.md](BUILDING.md).
 
 ## What I added
 
-Everything of mine is in `ZakoVDD/Guesthouse/`, plus a few lines in zako's swap chain loop and callbacks.
+Everything of mine is in `GuesthouseDisplay/Guesthouse/`, plus a few lines in the swap chain loop and callbacks.
 
 | File | Job |
 |---|---|
@@ -26,7 +26,7 @@ The driver makes its monitor when it starts. `setup/take-over-display.ps1` makes
 
 The hardware cursor is off in `vdd_settings.xml` for now, so Windows draws it into the frames.
 
-Zako's frame channel for Sunshine is still here. It only starts copying frames once something asks about it.
+The frame channel for Sunshine is still here. It only starts copying frames once something asks about it. Its contract with Sunshine keeps zako-vdd's names, in `Common/Include/vdd_control_ioctl.h` and in the shared object names, because Sunshine looks for those. Nobody using this sees them.
 
 ## What's been tested
 

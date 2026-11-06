@@ -11,11 +11,11 @@ You build this in Windows, and sign it on the machine that will run it. Nothing 
 
 Mount the ISO, run `LaunchBuildEnv.cmd` from it, and in that window, from this folder:
 
-    msbuild ZakoVDD.sln /m /p:Configuration=Release /p:Platform=x64 /p:SignMode=Off
+    msbuild GuesthouseDisplay.sln /m /p:Configuration=Release /p:Platform=x64 /p:SignMode=Off
 
-The driver is in `x64\Release\ZakoVDD`. You want `ZakoVDD.dll` and `ZakoVDD.inf` from there. The catalog file that's beside them gets replaced in the next step.
+The driver is in `x64\Release\GuesthouseDisplay`. You want `GuesthouseDisplay.dll` and `GuesthouseDisplay.inf` from there. The catalog file that's beside them gets replaced in the next step.
 
-Warnings are not errors in this project, as newer compilers flag zako's code in places I haven't touched. My files build with none.
+Warnings are not errors in this project, as newer compilers flag the forked code in places I haven't touched. My files build with none.
 
 ## Installing
 
