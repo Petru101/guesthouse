@@ -4,8 +4,12 @@
 //! layouts of what the guest's driver reads and writes. A generation holds what the architecture
 //! changes. They stay apart, so adding one never means a row for each of the others.
 
+mod generation;
+mod guest;
 mod host;
 
+pub use generation::{BLACKWELL, Generation, generation_for, guest_channel_classes};
+pub use guest::{AllocationLayout, ChannelObject, GUEST_617, GuestBranch, RecordLayout, guest_branch};
 pub use host::{HOST_615, HostBranch, host_branch, host_branch_of_version};
 
 /// Pairs of (host branch, guest branch) that have been run together.
