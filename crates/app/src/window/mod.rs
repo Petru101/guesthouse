@@ -41,7 +41,7 @@ const SMALLEST_WINDOW: (i32, i32) = (360, 300);
 const TOAST_SECONDS: u32 = 6;
 const PROBLEM_SECONDS: u32 = 10;
 /// In fullscreen the viewer's header lies over the picture, and it has no background of its own.
-const STYLE: &str = ".screen-header { background: var(--headerbar-bg-color); }
+const STYLE: &str = ".screen-header { background: @headerbar_bg_color; }
 .machine-thumbnail { border-radius: 6px; }";
 
 struct Inner {
