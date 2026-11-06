@@ -19,13 +19,13 @@ Warnings are not errors in this project, as newer compilers flag the forked code
 
 ## Installing
 
-In the Windows guest, make a folder with `vdd_settings.xml` in it, and a `pkg` folder inside holding the DLL and INF. Then, in PowerShell as an administrator:
+In the Windows guest, make a folder with `vdd_settings.xml` in it, and a `pkg` folder inside holding the DLL and INF. Then, in a command prompt as an administrator, from this folder. Windows won't run a script that isn't signed unless you say so, and this says so for this one run only:
 
-    setup\sign-and-install.ps1 C:\the\folder
+    powershell -ExecutionPolicy Bypass -File setup\sign-and-install.ps1 C:\the\folder
 
 After that, so that the screen comes up by itself:
 
-    setup\install-take-over.ps1 C:\where\take-over-display.ps1\is 1920 1080 60 YourUserName
+    powershell -ExecutionPolicy Bypass -File setup\install-take-over.ps1 C:\where\take-over-display.ps1\is 1920 1080 60 YourUserName
 
 That runs `take-over-display.ps1` when you log on, with your size and refresh rate. Copy it somewhere it'll stay first.
 
