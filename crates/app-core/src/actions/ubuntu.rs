@@ -8,8 +8,9 @@ use crate::iso::kernel_package;
 use crate::library::make_disk;
 use crate::linux::driver_image::{Outcome, prepare};
 use crate::linux::driver_versions::RpmHost;
-use crate::linux::guest_sources;
+use crate::linux::layout::ALLOW_LIST;
 use crate::linux::seed::make_seed;
+use crate::linux::{guest_sources, sensor_daemon};
 use crate::network::{Protocol, port_taken};
 use crate::start_checks::start_problems;
 use crate::vm_args::{Boot, INSTALL_LOG, UbuntuBoot, UbuntuInstall, ssh_port};
@@ -22,7 +23,6 @@ use std::time::Duration;
 const INSTALL_FINISHED: &[u8] = b"nvfwd-install-finished";
 const INSTALL_HOURS: u64 = 2;
 const REASON_FILE: &str = "gpu-off-reason";
-const SENSOR_DAEMON: &str = "nvfwd-sensord";
 const TURNED_OFF: &str = "The GPU is turned off in this machine's settings.";
 
 fn isoinfo_files(iso: &str) -> Result<String> {
@@ -118,7 +118,7 @@ fn gpu_boot(task: &mut Task) -> Result<UbuntuBoot> {
     if !task.machine.gpu_preview {
         return refused(task, TURNED_OFF.to_owned());
     }
-    let sensor_daemon = context.paths.qemu.with_file_name(SENSOR_DAEMON);
+    let sensor_daemon = sensor_daemon(context);
     if !sensor_daemon.exists() {
         return refused(
             task,
@@ -137,7 +137,7 @@ fn gpu_boot(task: &mut Task) -> Result<UbuntuBoot> {
         }
         Outcome::Ready { image, warning } => {
             task.error = warning.unwrap_or_default();
-            Ok(UbuntuBoot::WithGpu { image, allow_list: sources.join("allow.txt"), sensor_daemon })
+            Ok(UbuntuBoot::WithGpu { image, allow_list: sources.join(ALLOW_LIST), sensor_daemon })
         }
     }
 }
