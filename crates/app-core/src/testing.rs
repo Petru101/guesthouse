@@ -9,6 +9,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};
 
+/// So that no test depends on how much this PC has free. One about the limit sets its own.
+const PLENTY_OF_GIB: u64 = 64;
+
 static NEXT: AtomicU32 = AtomicU32::new(0);
 
 /// A folder that goes when the test ends.
@@ -100,5 +103,6 @@ pub fn scratch_context(scratch: &Scratch) -> Context {
     context.processes = scratch.path("proc");
     fs::create_dir_all(&context.processes).unwrap();
     context.reserve_memory = |_, _| Ok(());
+    context.ram_limit = Some(PLENTY_OF_GIB);
     context
 }

@@ -16,7 +16,8 @@ pub use install::{
 use crate::context::Context;
 use crate::disk_image::disk_size_gib;
 use crate::failure::{Failure, Result};
-use crate::host::{cpu_list, host_ram_limit, vcache_cpus};
+use crate::guest_memory::is_no_room;
+use crate::host::{cpu_list, host_ram_limit, ram_limit_for, vcache_cpus};
 use crate::library::MAX_DISK_GIB;
 use crate::log::clock_text;
 use crate::machine::{Kind, Machine, load};
@@ -156,6 +157,21 @@ fn boot(task: &mut Task) -> Result<()> {
     }
     set_up_desktop(task)?;
     place_driver_files(task)
+}
+
+/// Starts what has just been installed, if it fits. An install that worked is good news, and a full
+/// PC doesn't change that: the machine stays Off with Start ready.
+pub(super) fn start_if_there_is_room(task: &mut Task, what: &str) -> Result<()> {
+    let wanted = u64::from(task.machine.ram_gib);
+    let limit = ram_limit_for(task.context, &task.machine)?;
+    let started = if wanted > limit { Err(Failure::new("")) } else { start(task) };
+    match started {
+        Err(failure) if wanted > limit || is_no_room(&failure) => {
+            task.error = format!("{what} is installed. There isn't room to start it right now.");
+            Ok(())
+        }
+        other => other,
+    }
 }
 
 fn after_reboot(task: &mut Task) -> Result<()> {

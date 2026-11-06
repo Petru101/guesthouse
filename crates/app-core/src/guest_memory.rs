@@ -12,12 +12,18 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 
 const PRIVATE_FILE: u32 = 0o600;
+const NO_ROOM_WORDS: &str = "GiB is free";
+
+/// Whether a failed start was only for want of memory.
+pub fn is_no_room(failure: &Failure) -> bool {
+    failure.0.contains(NO_ROOM_WORDS)
+}
 
 fn no_room(file: &Path, bytes: u64) -> Failure {
     let folder = file.parent().unwrap_or(file);
     let free = free_gib(folder).unwrap_or(0.0);
     Failure(format!(
-        "This machine needs {} GiB of {}, and {free:.0} GiB is free. Stop another VM, or give this one less RAM.",
+        "This machine needs {} GiB of {}, and {free:.0} {NO_ROOM_WORDS}. Stop another VM, or give this one less RAM.",
         bytes.div_ceil(GIB),
         folder.display(),
     ))

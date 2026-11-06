@@ -11,7 +11,7 @@ use std::process::Command;
 use std::sync::OnceLock;
 
 /// Said wherever a GPU machine would have been offered.
-pub const NO_GPU_YET: &str = "GPU machines aren't available yet. The part that talks to the card isn't public, so this build runs plain VMs.";
+pub const NO_GPU_PART: &str = "This build has no GPU part, so it runs plain VMs and not GPU machines.";
 
 /// Said when an Ubuntu disc can't install by itself here.
 pub const NO_UBUNTU_INSTALL_YET: &str = "The files that install Ubuntu by itself aren't here, so this is like any other disc. A build of the repo has them.";
@@ -66,7 +66,7 @@ pub fn ubuntu_note(context: &Context) -> &'static str {
 /// Why a disc of this kind is only a plain VM here, if it is.
 pub fn plain_reason(context: &Context, disc: Kind) -> &'static str {
     match disc {
-        Kind::Windows if !gpu_ready(context) => NO_GPU_YET,
+        Kind::Windows if !gpu_ready(context) => NO_GPU_PART,
         Kind::Linux if !ubuntu_install_ready(context) => NO_UBUNTU_INSTALL_YET,
         _ => "",
     }
@@ -117,7 +117,7 @@ mod tests {
         assert_eq!(plain_reason(&context, Kind::Linux), NO_UBUNTU_INSTALL_YET);
         assert_eq!(plain_reason(&context, Kind::Plain), "");
         fs::remove_dir_all(context.paths.guest_files()).unwrap();
-        assert_eq!(plain_reason(&context, Kind::Windows), NO_GPU_YET);
+        assert_eq!(plain_reason(&context, Kind::Windows), NO_GPU_PART);
     }
 
     #[test]

@@ -21,8 +21,16 @@ const TASK_FILE: &str = "guesthouse-task.json";
 const STILL_BUSY: &str = "Something else is still in progress.";
 const QEMU_PAUSED_WORDS: [&str; 2] = ["paused", "debug"];
 /// How a machine is told it would be one too many.
-pub fn no_slot_text() -> String {
-    format!("{SLOTS} VMs are running, which is as many as Guesthouse runs at once.")
+/// Why there's no slot. Slots and their shared memory are the whole PC's, so another user's or another
+/// install's VM really does take one, and it's only fair to say whose they are.
+pub fn no_slot_text(context: &Context) -> String {
+    let ours = running_slots(context).len();
+    match (SLOTS as usize).saturating_sub(ours) {
+        0 => format!("{SLOTS} VMs are running, which is as many as Guesthouse runs at once."),
+        others => {
+            format!("All {SLOTS} slots are taken, {others} of them by another user or install on this PC.")
+        }
+    }
 }
 
 /// Whether QEMU's word for the guest means it was left stopped.
@@ -166,7 +174,7 @@ pub fn launch(
     let slot = slot
         .or_else(|| slot_of(context, machine))
         .or_else(|| if context.second_instance() { Some(context.slot) } else { free_slot(context) })
-        .ok_or_else(|| Failure(no_slot_text()))?;
+        .ok_or_else(|| Failure(no_slot_text(context)))?;
     let task = read_task(context, Some(slot));
     let mut arguments = arguments.to_vec();
     if task_alive(context, &task) {

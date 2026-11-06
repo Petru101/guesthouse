@@ -332,3 +332,17 @@ fn with_no_script_the_start_goes_on_and_says_so() {
     place_driver_files(&mut task).unwrap();
     assert!(task.error.contains("no script"));
 }
+
+#[test]
+fn an_install_with_no_room_to_boot_ends_well_and_stays_off() {
+    let scratch = Scratch::new();
+    let mut context = plain_task_context(&scratch);
+    context.ram_limit = Some(1);
+    let host = RecordingHost::default();
+    let mut vm = machine(&context);
+    vm.installing = false;
+    let mut task = Task::new(&context, &host, "install", vm);
+    start_if_there_is_room(&mut task, "Windows").unwrap();
+    assert_eq!(task.error, "Windows is installed. There isn't room to start it right now.");
+    assert!(host.said().is_empty(), "nothing may start");
+}

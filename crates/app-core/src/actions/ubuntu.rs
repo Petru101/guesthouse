@@ -1,7 +1,7 @@
 //! Installing and starting an Ubuntu guest. If the host can't honestly offer its driver, the guest
 //! boots without the GPU and is told why.
 
-use super::{KEY_POLL, Task, plan_for};
+use super::{KEY_POLL, Task, plan_for, start_if_there_is_room};
 use crate::disk_image::disk_size_gib;
 use crate::failure::{Failure, Result};
 use crate::iso::kernel_package;
@@ -91,7 +91,7 @@ pub fn install(task: &mut Task) -> Result<()> {
     task.machine.installing = false;
     task.machine.iso.clear();
     task.machine.save(context)?;
-    start(task)
+    start_if_there_is_room(task, "Ubuntu")
 }
 
 fn wait_for_poweroff(task: &Task) -> Result<()> {

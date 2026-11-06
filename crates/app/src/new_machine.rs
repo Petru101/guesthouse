@@ -172,7 +172,11 @@ impl NewMachineDialog {
 
     pub fn set_vm_running(&self, running: bool) {
         self.0.vm_running.set(running);
-        let note = if running { format!("{} Shut one down first.", no_slot_text()) } else { String::new() };
+        let note = if running {
+            format!("{} Shut one down first.", no_slot_text(&self.0.window.context()))
+        } else {
+            String::new()
+        };
         self.0.note.set_label(&note);
         self.update();
     }

@@ -3,7 +3,7 @@
 
 use crate::context::Context;
 use crate::failure::Result;
-use crate::gpu_support::{NO_GPU_YET, gpu_ready};
+use crate::gpu_support::{NO_GPU_PART, gpu_ready};
 use crate::host::{self, GIB, QEMU_FILES, physical_cores, ram_limit_for, shared_memory_used, vcache_cpus};
 use crate::machine::{Kind, Machine};
 use crate::network_settings::{network_start_problems, other_machines};
@@ -125,7 +125,7 @@ pub fn start_problems(context: &Context, machine: &Machine) -> Result<Vec<String
     }
     found.extend(share_problem(context, &machine.share));
     if machine.kind == Kind::Windows && !gpu_ready(context) {
-        found.push(NO_GPU_YET.to_owned());
+        found.push(NO_GPU_PART.to_owned());
     }
     if machine.has_gpu() && context.second_instance() {
         found.push(SECOND_INSTANCE_REFUSAL.to_owned());
@@ -155,7 +155,7 @@ pub fn start_problems(context: &Context, machine: &Machine) -> Result<Vec<String
         found.push(ALREADY_RUNNING.to_owned());
     }
     if qemu_pid(context, None).is_some() {
-        found.push(no_slot_text());
+        found.push(no_slot_text(context));
     } else if machine.has_gpu() && memory_taken(context, None) {
         found.push(MEMORY_TAKEN.to_owned());
     }

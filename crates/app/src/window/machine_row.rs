@@ -152,7 +152,7 @@ impl MachineRow {
             lines.push(status.error.clone());
         }
         if blocked {
-            lines.push(no_slot_text());
+            lines.push(no_slot_text(&self.window.context()));
         }
         if second {
             lines.push(SECOND_INSTANCE_REFUSAL.to_owned());
