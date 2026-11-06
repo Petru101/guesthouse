@@ -15,7 +15,7 @@ pub(super) const BOOTS_FILE: &str = "guesthouse-boots";
 pub(super) const SERIAL_FILE: &str = "serial.log";
 const SHARE_SCRIPT_SECONDS: u64 = 40;
 /// Where the guest keeps what the app puts there, and the account its desktop runs as.
-const GUEST_FOLDER: &str = "C:\\gpupv";
+pub(super) const GUEST_FOLDER: &str = "C:\\gpupv";
 const GUEST_USER: &str = "gpupv";
 const UPLOAD_SECONDS: u64 = 60;
 
@@ -59,8 +59,8 @@ pub(super) fn note_boot(task: &Task) -> Result<()> {
     Ok(())
 }
 
-/// Copies a file that ships with the app into the guest.
-fn put_guest_file(task: &Task, local: &str, guest: &str) -> Result<()> {
+/// Copies a file from the program folder into the guest.
+pub(super) fn put_guest_file(task: &Task, local: &str, guest: &str) -> Result<()> {
     let data = base64_encode(&fs::read(task.context.paths.guest_files().join(local))?);
     let script = format!("[IO.File]::WriteAllBytes('{guest}', [Convert]::FromBase64String('{data}'))");
     task.ask_guest(&script, UPLOAD_SECONDS);
