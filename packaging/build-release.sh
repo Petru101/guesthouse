@@ -355,7 +355,7 @@ stage_source() {
     [ ! -d "$bundle" ] || rm -rf "${bundle:?}"
     mkdir -p "$bundle/qemu-source"
     git -C "$REPO" archive HEAD | tar -C "$bundle" -xf -
-    tar -C "$(qemu_tree)" --exclude=.git -cf - . | tar -C "$bundle/qemu-source" -xf -
+    tar -C "$(qemu_tree)" --exclude=.git --exclude=__pycache__ -cf - . | tar -C "$bundle/qemu-source" -xf -
     # The crates are linked into the programs, and carry their licences with them here.
     (cd "$REPO" && cargo vendor --locked --quiet "$bundle/vendor" >/dev/null)
     mkdir -p "$bundle/.cargo"
