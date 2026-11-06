@@ -4,8 +4,8 @@
 //!
 //! `FUZZ_ROUNDS` runs it for longer, and `FUZZ_SEED` picks where it starts.
 
-use guesthouse_backend::Backend;
-use guesthouse_backend_standin::{RandomMessages, SparseMemory, StandIn};
+use guesthouse_backend::{Backend, StagingCopy, SurfaceShape};
+use guesthouse_backend_standin::{RandomMessages, SparseMemory, StandIn, WIDE_COLOUR};
 use guesthouse_core::{Config, CopyOrder, MemoryLimits, ReplyTicket, Session};
 use guesthouse_messages::wire::{set_u32, set_u64, u32_at};
 use guesthouse_messages::{Command, HEADER_SIZE};
@@ -130,13 +130,14 @@ fn surface_copy(session: &mut Session<StandIn, SparseMemory>) -> Vec<u8> {
 }
 
 /// Stand-in private data with its memory's size stated apart from its shape.
-fn shape(memory: u64, width: u32, height: u32, pitch: u32, tiling: u32) -> Vec<u8> {
-    let mut data = vec![0; 28];
+fn shape(memory: u64, width: u32, height: u32, pitch: u32, tiling: u32, colour: u32) -> Vec<u8> {
+    let mut data = vec![0; 32];
     set_u64(&mut data, 0, memory);
     set_u32(&mut data, 8, width);
     set_u32(&mut data, 12, height);
     set_u32(&mut data, 20, pitch);
     set_u32(&mut data, 24, tiling);
+    set_u32(&mut data, 28, colour);
     data
 }
 
@@ -157,6 +158,9 @@ const SHAPES: [(u64, u32, u32, u32, u32); 13] = [
     (0x10_0000, u32::MAX, u32::MAX, u32::MAX, 6),
 ];
 
+/// Colour words: the usual one, one of wide pixels, and one nobody knows.
+const COLOURS: [u32; 3] = [0, WIDE_COLOUR, 0xEE];
+
 /// Rectangles at the same edges, as left, top, right and bottom.
 const RECTANGLES: [[i32; 4]; 8] = [
     [0, 0, 64, 64],
@@ -175,8 +179,10 @@ fn shape_copies(session: &mut Session<StandIn, SparseMemory>, good_copy: &[u8]) 
     let good = u32_at(good_copy, 0x20).unwrap_or(0);
     let mut out = Vec::new();
     let mut copies = Vec::new();
-    for (memory, width, height, pitch, tiling) in SHAPES {
-        let private = shape(memory, width, height, pitch, tiling);
+    for ((memory, width, height, pitch, tiling), colour) in
+        SHAPES.into_iter().flat_map(|shape| COLOURS.map(|colour| (shape, colour)))
+    {
+        let private = shape(memory, width, height, pitch, tiling, colour);
         let _ = session.handle_message(&allocation(0, &private), TICKET, &mut out);
         let surface = u32_at(&out, 0x10).unwrap_or(0);
         for rectangle in RECTANGLES {
@@ -215,21 +221,39 @@ fn end_of_tiled_surface(pitch: u32, height: u32, block: u32) -> Option<u128> {
     Some((last_block + 1) * 64 * block_rows)
 }
 
-/// Holds each tiled copy since `from` to the header's sum and fields. Returns how many it saw.
-fn check_tiled_copies(session: &Session<StandIn, SparseMemory>, from: usize) -> usize {
-    let tiled = session.backend().copies[from..].iter().filter(|copy| copy.source.tiling.is_some());
-    let mut seen = 0;
-    for copy in tiled {
-        let block = copy.source.tiling.expect("filtered on it");
-        let end = end_of_tiled_surface(copy.source.pitch, copy.source.height, block);
-        let mapped = session.backend().mapped_length(copy.own_space, copy.source_address);
-        let (Some(end), Some(mapped)) = (end, mapped) else { panic!("not a surface: {copy:?}") };
-        assert!(end <= u128::from(mapped), "past its memory: {copy:?}");
-        // NVC7B5_SET_SRC_ORIGIN has 16 bits for each.
-        assert!(i64::from(copy.left) * 4 < 1 << 16 && copy.top < 1 << 16, "past its field: {copy:?}");
-        seen += 1;
+/// Holds one tiled side of a copy to the header's sum and fields.
+fn check_tiled_side(
+    session: &Session<StandIn, SparseMemory>,
+    copy: &StagingCopy,
+    (surface, address): (&SurfaceShape, u64),
+    (left, top): (i32, i32),
+) {
+    let block = surface.tiling.expect("only asked about tiled sides");
+    let end = end_of_tiled_surface(surface.pitch, surface.height, block);
+    let mapped = session.backend().mapped_length(copy.own_space, address);
+    let (Some(end), Some(mapped)) = (end, mapped) else { panic!("not a surface: {copy:?}") };
+    assert!(end <= u128::from(mapped), "past its memory: {copy:?}");
+    // NVC7B5_SET_SRC_ORIGIN and SET_DST_ORIGIN have 16 bits for each.
+    let pixel = i64::from(session.backend().copy_pixel_bytes(&copy.source));
+    assert!(i64::from(left) * pixel < 1 << 16 && top < 1 << 16, "past its field: {copy:?}");
+}
+
+/// Holds each tiled side of each copy since `from` to the header's sum and fields. Returns how many
+/// sources and targets it saw.
+fn check_tiled_copies(session: &Session<StandIn, SparseMemory>, from: usize) -> (usize, usize) {
+    let (mut sources, mut targets) = (0, 0);
+    for copy in &session.backend().copies[from..] {
+        if copy.source.tiling.is_some() {
+            check_tiled_side(session, copy, (&copy.source, copy.source_address), (copy.left, copy.top));
+            sources += 1;
+        }
+        if copy.target.tiling.is_some() {
+            let corner = (copy.target_left, copy.target_top);
+            check_tiled_side(session, copy, (&copy.target, copy.target_address), corner);
+            targets += 1;
+        }
     }
-    seen
+    (sources, targets)
 }
 
 #[test]
@@ -252,7 +276,8 @@ fn no_shape_of_surface_gets_a_copy_past_its_memory() {
         }
         assert_eq!(session.backend().copies_past_their_memory, Vec::<String>::new());
         assert!(!session.backend().copies.is_empty(), "some of these are fine");
-        assert!(check_tiled_copies(&session, 0) > 0, "some of the fine ones are tiled");
+        let (sources, targets) = check_tiled_copies(&session, 0);
+        assert!(sources > 0 && targets > 0, "some of the fine ones are tiled, on each side");
     }
 }
 

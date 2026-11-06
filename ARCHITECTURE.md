@@ -77,7 +77,7 @@ A handler answers everything, and nothing a message says may stop the daemon. So
 
 Past these the port is stricter than the prototype, which took such messages and did something else with them. For anything a guest really sends, the two still give the same replies.
 
-A surface's width, height, pitch and tiling are only what its description says, and they aren't tied to the size of its memory. All the daemon's copies run in its own address space, which no process shares, so `session/copy_bounds.rs` measures each one in bytes against the allocation's real size, on both sides, and a copy that doesn't fit is refused with `UNSUCCESSFUL`. A tiled source has to fit whole, and `Backend::tiled_bytes` says how big that is, as the layout is the vendor's.
+A surface's width, height, pitch and tiling are only what its description says, and they aren't tied to the size of its memory. All the daemon's copies run in its own address space, which no process shares, so `session/copy_bounds.rs` measures each one in bytes against the allocation's real size, on both sides, and a copy that doesn't fit is refused with `UNSUCCESSFUL`. Each side is held to the same rule. A tiled surface has to fit whole, source or target, and `Backend::tiled_bytes` says how big that is, as the layout is the vendor's. `Backend::copy_pixel_bytes` says how wide the source's pixels are, and the check and the copy both use that one number. A colour the backend doesn't know counts as four bytes, and the check still holds, as it measures the bytes the copy moves.
 
 ## Slots
 

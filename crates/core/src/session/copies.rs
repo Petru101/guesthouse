@@ -64,10 +64,11 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         };
         let rectangle = request.source_rectangle;
         let sizes = (self.allocations[&request.source].size, self.allocations[&request.target].size);
-        let read = Rows::read_by(&rectangle);
-        let written = Rows::written_by(&rectangle, request.target_left, request.target_top);
+        let pixel = self.backend.copy_pixel_bytes(&source);
+        let read = Rows::read_by(&rectangle, pixel);
+        let written = Rows::written_by(&rectangle, request.target_left, request.target_top, pixel);
         let fits = read.zip(written).is_some_and(|(read, written)| {
-            copy_fits(&self.backend, &read, (&source, sizes.0), &written, (&target, sizes.1))
+            copy_fits(&self.backend, pixel, &read, (&source, sizes.0), &written, (&target, sizes.1))
         });
         if !fits {
             // The GPU would take a size like this as a very long copy, which nothing can interrupt.
@@ -106,13 +107,14 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             own_space: self.own_space()?,
         };
         log::debug!(
-            "copy {:#x} to {:#x}, {rectangle:?}, to ({}, {}), {}x{} pitch {} tiling {:?} in {:#x} bytes to {}x{} pitch {} tiling {:?} in {:#x} bytes, screen {is_screen}",
+            "copy {:#x} to {:#x}, {rectangle:?}, to ({}, {}), {}x{} colour {:#x} pitch {} tiling {:?} in {:#x} bytes to {}x{} pitch {} tiling {:?} in {:#x} bytes, screen {is_screen}",
             request.source,
             request.target,
             copy.target_left,
             copy.target_top,
             source.width,
             source.height,
+            source.colour,
             source.pitch,
             source.tiling,
             sizes.0,
