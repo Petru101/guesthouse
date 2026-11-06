@@ -5,8 +5,9 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 
 const CHECK_SECONDS: &str = "10";
-/// QEMU exits with an error when it doesn't know a device, and lists its options when it does.
+/// QEMU exits with 0 either way. It only lists options on stdout for a device it knows.
 const DEVICE_QUESTION: &str = "nvfwd,help";
+const DEVICE_ANSWER: &str = "nvfwd options:";
 /// The parts of the jail that a PC can refuse, with nothing else in the way.
 const SANDBOX_QUESTION: [&str; 10] = [
     "--unshare-user",
@@ -27,7 +28,10 @@ fn answers_yes(command: &mut Command) -> bool {
 }
 
 fn has_device(qemu: &Path) -> bool {
-    answers_yes(Command::new("timeout").arg(CHECK_SECONDS).arg(qemu).args(["-device", DEVICE_QUESTION]))
+    let mut question = Command::new("timeout");
+    question.arg(CHECK_SECONDS).arg(qemu).args(["-device", DEVICE_QUESTION]).stdin(Stdio::null());
+    let said = question.output().map(|answer| String::from_utf8_lossy(&answer.stdout).into_owned());
+    said.is_ok_and(|text| text.contains(DEVICE_ANSWER))
 }
 
 fn sandbox_runs() -> bool {
@@ -56,8 +60,9 @@ mod tests {
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
 
-    fn fake_qemu(scratch: &Scratch, exit_code: u8) -> std::path::PathBuf {
-        let qemu = scratch.write("qemu", format!("#!/bin/sh\nexit {exit_code}\n"));
+    /// As the real one does, it exits with 0 whether or not it knows the device.
+    fn fake_qemu(scratch: &Scratch, answer: &str) -> std::path::PathBuf {
+        let qemu = scratch.write("qemu", format!("#!/bin/sh\necho '{answer}'\nexit 0\n"));
         fs::set_permissions(&qemu, fs::Permissions::from_mode(0o755)).unwrap();
         qemu
     }
@@ -65,7 +70,7 @@ mod tests {
     #[test]
     fn a_qemu_with_no_device_is_named() {
         let scratch = Scratch::new();
-        let said = forwarding_problem(&fake_qemu(&scratch, 1), Path::new("/nothing")).unwrap();
+        let said = forwarding_problem(&fake_qemu(&scratch, ""), Path::new("/nothing")).unwrap();
         assert!(said.contains("no nvfwd device"));
     }
 
@@ -78,7 +83,8 @@ mod tests {
     #[test]
     fn a_missing_allow_list_is_named() {
         let scratch = Scratch::new();
-        let said = forwarding_problem(&fake_qemu(&scratch, 0), &scratch.path("allow.txt")).unwrap();
+        let said =
+            forwarding_problem(&fake_qemu(&scratch, DEVICE_ANSWER), &scratch.path("allow.txt")).unwrap();
         assert!(said.contains("allow.txt"));
     }
 }

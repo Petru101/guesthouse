@@ -230,7 +230,7 @@ mod tests {
     /// A folder where QEMU has the device and bwrap works, whatever this PC has.
     fn qemu_with_the_device(scratch: &Scratch, context: &mut crate::context::Context) {
         context.paths.qemu = scratch.path("qemu/qemu-system-x86_64");
-        scratch.write("qemu/qemu-system-x86_64", "#!/bin/sh\nexit 0\n");
+        scratch.write("qemu/qemu-system-x86_64", "#!/bin/sh\necho 'nvfwd options:'\n");
         fs::set_permissions(&context.paths.qemu, fs::Permissions::from_mode(0o755)).unwrap();
     }
 
