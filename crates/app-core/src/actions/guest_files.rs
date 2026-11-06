@@ -15,6 +15,8 @@ const CHECK_SECONDS: u64 = 20;
 const PLACE_SECONDS: u64 = 110;
 const MISSING_MARK: &str = "missing ";
 const FAILED_MARK: &str = "FAILED";
+const NO_SCRIPT: &str = "Windows lacks some of the driver's files, so a program that looks for them may crash. \
+                         This install has no script to place them.";
 
 fn guest_path(name: &str) -> String {
     format!("{GUEST_FOLDER}\\{name}")
@@ -59,6 +61,11 @@ pub(super) fn place_driver_files(task: &mut Task) -> Result<()> {
     task.step("Checking the driver's files");
     send_list(task, &list);
     if count_missing(task).is_none_or(|count| count == 0) {
+        return Ok(());
+    }
+    if !task.context.paths.guest_files().join(SCRIPT_NAME).exists() {
+        write_log(task.context, "driver files: this program folder has no script to place them")?;
+        task.error = NO_SCRIPT.to_owned();
         return Ok(());
     }
     task.step("Placing the driver's files");

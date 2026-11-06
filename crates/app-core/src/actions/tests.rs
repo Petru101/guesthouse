@@ -319,3 +319,16 @@ fn with_no_card_known_the_guest_is_not_asked() {
     place_driver_files(&mut placing_task(&context, &host)).unwrap();
     assert!(agent.requests.lock().unwrap().is_empty());
 }
+
+#[test]
+fn with_no_script_the_start_goes_on_and_says_so() {
+    let scratch = Scratch::new();
+    let mut context = plain_task_context(&scratch);
+    with_driver_files(&scratch, &context);
+    fs::remove_file(scratch.path("program/guest/nv-files.ps1")).unwrap();
+    context.agent = Arc::new(ScriptedAgent::answering(&["", "missing 4\r\n"]));
+    let host = RecordingHost::default();
+    let mut task = placing_task(&context, &host);
+    place_driver_files(&mut task).unwrap();
+    assert!(task.error.contains("no script"));
+}
