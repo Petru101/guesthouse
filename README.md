@@ -18,7 +18,7 @@ So this project teaches KVM to speak Hyper-V's GPU protocol. Windows boots, find
 
 ## Where this is at
 
-The GPU backend is still private while I sort out licensing and clean it up.
+The GPU backend is still private while I sort out licensing and clean it up. It's been rewritten in Rust too, and it now runs Windows through the new app on my PC, so the Python prototype is on its way out.
 
 This repo is where it's all heading. So far it has:
 
@@ -27,9 +27,16 @@ This repo is where it's all heading. So far it has:
 - the tracking of processes, allocations, fences and GPU addresses
 - the line a GPU vendor's backend plugs in at, so AMD and Intel can fit in later
 - a tool that replays a recorded session and compares every reply with the prototype's
+- the socket that hands frames to a viewer as dmabufs
 - the desktop app, in `crates/app`, which runs plain VMs today
 
 There's no GPU backend here yet, so the daemon starts, tells you that, and stops. The app still works: it makes and runs plain VMs, and says why GPU machines aren't there. A plain VM needs QEMU and its D-Bus display, which Fedora calls `qemu-ui-dbus`. The next big step is moving the NVIDIA part over, and after that an installer.
+
+![The app's library, with a Windows machine and an Ubuntu machine](docs/images/app-library.jpg)
+
+![Windows on the real GPU in the app's viewer](docs/images/app-viewer.jpg)
+
+That's the new app. Windows there is on the real GPU, on my PC, with the private backend behind it.
 
 ## What the prototype does
 
@@ -50,7 +57,7 @@ Direct3D 12, Direct3D 11, Vulkan and OpenGL all run on the real card, along with
 
 Once work reaches the card it runs at full speed. Getting it there is what costs extra.
 
-**How fast is a real program?** Superposition at 1080p Extreme in Direct3D 11 scores **20,912**, averaging 156 fps with a minimum of 98. That's with no viewer open. The lowest 5090 I could find on Unigine's leaderboard is around 31,000, so call it two thirds of what the card can do. Something is still eating the rest, and I don't know what yet.
+**How fast is a real program?** Superposition at 1080p Extreme in Direct3D 11 scores about **21,000** on a fresh boot, averaging around 157 fps. That's with no viewer open. The lowest 5090 I could find on Unigine's leaderboard is around 31,000, so call it two thirds of what the card can do. Something is still eating the rest, and I don't know what yet.
 
 ![Superposition's result in the VM: 20,912 at 1080p Extreme](docs/images/superposition-result.jpg)
 
@@ -74,6 +81,12 @@ Linux takes a different route. The guest runs NVIDIA's real Linux driver and its
 
 `nvidia-smi`, CUDA and Vulkan work, and speed is about the same as the host: 111–113 TFLOPS on Vulkan in both, and a CUDA launch takes 14.5 µs against 13.9. GNOME runs on it through Zink, with Firefox, Files, Settings and a terminal all working. Godot's Windows build even runs in there through Wine on Wayland.
 
+![nvidia-smi and a small CUDA test in a terminal on the Ubuntu guest's desktop](docs/images/nvidia-smi-in-ubuntu.jpg)
+
+That's `nvidia-smi` and a small CUDA test of mine, on the guest's own desktop. The load and memory it shows are for the whole card, because other VMs were using it at the time.
+
+In theory this route isn't tied to the 5090 the way the Windows one is. It forwards the real driver's calls, so it should work on anything NVIDIA's open driver supports, from the 20 series up, as long as its tables get rebuilt for that driver version. That's only theory for now: it has run on my 5090, on driver 615.78.08, with an AMD CPU, and nothing else.
+
 Delay is where it's behind. A simple app takes about 20 to 30 ms from key press to picture, against about 11.5 on the host, and Godot takes 50 to 100 ms.
 
 ## How it works
@@ -92,7 +105,7 @@ There are three pieces:
 
 - **A QEMU patch**, about 600 lines of code, which gives the guest the devices and the VMBus channels it expects to find on Hyper-V.
 - **A daemon**, which answers everything Windows asks, sets up real GPU channels through the Linux driver, and rings their doorbells when the guest has work.
-- **A desktop app**, Guesthouse, so that none of this needs a terminal. With the GPU part behind it, you pick a Windows ISO and it installs Windows unattended and brings up the GPU. From this repo alone it runs plain VMs.
+- **A desktop app**, Guesthouse, so that none of this needs a terminal. The prototype's app took a Windows ISO, installed Windows unattended and brought up the GPU. The Rust one has that code too, but I haven't proven it yet. From this repo alone it runs plain VMs.
 
 Apart from one small workaround, the guest's commands aren't translated. The Windows driver writes them, and the GPU runs them. Finished frames stay in video memory and reach the viewer as dmabufs.
 
@@ -122,6 +135,8 @@ I'd rather you hear this from me:
 
 ## What's next
 
+The full list, with what's already done, is in the [roadmap](https://github.com/xnixy/guesthouse/issues/2). The short version:
+
 1. Move the NVIDIA backend here, so this repo can boot a guest
 2. An installer, so you can try it
 3. CUDA and video in Windows
@@ -136,6 +151,7 @@ You need a recent stable Rust, and no GPU or VM.
 ```sh
 cargo test                       # everything
 cargo bench -p guesthouse-core   # the message path, in nanoseconds
+cargo run -p guesthouse-app       # the app, which needs GTK 4 and libadwaita's development files
 ```
 
 [ARCHITECTURE.md](ARCHITECTURE.md) explains how the pieces fit, and [CONTRIBUTING.md](CONTRIBUTING.md) how to work on them.
