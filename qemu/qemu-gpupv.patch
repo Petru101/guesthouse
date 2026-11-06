@@ -1009,3 +1009,321 @@ index 0000000..969db62
 -- 
 2.56.0
 
+From 18a15f425f5d0e9d44934620062f012e79a622d5 Mon Sep 17 00:00:00 2001
+From: xnixy <x@ruxn.com>
+Date: Thu, 5 Nov 2026 22:59:41 -0800
+Subject: [PATCH 07/21] hw/misc/nvfwd: keep a tree of what a guest holds in the
+ driver
+
+Each object has its parent and what it is charged, and goes with its parent or
+its file, as in the driver. This is how limits on objects and memory are kept,
+and how the device knows which handles are the guest's.
+---
+ hw/misc/nvfwd/meson.build |   1 +
+ hw/misc/nvfwd/objects.c   | 217 ++++++++++++++++++++++++++++++++++++++
+ hw/misc/nvfwd/objects.h   |  58 ++++++++++
+ 3 files changed, 276 insertions(+)
+ create mode 100644 hw/misc/nvfwd/objects.c
+ create mode 100644 hw/misc/nvfwd/objects.h
+
+diff --git a/hw/misc/nvfwd/meson.build b/hw/misc/nvfwd/meson.build
+index 1c13d58..c3cbcae 100644
+--- a/hw/misc/nvfwd/meson.build
++++ b/hw/misc/nvfwd/meson.build
+@@ -1,5 +1,6 @@
+ # SPDX-License-Identifier: GPL-2.0-or-later
+ nvfwd_ss = files(
+   'callrate.c',
++  'objects.c',
+ )
+ system_ss.add(when: 'CONFIG_PCI', if_true: nvfwd_ss)
+diff --git a/hw/misc/nvfwd/objects.c b/hw/misc/nvfwd/objects.c
+new file mode 100644
+index 0000000..5e79dc3
+--- /dev/null
++++ b/hw/misc/nvfwd/objects.c
+@@ -0,0 +1,217 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++/* See objects.h. */
++#include "objects.h"
++
++#include <glib.h>
++
++typedef struct Entry Entry;
++struct Entry {
++    ObjectInfo info;
++    MemoryKind kind;
++    uint64_t bytes, key;
++    Entry *parent, *first_child, *prev, *next;
++};
++
++struct Objects {
++    GMutex lock;
++    GHashTable *entries;
++    ObjectLimits limits;
++    ObjectGoneFn *gone;
++    void *opaque;
++    uint32_t count; /* entries and claims */
++    uint64_t used[MEMORY_KINDS];
++};
++
++static uint64_t key_of(uint32_t client, uint32_t object)
++{
++    return (uint64_t)client << 32 | object;
++}
++
++static Entry *find(Objects *o, uint32_t client, uint32_t object)
++{
++    uint64_t key = key_of(client, object);
++
++    return g_hash_table_lookup(o->entries, &key);
++}
++
++Objects *objects_new(const ObjectLimits *limits, ObjectGoneFn *gone, void *opaque)
++{
++    Objects *o = g_new0(Objects, 1);
++
++    g_mutex_init(&o->lock);
++    o->entries = g_hash_table_new(g_int64_hash, g_int64_equal);
++    o->limits = *limits;
++    o->gone = gone;
++    o->opaque = opaque;
++    return o;
++}
++
++bool objects_claim(Objects *o, const ObjectClaim *claim)
++{
++    uint64_t max = o->limits.max_bytes[claim->kind];
++    bool ok;
++
++    g_mutex_lock(&o->lock);
++    ok = o->count < o->limits.max_objects &&
++         (claim->kind == MEMORY_NONE ||
++          (claim->bytes <= max && o->used[claim->kind] <= max - claim->bytes));
++    if (ok) {
++        o->count++;
++        o->used[claim->kind] += claim->bytes;
++    }
++    g_mutex_unlock(&o->lock);
++    return ok;
++}
++
++static void drop_claim(Objects *o, const ObjectClaim *claim)
++{
++    o->count--;
++    o->used[claim->kind] -= claim->bytes;
++}
++
++void objects_drop_claim(Objects *o, const ObjectClaim *claim)
++{
++    g_mutex_lock(&o->lock);
++    drop_claim(o, claim);
++    g_mutex_unlock(&o->lock);
++}
++
++static void link_child(Entry *parent, Entry *child)
++{
++    child->parent = parent;
++    child->next = parent->first_child;
++    if (child->next) {
++        child->next->prev = child;
++    }
++    parent->first_child = child;
++}
++
++static void unlink_child(Entry *e)
++{
++    if (e->prev) {
++        e->prev->next = e->next;
++    } else if (e->parent) {
++        e->parent->first_child = e->next;
++    }
++    if (e->next) {
++        e->next->prev = e->prev;
++    }
++    e->parent = e->prev = e->next = NULL;
++}
++
++static void forget(Objects *o, Entry *e)
++{
++    while (e->first_child) {
++        forget(o, e->first_child);
++    }
++    unlink_child(e);
++    g_hash_table_remove(o->entries, &e->key);
++    o->count--;
++    o->used[e->kind] -= e->bytes;
++    if (e->info.host_range) {
++        o->gone(o->opaque, e->info.host_range, e->info.host_bytes);
++    }
++    g_free(e);
++}
++
++void objects_add(Objects *o, const ObjectClaim *claim, uint64_t bytes, const ObjectInfo *info)
++{
++    Entry *e = g_new0(Entry, 1), *parent;
++
++    e->info = *info;
++    e->kind = claim->kind;
++    e->bytes = bytes;
++    e->key = key_of(info->client, info->object);
++    g_mutex_lock(&o->lock);
++    drop_claim(o, claim);
++    /* A handle used again means the driver dropped the old object without being asked here. */
++    if (find(o, info->client, info->object)) {
++        forget(o, find(o, info->client, info->object));
++    }
++    o->count++;
++    o->used[e->kind] += bytes;
++    g_hash_table_insert(o->entries, &e->key, e);
++    /* An object the parent of which was never seen still goes with its client. */
++    parent = find(o, info->client, info->parent);
++    if (!parent) {
++        parent = find(o, info->client, info->client);
++    }
++    if (parent && parent != e) {
++        link_child(parent, e);
++    }
++    g_mutex_unlock(&o->lock);
++}
++
++void objects_remove(Objects *o, uint32_t client, uint32_t object)
++{
++    Entry *e;
++
++    g_mutex_lock(&o->lock);
++    e = find(o, client, object);
++    if (e) {
++        forget(o, e);
++    }
++    g_mutex_unlock(&o->lock);
++}
++
++void objects_file_closed(Objects *o, uint32_t file)
++{
++    GPtrArray *clients = g_ptr_array_new();
++    GHashTableIter it;
++    Entry *e;
++
++    g_mutex_lock(&o->lock);
++    g_hash_table_iter_init(&it, o->entries);
++    while (g_hash_table_iter_next(&it, NULL, (void **)&e)) {
++        if (e->info.client == e->info.object && e->info.file == file) {
++            g_ptr_array_add(clients, e);
++        }
++    }
++    for (guint i = 0; i < clients->len; i++) {
++        forget(o, g_ptr_array_index(clients, i));
++    }
++    g_mutex_unlock(&o->lock);
++    g_ptr_array_free(clients, TRUE);
++}
++
++bool objects_has_client(Objects *o, uint32_t client)
++{
++    bool found;
++
++    g_mutex_lock(&o->lock);
++    found = find(o, client, client) != NULL;
++    g_mutex_unlock(&o->lock);
++    return found;
++}
++
++bool objects_is_local(Objects *o, uint32_t client, uint32_t object)
++{
++    Entry *e;
++    bool local;
++
++    g_mutex_lock(&o->lock);
++    e = find(o, client, object);
++    local = e && e->info.local;
++    g_mutex_unlock(&o->lock);
++    return local;
++}
++
++uint32_t objects_count(Objects *o)
++{
++    uint32_t count;
++
++    g_mutex_lock(&o->lock);
++    count = o->count;
++    g_mutex_unlock(&o->lock);
++    return count;
++}
++
++uint64_t objects_bytes(Objects *o, MemoryKind kind)
++{
++    uint64_t bytes;
++
++    g_mutex_lock(&o->lock);
++    bytes = o->used[kind];
++    g_mutex_unlock(&o->lock);
++    return bytes;
++}
+diff --git a/hw/misc/nvfwd/objects.h b/hw/misc/nvfwd/objects.h
+new file mode 100644
+index 0000000..0f168e3
+--- /dev/null
++++ b/hw/misc/nvfwd/objects.h
+@@ -0,0 +1,58 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++/*
++ * What a guest holds in the host's driver: its clients, their objects, and the memory behind them.
++ * The driver frees an object's children with it and a client's objects with its file, so this keeps
++ * the same tree, or a guest that frees a device would be charged for it for ever.
++ *
++ * It is also how the device knows which handles are the guest's own, and which objects it made up.
++ */
++#ifndef NVFWD_OBJECTS_H
++#define NVFWD_OBJECTS_H
++
++#include <stdbool.h>
++#include <stdint.h>
++
++typedef enum { MEMORY_NONE, MEMORY_VIDEO, MEMORY_SYSTEM, MEMORY_KINDS } MemoryKind;
++
++typedef struct ObjectLimits {
++    uint32_t max_objects;
++    uint64_t max_bytes[MEMORY_KINDS];
++} ObjectLimits;
++
++/* What a call is about to add. Held from before the call to after it, so vCPUs cannot pass a limit together. */
++typedef struct ObjectClaim {
++    MemoryKind kind;
++    uint64_t bytes;
++} ObjectClaim;
++
++typedef struct ObjectInfo {
++    uint32_t client, parent, object, file;
++    bool local;       /* answered in the device: the host has no such object */
++    void *host_range; /* guest pages mapped for the driver, unmapped when the object goes */
++    uint64_t host_bytes;
++} ObjectInfo;
++
++typedef struct Objects Objects;
++typedef void ObjectGoneFn(void *opaque, void *host_range, uint64_t host_bytes);
++
++Objects *objects_new(const ObjectLimits *limits, ObjectGoneFn *gone, void *opaque);
++
++/* False if the claim would pass a limit, and then nothing is held. */
++bool objects_claim(Objects *o, const ObjectClaim *claim);
++void objects_drop_claim(Objects *o, const ObjectClaim *claim);
++
++/* Turns a claim into an object, charged `bytes` as the driver reports them. */
++void objects_add(Objects *o, const ObjectClaim *claim, uint64_t bytes, const ObjectInfo *info);
++
++/* The object and everything under it. A client is an object with itself as parent. */
++void objects_remove(Objects *o, uint32_t client, uint32_t object);
++
++/* The driver frees the clients made on a file when it closes. */
++void objects_file_closed(Objects *o, uint32_t file);
++
++bool objects_has_client(Objects *o, uint32_t client);
++bool objects_is_local(Objects *o, uint32_t client, uint32_t object);
++uint32_t objects_count(Objects *o);
++uint64_t objects_bytes(Objects *o, MemoryKind kind);
++
++#endif
+-- 
+2.56.0
+
