@@ -86,6 +86,7 @@ bool HostLink::OpenRing(const RingShape& shape)
 	message.pitch = PitchFor(shape.width);
 	message.slot_size = shape.slotSize;
 	message.fourcc = FourccOf(shape.format);
+	message.refresh_millihertz = shape.refreshMillihertz;
 	DescribeColour(shape.format, message);
 
 	m_RingOpen = Exchange(&buffer, BufferSize);

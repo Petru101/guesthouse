@@ -3,6 +3,7 @@
 
 use super::*;
 use crate::{Delivery, Frame, FrameRing, FrameSink, ViewerFacts};
+use guesthouse_messages::adapter::{AdapterQuery, DisplayMode};
 use guesthouse_messages::indirect::as_the_driver_sends as driver;
 use guesthouse_messages::indirect::{FrameDone, Look, Mastering, Register, RingName, Stamp};
 use std::os::fd::BorrowedFd;
@@ -56,6 +57,7 @@ fn ring(look: Look) -> Register {
         height: HEIGHT,
         pitch: PITCH,
         slot_size: SLOT_BYTES,
+        refresh_millihertz: 120_000,
         look,
     }
 }
@@ -609,4 +611,82 @@ mod cursor {
         session.viewer_arrived();
         assert_eq!(say(&mut session, PROCESS, &driver::cursor_move(&MOVE)).0, STATUS_NOT_WANTED);
     }
+}
+
+fn display_mode(session: &mut TestSession) -> Vec<u8> {
+    let mut message = vec![0; HEADER_SIZE + 8 + DisplayMode::ANSWER_SIZE];
+    message[HEADER_SIZE..HEADER_SIZE + 4].copy_from_slice(&AdapterQuery::CURRENT_DISPLAY_MODE.to_le_bytes());
+    message[HEADER_SIZE + 4..HEADER_SIZE + 8]
+        .copy_from_slice(&(DisplayMode::ANSWER_SIZE as u32).to_le_bytes());
+    let mut out = Vec::new();
+    session.query_adapter(&message, &mut out).unwrap();
+    out
+}
+
+fn is_refused(reply: &[u8]) -> bool {
+    u32_at(reply, 0) == Ok(Status::NOT_SUPPORTED.0)
+}
+
+#[test]
+fn the_display_mode_is_refused_until_there_is_a_ring() {
+    assert!(is_refused(&display_mode(&mut session())));
+}
+
+#[test]
+fn a_ring_says_what_the_display_mode_is() {
+    let (mut session, _) = registered();
+    let reply = display_mode(&mut session);
+    assert_eq!(u32_at(&reply, 0), Ok(Status::SUCCESS.0));
+    assert_eq!(u32_at(&reply, 8), Ok(WIDTH));
+    assert_eq!(u32_at(&reply, 12), Ok(HEIGHT));
+    assert_eq!(u32_at(&reply, 16), Ok(DisplayMode::FORMAT_8_BIT));
+    assert_eq!(u32_at(&reply, 24), Ok(120_000));
+}
+
+#[test]
+fn the_display_mode_agrees_with_what_the_app_is_told() {
+    let (mut session, _) = registered();
+    let (picture, _, _) = session.indirect_screen().expect("a ring is open");
+    let reply = display_mode(&mut session);
+    assert_eq!(u32_at(&reply, 8), Ok(picture.width));
+    assert_eq!(u32_at(&reply, 12), Ok(picture.height));
+}
+
+#[test]
+fn the_display_mode_goes_with_its_ring() {
+    let (mut session, _) = registered();
+    session.end_indirect_ring("the driver closed it");
+    assert!(is_refused(&display_mode(&mut session)));
+}
+
+#[test]
+fn the_display_mode_goes_with_the_drivers_process() {
+    let (mut session, _) = registered();
+    session.process_going(PROCESS);
+    assert!(is_refused(&display_mode(&mut session)));
+}
+
+#[test]
+fn the_display_mode_stays_refused_after_a_close_and_a_refused_ring() {
+    let (mut session, _) = registered();
+    let close = escape_from(PROCESS, &driver::close(NAME));
+    let _ = session.handle_message(&close, Some(ReplyTicket::default()), &mut Vec::new());
+    let (status, _) = register(&mut session, &Register { width: 0, ..ring(Look::SDR) });
+    assert_ne!(status, STATUS_OK);
+    assert!(is_refused(&display_mode(&mut session)));
+}
+
+#[test]
+fn the_display_mode_is_refused_when_the_driver_gave_no_rate() {
+    let (mut session, _) = stamped(NAME.generation);
+    let (status, _) = register(&mut session, &Register { refresh_millihertz: 0, ..ring(Look::SDR) });
+    assert_eq!(status, STATUS_OK);
+    assert!(is_refused(&display_mode(&mut session)));
+}
+
+#[test]
+fn a_restart_forgets_the_display_mode() {
+    let (mut session, _) = registered();
+    session.guest_reset();
+    assert!(is_refused(&display_mode(&mut session)));
 }

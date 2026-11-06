@@ -30,27 +30,27 @@ pub(super) struct Rows {
 
 impl Rows {
     /// `None` if the rectangle is inside out or starts before the surface does.
-    fn of(left: i32, top: i32, width: i64, count: i64) -> Option<Self> {
+    fn of(left: i32, top: i32, width: i64, count: i64, pixel: u32) -> Option<Self> {
         Some(Self {
-            x: u64::try_from(left).ok()? * u64::from(COPY_PIXEL_BYTES),
+            x: u64::try_from(left).ok()?.checked_mul(u64::from(pixel))?,
             y: u64::try_from(top).ok()?,
-            width: u64::try_from(width).ok()? * u64::from(COPY_PIXEL_BYTES),
+            width: u64::try_from(width).ok()?.checked_mul(u64::from(pixel))?,
             count: u64::try_from(count).ok()?,
         })
     }
 
-    /// The source's side of a copy.
-    pub fn read_by(rectangle: &Rectangle) -> Option<Self> {
+    /// The source's side of a copy, in pixels of this many bytes.
+    pub fn read_by(rectangle: &Rectangle, pixel: u32) -> Option<Self> {
         let width = i64::from(rectangle.right) - i64::from(rectangle.left);
         let count = i64::from(rectangle.bottom) - i64::from(rectangle.top);
-        Self::of(rectangle.left, rectangle.top, width, count)
+        Self::of(rectangle.left, rectangle.top, width, count, pixel)
     }
 
-    /// The target's side: the same size, from this corner.
-    pub fn written_by(rectangle: &Rectangle, left: i32, top: i32) -> Option<Self> {
+    /// The target's side: the same size, from this corner, in the same pixels as the source's.
+    pub fn written_by(rectangle: &Rectangle, left: i32, top: i32, pixel: u32) -> Option<Self> {
         let width = i64::from(rectangle.right) - i64::from(rectangle.left);
         let count = i64::from(rectangle.bottom) - i64::from(rectangle.top);
-        Self::of(left, top, width, count)
+        Self::of(left, top, width, count, pixel)
     }
 
     /// A whole picture, from the top left corner.
@@ -76,17 +76,17 @@ impl Rows {
 
     /// Whether a width and height in pixels hold these rows. Zero says nothing, as some surfaces
     /// don't state them, and then the bytes alone decide.
-    fn inside_pixels(&self, surface: &SurfaceShape) -> bool {
+    fn inside_pixels(&self, surface: &SurfaceShape, pixel: u32) -> bool {
         let inside = |end: u128, limit: u32| limit == 0 || end <= u128::from(limit);
-        let pixel = u128::from(COPY_PIXEL_BYTES);
-        inside(self.end_of_row().div_ceil(pixel), surface.width) && inside(self.end_of_rows(), surface.height)
+        inside(self.end_of_row().div_ceil(u128::from(pixel)), surface.width)
+            && inside(self.end_of_rows(), surface.height)
     }
 }
 
-/// Whether these rows can be read from a surface in this much memory. A tiled surface has to fit
-/// whole, as where one row lies in it is the backend's business, and the rows have to lie inside
-/// what the copy engine will take to be the surface.
-pub(super) fn read_fits<B: Backend>(backend: &B, rows: &Rows, surface: &SurfaceShape, memory: u64) -> bool {
+/// Whether these rows can be read from or written to a surface in this much memory. A tiled surface
+/// has to fit whole, as where one row lies in it is the backend's business, and the rows have to lie
+/// inside what the copy engine will take to be the surface.
+pub(super) fn side_fits<B: Backend>(backend: &B, rows: &Rows, surface: &SurfaceShape, memory: u64) -> bool {
     if surface.tiling.is_none() {
         return rows.fit_linear(surface.pitch, memory);
     }
@@ -103,22 +103,24 @@ pub(super) fn picture_fits<B: Backend>(
     slot_memory: u64,
 ) -> bool {
     let rows = Rows::whole(picture.width, picture.height);
-    read_fits(backend, &rows, surface, memory) && rows.fit_linear(picture.pitch, slot_memory)
+    side_fits(backend, &rows, surface, memory) && rows.fit_linear(picture.pitch, slot_memory)
 }
 
-/// Whether a copy of a rectangle stays inside both surfaces and their memory. The target's tiling
-/// plays no part, as a copy writes it row by row whatever it says.
+/// Whether a copy of a rectangle stays inside both surfaces and their memory. Both sides are held to
+/// the same rule, whatever their tiling, and `read` and `written` count the same bytes a pixel, as a
+/// copy moves bytes and doesn't change them.
 pub(super) fn copy_fits<B: Backend>(
     backend: &B,
+    pixel: u32,
     read: &Rows,
     (source, source_memory): (&SurfaceShape, u64),
     written: &Rows,
     (target, target_memory): (&SurfaceShape, u64),
 ) -> bool {
-    read.inside_pixels(source)
-        && written.inside_pixels(target)
-        && read_fits(backend, read, source, source_memory)
-        && written.fit_linear(target.pitch, target_memory)
+    read.inside_pixels(source, pixel)
+        && written.inside_pixels(target, pixel)
+        && side_fits(backend, read, source, source_memory)
+        && side_fits(backend, written, target, target_memory)
 }
 
 #[cfg(test)]
@@ -189,18 +191,18 @@ mod tests {
     #[test]
     fn a_rectangle_inside_out_or_before_the_surface_has_no_rows() {
         let rectangle = |left, top, right, bottom| Rectangle { left, top, right, bottom };
-        assert_eq!(Rows::read_by(&rectangle(10, 0, 5, 5)), None);
-        assert_eq!(Rows::read_by(&rectangle(0, 10, 5, 5)), None);
-        assert_eq!(Rows::read_by(&rectangle(-1, 0, 5, 5)), None);
-        assert_eq!(Rows::read_by(&rectangle(0, -1, 5, 5)), None);
-        assert_eq!(Rows::written_by(&rectangle(0, 0, 5, 5), -1, 0), None);
-        assert_eq!(Rows::written_by(&rectangle(0, 0, 5, 5), 0, -1), None);
+        assert_eq!(Rows::read_by(&rectangle(10, 0, 5, 5), 4), None);
+        assert_eq!(Rows::read_by(&rectangle(0, 10, 5, 5), 4), None);
+        assert_eq!(Rows::read_by(&rectangle(-1, 0, 5, 5), 4), None);
+        assert_eq!(Rows::read_by(&rectangle(0, -1, 5, 5), 4), None);
+        assert_eq!(Rows::written_by(&rectangle(0, 0, 5, 5), -1, 0, 4), None);
+        assert_eq!(Rows::written_by(&rectangle(0, 0, 5, 5), 0, -1, 4), None);
     }
 
     #[test]
     fn the_widest_rectangle_there_is_comes_out_whole() {
         let rectangle = Rectangle { left: 0, top: 0, right: i32::MAX, bottom: i32::MAX };
-        let rows = Rows::read_by(&rectangle).unwrap();
+        let rows = Rows::read_by(&rectangle, 4).unwrap();
         assert_eq!(rows.width, i32::MAX as u64 * 4, "wider than a u32, and not cut down to fit one");
         assert!(!rows.fit_linear(u32::MAX, u64::MAX));
     }
@@ -237,18 +239,120 @@ mod tests {
         assert!(!picture_fits(&backend, &picture, (&tiled, picture.bytes()), slot));
     }
 
+    const PIXEL: u32 = 4;
+    const WIDE_PIXEL: u32 = 8;
+
+    fn tiled(width: u32, height: u32, pitch: u32) -> SurfaceShape {
+        SurfaceShape { tiling: Some(4), ..surface(width, height, pitch) }
+    }
+
+    fn rectangle(left: i32, top: i32, right: i32, bottom: i32) -> Rectangle {
+        Rectangle { left, top, right, bottom }
+    }
+
+    /// A copy of this rectangle from a surface in plenty of memory, to this corner of a target.
+    fn copies_to(
+        target: &SurfaceShape,
+        memory: u64,
+        area: Rectangle,
+        corner: (i32, i32),
+        pixel: u32,
+    ) -> bool {
+        let backend = StandIn::new();
+        let source = tiled(0, 0x7FFF, 0x7FFF);
+        let read = Rows::read_by(&area, pixel).unwrap();
+        let written = Rows::written_by(&area, corner.0, corner.1, pixel).unwrap();
+        copy_fits(&backend, pixel, &read, (&source, u64::MAX), &written, (target, memory))
+    }
+
+    #[test]
+    fn a_tiled_target_must_really_hold_its_blocks() {
+        let target = tiled(1920, 1080, 7680);
+        let blocks = 7680 * 1152;
+        let whole = rectangle(0, 0, 1920, 1080);
+        assert!(copies_to(&target, blocks, whole, (0, 0), PIXEL));
+        assert!(!copies_to(&target, blocks - 1, whole, (0, 0), PIXEL));
+        assert!(
+            !copies_to(&target, 7680 * 1080, whole, (0, 0), PIXEL),
+            "rows alone are short of whole blocks"
+        );
+    }
+
+    #[test]
+    fn a_rectangle_stays_inside_a_tiled_target() {
+        let target = tiled(1920, 1080, 7680);
+        let plenty = 1 << 30;
+        assert!(copies_to(&target, plenty, rectangle(0, 0, 100, 100), (1820, 980), PIXEL));
+        assert!(!copies_to(&target, plenty, rectangle(0, 0, 100, 100), (1821, 980), PIXEL));
+        assert!(!copies_to(&target, plenty, rectangle(0, 0, 100, 100), (1820, 981), PIXEL));
+    }
+
+    #[test]
+    fn a_tiled_target_with_no_stated_size_is_held_to_its_pitch_and_height() {
+        let target = SurfaceShape { width: 0, ..tiled(0, 1080, 7680) };
+        let plenty = 1 << 30;
+        assert!(copies_to(&target, plenty, rectangle(0, 0, 1920, 1080), (0, 0), PIXEL));
+        assert!(!copies_to(&target, plenty, rectangle(0, 0, 1921, 1080), (0, 0), PIXEL));
+        assert!(!copies_to(&target, plenty, rectangle(0, 0, 1920, 1081), (0, 0), PIXEL));
+    }
+
+    #[test]
+    fn a_tiled_target_past_the_engines_fields_is_refused() {
+        let plenty = u64::MAX;
+        let bad_block = SurfaceShape { tiling: Some(6), ..tiled(1920, 1080, 7680) };
+        assert!(!copies_to(&bad_block, plenty, rectangle(0, 0, 10, 10), (0, 0), PIXEL));
+        let wild_block = SurfaceShape { tiling: Some(u32::MAX), ..tiled(1920, 1080, 7680) };
+        assert!(!copies_to(&wild_block, plenty, rectangle(0, 0, 10, 10), (0, 0), PIXEL));
+        let far = tiled(0, 0x2_0000, 0x10_0000);
+        assert!(copies_to(&far, plenty, rectangle(0, 0, 1, 1), (0x3FFF, 0xFFFF), PIXEL));
+        assert!(!copies_to(&far, plenty, rectangle(0, 0, 1, 1), (0x4000, 0), PIXEL), "x is in bytes");
+        assert!(!copies_to(&far, plenty, rectangle(0, 0, 1, 1), (0, 0x1_0000), PIXEL));
+    }
+
+    #[test]
+    fn wide_pixels_reach_the_engines_limit_in_half_the_pixels() {
+        let far = tiled(0, 8, 0x10_0000);
+        assert!(copies_to(&far, u64::MAX, rectangle(0, 0, 1, 1), (0x1FFF, 0), WIDE_PIXEL));
+        assert!(!copies_to(&far, u64::MAX, rectangle(0, 0, 1, 1), (0x2000, 0), WIDE_PIXEL));
+    }
+
+    #[test]
+    fn a_wide_source_cant_overrun_a_narrow_target() {
+        // Rows of 8W bytes are wider than a target of pitch 4W.
+        let width = 2560;
+        let target = surface(width, 1440, width * PIXEL);
+        let exact = u64::from(width * PIXEL) * 1440;
+        let whole = rectangle(0, 0, width as i32, 1440);
+        assert!(copies_to(&target, exact, whole, (0, 0), PIXEL));
+        assert!(!copies_to(&target, exact, whole, (0, 0), WIDE_PIXEL));
+        let tiled_target = tiled(width, 1440, width * PIXEL);
+        assert!(!copies_to(&tiled_target, u64::MAX, whole, (0, 0), WIDE_PIXEL));
+    }
+
+    #[test]
+    fn a_colour_nobody_knows_is_held_to_four_bytes_a_pixel() {
+        let backend = StandIn::new();
+        let unknown = SurfaceShape { colour: 0xEE, ..surface(100, 100, 1 << 20) };
+        assert_eq!(backend.copy_pixel_bytes(&unknown), PIXEL);
+        let wide = SurfaceShape { colour: guesthouse_backend_standin::WIDE_COLOUR, ..unknown };
+        assert_eq!(backend.copy_pixel_bytes(&wide), WIDE_PIXEL);
+        let area = rectangle(0, 0, 100, 1);
+        let read = Rows::read_by(&area, PIXEL).unwrap();
+        assert_eq!(read.width, 400, "the copy moves four bytes a pixel too, so this is what it can touch");
+    }
+
     #[test]
     fn a_stated_size_still_limits_a_copy_in_pixels() {
         let inside = rows(0, 0, 4 * 100, 100);
-        assert!(inside.inside_pixels(&surface(100, 100, 512)));
-        assert!(!inside.inside_pixels(&surface(99, 100, 512)));
-        assert!(!inside.inside_pixels(&surface(100, 99, 512)));
+        assert!(inside.inside_pixels(&surface(100, 100, 512), 4));
+        assert!(!inside.inside_pixels(&surface(99, 100, 512), 4));
+        assert!(!inside.inside_pixels(&surface(100, 99, 512), 4));
     }
 
     #[test]
     fn a_size_of_zero_leaves_only_the_bytes_to_decide() {
         let rows = rows(0, 0, 400, 100);
-        assert!(rows.inside_pixels(&surface(0, 0, 512)));
+        assert!(rows.inside_pixels(&surface(0, 0, 512), 4));
         assert!(rows.fit_linear(512, 512 * 100));
         assert!(!rows.fit_linear(512, 512 * 99));
     }

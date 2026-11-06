@@ -569,6 +569,7 @@ mod display_driver {
             height: HEIGHT,
             pitch: PITCH,
             slot_size: u64::from(PITCH) * u64::from(HEIGHT),
+            refresh_millihertz: 60_000,
             look,
         }
     }

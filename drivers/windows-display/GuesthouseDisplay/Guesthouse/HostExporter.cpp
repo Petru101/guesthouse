@@ -72,14 +72,16 @@ HostExporter::~HostExporter()
 	m_Link.CloseRing();
 }
 
-void HostExporter::SetCommittedMode(bool known, bool hdr)
+void HostExporter::SetCommittedMode(bool known, bool hdr, std::uint32_t refreshMillihertz)
 {
 	m_CommittedMode = known ? (hdr ? ModeHdr : ModeSdr) : ModeUnknown;
+	m_CommittedRefresh = refreshMillihertz;
 }
 
 bool HostExporter::EnsureRing(std::uint32_t width, std::uint32_t height, WireFormat format)
 {
-	const bool sameShape = width == m_RingWidth && height == m_RingHeight && format == m_RingFormat;
+	const std::uint32_t refresh = m_CommittedRefresh;
+	const bool sameShape = width == m_RingWidth && height == m_RingHeight && format == m_RingFormat && refresh == m_RingRefresh;
 	if (sameShape && (m_Link.RingOpen() || m_Link.GaveUp()))
 	{
 		return m_Link.RingOpen();
@@ -101,6 +103,7 @@ bool HostExporter::EnsureRing(std::uint32_t width, std::uint32_t height, WireFor
 	m_RingWidth = width;
 	m_RingHeight = height;
 	m_RingFormat = format;
+	m_RingRefresh = refresh;
 
 	RingShape shape;
 	shape.slots = RingSlots;
@@ -108,6 +111,7 @@ bool HostExporter::EnsureRing(std::uint32_t width, std::uint32_t height, WireFor
 	shape.height = height;
 	shape.slotSize = m_Pass.SlotSize();
 	shape.format = format;
+	shape.refreshMillihertz = refresh;
 	shape.monitor = m_Monitor;
 
 	const bool open = m_Link.OpenRing(shape);

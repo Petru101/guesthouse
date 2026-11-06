@@ -1,7 +1,7 @@
 //! `fake_channels`: makes each kind of channel against the pretend RM, and prints every RM call and
 //! every word left in the channels' memory, to compare with another implementation of the same rules.
 
-use guesthouse_backend_nvidia::channel::copy::{RING_ENTRIES, Rows, Tiled};
+use guesthouse_backend_nvidia::channel::copy::{RING_ENTRIES, Rows, Tiled, TiledSide};
 use guesthouse_backend_nvidia::channel::{
     AREA_SIZE, Area, Channel, ChannelPlace, CopyChannel, Engine, LIST_AREA, ListChannel,
 };
@@ -111,11 +111,8 @@ fn main() {
     copier.start(&mut device, batch);
     let tiled = Tiled {
         rows: Rows { source_pitch: 0, ..rows },
-        x: 16,
-        y: 4,
-        surface_width: 4096,
-        surface_height: 768,
-        block: 3,
+        source: Some(TiledSide { x: 16, y: 4, surface_width: 4096, surface_height: 768, block: 3 }),
+        target: None,
     };
     let batch = copier.tiled(&tiled).expect("these numbers fit their fields");
     copier.start(&mut device, batch);

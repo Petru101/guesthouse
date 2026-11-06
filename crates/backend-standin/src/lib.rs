@@ -40,6 +40,9 @@ const COLOUR_8_BIT: u32 = 7;
 const FORMAT_32_BIT: u32 = 21;
 const EXPORTED_FILE: &str = "/dev/null";
 const BYTES_PER_PIXEL: u32 = 4;
+/// The stand-in's word for a surface of wide pixels, for testing what depends on them.
+pub const WIDE_COLOUR: u32 = 0x29;
+const WIDE_PIXEL_BYTES: u32 = 8;
 
 /// See the crate documentation.
 #[derive(Debug)]
@@ -171,15 +174,20 @@ impl StandIn {
         surface.tiling.is_some() || self.rows_are_mapped(space, address, surface, rows)
     }
 
+    /// The same goes for a tiled target.
+    fn target_is_mapped(&self, space: SpaceId, address: u64, surface: &SurfaceShape, rows: &Touched) -> bool {
+        surface.tiling.is_some() || self.rows_are_mapped(space, address, surface, rows)
+    }
+
     fn note_staging_copy(&mut self, copy: &StagingCopy) {
-        let width = (i128::from(copy.right) - i128::from(copy.left)) * i128::from(BYTES_PER_PIXEL);
+        let pixel = i128::from(self.copy_pixel_bytes(&copy.source));
+        let width = (i128::from(copy.right) - i128::from(copy.left)) * pixel;
         let count = i128::from(copy.bottom) - i128::from(copy.top);
-        let pixel = i128::from(BYTES_PER_PIXEL);
         let read = Touched { left: i128::from(copy.left) * pixel, top: i128::from(copy.top), width, count };
         let written =
             Touched { left: i128::from(copy.target_left) * pixel, top: i128::from(copy.target_top), ..read };
         if !self.source_is_mapped(copy.own_space, copy.source_address, &copy.source, &read)
-            || !self.rows_are_mapped(copy.own_space, copy.target_address, &copy.target, &written)
+            || !self.target_is_mapped(copy.own_space, copy.target_address, &copy.target, &written)
         {
             self.copies_past_their_memory.push(format!("{copy:?}"));
         }
@@ -215,6 +223,8 @@ const PITCH_FIELD: usize = 20;
 /// Where private data can ask for tiling, as one more than the log2 of the block height. Zero means
 /// rows in order.
 const TILING_FIELD: usize = 24;
+/// Where private data can state a colour word. Zero means the usual one.
+const COLOUR_FIELD: usize = 28;
 /// The narrowest and shortest block of a pretend tiled surface, and the tallest log2 there is.
 const TILE_WIDTH: u64 = 64;
 const TILE_ROWS: u64 = 8;
@@ -337,7 +347,10 @@ impl Backend for StandIn {
             tiling: field(private, TILING_FIELD).checked_sub(1),
             refresh: (60, 1),
             samples: (1, 0),
-            colour: COLOUR_8_BIT,
+            colour: match field(private, COLOUR_FIELD) {
+                0 => COLOUR_8_BIT,
+                colour => colour,
+            },
         });
         AllocationShape {
             size,
@@ -425,6 +438,10 @@ impl Backend for StandIn {
         self.note_slot_copy(copy);
         self.slot_copies.push(*copy);
         if self.slow_copies { StagingStart::Running } else { StagingStart::Finished(self.slot_copy_status) }
+    }
+
+    fn copy_pixel_bytes(&self, surface: &SurfaceShape) -> u32 {
+        if surface.colour == WIDE_COLOUR { WIDE_PIXEL_BYTES } else { BYTES_PER_PIXEL }
     }
 
     /// As a copy engine lays one out: whole blocks of 64 bytes by `8 << block` rows, and a corner

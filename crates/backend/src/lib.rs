@@ -177,6 +177,13 @@ pub trait Backend: Sized {
         StagingStart::Finished(Status::UNSUCCESSFUL)
     }
 
+    /// How many bytes a pixel of this surface takes in a copy. The check of a copy and the copy itself
+    /// both use this, so that they can't disagree. A surface this backend can't place counts as the
+    /// usual size: the check still holds, as it measures the same bytes the copy moves.
+    fn copy_pixel_bytes(&self, _surface: &SurfaceShape) -> u32 {
+        COPY_PIXEL_BYTES
+    }
+
     /// The bytes a tiled surface fills, as this backend's copy engine lays it out, for a copy that
     /// starts at byte `x` of row `y`. `None` if the engine can't be given these numbers at all.
     fn tiled_bytes(&self, _surface: &SurfaceShape, _x: u64, _y: u64) -> Option<u64> {

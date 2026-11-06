@@ -1,13 +1,14 @@
 //! The daemon's own copies: frames to the staging surface and into the frame ring, and an allocation's
 //! contents when it moves.
 
-use crate::channel::copy::{RING_ENTRIES, Rows, Tiled};
+use crate::channel::copy::{RING_ENTRIES, Rows, Tiled, TiledSide};
 use crate::channel::{AREA_SIZE, COPY_AREA_EXTRA, COPY_WINDOW, Channel, ChannelPlace, CopyChannel, Engine};
 use crate::rm::device::Mapping;
 use crate::rm::{Handle, Rm, RmError};
 use crate::{CHANNEL_ADDRESS_ALIGN, NvidiaBackend, memory_error};
 use guesthouse_backend::{
     BackendError, COPY_PIXEL_BYTES, HostServices, SlotCopy, SpaceId, StagingCopy, StagingStart, Status,
+    SurfaceShape,
 };
 use std::time::Instant;
 
@@ -15,6 +16,38 @@ const SMALL_PAGE: u64 = 0x1000;
 /// What a guest's 10-bit surfaces carry here, as a Direct3D 11 `R10G10B10A2` swap chain's do. The ring
 /// holds 8-bit pictures, and a plain copy can't narrow one.
 const SURFACE_COLOUR_10_BIT: u32 = 0x36;
+/// What a surface of 16-bit floats carries, as an HDR desktop's does.
+const SURFACE_COLOUR_16_BIT_FLOAT: u32 = 0x29;
+const FLOAT_PIXEL_BYTES: u32 = 8;
+
+/// How wide a surface's pixels are. A colour not known here counts as four bytes.
+pub(crate) fn pixel_bytes(surface: &SurfaceShape) -> u32 {
+    if surface.colour == SURFACE_COLOUR_16_BIT_FLOAT { FLOAT_PIXEL_BYTES } else { COPY_PIXEL_BYTES }
+}
+
+/// One side of a copy: where it starts, its pitch, and the tiling the engine has to know about. A
+/// linear side starts at the rectangle, and a tiled side starts at the surface.
+fn copy_side(
+    address: u64,
+    surface: &SurfaceShape,
+    x: i64,
+    y: i64,
+    pixel: i64,
+) -> Option<(u64, u32, Option<TiledSide>)> {
+    let x_bytes = x.checked_mul(pixel)?;
+    let Some(block) = surface.tiling else {
+        let offset = y.checked_mul(i64::from(surface.pitch))?.checked_add(x_bytes)?;
+        return Some((address.checked_add_signed(offset)?, surface.pitch, None));
+    };
+    let side = TiledSide {
+        x: u32::try_from(x_bytes).ok()?,
+        y: u32::try_from(y).ok()?,
+        surface_width: surface.pitch,
+        surface_height: surface.height,
+        block,
+    };
+    Some((address, 0, Some(side)))
+}
 
 /// The copy channel, and where it lives.
 #[derive(Debug)]
@@ -60,44 +93,20 @@ impl<R: Rm> NvidiaBackend<R> {
     /// The core has checked these numbers against the memory, so `None` here means something is
     /// wrong in that check, and no copy is better than one built from a number cut down to size.
     fn batch_for(channel: &mut CopyChannel, copy: &StagingCopy) -> Option<Vec<u32>> {
-        let pixel = i64::from(COPY_PIXEL_BYTES);
+        let pixel = i64::from(pixel_bytes(&copy.source));
         let (left, top) = (i64::from(copy.left), i64::from(copy.top));
-        let (source, target) = (&copy.source, &copy.target);
-        let offset = i64::from(copy.target_top)
-            .checked_mul(i64::from(target.pitch))?
-            .checked_add(i64::from(copy.target_left).checked_mul(pixel)?)?;
-        let write = copy.target_address.checked_add_signed(offset)?;
         let width = u32::try_from((i64::from(copy.right) - left).checked_mul(pixel)?).ok()?;
         let count = u32::try_from(i64::from(copy.bottom) - top).ok()?;
-        match source.tiling {
-            None => {
-                let start =
-                    top.checked_mul(i64::from(source.pitch))?.checked_add(left.checked_mul(pixel)?)?;
-                Some(channel.rows(&Rows {
-                    source: copy.source_address.checked_add_signed(start)?,
-                    target: write,
-                    source_pitch: source.pitch,
-                    target_pitch: target.pitch,
-                    width,
-                    count,
-                }))
-            }
-            Some(block) => channel.tiled(&Tiled {
-                rows: Rows {
-                    source: copy.source_address,
-                    target: write,
-                    source_pitch: 0,
-                    target_pitch: target.pitch,
-                    width,
-                    count,
-                },
-                x: u32::try_from(left.checked_mul(pixel)?).ok()?,
-                y: u32::try_from(top).ok()?,
-                surface_width: source.pitch,
-                surface_height: source.height,
-                block,
-            }),
+        let (source, source_pitch, source_side) =
+            copy_side(copy.source_address, &copy.source, left, top, pixel)?;
+        let (target_left, target_top) = (i64::from(copy.target_left), i64::from(copy.target_top));
+        let (target, target_pitch, target_side) =
+            copy_side(copy.target_address, &copy.target, target_left, target_top, pixel)?;
+        let rows = Rows { source, target, source_pitch, target_pitch, width, count };
+        if source_side.is_none() && target_side.is_none() {
+            return Some(channel.rows(&rows));
         }
+        channel.tiled(&Tiled { rows, source: source_side, target: target_side })
     }
 
     /// The batch last started, for a test on a fake.
@@ -164,11 +173,14 @@ impl<R: Rm> NvidiaBackend<R> {
             None => Some(channel.rows(&rows(copy.source.pitch))),
             Some(block) => channel.tiled(&Tiled {
                 rows: rows(0),
-                x: 0,
-                y: 0,
-                surface_width: copy.source.pitch,
-                surface_height: copy.source.height,
-                block,
+                source: Some(TiledSide {
+                    x: 0,
+                    y: 0,
+                    surface_width: copy.source.pitch,
+                    surface_height: copy.source.height,
+                    block,
+                }),
+                target: None,
             }),
         }
     }
@@ -317,6 +329,111 @@ mod tests {
             height: 50,
             own_space: SpaceId(1),
         }
+    }
+
+    fn shape(tiling: Option<u32>, colour: u32, pitch: u32) -> SurfaceShape {
+        SurfaceShape {
+            width: 100,
+            height: 50,
+            format: 17,
+            pitch,
+            tiling,
+            refresh: (60, 1),
+            samples: (1, 0),
+            colour,
+        }
+    }
+
+    fn copy_between(source: SurfaceShape, target: SurfaceShape) -> StagingCopy {
+        StagingCopy {
+            source,
+            target,
+            source_address: 0x1000_0000,
+            target_address: 0x2000_0000,
+            left: 10,
+            top: 20,
+            right: 30,
+            bottom: 25,
+            target_left: 3,
+            target_top: 4,
+            target_guest_address: None,
+            is_screen: false,
+            own_space: SpaceId(1),
+        }
+    }
+
+    fn batch(source: SurfaceShape, target: SurfaceShape) -> Option<Vec<u32>> {
+        NvidiaBackend::<FakeRm>::batch_for(&mut channel(), &copy_between(source, target))
+    }
+
+    #[test]
+    fn a_rectangle_between_linear_surfaces_starts_where_it_should_on_each_side() {
+        let words = batch(shape(None, 7, 512), shape(None, 7, 1024)).unwrap();
+        let source = 0x1000_0000 + 20 * 512 + 10 * 4;
+        let target = 0x2000_0000 + 4 * 1024 + 3 * 4;
+        assert_eq!(words[3..11], [0, source, 0, target, 512, 1024, 80, 5]);
+    }
+
+    #[test]
+    fn a_rectangle_out_of_a_tiled_surface_lands_where_it_should_in_rows() {
+        let words = batch(shape(Some(4), 7, 512), shape(None, 7, 1024)).unwrap();
+        assert_eq!(words[3..11], [0, 0x1000_0000, 0, 0x2000_0000 + 4 * 1024 + 3 * 4, 0, 1024, 80, 5]);
+        assert_eq!(words[21], 40 | 20 << 16);
+    }
+
+    #[test]
+    fn a_rectangle_into_a_tiled_surface_keeps_its_tiling() {
+        let words = batch(shape(Some(4), 7, 512), shape(Some(4), 7, 512)).unwrap();
+        assert_eq!(words[3..11], [0, 0x1000_0000, 0, 0x2000_0000, 0, 0, 80, 5], "whole surfaces, no pitch");
+        assert_eq!(words[21], 40 | 20 << 16, "the source's corner");
+        assert_eq!(words[28], 12 | 4 << 16, "the target's corner");
+    }
+
+    #[test]
+    fn rows_can_go_into_a_tiled_surface() {
+        let words = batch(shape(None, 7, 512), shape(Some(2), 7, 512)).unwrap();
+        assert_eq!(words[3..11], [0, 0x1000_0000 + 20 * 512 + 10 * 4, 0, 0x2000_0000, 512, 0, 80, 5]);
+        assert_eq!(words[16], 2 << 4 | 1 << 12);
+    }
+
+    #[test]
+    fn a_rectangle_of_floats_counts_eight_bytes_a_pixel() {
+        let wide = shape(Some(4), SURFACE_COLOUR_16_BIT_FLOAT, 1024);
+        let words = batch(wide, wide).unwrap();
+        assert_eq!(words[9], 160, "twenty pixels wide");
+        assert_eq!(words[21], 80 | 20 << 16);
+    }
+
+    #[test]
+    fn a_surface_of_floats_has_wide_pixels() {
+        // Colour words and rows as a real guest has them, SDR and HDR, at sizes rows pad differently.
+        for (colour, width, pitch, bytes) in [
+            (0x7, 1920, 7680, 4),
+            (0x7, 2560, 10240, 4),
+            (0x7, 1366, 5504, 4),
+            (0x29, 1920, 15360, 8),
+            (0x29, 2560, 20480, 8),
+            (0x29, 1366, 10944, 8),
+        ] {
+            let surface = SurfaceShape { width, ..shape(Some(4), colour, pitch) };
+            assert_eq!(pixel_bytes(&surface), bytes);
+            assert!(width * bytes <= pitch, "a row fits its pitch");
+        }
+    }
+
+    #[test]
+    fn a_colour_nobody_knows_is_four_bytes_however_long_its_rows() {
+        assert_eq!(pixel_bytes(&shape(Some(4), 0xEE, 1 << 20)), 4);
+    }
+
+    #[test]
+    fn a_number_past_its_field_makes_no_batch_for_a_tiled_target() {
+        assert_eq!(batch(shape(None, 7, 512), shape(Some(9), 7, 512)), None);
+        let far = StagingCopy {
+            target_left: 0x1_0000,
+            ..copy_between(shape(None, 7, 512), shape(Some(4), 7, 1 << 20))
+        };
+        assert_eq!(NvidiaBackend::<FakeRm>::batch_for(&mut channel(), &far), None);
     }
 
     #[test]

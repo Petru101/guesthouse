@@ -141,7 +141,9 @@ void SwapChainProcessor::PublishModeMetadata(const DISPLAYCONFIG_VIDEO_SIGNAL_IN
 {
 	if (m_HostExporter)
 	{
-		m_HostExporter->SetCommittedMode(hasExpectedHdrState, expectedIsHdr);
+		const auto& rate = mode.vSyncFreq;
+		const std::uint64_t millihertz = rate.Denominator ? std::uint64_t(rate.Numerator) * 1000 / rate.Denominator : 0;
+		m_HostExporter->SetCommittedMode(hasExpectedHdrState, expectedIsHdr, static_cast<std::uint32_t>(millihertz));
 	}
 
 	if (!m_Exporter)

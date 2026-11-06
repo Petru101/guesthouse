@@ -44,7 +44,7 @@ public:
 	HostExporter& operator=(const HostExporter&) = delete;
 
 	// From CommitModes, on another thread. HDR is the mode's choice, not the frame's: Windows may send any frame as 8-bit.
-	void SetCommittedMode(bool known, bool hdr);
+	void SetCommittedMode(bool known, bool hdr, std::uint32_t refreshMillihertz);
 
 	void Process(IDXGIResource* acquired, const SurfaceFacts& facts);
 	void Announce();
@@ -64,10 +64,12 @@ private:
 
 	bool m_PassReady = false;
 	std::atomic<int> m_CommittedMode{0};
+	std::atomic<std::uint32_t> m_CommittedRefresh{0};
 
 	std::uint32_t m_RingWidth = 0;
 	std::uint32_t m_RingHeight = 0;
 	WireFormat m_RingFormat = WireFormat::Sdr;
+	std::uint32_t m_RingRefresh = 0;
 
 	std::shared_ptr<const GammaTransform> m_Transform;
 	std::uint64_t m_TransformVersion = 0;

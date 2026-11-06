@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::CopyOrder;
+use guesthouse_backend_standin::WIDE_COLOUR;
 use guesthouse_messages::wire::set_u32;
 
 const UNSUCCESSFUL: u32 = Status::UNSUCCESSFUL.0;
@@ -286,6 +287,92 @@ fn a_row_past_a_tiled_sources_pitch_is_refused() {
     let target = plain(&mut session);
     let request = copy(source, target, [1, 0, 257, 1], [0, 0]);
     assert_eq!(outcome(&mut session, &request), (UNSUCCESSFUL, 0));
+}
+
+#[test]
+fn a_tiled_target_that_fills_its_memory_goes_through() {
+    let mut session = session();
+    let source = plain(&mut session);
+    let (_, target) = allocate(&mut session, tiled(ROW as u64 * 256, 256, 250, ROW, 3));
+    let request = copy(source, target, [0, 0, 256, 250], [0, 0]);
+    assert_eq!(outcome(&mut session, &request), (SUCCESS, 1));
+}
+
+#[test]
+fn a_tiled_target_bigger_than_its_memory_is_refused_even_for_one_row() {
+    let mut session = session();
+    let source = plain(&mut session);
+    let (_, target) = allocate(&mut session, tiled(ROW as u64 * 250, 256, 250, ROW, 3));
+    let request = copy(source, target, [0, 0, 1, 1], [0, 0]);
+    assert_eq!(outcome(&mut session, &request), (UNSUCCESSFUL, 0));
+}
+
+#[test]
+fn a_block_height_the_engine_lacks_is_refused_for_a_target() {
+    let mut session = session();
+    let source = plain(&mut session);
+    let (_, target) = allocate(&mut session, tiled(WHOLE * 64, 256, 256, ROW, 6));
+    let request = copy(source, target, [0, 0, 256, 256], [0, 0]);
+    assert_eq!(outcome(&mut session, &request), (UNSUCCESSFUL, 0));
+}
+
+#[test]
+fn a_corner_past_a_tiled_targets_field_is_refused() {
+    let mut session = session();
+    let source = plain(&mut session);
+    let wide_row = 0x10_0000;
+    let (_, target) = allocate(&mut session, tiled(wide_row as u64 * 256, 0, 256, wide_row, 0));
+    let last = copy(source, target, [0, 0, 1, 1], [0x3FFF, 0]);
+    assert_eq!(outcome(&mut session, &last), (SUCCESS, 1));
+    let past = copy(source, target, [0, 0, 1, 1], [0x4000, 0]);
+    assert_eq!(outcome(&mut session, &past), (UNSUCCESSFUL, 1));
+}
+
+/// A surface of `width` by 256 whose pixels are as this colour word says.
+fn coloured(session: &mut TestSession, width: u32, pitch: u32, tiling: u32, colour: u32) -> u32 {
+    let mut data = shape(u64::from(pitch) * 256, width, 256, pitch);
+    data.resize(32, 0);
+    set_u32(&mut data, 24, tiling);
+    set_u32(&mut data, 28, colour);
+    allocate(session, data).1
+}
+
+#[test]
+fn wide_pixels_are_counted_on_the_way_into_a_narrow_target() {
+    let mut session = session();
+    let source = coloured(&mut session, 256, ROW * 2, 0, WIDE_COLOUR);
+    let target = plain(&mut session);
+    let request = copy(source, target, [0, 0, 256, 256], [0, 0]);
+    assert_eq!(outcome(&mut session, &request), (UNSUCCESSFUL, 0));
+}
+
+#[test]
+fn wide_pixels_are_counted_on_the_way_into_a_narrow_tiled_target() {
+    let mut session = session();
+    let source = coloured(&mut session, 256, ROW * 2, 0, WIDE_COLOUR);
+    let target = coloured(&mut session, 256, ROW, 1, 0);
+    let request = copy(source, target, [0, 0, 256, 256], [0, 0]);
+    assert_eq!(outcome(&mut session, &request), (UNSUCCESSFUL, 0));
+}
+
+#[test]
+fn wide_pixels_fit_a_target_of_the_same_pixels() {
+    let mut session = session();
+    let source = coloured(&mut session, 256, ROW * 2, 1, WIDE_COLOUR);
+    let target = coloured(&mut session, 256, ROW * 2, 1, WIDE_COLOUR);
+    let request = copy(source, target, [0, 0, 256, 256], [0, 0]);
+    assert_eq!(outcome(&mut session, &request), (SUCCESS, 1));
+}
+
+#[test]
+fn a_colour_nobody_knows_is_measured_as_four_bytes_a_pixel_on_both_sides() {
+    let mut session = session();
+    let source = coloured(&mut session, 256, ROW, 1, 0xEE);
+    let target = coloured(&mut session, 256, ROW, 1, 0xEE);
+    let fits = copy(source, target, [0, 0, 256, 256], [0, 0]);
+    assert_eq!(outcome(&mut session, &fits), (SUCCESS, 1));
+    let past = copy(source, target, [0, 0, 257, 256], [0, 0]);
+    assert_eq!(outcome(&mut session, &past), (UNSUCCESSFUL, 1));
 }
 
 const ADDRESS_STEP: u64 = 0x1_0000;

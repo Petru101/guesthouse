@@ -477,6 +477,10 @@ impl<R: Rm + OpenRm> Backend for NvidiaBackend<R> {
         self.start_frame_copy(host, copy)
     }
 
+    fn copy_pixel_bytes(&self, surface: &SurfaceShape) -> u32 {
+        staging::pixel_bytes(surface)
+    }
+
     fn tiled_bytes(&self, surface: &SurfaceShape, x: u64, y: u64) -> Option<u64> {
         if !tiling::origin_fits(x, y) {
             return None;

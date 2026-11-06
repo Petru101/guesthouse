@@ -10,6 +10,7 @@ use crate::frames::{
     Cursor, FrameLight, GuestSlot, IndirectRing, Landing, LiveRing, Picture, Registering, ReplyWaiting, Slots,
 };
 use guesthouse_backend::{Backend, BackendError, GuestMemory, SpaceId};
+use guesthouse_messages::adapter::DisplayMode;
 use guesthouse_messages::indirect::{FrameDone, Look, Outcome, Register, Reply, Request, STAMP_SIZE, Stamp};
 use std::collections::VecDeque;
 use std::os::fd::OwnedFd;
@@ -204,6 +205,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             light: vec![None; count],
             needs_export: true,
             export_refused: false,
+            refresh_millihertz: ring.refresh_millihertz,
             opened_at: Instant::now(),
             landed: false,
         });
@@ -282,6 +284,22 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
     pub fn indirect_screen(&self) -> Option<(Picture, Look, bool)> {
         let landed = self.frames.indirect.as_ref()?.landed;
         self.frames.ring.as_ref().map(|ring| (ring.picture, ring.look, landed))
+    }
+
+    /// What the current display mode query answers. It comes from the same open ring the app's note
+    /// does, so that the two can't disagree, and it goes when the ring does. A ring with no rate gets
+    /// no answer, which is what a driver too old to send one has always had.
+    pub(super) fn display_mode(&self) -> Option<DisplayMode> {
+        let rate = self.frames.indirect.as_ref()?.refresh_millihertz;
+        let ring = self.frames.ring.as_ref()?;
+        let format =
+            if ring.look == Look::SDR { DisplayMode::FORMAT_8_BIT } else { DisplayMode::FORMAT_16_BIT_FLOAT };
+        (rate != 0).then_some(DisplayMode {
+            width: ring.picture.width,
+            height: ring.picture.height,
+            format,
+            refresh_millihertz: rate,
+        })
     }
 
     /// The guest has restarted. Its old processes never said goodbye, so without this the ring would

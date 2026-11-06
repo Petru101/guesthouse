@@ -38,4 +38,4 @@ On my PC, with an RTX 5090 and Windows 11 in a VM, in one or two runs of each:
 - A restart and cold boots with nothing done by hand after the install.
 - Installing and loading with Secure Boot on.
 
-`tests/run.sh` runs what needs no Windows on Linux: the ring's rules against a fake daemon, and the shader's colour maths from the shader's own file. `tests/compile-mingw.sh` compiles the D3D11 parts against mingw's headers. `tests/bars/d12hdr.c` is the test app that draws the pictures.
+`tests/run.sh` runs what needs no Windows on Linux: the ring's rules against a fake daemon, and the shader's colour maths from the shader's own file. `tests/compile-mingw.sh` compiles the D3D11 parts against mingw's headers. `tests/bars/d12hdr.c` is the test app that draws the pictures. `tests/bars/dupcheck.c` checks every pixel of what Desktop Duplication hands an app against those pictures.

@@ -70,6 +70,8 @@ pub(crate) struct IndirectRing {
     pub needs_export: bool,
     /// An export failed, which isn't worth trying on every turn of the loop.
     pub export_refused: bool,
+    /// The rate Windows committed for this mode, 0 if the driver didn't say.
+    pub refresh_millihertz: u32,
     /// When it opened, for saying how long its first frame took.
     pub opened_at: Instant,
     /// A frame has really finished on this ring. Opening one proves nothing about the picture.

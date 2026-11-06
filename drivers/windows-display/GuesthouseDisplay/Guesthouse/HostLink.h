@@ -15,6 +15,7 @@ struct RingShape
 	std::uint32_t height = 0;
 	std::uint64_t slotSize = 0;
 	WireFormat format = WireFormat::Sdr;
+	std::uint32_t refreshMillihertz = 0;
 	std::uint32_t monitor = 0;
 };
 

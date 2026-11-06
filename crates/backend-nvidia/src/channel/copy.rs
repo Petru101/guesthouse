@@ -28,11 +28,14 @@ pub(crate) const METHOD_SET_SEMAPHORE: u32 = 0x240;
 const METHOD_SET_RENDER_ENABLE: u32 = 0x25C;
 pub(crate) const METHOD_LAUNCH: u32 = 0x300;
 pub(crate) const METHOD_OFFSET_IN: u32 = 0x400;
+const METHOD_SET_TARGET_BLOCK_SIZE: u32 = 0x70C;
 const METHOD_SET_SOURCE_BLOCK_SIZE: u32 = 0x728;
 const RENDER_ALWAYS: u32 = 1;
 /// Launches: non-pipelined, flushed, ending in a one-word semaphore.
 const LAUNCH_PITCH_LINES: u32 = 0x38E;
 const LAUNCH_BLOCK_TO_PITCH_LINES: u32 = 0x30E;
+const LAUNCH_PITCH_TO_BLOCK_LINES: u32 = 0x28E;
+const LAUNCH_BLOCK_TO_BLOCK_LINES: u32 = 0x20E;
 const LAUNCH_PITCH_ONE_LINE: u32 = 0x18E;
 /// Flushed, with nothing to transfer, ending in a one-word semaphore.
 pub(crate) const LAUNCH_SEMAPHORE_ONLY: u32 = 0xC;
@@ -52,15 +55,42 @@ pub struct Rows {
     pub count: u32,
 }
 
-/// A rectangle out of a tiled surface. `block` is the log2 of its block height.
+/// Where a rectangle sits in a tiled surface. `x` and `surface_width` are in bytes, and `block` is
+/// the log2 of the surface's block height.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Tiled {
-    pub rows: Rows,
+pub struct TiledSide {
     pub x: u32,
     pub y: u32,
     pub surface_width: u32,
     pub surface_height: u32,
     pub block: u32,
+}
+
+impl TiledSide {
+    /// The engine's words for this side, or `None` for numbers its fields can't hold.
+    fn words(&self, method: u32) -> Option<[u32; 7]> {
+        if self.block >= BLOCK_LIMIT || !origin_fits(u64::from(self.x), u64::from(self.y)) {
+            return None;
+        }
+        Some([
+            increasing(COPY_SUBCHANNEL, method, 6),
+            self.block << BLOCK_HEIGHT_SHIFT | BLOCK_GOB_HEIGHT_8,
+            self.surface_width,
+            self.surface_height,
+            1,
+            0,
+            self.x | self.y << ORIGIN_Y_SHIFT,
+        ])
+    }
+}
+
+/// A rectangle with a tiled surface on at least one side. A tiled side's address in `rows` is the
+/// whole surface's, and the engine finds the rectangle in it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Tiled {
+    pub rows: Rows,
+    pub source: Option<TiledSide>,
+    pub target: Option<TiledSide>,
 }
 
 /// See the module documentation.
@@ -114,21 +144,18 @@ impl CopyChannel {
     /// The batch for a rectangle out of a tiled surface, which the engine detiles by itself. `None`
     /// if a number wouldn't fit its field, as it would change the one beside it.
     pub fn tiled(&mut self, tiled: &Tiled) -> Option<Vec<u32>> {
-        if tiled.block >= BLOCK_LIMIT || !origin_fits(u64::from(tiled.x), u64::from(tiled.y)) {
-            return None;
-        }
+        let source = tiled.source.as_ref().map(|side| side.words(METHOD_SET_SOURCE_BLOCK_SIZE));
+        let target = tiled.target.as_ref().map(|side| side.words(METHOD_SET_TARGET_BLOCK_SIZE));
+        let launch = match (&source, &target) {
+            (Some(_), Some(_)) => LAUNCH_BLOCK_TO_BLOCK_LINES,
+            (Some(_), None) => LAUNCH_BLOCK_TO_PITCH_LINES,
+            (None, Some(_)) => LAUNCH_PITCH_TO_BLOCK_LINES,
+            (None, None) => LAUNCH_PITCH_LINES,
+        };
+        let sides = [source, target].into_iter().flatten().collect::<Option<Vec<_>>>()?;
         let mut words = self.head(&tiled.rows);
-        words.extend([
-            increasing(COPY_SUBCHANNEL, METHOD_SET_SOURCE_BLOCK_SIZE, 6),
-            tiled.block << BLOCK_HEIGHT_SHIFT | BLOCK_GOB_HEIGHT_8,
-            tiled.surface_width,
-            tiled.surface_height,
-            1,
-            0,
-            tiled.x | tiled.y << ORIGIN_Y_SHIFT,
-            increasing(COPY_SUBCHANNEL, METHOD_LAUNCH, 1),
-            LAUNCH_BLOCK_TO_PITCH_LINES,
-        ]);
+        words.extend(sides.into_iter().flatten());
+        words.extend([increasing(COPY_SUBCHANNEL, METHOD_LAUNCH, 1), launch]);
         Some(words)
     }
 
@@ -270,21 +297,54 @@ mod tests {
     #[test]
     fn a_tiled_copy_describes_the_source_block() {
         let (_, mut copier) = copier();
-        let tiled = Tiled { rows: rows(), x: 4, y: 2, surface_width: 1024, surface_height: 768, block: 3 };
+        let tiled = Tiled { rows: rows(), source: Some(side()), target: None };
         let words = copier.tiled(&tiled).unwrap();
         assert_eq!(words[16], 3 << 4 | 1 << 12);
         assert_eq!(words[21], 4 | 2 << 16);
         assert_eq!(*words.last().unwrap(), LAUNCH_BLOCK_TO_PITCH_LINES);
     }
 
+    fn side() -> TiledSide {
+        TiledSide { x: 4, y: 2, surface_width: 1024, surface_height: 768, block: 3 }
+    }
+
     #[test]
-    fn a_number_past_its_field_makes_no_batch() {
+    fn a_copy_into_a_tiled_surface_describes_the_target_block() {
         let (_, mut copier) = copier();
-        let tiled = Tiled { rows: rows(), x: 4, y: 2, surface_width: 1024, surface_height: 768, block: 3 };
-        for bad in
-            [Tiled { block: 6, ..tiled }, Tiled { x: 0x1_0000, ..tiled }, Tiled { y: 0x1_0000, ..tiled }]
-        {
-            assert_eq!(copier.tiled(&bad), None, "{bad:?}");
+        let words = copier.tiled(&Tiled { rows: rows(), source: None, target: Some(side()) }).unwrap();
+        assert_eq!(words[15], increasing(COPY_SUBCHANNEL, METHOD_SET_TARGET_BLOCK_SIZE, 6));
+        assert_eq!(words[16..22], [3 << 4 | 1 << 12, 1024, 768, 1, 0, 4 | 2 << 16]);
+        assert_eq!(*words.last().unwrap(), LAUNCH_PITCH_TO_BLOCK_LINES);
+    }
+
+    #[test]
+    fn a_copy_between_tiled_surfaces_describes_both() {
+        let (_, mut copier) = copier();
+        let target = TiledSide { x: 8, y: 16, ..side() };
+        let words =
+            copier.tiled(&Tiled { rows: rows(), source: Some(side()), target: Some(target) }).unwrap();
+        assert_eq!(words[15], increasing(COPY_SUBCHANNEL, METHOD_SET_SOURCE_BLOCK_SIZE, 6));
+        assert_eq!(words[22], increasing(COPY_SUBCHANNEL, METHOD_SET_TARGET_BLOCK_SIZE, 6));
+        assert_eq!(words[28], 8 | 16 << 16);
+        assert_eq!(*words.last().unwrap(), LAUNCH_BLOCK_TO_BLOCK_LINES);
+    }
+
+    #[test]
+    fn a_number_past_its_field_makes_no_batch_on_either_side() {
+        let (_, mut copier) = copier();
+        let good = side();
+        for bad in [
+            TiledSide { block: 6, ..good },
+            TiledSide { block: u32::MAX, ..good },
+            TiledSide { x: 0x1_0000, ..good },
+            TiledSide { y: 0x1_0000, ..good },
+        ] {
+            let source = Tiled { rows: rows(), source: Some(bad), target: Some(good) };
+            let target = Tiled { rows: rows(), source: Some(good), target: Some(bad) };
+            let alone = Tiled { rows: rows(), source: None, target: Some(bad) };
+            assert_eq!(copier.tiled(&source), None, "{bad:?}");
+            assert_eq!(copier.tiled(&target), None, "{bad:?}");
+            assert_eq!(copier.tiled(&alone), None, "{bad:?}");
         }
         assert_eq!(copier.sequence, 0, "nothing was started");
     }

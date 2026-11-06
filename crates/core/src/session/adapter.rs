@@ -4,7 +4,7 @@ use super::{Handled, Session, answer_status};
 use crate::io_space::IoSpace;
 use guesthouse_backend::{Backend, BackendError, GuestMemory, RegistryName, VendorQuery, VideoMemoryUse};
 use guesthouse_messages::adapter::{
-    ASYNC_MESSAGES, AdapterQuery, CapsQuery, DRIVER_MODEL_NUMBER, IdentityAnswer, SetIoSpace,
+    ASYNC_MESSAGES, AdapterQuery, CapsQuery, DRIVER_MODEL_NUMBER, DisplayMode, IdentityAnswer, SetIoSpace,
     adapter_identity, description_answer, driver_caps, node_description, node_of, physical_adapter_ids,
     segment_sizes,
 };
@@ -173,6 +173,18 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             AdapterQuery::DIRECT_FLIP | AdapterQuery::CONSOLE_CAPS => pad_to(out, STATUS_SIZE + query.size),
             AdapterQuery::REGISTRY => return self.registry_answer(query.data, out),
             kind if ZERO_ANSWERS.contains(&kind) => pad_to(out, STATUS_SIZE + query.size),
+            AdapterQuery::CURRENT_DISPLAY_MODE if query.size >= DisplayMode::ANSWER_SIZE => {
+                // Only the display driver's open ring can answer. Saying what Basic Display has makes
+                // Windows present to it far less often, and a viewer of that screen goes short of frames.
+                let Some(mode) = self.display_mode() else {
+                    log::debug!("no display mode to give");
+                    return Ok(Status::NOT_SUPPORTED);
+                };
+                let source = u32_at(query.data, 0).unwrap_or(0);
+                log::debug!("display mode for source {source}: {mode:?}");
+                mode.answer(source, out);
+                pad_to(out, STATUS_SIZE + query.size);
+            }
             kind => {
                 log::debug!("adapter query {kind} has no answer");
                 return Ok(Status::NOT_SUPPORTED);
