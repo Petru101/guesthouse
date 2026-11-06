@@ -5,6 +5,7 @@ pub mod clock;
 pub mod context;
 pub mod failure;
 pub mod log;
+pub mod machine;
 pub mod monitor;
 pub mod network;
 pub mod paths;
