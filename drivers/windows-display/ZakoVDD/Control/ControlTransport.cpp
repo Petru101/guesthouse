@@ -50,6 +50,7 @@ static NTSTATUS HandleQueryFrameChannelCaps(WDFREQUEST Request)
 		return STATUS_BUFFER_TOO_SMALL;
 	}
 
+	frameChannelWanted = true;
 	auto caps = Microsoft::IndirectDisp::SharedFrameExporter::FrameChannelCaps();
 	RtlCopyMemory(pOutBuffer, &caps, sizeof(caps));
 	WdfRequestCompleteWithInformation(Request, STATUS_SUCCESS, sizeof(caps));

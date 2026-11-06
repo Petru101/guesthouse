@@ -29,6 +29,8 @@ extern std::atomic<bool> hardwareCursor;
 extern std::atomic<bool> preventManufacturerSpoof;
 extern std::atomic<bool> edidCeaOverride;
 extern std::atomic<bool> legacyNamedFrameChannel;
+// Set once something asks about the frame channel. Until then there's no reason to copy frames for it.
+extern std::atomic<bool> frameChannelWanted;
 
 extern std::atomic<bool> alphaCursorSupport;
 extern int CursorMaxX;
