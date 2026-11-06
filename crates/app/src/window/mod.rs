@@ -1,6 +1,8 @@
 //! The main window, and what every page asks of it: telling the user about things, starting tasks and
 //! saving machines. The pages it shows are modules of their own.
 
+mod actions;
+mod keys;
 mod library_page;
 mod machine_row;
 mod refresh;
@@ -52,6 +54,7 @@ struct Inner {
     new_machine: RefCell<Option<NewMachineDialog>>,
     screen_page: RefCell<Option<ScreenPage>>,
     vm_running: Cell<bool>,
+    host_key_down: Cell<bool>,
     refresh: RefCell<RefreshState>,
 }
 
@@ -91,10 +94,13 @@ impl Window {
             new_machine: RefCell::default(),
             screen_page: RefCell::default(),
             vm_running: Cell::new(false),
+            host_key_down: Cell::new(false),
             refresh: RefCell::default(),
         }));
         this.add_style();
         this.0.library.connect_new_machine(&this);
+        keys::add_host_keys(&this);
+        actions::add_actions(&this);
         this.connect_close();
         this.load_machines();
         this.refresh();
@@ -264,6 +270,7 @@ impl Window {
     }
 
     pub fn show_screen(&self, machine: MachineHandle) {
+        actions::allow_host_keys(self, false);
         let page = ScreenPage::new(self, machine);
         self.0.pages.push(page.widget());
         *self.0.screen_page.borrow_mut() = Some(page);
@@ -271,6 +278,7 @@ impl Window {
 
     pub fn screen_closed(&self) {
         *self.0.screen_page.borrow_mut() = None;
+        actions::allow_host_keys(self, true);
     }
 
     /// Once by itself. After that it's in the menu, and New Machine says when it's needed.
