@@ -23,6 +23,7 @@ The GPU backend is still private while I sort out licensing and clean it up. It'
 This repo is where it's all heading. So far it has:
 
 - the QEMU patch, in `qemu/`
+- the files that go into a Windows guest, in `guest/`
 - the code that reads and answers the guest's messages
 - the tracking of processes, allocations, fences and GPU addresses
 - the line a GPU vendor's backend plugs in at, so AMD and Intel can fit in later

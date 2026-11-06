@@ -153,6 +153,8 @@ The host hands out addresses from `GPU_RANGES`, less anything a backend keeps cl
 
 Nothing is relative to a project folder. Machines are in the data store, which `~/.config/guesthouse/store` can move, sockets are in the XDG runtime folder, the log is in the state folder, and QEMU and the guest's files are in a program folder found from where it runs. Each machine has its own token for the guest's agent. That folder isn't in this repo, and without it the app runs plain VMs on the system's QEMU.
 
+What goes into a Windows guest is in `guest/`. The app finds it in the program folder, or in the repo if it's a build of the repo. There's no token or password in there: each machine gets its own at install, and they go on an answer disc the app makes and deletes afterwards. Having those files doesn't mean a GPU can work, so a build of the repo also has to find a QEMU with the patch before it offers one.
+
 Ubuntu guests take a route of their own, in `crates/app-core/src/linux/` and `actions/ubuntu.rs`, with what goes into a guest in `linux/` at the top of the repo. Ubuntu's installer runs with no hands from a seed disc, and the host's driver reaches the guest on a read-only image, made from the files of the driver that's loaded. An unknown driver branch turns the GPU off and the VM still boots, and another point release warns. That GPU is a preview so far, and the app says so.
 
 The guest's driver calls go through `nvfwd`, a device in the QEMU patch, to the host's driver, on the vCPU that made them. No daemon carries the calls on this route. The device works on a private copy of each call and holds it to an allow list and to limits per VM, and `linux/README.md` has the details. QEMU runs in a bubblewrap sandbox here, from `vm_args/jail.rs`.
