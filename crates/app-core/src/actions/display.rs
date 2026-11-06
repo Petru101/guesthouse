@@ -246,7 +246,7 @@ fn tell_windows(task: &Task, wanted: &Wanted, expected: bool) -> Result<Option<R
 }
 
 fn ring(task: &Task) -> Option<ScreenNote> {
-    ring_in(&task.context.run_folder(None))
+    ring_in(task.context, None)
 }
 
 /// Waits for the frames to say what Windows says, and returns what's there at the end of the wait.

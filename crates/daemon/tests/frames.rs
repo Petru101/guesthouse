@@ -627,7 +627,7 @@ mod display_driver {
         for _ in 0..MOST_STEPS {
             rig.step();
         }
-        let note = ScreenNote { width: WIDTH, height: HEIGHT, hdr: true };
+        let note = ScreenNote { width: WIDTH, height: HEIGHT, hdr: true, daemon: process::id() };
         assert_eq!(read_note(&rig.folder), Some(note));
         rig.say(&driver::close(NAME));
         rig.step();

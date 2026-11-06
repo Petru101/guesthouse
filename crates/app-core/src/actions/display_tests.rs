@@ -2,7 +2,7 @@ use super::*;
 use crate::actions::tests::{FakeClock, machine, plain_task_context};
 use crate::agent::GuestAgent;
 use crate::context::Context;
-use crate::display::stand_in::fake_package;
+use crate::display::stand_in::{fake_daemon, fake_package};
 use crate::display::{SCREEN_HDR_PREF, read_state};
 use crate::machine::Machine;
 use crate::settings::write_prefs;
@@ -16,6 +16,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+const DAEMON_PID: u32 = 77;
 const INSTALLED: &str = "Added driver packages:  1\nupdate True error 0 reboot False\n\
                          OK CM_PROB_NONE RDPUDD Chained DD ROOT\\DISPLAY\\0000\n";
 const REFUSED: &str = "Added driver packages:  0\nupdate False error 5 reboot False\n";
@@ -53,7 +54,7 @@ impl Guest {
     }
 
     fn show_frames(&self) {
-        let note = ScreenNote { width: 1920, height: 1080, hdr: false };
+        let note = ScreenNote { width: 1920, height: 1080, hdr: false, daemon: DAEMON_PID };
         let shown = self.sends_frames.load(Ordering::Relaxed).then_some(note);
         write_note(&self.run_folder, shown).unwrap();
     }
@@ -117,6 +118,7 @@ impl Rig {
         let machine = machine(&context);
         crate::agent::make_token(&context, &machine).unwrap();
         fs::create_dir_all(context.run_folder(None)).unwrap();
+        fake_daemon(&context, DAEMON_PID);
         Self { scratch, context, machine }
     }
 

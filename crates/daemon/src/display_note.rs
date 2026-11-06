@@ -15,23 +15,31 @@ pub struct ScreenNote {
     pub width: u32,
     pub height: u32,
     pub hdr: bool,
+    /// Who wrote it. A daemon that dies leaves its note behind, so a reader has to see it's alive.
+    pub daemon: u32,
 }
 
 impl ScreenNote {
     fn text(self) -> String {
         let look = if self.hdr { HDR_WORD } else { SDR_WORD };
-        format!("{}x{} {look}\n", self.width, self.height)
+        format!("{}x{} {look} {}\n", self.width, self.height, self.daemon)
     }
 
     fn parse(text: &str) -> Option<Self> {
-        let (size, look) = text.trim().split_once(' ')?;
+        let mut words = text.split_whitespace();
+        let (size, look, daemon) = (words.next()?, words.next()?, words.next()?);
         let (width, height) = size.split_once('x')?;
         let hdr = match look {
             HDR_WORD => true,
             SDR_WORD => false,
             _ => return None,
         };
-        Some(Self { width: width.parse().ok()?, height: height.parse().ok()?, hdr })
+        Some(Self {
+            width: width.parse().ok()?,
+            height: height.parse().ok()?,
+            hdr,
+            daemon: daemon.parse().ok()?,
+        })
     }
 }
 
@@ -63,7 +71,7 @@ mod tests {
         fs::create_dir_all(&folder).unwrap();
         assert_eq!(read_note(&folder), None);
         write_note(&folder, None).unwrap();
-        let note = ScreenNote { width: 3840, height: 2160, hdr: true };
+        let note = ScreenNote { width: 3840, height: 2160, hdr: true, daemon: 7 };
         write_note(&folder, Some(note)).unwrap();
         assert_eq!(read_note(&folder), Some(note));
         write_note(&folder, None).unwrap();
@@ -73,7 +81,8 @@ mod tests {
 
     #[test]
     fn a_note_that_makes_no_sense_counts_as_none() {
-        for text in ["", "1920x1080", "1920 sdr", "wide x high sdr", "1920x1080 maybe"] {
+        for text in ["", "1920x1080", "1920x1080 sdr", "1920 sdr 7", "wide x high sdr 7", "1920x1080 maybe 7"]
+        {
             assert_eq!(ScreenNote::parse(text), None, "{text:?}");
         }
     }

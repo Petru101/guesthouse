@@ -2,14 +2,16 @@
 //! it down in the machine's folder, as it has to outlive a VM, and the app reads it from there.
 
 use crate::context::Context;
+use crate::daemon::is_own_daemon;
 use crate::failure::Result;
 use crate::machine::Machine;
 use crate::settings::{read_prefs, write_json};
 use guesthouse_daemon::display_note::{ScreenNote, read_note};
+use guesthouse_daemon::slot::Slot;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 const STATE_FILE: &str = "display.json";
 const SCREEN_LINE: &str = "screen ";
@@ -129,9 +131,10 @@ pub fn screen_shows_hdr(context: &Context) -> bool {
     read_prefs(context).get(SCREEN_HDR_PREF).and_then(Value::as_bool).unwrap_or(false)
 }
 
-/// What the daemon says is on the ring in this run folder.
-pub fn ring_in(run_folder: &Path) -> Option<ScreenNote> {
-    read_note(run_folder)
+/// What the daemon says is on its ring, if that daemon is still there to say it.
+pub fn ring_in(context: &Context, slot: Option<Slot>) -> Option<ScreenNote> {
+    let note = read_note(&context.run_folder(slot))?;
+    is_own_daemon(context, &note.daemon.to_string(), slot.unwrap_or(context.slot)).then_some(note)
 }
 
 /// A build of the display driver, as the packaging leaves it in the program folder.
@@ -154,7 +157,17 @@ impl DriverPackage {
 #[cfg(test)]
 pub(crate) mod stand_in {
     use super::*;
+    use crate::context::SLOT_VARIABLE;
+    use crate::daemon::DAEMON_PROGRAM;
+    use crate::processes::stand_in::fake_process;
     use crate::testing::Scratch;
+
+    /// A daemon for the context's own slot.
+    pub fn fake_daemon(context: &Context, pid: u32) {
+        let base = context.paths.runtime.display().to_string();
+        let slot = format!("{SLOT_VARIABLE}={}", context.slot.number());
+        fake_process(context, pid, &[DAEMON_PROGRAM, &base], &[&slot], "");
+    }
 
     /// A package in the scratch program folder.
     pub fn fake_package(scratch: &Scratch, id: &str) {
@@ -167,9 +180,10 @@ pub(crate) mod stand_in {
 
 #[cfg(test)]
 mod tests {
-    use super::stand_in::fake_package;
+    use super::stand_in::{fake_daemon, fake_package};
     use super::*;
     use crate::testing::{Scratch, scratch_context};
+    use guesthouse_daemon::display_note::write_note;
 
     const ON_DRIVER: RunningScreen =
         RunningScreen { on_driver: true, width: 1920, height: 1080, hz: 240, hdr: false };
@@ -196,7 +210,7 @@ mod tests {
     #[test]
     fn the_size_and_the_look_come_from_the_frames_and_the_rate_from_windows() {
         let state = DisplayState { running: Some(ON_DRIVER), ..DisplayState::default() };
-        let ring = ScreenNote { width: 3840, height: 2160, hdr: true };
+        let ring = ScreenNote { width: 3840, height: 2160, hdr: true, daemon: 7 };
         assert_eq!(screen_text(&state, Some(ring)), "3840x2160 at 240 Hz, HDR");
         assert_eq!(screen_text(&state, None), "no picture from the display driver");
     }
@@ -207,6 +221,18 @@ mod tests {
         let state = DisplayState { running, ..DisplayState::default() };
         assert_eq!(screen_text(&state, None), "1920x1080 at 64 Hz on the basic display");
         assert_eq!(screen_text(&DisplayState::default(), None), "display not known yet");
+    }
+
+    #[test]
+    fn a_note_is_only_believed_while_its_daemon_is_alive() {
+        let scratch = Scratch::new();
+        let context = scratch_context(&scratch);
+        fs::create_dir_all(context.run_folder(None)).unwrap();
+        let note = ScreenNote { width: 1920, height: 1080, hdr: false, daemon: 77 };
+        write_note(&context.run_folder(None), Some(note)).unwrap();
+        assert_eq!(ring_in(&context, None), None, "that daemon has gone");
+        fake_daemon(&context, 77);
+        assert_eq!(ring_in(&context, None), Some(note));
     }
 
     #[test]

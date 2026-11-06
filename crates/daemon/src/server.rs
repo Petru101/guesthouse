@@ -259,6 +259,7 @@ impl<B: Backend, M: GuestMemory> Server<B, M> {
             width: picture.width,
             height: picture.height,
             hdr: look == Look::HDR,
+            daemon: std::process::id(),
         });
         if screen != self.said_screen {
             self.said_screen = screen;
