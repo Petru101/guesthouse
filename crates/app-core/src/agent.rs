@@ -73,9 +73,19 @@ fn read_answer(stream: &mut TcpStream, patience: Duration) -> std::io::Result<Ve
 /// The machine's token, made the first time. Only an install calls this: the guest learns the token
 /// from the install disc, so a new one for a machine already installed would lock the app out of it.
 pub fn make_token(context: &Context, machine: &Machine) -> Result<String> {
-    let path = machine.token_file(context);
+    make_secret(&machine.token_file(context))
+}
+
+/// The Windows account's password, made the first time. It logs in by itself, so nobody has to know
+/// it, but it's kept in the machine's folder for whoever wants to.
+pub fn make_password(context: &Context, machine: &Machine) -> Result<String> {
+    make_secret(&machine.password_file(context))
+}
+
+/// A file only this user can read, with a random value that stays.
+fn make_secret(path: &Path) -> Result<String> {
     if !path.exists() {
-        let mut file = fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&path)?;
+        let mut file = fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(path)?;
         writeln!(file, "{}", random_hex::<TOKEN_BYTES>())?;
     }
     Ok(fs::read_to_string(path)?.trim().to_owned())
@@ -257,6 +267,18 @@ mod tests {
     fn a_whole_answer_comes_back() {
         let port = answering_with(|mut stream| stream.write_all(b"finished\r\n").unwrap());
         assert_eq!(TcpAgent.ask(port, "token", "up", 5), "finished\r\n");
+    }
+
+    #[test]
+    fn each_machine_keeps_its_own_password() {
+        let scratch = Scratch::new();
+        let context = scratch_context(&scratch);
+        let (first, second) = (machine(&context, "first"), machine(&context, "second"));
+        let password = make_password(&context, &first).unwrap();
+        assert_eq!(make_password(&context, &first).unwrap(), password);
+        assert_ne!(make_password(&context, &second).unwrap(), password);
+        let mode = fs::metadata(first.password_file(&context)).unwrap().mode();
+        assert_eq!(mode & 0o777, 0o600);
     }
 
     #[test]

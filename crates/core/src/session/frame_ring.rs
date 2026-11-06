@@ -6,13 +6,14 @@
 //! a wait on the viewer: with no free slot, the frame is skipped.
 
 use super::{Session, services};
-use crate::frames::{Delivery, Frame, FrameCounts, FrameRing, FrameSink, Picture, Slots};
+use crate::frames::{Delivery, Frame, FrameCounts, FrameRing, FrameSink, Picture, Slots, ViewerFacts};
 use crate::frames::{LiveRing, RING_SLOTS, SlotInFlight, SlotMemory};
 use crate::gpu_addresses::{ALLOCATION_ALIGN, AddressUse};
 use guesthouse_backend::{
     Backend, BackendError, GuestMemory, MapRequest, SlotCopy, SpaceId, StagingCopy, StagingStart, Status,
     SurfaceShape, UnmapRequest,
 };
+use guesthouse_messages::indirect::Look;
 use guesthouse_messages::wire::align_up;
 use std::os::fd::{AsFd, OwnedFd};
 use std::time::Instant;
@@ -31,17 +32,50 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
     /// Someone has said hello. A ring follows as soon as there's a screen to size it by.
     pub fn viewer_arrived(&mut self) {
         self.frames.viewer = true;
+        self.frames.viewer_facts = ViewerFacts::default();
+        self.frames.viewer_wants_cursor = false;
         self.frames.refused = None;
+    }
+
+    /// The viewer will draw the cursor, which the guest then leaves out of the frames.
+    pub fn viewer_wants_cursor(&mut self) {
+        self.frames.viewer_wants_cursor = true;
+        self.frames.cursor.send_again();
+    }
+
+    /// What the viewer that has just arrived can do.
+    pub fn viewer_described(&mut self, facts: ViewerFacts) {
+        self.frames.viewer_facts = facts;
     }
 
     /// The viewer has gone. Its buffers go too, and the next one gets its own, so that a slot it might
     /// still have on show is never written again.
     pub fn viewer_left(&mut self) {
         self.frames.viewer = false;
-        self.frames.retire_ring();
+        self.frames.viewer_facts = ViewerFacts::default();
+        self.frames.viewer_wants_cursor = false;
+        if self.frames.indirect.is_some() {
+            self.keep_ring_for_next_viewer();
+        } else {
+            self.frames.retire_ring();
+        }
         self.frames.behind = false;
         self.close_retired_rings();
         log::info!("the viewer has gone: {:?}", self.frames.counts);
+    }
+
+    /// The guest's memory stays, so the same slots go to the next viewer under a new generation, and
+    /// a release from this one can't touch them.
+    fn keep_ring_for_next_viewer(&mut self) {
+        self.frames.generation = self.frames.generation.wrapping_add(1);
+        let generation = self.frames.generation;
+        if let (Some(indirect), Some(ring)) = (self.frames.indirect.as_mut(), self.frames.ring.as_mut()) {
+            ring.generation = generation;
+            ring.unsent = None;
+            ring.slots.viewer_gone();
+            indirect.needs_export = true;
+            indirect.export_refused = false;
+        }
     }
 
     /// The viewer is done with a slot. Anything but a slot it has changes nothing: a release from an
@@ -64,10 +98,40 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
                 self.viewer_left();
             }
         }
+        if self.frames.viewer_wants_cursor && self.deliver_cursor(sink) == Delivery::Gone {
+            self.viewer_left();
+        }
+    }
+
+    /// The shape first, as a position means nothing without it.
+    fn deliver_cursor(&mut self, sink: &mut dyn FrameSink) -> Delivery {
+        let cursor = &mut self.frames.cursor;
+        if cursor.shape_unsent
+            && let Some(shape) = &cursor.shape
+        {
+            let delivery = sink.cursor_shape(shape);
+            if delivery != Delivery::Sent {
+                return delivery;
+            }
+            cursor.shape_unsent = false;
+        }
+        if cursor.position_unsent
+            && let Some(position) = &cursor.position
+        {
+            let delivery = sink.cursor_moved(position);
+            if delivery != Delivery::Sent {
+                return delivery;
+            }
+            cursor.position_unsent = false;
+        }
+        Delivery::Sent
     }
 
     /// Offers the ring if it hasn't gone yet. [`Delivery::Sent`] means frames can follow.
     fn deliver_ring(&mut self, sink: &mut dyn FrameSink) -> Delivery {
+        if self.frames.indirect.as_ref().is_some_and(|ring| ring.needs_export) {
+            return Delivery::NotNow;
+        }
         let Some(ring) = self.frames.ring.as_mut() else { return Delivery::NotNow };
         let Some(buffers) = &ring.unsent else { return Delivery::Sent };
         let shared =
@@ -87,9 +151,16 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
     }
 
     fn deliver_frame(&mut self, sink: &mut dyn FrameSink) -> Delivery {
+        let can_show = self.frames.ring.as_ref().is_some_and(|ring| self.frames.viewer_can_show(ring.look));
+        if !can_show {
+            self.frames.complain("the viewer can't show this ring's format, so nothing is reaching it");
+            return Delivery::NotNow;
+        }
         let Some(ring) = self.frames.ring.as_mut() else { return Delivery::NotNow };
         let Some((slot, sequence)) = ring.slots.pending() else { return Delivery::NotNow };
-        let frame = Frame { generation: ring.generation, slot, sequence, picture: ring.picture };
+        let light = self.frames.indirect.as_ref().and_then(|indirect| indirect.light[slot as usize]);
+        let (generation, picture, look) = (ring.generation, ring.picture, ring.look);
+        let frame = Frame { generation, slot, sequence, picture, look, light };
         let delivery = sink.frame_ready(&frame);
         if delivery == Delivery::Sent {
             ring.slots.sent(slot);
@@ -106,6 +177,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
     /// catching up. It's all on this thread, but none of it holds a guest's reply back.
     pub(super) fn service_frames(&mut self, now: Instant) {
         self.close_retired_rings();
+        self.service_indirect(now);
         if let Some(picture) = self.frames.wanted_ring() {
             match self.open_ring(picture) {
                 Ok(ring) => {
@@ -144,7 +216,17 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         self.frames.generation = self.frames.generation.wrapping_add(1);
         let generation = self.frames.generation;
         let slots = Slots::new(RING_SLOTS);
-        Ok(LiveRing { generation, picture, slot_size: size, space, memory, slots, unsent: Some(buffers) })
+        let look = Look::SDR;
+        Ok(LiveRing {
+            generation,
+            picture,
+            look,
+            slot_size: size,
+            space,
+            memory,
+            slots,
+            unsent: Some(buffers),
+        })
     }
 
     /// Makes one slot: video memory the GPU can reach, and the file a viewer reads it by.
@@ -233,7 +315,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
     /// A frame has reached the staging surface. Starts its copy into the ring, if there's a place for
     /// it. `Some` means that copy is under way and will need [`Session::ring_copy_ended`].
     pub(super) fn begin_ring_copy(&mut self, copy: &StagingCopy, handles: [u32; 2]) -> Option<SlotInFlight> {
-        if !copy.is_screen {
+        if !copy.is_screen || self.frames.indirect.is_some() {
             return None;
         }
         self.frames.screen_copied(handles[1], copy.target, Instant::now());

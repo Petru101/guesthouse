@@ -5,8 +5,12 @@
 //! viewer gets buffers of its own. The ring is made and closed from the main loop, never during a
 //! copy to the screen. So a frame that finds no ring is skipped, and remembered as being behind.
 
+use super::Cursor;
+use super::IndirectRing;
+use super::Registering;
 use super::{Picture, Slots};
 use guesthouse_backend::{MemoryId, SpaceId, SurfaceShape};
+use guesthouse_messages::indirect::{Look, RingName};
 use std::os::fd::OwnedFd;
 use std::time::{Duration, Instant};
 
@@ -30,6 +34,7 @@ pub(crate) struct SlotMemory {
 pub(crate) struct LiveRing {
     pub generation: u32,
     pub picture: Picture,
+    pub look: Look,
     pub slot_size: u64,
     pub space: SpaceId,
     pub memory: Vec<SlotMemory>,
@@ -66,10 +71,28 @@ pub struct FrameCounts {
     pub replaced: u64,
 }
 
+/// What a viewer said it can do.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ViewerFacts {
+    /// It can show HDR, as well as the SDR every viewer can.
+    pub shows_hdr: bool,
+    /// 0 if not known.
+    pub refresh_millihertz: u32,
+    /// 0 if not known.
+    pub peak_nits: u32,
+}
+
 /// See the module documentation.
 #[derive(Debug, Default)]
 pub(crate) struct ScreenFrames {
     pub viewer: bool,
+    pub viewer_facts: ViewerFacts,
+    /// The guest's display driver is the screen. Copies to the old screen are ignored meanwhile.
+    pub indirect: Option<IndirectRing>,
+    pub registering: Option<Registering>,
+    pub cursor: Cursor,
+    /// The viewer draws the cursor itself.
+    pub viewer_wants_cursor: bool,
     pub ring: Option<LiveRing>,
     /// Rings to close, once nothing is writing them.
     pub retired: Vec<LiveRing>,
@@ -88,7 +111,21 @@ pub(crate) struct ScreenFrames {
 impl ScreenFrames {
     /// Whether the main loop has anything to do here.
     pub fn has_work(&self) -> bool {
-        self.viewer || !self.retired.is_empty()
+        self.viewer || !self.retired.is_empty() || self.registering.is_some() || self.indirect.is_some()
+    }
+
+    /// The guest is waiting, or a frame is on its way out.
+    pub fn is_urgent(&self) -> bool {
+        self.registering.is_some() || self.indirect.as_ref().is_some_and(|ring| !ring.landing.is_empty())
+    }
+
+    pub fn owns_ring(&self, process: u32, name: RingName) -> bool {
+        self.indirect.as_ref().is_some_and(|ring| ring.owner == process && ring.name == name)
+    }
+
+    /// Whether this viewer can show a look.
+    pub fn viewer_can_show(&self, look: Look) -> bool {
+        look == Look::SDR || self.viewer_facts.shows_hdr
     }
 
     /// The guest's screen has a new frame. A new size means the ring in use is the wrong one.
@@ -107,7 +144,7 @@ impl ScreenFrames {
 
     /// The picture a ring should be made for now, if it should.
     pub fn wanted_ring(&self) -> Option<Picture> {
-        if !self.viewer || self.ring.is_some() {
+        if !self.viewer || self.ring.is_some() || self.indirect.is_some() {
             return None;
         }
         let picture = Picture::of(&self.screen?.surface)?;
@@ -116,7 +153,7 @@ impl ScreenFrames {
 
     fn can_catch_up(&self) -> bool {
         let free = |ring: &LiveRing| ring.slots.has_free();
-        self.viewer && self.behind && self.ring.as_ref().is_some_and(free)
+        self.viewer && self.behind && self.indirect.is_none() && self.ring.as_ref().is_some_and(free)
     }
 
     /// Whether the ring should fetch the picture for itself, as no frame is coming to bring it.
@@ -169,6 +206,7 @@ mod tests {
         LiveRing {
             generation,
             picture: Picture::of(&surface(width)).unwrap(),
+            look: Look::SDR,
             slot_size: 0x10000,
             space: SpaceId(1),
             memory: Vec::new(),

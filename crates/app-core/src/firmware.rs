@@ -59,7 +59,9 @@ fn from_descriptors(folder: &Path) -> Option<Firmware> {
         names.iter().filter_map(|path| serde_json::from_slice(&fs::read(path).ok()?).ok()).collect();
     let first = |with_keys| descriptors.iter().find_map(|found| files_of(found, with_keys));
     let (code, vars) = first(false)?;
-    let (code_secure, vars_secure) = first(true)?;
+    // Arch ships no firmware with keys. A VM with no TPM never uses it, and one with a TPM gets
+    // Secure Boot off.
+    let (code_secure, vars_secure) = first(true).unwrap_or_else(|| (code.clone(), vars.clone()));
     Some(Firmware { code, vars, code_secure, vars_secure })
 }
 
@@ -121,6 +123,31 @@ mod tests {
         assert_eq!(found.code, Path::new("/o/CODE.secboot.fd"));
         assert_eq!(found.vars, Path::new("/o/VARS.fd"));
         assert_eq!(found.vars_secure, Path::new("/o/VARS.ms.fd"));
+    }
+
+    #[test]
+    fn a_file_that_isnt_a_descriptor_is_passed_over() {
+        let scratch = Scratch::new();
+        let features = r#""enrolled-keys", "requires-smm", "secure-boot""#;
+        scratch.write("firmware/40-keys.json", descriptor("/s/CODE", "/s/VARS.ms", features));
+        let features = r#""requires-smm", "secure-boot""#;
+        scratch.write("firmware/50-secure.json", descriptor("/s/CODE", "/s/VARS", features));
+        scratch.write("firmware/60-plain.json", descriptor("/s/PLAIN", "/s/PLAIN_VARS", ""));
+        scratch.write("firmware/70-not-json.json", "nothing");
+        let found = from_descriptors(&scratch.path("firmware")).unwrap();
+        assert_eq!(found.vars, Path::new("/s/VARS"));
+        assert_eq!(found.vars_secure, Path::new("/s/VARS.ms"));
+        assert_eq!((format_of(&found.code), format_of(&found.code_secure)), ("raw", "raw"));
+    }
+
+    #[test]
+    fn with_no_firmware_with_keys_the_plain_one_stands_in() {
+        let scratch = Scratch::new();
+        let features = r#""requires-smm", "secure-boot""#;
+        scratch.write("firmware/50-secure.json", descriptor("/s/CODE", "/s/VARS", features));
+        let found = from_descriptors(&scratch.path("firmware")).unwrap();
+        assert_eq!(found.vars_secure, Path::new("/s/VARS"));
+        assert_eq!(from_descriptors(&scratch.path("nothing")), None);
     }
 
     #[test]

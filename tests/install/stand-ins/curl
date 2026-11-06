@@ -1,0 +1,23 @@
+#!/bin/sh
+# Stands in for curl: a release is a folder, FAKE_RELEASES/vVERSION, and main's script a file in it.
+out=""
+url=""
+while [ $# -gt 0 ]; do
+    case $1 in
+        -o) out=$2; shift ;;
+        http*) url=$1 ;;
+    esac
+    shift
+done
+printf '%s\n' "$url" >>"$STAND_IN_LOG"
+case $url in
+    */releases/download/*) file=$FAKE_RELEASES/${url#*/releases/download/} ;;
+    */main/install.sh) file=$FAKE_RELEASES/main-install.sh ;;
+    *) exit 22 ;;
+esac
+[ -f "$file" ] || exit 22
+if [ -n "$out" ]; then
+    cp "$file" "$out"
+else
+    cat "$file"
+fi

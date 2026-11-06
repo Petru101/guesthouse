@@ -1,0 +1,6 @@
+#!/bin/sh
+# Stands in for ldconfig -p, naming whatever FAKE_LIBRARIES holds, once the stand-in packages are "in".
+[ -e "$STAND_IN_LOG.installed" ] || [ -n "${LIBRARIES_PRESENT:-}" ] || exit 0
+for library in "$FAKE_LIBRARIES"/*; do
+    printf '\t%s (libc6,x86-64) => %s\n' "${library##*/}" "$library"
+done

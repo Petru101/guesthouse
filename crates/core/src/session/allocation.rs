@@ -172,6 +172,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         handles.extend(self.resources.remove(&resource).unwrap_or_default());
         self.run_deferred();
         for handle in handles {
+            self.allocation_going(handle);
             let Some(allocation) = self.allocations.remove(&handle) else { continue };
             self.leave_resource(allocation.resource, handle);
             let Some(memory) = allocation.memory else { continue };

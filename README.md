@@ -23,6 +23,7 @@ The GPU backend is still private while I sort out licensing and clean it up. It'
 This repo is where it's all heading. So far it has:
 
 - the QEMU patch, in `qemu/`
+- the files that go into a Windows guest, in `guest/`
 - the code that reads and answers the guest's messages
 - the tracking of processes, allocations, fences and GPU addresses
 - the line a GPU vendor's backend plugs in at, so AMD and Intel can fit in later
@@ -181,6 +182,31 @@ cargo run -p guesthouse-app       # the app, which needs GTK 4.16 and libadwaita
 With GTK 4.14, add `--no-default-features`: that leaves out HDR and nothing else.
 
 [ARCHITECTURE.md](ARCHITECTURE.md) explains how the pieces fit, and [CONTRIBUTING.md](CONTRIBUTING.md) how to work on them.
+
+## Installing
+
+There's no release yet, so the script has nothing to fetch and says so. The one line goes here once it works.
+
+`install.sh` and `uninstall.sh` are at the top of this repo. They're plain `sh`, and they're meant to be read before you run them. Nothing runs until the last line, so a download that gets cut off does nothing. To read it first, download it, read it, and run it with `sh install.sh --dry-run`, which checks everything, shows the plan and stops.
+
+What `install.sh` does, in order:
+
+1. Refuses to run as root, on NixOS, on musl, and on anything but x86_64.
+2. Looks at the distro, CPU and KVM, with no root.
+3. Downloads one release into a folder of its own and checks its SHA-256 against the one in the script.
+4. Asks the release's own `guesthouse-check` what this PC can run. That's what looks at the GPU and its driver. If the answer's no it still installs, with plain VMs only, and says why.
+5. Shows you the plan and every command that needs root, word for word, and waits for you to type yes. Root is one `sudo` for missing packages, or nothing at all if they're here.
+6. Puts everything under your own folders: the program in `~/.local/lib/guesthouse/VERSION`, reached through a `current` link, plus a launcher and icons. It writes all of that in `~/.local/lib/guesthouse/manifest`.
+
+It never installs or changes a GPU driver, kernel arguments or services. On an immutable distro it only touches your home folder, and prints what to layer.
+
+A word on the checksum. It proves the download is the release the script names, and that's all. It can't protect you from the script, which is why you should read it.
+
+To update, run the script again, or `~/.local/lib/guesthouse/current/install.sh --update`. It says what will change and refuses while a VM is running. The old version stays until the new one is in place, so a failed update leaves you with what you had. Your machines, disks and settings aren't touched. `--check-update` says if there's a newer release and changes nothing. If your driver has moved to another branch, it tells you what that means. GPU machines won't start until the branches match, and plain VMs still run.
+
+To remove it, run `~/.local/lib/guesthouse/current/uninstall.sh`. It refuses while a VM is running, and removes what's in the manifest and nothing else, and a file that has changed since the install stays. Your machines stay too, unless you pass `--delete-machines` and then type the folder's name. Packages stay, as something else may use them, and it lists them.
+
+I run this on Fedora. Debian, Ubuntu and Arch should work, and openSUSE is best effort. Debian 13 and Ubuntu 24.04 can't run the app yet, though, as their libadwaita is older than 1.8, and the script stops and says so. Nothing here has been tried on a real install of any of them.
 
 ## Bring your own
 

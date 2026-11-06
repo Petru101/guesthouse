@@ -31,6 +31,7 @@ const PROGRAM_MARK: &str = "guest";
 const REPO_GUEST_MARK: &str = "setup.ps1";
 const SHARED_MEMORY: &str = "/dev/shm";
 const QEMU_PROGRAM: &str = "qemu/build/qemu-system-x86_64";
+/// Where each distribution's firmware package says what it installed, in QEMU's own format.
 const SYSTEM_QEMU: &str = "qemu-system-x86_64";
 
 /// The environment, as a value, so that a test can say what it holds.

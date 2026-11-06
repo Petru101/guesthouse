@@ -1,0 +1,81 @@
+; GuesthouseDisplay.inf
+;
+
+[Version]
+PnpLockdown=1
+Signature="$Windows NT$"
+ClassGUID = {4D36E968-E325-11CE-BFC1-08002BE10318}
+Class = Display
+ClassVer = 2.0
+Provider=%ManufacturerName%
+CatalogFile=GuesthouseDisplay.cat
+DriverVer=10/16/2024,0.0.1.0
+
+[Manufacturer]
+%ManufacturerName%=Standard,NT$ARCH$
+
+[Standard.NT$ARCH$]
+%DeviceName%=MyDevice_Install, Root\GuesthouseDisplay
+%DeviceName%=MyDevice_Install, GuesthouseDisplay
+
+[SourceDisksFiles]
+GuesthouseDisplay.dll=1
+
+[SourceDisksNames]
+1 = %DiskName%
+
+; =================== UMDF Device ==================================
+
+[MyDevice_Install.NT]
+CopyFiles=UMDriverCopy
+
+[MyDevice_Install.NT.hw]
+AddReg = MyDevice_HardwareDeviceSettings, MyDevice_DeviceSecurity
+
+[MyDevice_HardwareDeviceSettings]
+HKR,, "UpperFilters",  %REG_MULTI_SZ%, "IndirectKmd"
+HKR, "WUDF", "DeviceGroupId", %REG_SZ%, "GuesthouseDisplayGroup"
+
+[MyDevice_DeviceSecurity]
+HKR,, "Security", %REG_SZ%, "D:P(A;;GA;;;SY)(A;;GA;;;BA)"
+
+[MyDevice_Install.NT.Services]
+AddService=WUDFRd,0x000001fa,WUDFRD_ServiceInstall
+
+[MyDevice_Install.NT.Wdf]
+UmdfService=GuesthouseDisplay,GuesthouseDisplay_Install
+UmdfServiceOrder=GuesthouseDisplay
+UmdfKernelModeClientPolicy = AllowKernelModeClients
+UmdfImpersonationLevel=Impersonation
+
+[GuesthouseDisplay_Install]
+UmdfLibraryVersion=$UMDFVERSION$
+ServiceBinary=%12%\UMDF\GuesthouseDisplay.dll
+UmdfExtensions = IddCx0102
+
+[WUDFRD_ServiceInstall]
+DisplayName = %WudfRdDisplayName%
+ServiceType = 1
+StartType = 3
+ErrorControl = 1
+ServiceBinary = %12%\WUDFRd.sys
+
+[DestinationDirs]
+UMDriverCopy=12,UMDF ; copy to drivers\umdf
+
+[UMDriverCopy]
+GuesthouseDisplay.dll
+
+; =================== Generic ==================================
+
+[Strings]
+ManufacturerName="Guesthouse"
+DiskName = "Guesthouse display driver"
+WudfRdDisplayName="Windows Driver Foundation - User-mode Driver Framework Reflector"
+; With an indirect display as the only display, the guest's OpenGL and Vulkan need the device to have this name.
+DeviceName="RDPUDD Chained DD"
+
+REG_MULTI_SZ  = 0x00010000
+REG_SZ        = 0x00000000
+REG_EXPAND_SZ = 0x00020000
+REG_DWORD     = 0x00010001
