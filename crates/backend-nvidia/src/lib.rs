@@ -15,4 +15,5 @@ pub mod inf;
 pub mod profile;
 pub mod pushbuffer;
 pub mod rm;
+pub mod sensors;
 pub mod startup;
