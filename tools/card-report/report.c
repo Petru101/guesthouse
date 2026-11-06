@@ -122,8 +122,8 @@ static void write_windows_nodes(FILE *out, const AdapterFacts *adapter)
         const WindowsNode *node = &adapter->nodes[i];
         unsigned type = (unsigned)node->engine_type;
 
-        fprintf(out, "  %2zu: %s, %s\n", i, type < ENGINE_TYPE_COUNT ? engine_types[type] : "unknown",
-                node->name);
+        fprintf(out, "  %2zu: %s%s%s\n", i, type < ENGINE_TYPE_COUNT ? engine_types[type] : "unknown",
+                node->name[0] ? ", " : "", node->name);
     }
 }
 

@@ -21,10 +21,12 @@
 #define QUERY_NODE 25
 #define QUERY_DEVICE_IDS 31
 #define QUERY_KERNEL_DRIVER_VERSION 49
+#define QUERY_DRIVER_MODEL_FOR_RENDER 56
 #define QUERY_DESCRIPTION 65
+#define QUERY_DESCRIPTION_FOR_RENDER 66
 
 /* Room for a record of a size this program has no layout for. */
-#define RECORD_LARGEST_ASK 0x40000
+#define RECORD_LARGEST_ASK 0x10000
 
 #define VERSION_PARTS 4
 #define VERSION_PART_BITS 16
@@ -111,11 +113,14 @@ static void read_adapter(UINT adapter, const DeviceIds *ids, AdapterFacts *facts
     facts->have_ids = true;
     facts->device_id = (uint16_t)ids->device;
     facts->revision = (uint8_t)ids->revision;
-    if (ask(adapter, QUERY_DESCRIPTION, description, sizeof(description))) {
+    if (ask(adapter, QUERY_DESCRIPTION_FOR_RENDER, description, sizeof(description)) ||
+        ask(adapter, QUERY_DESCRIPTION, description, sizeof(description))) {
         plain_text(facts->name, sizeof(facts->name), (const uint16_t *)description, DESCRIPTION_CHARS);
     }
     read_driver_version(adapter, facts);
-    ask(adapter, QUERY_DRIVER_MODEL, &facts->driver_model, sizeof(facts->driver_model));
+    if (!ask(adapter, QUERY_DRIVER_MODEL_FOR_RENDER, &facts->driver_model, sizeof(facts->driver_model))) {
+        ask(adapter, QUERY_DRIVER_MODEL, &facts->driver_model, sizeof(facts->driver_model));
+    }
     read_nodes(adapter, facts);
 }
 
@@ -242,8 +247,9 @@ static void say_what_happened(void)
     }
     for (size_t i = 0; i < report.card_count; i++) {
         const Card *card = &report.cards[i];
+        const char *name = card->adapter.name[0] ? card->adapter.name : card->record.name;
 
-        printf("Found %s.\n", card->adapter.name[0] ? card->adapter.name : "an NVIDIA card");
+        printf("Found %s.\n", name[0] ? name : "an NVIDIA card");
         if (card->record.state != RECORD_READ) {
             printf("Some fields can't be read on this driver, and the report says which.\n");
         }
