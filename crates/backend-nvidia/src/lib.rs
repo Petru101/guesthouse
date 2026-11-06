@@ -10,6 +10,8 @@
 #![allow(dead_code, unused_imports)]
 
 pub mod channel;
+pub mod inf;
 pub mod profile;
 pub mod pushbuffer;
 pub mod rm;
+pub mod startup;
