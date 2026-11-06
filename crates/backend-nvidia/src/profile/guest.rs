@@ -48,6 +48,8 @@ pub struct RecordLayout {
     pub ram_megabytes: [usize; 3],
     /// A word of flags whose meanings aren't known, bar the one in the builder.
     pub flags: usize,
+    /// A byte of flags whose meaning isn't known, as with the word above.
+    pub decoder_flags: usize,
     pub current_clocks: usize,
     pub rated_clocks: usize,
     pub chipset: usize,
@@ -157,6 +159,7 @@ pub const GUEST_617: GuestBranch = GuestBranch {
         cpu_short: 0x40,
         ram_megabytes: [0x48, 0x4C, 0x50],
         flags: 0x60,
+        decoder_flags: 0x1D5,
         current_clocks: 0xA8,
         rated_clocks: 0xB4,
         chipset: 0xE4,

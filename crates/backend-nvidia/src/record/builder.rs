@@ -83,6 +83,10 @@ const FIFO_NO_PIPELINED_PAGE_TABLE_BLIT: (usize, u8) = (0, 0x80);
 /// Measured: with this bit clear, Direct3D 11 offers no video decoders at all.
 const FLAG_VIDEO_DECODE: u32 = 1 << 20;
 
+/// As a real install's record has it. Measured: with either bit clear, making a Direct3D 11 decoder
+/// fails as out of memory.
+const DECODER_FLAGS: u8 = 0x48;
+
 /// The identifiers the guest's adapter goes by, which the core's identity answer repeats.
 const ADAPTER_ID: [u32; 2] = [0xABC, 1];
 
@@ -322,6 +326,7 @@ pub fn build<R: Rm>(
     }
 
     record.word(layout.flags, FLAG_VIDEO_DECODE);
+    record.put(layout.decoder_flags, &[DECODER_FLAGS]);
     record.counted_words(layout.classes, &card.classes().map_err(card_failed)?)?;
 
     let (graphics_hertz, memory_hertz) = host.rated_clocks;
