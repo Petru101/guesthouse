@@ -16,9 +16,12 @@ const BLOCK_AT: usize = 0x18;
 const BLOCK_IN_RECORD: usize = 0x105;
 const BLOCK_SIZE: usize = 0xD1;
 const CLASS_COUNT_AT: usize = BLOCK_AT + BLOCK_SIZE;
+/// Two words of 64 bits, with a bit set for each of the RM's engine numbers this card has.
+const ENGINE_MASK: usize = 0x1C;
+const ENGINE_MASK_BITS: u32 = 128;
 
 /// Builds the answer from the record, which already holds all of it.
-pub fn caps_answer(record: &[u8], layout: &RecordLayout, request: &[u8], out: &mut Vec<u8>) {
+pub fn caps_answer(record: &[u8], layout: &RecordLayout, engines: &[u32], request: &[u8], out: &mut Vec<u8>) {
     let start = out.len();
     out.resize(start + CAPS_SIZE, 0);
     let answer = &mut out[start..];
@@ -27,6 +30,11 @@ pub fn caps_answer(record: &[u8], layout: &RecordLayout, request: &[u8], out: &m
     if let Some(block) = record.get(BLOCK_IN_RECORD..BLOCK_IN_RECORD + BLOCK_SIZE) {
         answer[BLOCK_AT..CLASS_COUNT_AT].copy_from_slice(block);
     }
+    let mask = engines
+        .iter()
+        .filter(|&&engine| engine < ENGINE_MASK_BITS)
+        .fold(0u128, |mask, engine| mask | 1 << engine);
+    answer[ENGINE_MASK..ENGINE_MASK + 16].copy_from_slice(&mask.to_le_bytes());
     let room = CAPS_SIZE - CLASS_COUNT_AT;
     if let Some(classes) = record.get(layout.classes..) {
         let count = classes.first_chunk::<4>().map_or(0, |bytes| u32::from_le_bytes(*bytes)) as usize;
@@ -58,7 +66,7 @@ mod tests {
     #[test]
     fn the_answer_is_the_size_asked_and_keeps_the_guests_header() {
         let mut out = Vec::new();
-        caps_answer(&record(), LAYOUT, &[9; 0x40], &mut out);
+        caps_answer(&record(), LAYOUT, &[], &[9; 0x40], &mut out);
         assert_eq!(out.len(), CAPS_SIZE);
         assert_eq!(out[HEADER_SIZE - 1], 9);
         assert_eq!(out[HEADER_SIZE], 0);
@@ -67,10 +75,19 @@ mod tests {
     #[test]
     fn the_block_and_the_classes_land_where_the_runtime_reads_them() {
         let mut out = Vec::new();
-        caps_answer(&record(), LAYOUT, &[], &mut out);
+        caps_answer(&record(), LAYOUT, &[], &[], &mut out);
         assert_eq!(out[BLOCK_AT], 0xAB);
         assert_eq!(word(&out, CLASS_COUNT_AT), 2);
         assert_eq!(word(&out, CLASS_COUNT_AT + 8), 0xCFB7);
+    }
+
+    #[test]
+    fn each_engine_the_card_has_sets_its_bit() {
+        let mut out = Vec::new();
+        caps_answer(&record(), LAYOUT, &[0x13, 0x3F, 0x50], &[], &mut out);
+        assert_eq!(word(&out, ENGINE_MASK), 1 << 0x13);
+        assert_eq!(word(&out, ENGINE_MASK + 4), 1 << (0x3F - 32));
+        assert_eq!(word(&out, ENGINE_MASK + 8), 1 << (0x50 - 64));
     }
 
     #[test]
@@ -78,7 +95,7 @@ mod tests {
         let mut record = record();
         record[LAYOUT.classes..LAYOUT.classes + 4].copy_from_slice(&0xFFFFu32.to_le_bytes());
         let mut out = Vec::new();
-        caps_answer(&record, LAYOUT, &[], &mut out);
+        caps_answer(&record, LAYOUT, &[], &[], &mut out);
         assert_eq!(out.len(), CAPS_SIZE);
     }
 }

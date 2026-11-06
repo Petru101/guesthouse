@@ -41,7 +41,7 @@ fn put_long(data: &mut [u8], at: usize, value: u64) {
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{device, escape};
+    use super::super::tests::{NO_FACTS, device, escape};
     use super::super::{FUNCTION_RUNTIME_GPU_RANGE, RESULT, answer as answer_escape, get};
     use super::*;
 
@@ -55,7 +55,7 @@ mod tests {
     #[test]
     fn the_four_fields_land_at_their_packed_offsets() {
         let mut data = escape(FUNCTION_RUNTIME_GPU_RANGE, WHOLE_ANSWER);
-        answer_escape(&mut device(), &[], &mut data).unwrap();
+        answer_escape(&mut device(), NO_FACTS, &mut data).unwrap();
         assert_eq!(get(&data, RESULT), Some(1));
         assert_eq!(data[PRESENT], 1);
         assert_eq!(get(&data, UNEXPLAINED), Some(0x20_0000));
@@ -66,7 +66,7 @@ mod tests {
     #[test]
     fn the_range_promised_is_the_range_the_host_keeps_clear() {
         let mut data = escape(FUNCTION_RUNTIME_GPU_RANGE, WHOLE_ANSWER);
-        answer_escape(&mut device(), &[], &mut data).unwrap();
+        answer_escape(&mut device(), NO_FACTS, &mut data).unwrap();
         assert!(RUNTIME_GPU_RANGE.contains(long(&data, BASE)));
         assert!(RUNTIME_GPU_RANGE.contains(long(&data, LAST)));
     }
@@ -74,7 +74,7 @@ mod tests {
     #[test]
     fn a_short_buffer_gets_what_fits() {
         let mut data = escape(FUNCTION_RUNTIME_GPU_RANGE, BASE + 4);
-        answer_escape(&mut device(), &[], &mut data).unwrap();
+        answer_escape(&mut device(), NO_FACTS, &mut data).unwrap();
         assert_eq!(data[PRESENT], 1);
     }
 }

@@ -36,6 +36,8 @@ fn utf16_zero(text: &str) -> Vec<u8> {
 #[derive(Debug, Clone)]
 pub struct Inputs {
     pub record: Vec<u8>,
+    /// The RM's engine numbers on this card.
+    pub engines: Vec<u32>,
     pub nodes: Vec<Node>,
     pub registry: AdapterRegistry,
     pub guid_seed: String,
@@ -47,6 +49,7 @@ pub struct Inputs {
 #[derive(Debug, Clone)]
 pub struct AdapterAnswers {
     record: Vec<u8>,
+    rm_engines: Vec<u32>,
     layout: &'static RecordLayout,
     discovery_field: usize,
     fixed: HashMap<u32, Vec<u8>>,
@@ -62,6 +65,7 @@ impl AdapterAnswers {
         let numbered = (0u32..).zip(&inputs.nodes);
         Self {
             record: inputs.record,
+            rm_engines: inputs.engines,
             layout,
             discovery_field: layout.gpu_discovery,
             fixed: fixed.into_iter().collect(),
@@ -137,7 +141,7 @@ impl AdapterAnswers {
     pub fn answer(&self, query: &VendorQuery<'_>, out: &mut Vec<u8>) -> Option<Status> {
         match query.kind {
             QUERY_RECORD if query.size == CAPS_SIZE => {
-                caps_answer(&self.record, self.layout, query.data, out)
+                caps_answer(&self.record, self.layout, &self.rm_engines, query.data, out)
             }
             QUERY_RECORD => self.record_answer(query.size, out),
             QUERY_USER_DRIVER_NAME => Self::user_driver_name(query, out),
@@ -165,6 +169,7 @@ mod tests {
     fn answers() -> AdapterAnswers {
         let inputs = Inputs {
             record: vec![7; 16],
+            engines: Vec::new(),
             nodes: node_list(&[0x01, 0x09, 0x0D, 0x13], None),
             registry: AdapterRegistry::default(),
             guid_seed: "seed".into(),

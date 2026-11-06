@@ -24,7 +24,7 @@ pub mod staging;
 pub mod startup;
 
 use answers::adapter::{AdapterAnswers, Inputs};
-use answers::nodes::node_list;
+use answers::nodes::{Node, node_list};
 use answers::perf_data;
 use answers::registry::AdapterRegistry;
 use guesthouse_backend::{
@@ -98,6 +98,7 @@ pub struct NvidiaBackend<R> {
     guest: &'static GuestBranch,
     /// The class behind each handle the guest's driver uses.
     channel_classes: Vec<(u32, u32)>,
+    nodes: Vec<Node>,
     facts: AdapterFacts,
     answers: AdapterAnswers,
     pub(crate) spaces: HashMap<SpaceId, AddressSpace>,
@@ -166,13 +167,22 @@ impl<R: Rm> NvidiaBackend<R> {
         };
         let (graphics_hertz, memory_hertz) = (clock(layout.rated_clocks), clock(layout.rated_clocks + 4));
         let card_uuid = record[layout.uuid..layout.uuid + 16].try_into().expect("sixteen bytes");
-        let inputs = Inputs { guid_seed, graphics_hertz, memory_hertz, nodes, registry, record };
+        let inputs = Inputs {
+            guid_seed,
+            graphics_hertz,
+            memory_hertz,
+            nodes: nodes.clone(),
+            registry,
+            record,
+            engines,
+        };
         Ok(Self {
             device,
             generation,
             host_branch,
             guest,
             channel_classes: guest_channel_classes(guest, generation),
+            nodes,
             facts: AdapterFacts {
                 card: pci_card,
                 name,
@@ -335,7 +345,8 @@ impl<R: Rm + OpenRm> Backend for NvidiaBackend<R> {
 
     fn escape(&mut self, data: &mut [u8]) {
         log::debug!("escape {:02x?}, {} bytes", data.get(0x10..0x14), data.len());
-        if let Err(error) = escape::answer(&mut self.device, &self.channel_classes, data) {
+        let facts = escape::EscapeFacts { channel_classes: &self.channel_classes, nodes: &self.nodes };
+        if let Err(error) = escape::answer(&mut self.device, facts, data) {
             log::warn!("an escape failed: {error}");
         }
     }
