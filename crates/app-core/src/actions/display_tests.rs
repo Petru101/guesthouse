@@ -285,3 +285,47 @@ fn a_lost_upload_on_a_new_machine_is_said_and_tried_again() {
     guest.loses_uploads.store(false, Ordering::Relaxed);
     assert_eq!(rig.run(boot_display).driver, Driver::Installed);
 }
+
+#[test]
+fn a_settings_change_that_stalls_never_costs_the_driver() {
+    let (rig, guest) = Rig::new().with(|context| Guest::new(context, "working", INSTALLED, false));
+    rig.say_this_build_is_in("build 1");
+    let state = rig.run(apply_display);
+    assert_eq!(guest.asked_for("take it out"), 0);
+    assert_eq!(state.driver, Driver::Installed);
+    assert_eq!(state.reason, "");
+    assert!(state.note.contains("hasn't confirmed"), "{}", state.note);
+    *guest.screen.lock().unwrap() = ON_BASIC;
+    let state = rig.run(apply_display);
+    assert_eq!(guest.asked_for("take it out"), 0, "not even if Windows says it's on the basic display");
+    assert_eq!(state.driver, Driver::Installed);
+}
+
+#[test]
+fn a_driver_that_has_shown_frames_only_goes_after_two_blank_boots_in_a_row() {
+    let (rig, guest) = Rig::new().with(|context| Guest::new(context, "working", INSTALLED, true));
+    rig.run(boot_display);
+    guest.sends_frames.store(false, Ordering::Relaxed);
+    let state = rig.run(boot_display);
+    assert_eq!(guest.asked_for("take it out"), 0, "one slow boot can't cost the driver");
+    assert_eq!(state.driver, Driver::Installed);
+    assert!(state.note.contains("no picture"), "{}", state.note);
+    guest.sends_frames.store(true, Ordering::Relaxed);
+    rig.run(boot_display);
+    guest.sends_frames.store(false, Ordering::Relaxed);
+    rig.run(boot_display);
+    assert_eq!(guest.asked_for("take it out"), 0, "a good boot starts the count again");
+    let state = rig.run(boot_display);
+    assert_eq!(guest.asked_for("take it out"), 1, "a machine can't stay black for good");
+    assert_eq!(state.driver, Driver::Failed);
+}
+
+#[test]
+fn a_stopped_gpu_is_no_reason_to_give_up_on_the_driver() {
+    let (rig, guest) = Rig::new().with(|context| Guest::new(context, "working", INSTALLED, false));
+    guesthouse_daemon::gpu_note::write_note(&rig.context.run_folder(None), true).unwrap();
+    for _ in 0..3 {
+        assert_eq!(rig.run(boot_display).driver, Driver::Installed);
+    }
+    assert_eq!(guest.asked_for("take it out"), 0);
+}

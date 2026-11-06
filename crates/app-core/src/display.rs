@@ -83,6 +83,12 @@ pub struct DisplayState {
     /// What couldn't be done of what was asked for.
     pub note: String,
     pub running: Option<RunningScreen>,
+    /// This build has sent a picture, so it's worth waiting for.
+    #[serde(default)]
+    pub shown_frames: bool,
+    /// Boots in a row with no picture, from a build that has sent one before.
+    #[serde(default)]
+    pub blank_boots: u32,
 }
 
 impl DisplayState {

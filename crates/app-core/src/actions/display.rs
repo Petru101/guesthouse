@@ -12,6 +12,7 @@ use crate::failure::Result;
 use crate::log::write_log;
 use crate::machine::REFRESH_RATES;
 use guesthouse_daemon::display_note::ScreenNote;
+use guesthouse_daemon::gpu_note::read_note as read_gpu_note;
 use std::time::Duration;
 
 const APPLY_SCRIPT: &str = include_str!("../../data/apply-display.ps1");
@@ -26,6 +27,9 @@ const CHECK_SECONDS: u64 = 15;
 /// From a mode change or a logon to the driver's ring being up.
 const RING_WAIT: Duration = Duration::from_secs(40);
 const RING_POLL: Duration = Duration::from_secs(1);
+/// How many boots in a row with no picture a driver that has worked gets. One slow boot can't cost it
+/// the machine, and this many mean the screen would stay black for good.
+const BLANK_BOOTS_ALLOWED: u32 = 2;
 /// What the logon task uses if the machine's own rate isn't one the driver has.
 const SAFE_HZ: u32 = 60;
 const LOGON_TASK: &str = "guesthouse-display";
@@ -48,7 +52,17 @@ const NO_FRAMES: &str = "The display driver installed but sent no picture, so it
                          its basic display.";
 const NOT_UP: &str =
     "The display driver did not come up, so it was taken out and Windows is on its basic display.";
+const NOT_CONFIRMED: &str = "Windows hasn't confirmed this change with a picture yet.";
+const BLANK_BOOT: &str = "The display driver sent no picture on this boot. If that happens again on the next one,                           it's taken out.";
 const NO_HDR_SCREEN: &str = "This screen can't show HDR, so Windows stays in SDR.";
+
+/// Why the screen is being set. A boot can give up on the driver, and a change to a running machine
+/// never does: a late picture is no reason to take the driver from under it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Occasion {
+    Boot,
+    SettingsChange,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Device {
@@ -169,6 +183,8 @@ fn install(task: &Task, package: &DriverPackage, state: &mut DisplayState, found
     state.package.clone_from(&package.id);
     state.failed_package.clear();
     state.reason.clear();
+    state.shown_frames = false;
+    state.blank_boots = 0;
     Ok(())
 }
 
@@ -260,7 +276,36 @@ fn give_up(task: &mut Task, state: &mut DisplayState, wanted: &Wanted, reason: &
     settle_on_basic(task, state, wanted)
 }
 
-fn apply(task: &mut Task, state: &mut DisplayState) -> Result<()> {
+/// Windows says it's on our display, or should be, and no picture came.
+fn no_picture(
+    task: &mut Task,
+    state: &mut DisplayState,
+    wanted: &Wanted,
+    screen: RunningScreen,
+    occasion: Occasion,
+) -> Result<()> {
+    state.running = Some(screen);
+    if occasion == Occasion::SettingsChange {
+        state.note = NOT_CONFIRMED.to_owned();
+        return Ok(());
+    }
+    // Nothing can reach the host then, however good the driver is, and the row already says so.
+    if read_gpu_note(&task.context.run_folder(None)).is_some() {
+        state.note.clear();
+        return Ok(());
+    }
+    state.blank_boots += 1;
+    if !state.shown_frames || state.blank_boots >= BLANK_BOOTS_ALLOWED {
+        return give_up(task, state, wanted, if screen.on_driver { NO_FRAMES } else { NOT_UP });
+    }
+    if !screen.on_driver {
+        settle_on_basic(task, state, wanted)?;
+    }
+    state.note = BLANK_BOOT.to_owned();
+    Ok(())
+}
+
+fn apply(task: &mut Task, state: &mut DisplayState, occasion: Occasion) -> Result<()> {
     let wanted = Wanted::of(task);
     let Wanted { width, height, hz, .. } = wanted;
     task.step(&format!("Setting the display to {width}x{height} at {hz} Hz"));
@@ -270,18 +315,15 @@ fn apply(task: &mut Task, state: &mut DisplayState) -> Result<()> {
         state.running = None;
         return Ok(());
     };
-    if !screen.on_driver {
-        return if expected {
-            give_up(task, state, &wanted, NOT_UP)
-        } else {
-            settle_on_basic(task, state, &wanted)
-        };
+    if !screen.on_driver && !expected {
+        return settle_on_basic(task, state, &wanted);
     }
-    let Some(found) = wait_for_ring(task, &wanted) else {
-        return give_up(task, state, &wanted, NO_FRAMES);
-    };
+    let found = if screen.on_driver { wait_for_ring(task, &wanted) } else { None };
+    let Some(found) = found else { return no_picture(task, state, &wanted, screen, occasion) };
     write_log(task.context, &format!("display: frames are {found:?}"))?;
     state.running = Some(screen);
+    state.shown_frames = true;
+    state.blank_boots = 0;
     state.note = wanted.shortfall(task.machine.hdr, screen);
     Ok(())
 }
@@ -297,14 +339,14 @@ pub(super) fn set_up_display(task: &mut Task) -> Result<()> {
     save(task, &state)?;
     make_sure_of_driver(task, &mut state, false)?;
     save(task, &state)?;
-    apply(task, &mut state)?;
+    apply(task, &mut state, Occasion::Boot)?;
     save(task, &state)
 }
 
 /// The settings have changed while the machine is up.
 pub(super) fn apply_display(task: &mut Task) -> Result<()> {
     let mut state = read_state(task.context, &task.machine);
-    apply(task, &mut state)?;
+    apply(task, &mut state, Occasion::SettingsChange)?;
     save(task, &state)
 }
 
@@ -313,7 +355,7 @@ pub(super) fn install_display(task: &mut Task) -> Result<()> {
     let mut state = read_state(task.context, &task.machine);
     make_sure_of_driver(task, &mut state, true)?;
     save(task, &state)?;
-    apply(task, &mut state)?;
+    apply(task, &mut state, Occasion::Boot)?;
     save(task, &state)
 }
 
