@@ -1,3 +1,5 @@
-//! `guesthouse`: the desktop app. Its window comes next.
+//! `guesthouse`: the desktop app.
 
-fn main() {}
+fn main() -> gtk::glib::ExitCode {
+    guesthouse_app::application::run()
+}
