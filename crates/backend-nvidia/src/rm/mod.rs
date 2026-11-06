@@ -10,6 +10,8 @@ pub mod dmabuf;
 #[cfg(any(test, feature = "fake-rm"))]
 pub mod fake;
 #[cfg(any(test, feature = "fake-rm"))]
+pub mod fake_card;
+#[cfg(any(test, feature = "fake-rm"))]
 pub mod fake_engine;
 pub mod linux;
 
