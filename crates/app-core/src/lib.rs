@@ -18,6 +18,7 @@ pub mod host;
 pub mod input;
 pub mod iso;
 pub mod library;
+pub mod linux;
 pub mod log;
 pub mod machine;
 pub mod monitor;
