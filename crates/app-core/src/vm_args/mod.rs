@@ -5,6 +5,9 @@
 
 mod arguments;
 mod nic;
+mod ubuntu;
+
+pub use ubuntu::{FORWARDED_INPUT_SOCKET, FRAMES_PREFIX, INSTALL_LOG};
 
 use crate::context::Context;
 use crate::machine::Machine;
@@ -34,6 +37,33 @@ pub enum Boot {
     Install { iso: String, answer: PathBuf },
     /// With the GPU, which needs the daemon up first.
     Gpu,
+    /// Ubuntu's installer, from the ISO's own kernel.
+    UbuntuInstall(UbuntuInstall),
+    /// An installed Ubuntu guest.
+    Ubuntu(UbuntuBoot),
+}
+
+/// What Ubuntu's unattended install starts from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UbuntuInstall {
+    pub iso: String,
+    pub seed: PathBuf,
+    pub kernel: PathBuf,
+    pub initrd: PathBuf,
+}
+
+/// An Ubuntu guest gets the forwarded GPU, or the reason it hasn't.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UbuntuBoot {
+    WithGpu {
+        image: PathBuf,
+        allow_list: PathBuf,
+        sensor_daemon: PathBuf,
+    },
+    /// A file holding the reason, which reaches the guest so that it can say why.
+    NoGpu {
+        reason_file: PathBuf,
+    },
 }
 
 /// What the first NIC is, and what the private link carries.
@@ -54,6 +84,8 @@ pub struct NetworkPlan {
 pub struct VmPlan {
     pub boot: Boot,
     pub slot: Slot,
+    /// The machine's id, which an Ubuntu guest's QEMU goes by.
+    pub name: String,
     pub qemu: PathBuf,
     pub qemu_files: PathBuf,
     pub firmware: Firmware,
@@ -98,6 +130,7 @@ impl VmPlan {
         Self {
             boot,
             slot,
+            name: machine.id.clone(),
             qemu: context.paths.qemu.clone(),
             qemu_files: context.paths.helper("qemu/pc-bios"),
             firmware: context.paths.firmware.clone(),

@@ -3,6 +3,7 @@
 
 mod desktop;
 mod install;
+mod ubuntu;
 
 pub use desktop::{apply_share, boots, rebooted};
 use desktop::{note_boot, set_up_desktop, wait_for_desktop};
@@ -16,7 +17,7 @@ use crate::failure::{Failure, Result};
 use crate::host::{cpu_list, host_ram_limit, vcache_cpus};
 use crate::library::MAX_DISK_GIB;
 use crate::log::clock_text;
-use crate::machine::{Machine, load};
+use crate::machine::{Kind, Machine, load};
 use crate::monitor::Command as Qmp;
 use crate::network_settings::other_machines;
 use crate::processes::qemu_pid;
@@ -120,6 +121,9 @@ fn wait_for_memory(task: &Task) {
 }
 
 pub fn start(task: &mut Task) -> Result<()> {
+    if task.machine.kind == Kind::Linux {
+        return ubuntu::start(task);
+    }
     let machine = task.machine.clone();
     if machine.has_gpu() {
         wait_for_memory(task);
@@ -249,6 +253,7 @@ fn run_action(task: &mut Task, arguments: &[String]) -> Result<()> {
         "resume" => resume(task),
         "clean_up" => clean_up(task),
         "after_reboot" => after_reboot(task),
+        "install" if task.machine.kind == Kind::Linux => ubuntu::install(task),
         "install" => install(task),
         "take_snapshot" => take_snapshot(task, text),
         "go_back" => go_back(task, text),

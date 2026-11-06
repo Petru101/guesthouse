@@ -187,11 +187,15 @@ impl VmPlan {
                 "ide-cd,bus=ahci.2,drive=cd1",
             ]),
             Boot::Gpu => self.gpu_arguments(),
+            Boot::UbuntuInstall(_) | Boot::Ubuntu(_) => Vec::new(),
         }
     }
 
     /// The program's arguments.
     pub fn qemu_arguments(&self) -> Vec<String> {
+        if let Some(arguments) = self.ubuntu_arguments() {
+            return arguments;
+        }
         let mut arguments = words(&["-L", &self.qemu_files.to_string_lossy()]);
         arguments.extend(self.common_arguments());
         arguments.extend(self.boot_arguments());
@@ -215,10 +219,11 @@ impl VmPlan {
     /// The words to run, with `taskset` first if the VM is pinned.
     pub fn qemu_command(&self) -> Vec<String> {
         let qemu = self.qemu.to_string_lossy().into_owned();
-        let mut command = match &self.pin {
-            Some(cpus) => words(&["taskset", "-c", cpus, &qemu]),
-            None => vec![qemu],
-        };
+        let mut command = self.ubuntu_launcher();
+        if let Some(cpus) = &self.pin {
+            command.extend(words(&["taskset", "-c", cpus]));
+        }
+        command.push(qemu);
         command.extend(self.qemu_arguments());
         command
     }
