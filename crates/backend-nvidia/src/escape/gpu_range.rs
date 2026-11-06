@@ -9,6 +9,10 @@ use guesthouse_backend::GpuRange;
 /// Everything from 512 MiB up to the 4 GiB line.
 pub const RUNTIME_GPU_RANGE: GpuRange = GpuRange { start: 0x2000_0000, end: 0x1_0000_0000 };
 
+/// Where the compute runtime places its own big reservations. It picks addresses that are free on
+/// the CPU, from 8 GiB up, and wants the same numbers on the GPU, so nothing of ours can be there.
+pub const RUNTIME_PLACED_RANGE: GpuRange = GpuRange { start: 0x2_0000_0000, end: 0x40_0000_0000 };
+
 // The answer is packed, so these fields aren't aligned.
 const PRESENT: usize = 0x30;
 const UNEXPLAINED: usize = 0x31;
@@ -37,7 +41,7 @@ fn put_long(data: &mut [u8], at: usize, value: u64) {
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{device, escape};
+    use super::super::tests::{NO_FACTS, device, escape};
     use super::super::{FUNCTION_RUNTIME_GPU_RANGE, RESULT, answer as answer_escape, get};
     use super::*;
 
@@ -51,7 +55,7 @@ mod tests {
     #[test]
     fn the_four_fields_land_at_their_packed_offsets() {
         let mut data = escape(FUNCTION_RUNTIME_GPU_RANGE, WHOLE_ANSWER);
-        answer_escape(&mut device(), &[], &super::super::tests::NO_MEMORY, &mut data).unwrap();
+        answer_escape(&mut device(), NO_FACTS, &mut data).unwrap();
         assert_eq!(get(&data, RESULT), Some(1));
         assert_eq!(data[PRESENT], 1);
         assert_eq!(get(&data, UNEXPLAINED), Some(0x20_0000));
@@ -62,7 +66,7 @@ mod tests {
     #[test]
     fn the_range_promised_is_the_range_the_host_keeps_clear() {
         let mut data = escape(FUNCTION_RUNTIME_GPU_RANGE, WHOLE_ANSWER);
-        answer_escape(&mut device(), &[], &super::super::tests::NO_MEMORY, &mut data).unwrap();
+        answer_escape(&mut device(), NO_FACTS, &mut data).unwrap();
         assert!(RUNTIME_GPU_RANGE.contains(long(&data, BASE)));
         assert!(RUNTIME_GPU_RANGE.contains(long(&data, LAST)));
     }
@@ -70,7 +74,7 @@ mod tests {
     #[test]
     fn a_short_buffer_gets_what_fits() {
         let mut data = escape(FUNCTION_RUNTIME_GPU_RANGE, BASE + 4);
-        answer_escape(&mut device(), &[], &super::super::tests::NO_MEMORY, &mut data).unwrap();
+        answer_escape(&mut device(), NO_FACTS, &mut data).unwrap();
         assert_eq!(data[PRESENT], 1);
     }
 }

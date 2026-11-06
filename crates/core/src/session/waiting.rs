@@ -155,7 +155,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
     }
 
     /// Whether no queue behind these handles has work the GPU has not finished.
-    fn queues_idle(&self, mut handles: impl Iterator<Item = u32>) -> bool {
+    pub(crate) fn queues_idle(&self, mut handles: impl Iterator<Item = u32>) -> bool {
         handles.all(|handle| {
             self.visit_live_queues(handle, |queue| {
                 queue.last_fence.is_none_or(|value| self.fence_value(queue.fence) >= value)
@@ -163,7 +163,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         })
     }
 
-    fn after_queues(&mut self, handles: impl Iterator<Item = u32> + Clone, action: QueueAction) {
+    pub(crate) fn after_queues(&mut self, handles: impl Iterator<Item = u32> + Clone, action: QueueAction) {
         if self.queues_idle(handles.clone()) {
             self.run_queue_action(action);
         } else {
@@ -182,6 +182,9 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
                 signals.into_iter().for_each(|(handle, value)| self.write_fence(handle, value));
             }
             QueueAction::PresentDone(token) => self.notices.push(Notice::PresentDone { token }),
+            QueueAction::Retry { message, ticket, started } => {
+                self.pending.push(Pending::Retry { message, ticket, started });
+            }
         }
     }
 
@@ -248,6 +251,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         let release = u64::from(request.release_event);
         let signals: Vec<Signal> = request.objects.iter().zip(request.values.iter()).collect();
         if self.signals_finished(&signals, request.wake_on_any) {
+            self.take_tokens(&signals, request.wake_on_any);
             self.notices.push(Notice::WakeEvent { event: request.event, release });
         } else {
             let (wake_on_any, event) = (request.wake_on_any, request.event);
@@ -262,13 +266,23 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         let request = WaitOnGpu::parse(message)?;
         let signals: Vec<Signal> = request.objects.iter().zip(request.values.iter()).collect();
         let handle = request.queue_or_context;
+        if self.context_nodes.contains_key(&handle) {
+            self.queue_of_context(handle, message)?;
+        }
         let queues = self.context_queues.get(&handle).cloned().unwrap_or_else(|| vec![handle]);
         let deadline = Instant::now() + GATE_TIMEOUT;
         for queue in queues {
+            if !self.gates.contains_key(&queue) && self.signals_finished(&signals, false) {
+                self.take_tokens(&signals, false);
+                continue;
+            }
+            let id = self.next_wait;
+            self.next_wait += 1;
+            self.join_lines(&signals, id);
+            let step = GateStep::Wait { signals: signals.clone(), deadline, id };
             if let Some(gate) = self.gates.get_mut(&queue) {
-                gate.push_back(GateStep::Wait { signals: signals.clone(), deadline });
-            } else if !self.signals_finished(&signals, false) {
-                let step = GateStep::Wait { signals: signals.clone(), deadline };
+                gate.push_back(step);
+            } else {
                 self.gates.insert(queue, VecDeque::from([step]));
                 self.pending.push(Pending::Gate { queue });
             }
@@ -281,11 +295,16 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
     fn run_gate(&mut self, queue: u32, now: Instant) -> bool {
         while let Some(step) = self.gates.get_mut(&queue).and_then(VecDeque::pop_front) {
             match step {
-                GateStep::Wait { signals, deadline } => {
-                    if !self.signals_finished(&signals, false) && now < deadline {
-                        let held = GateStep::Wait { signals, deadline };
+                GateStep::Wait { signals, deadline, id } => {
+                    let can_go = self.wait_can_go(&signals, id);
+                    if !can_go && now < deadline {
+                        let held = GateStep::Wait { signals, deadline, id };
                         self.gates.get_mut(&queue).expect("just read").push_front(held);
                         return false;
+                    }
+                    self.leave_lines(&signals, id);
+                    if can_go {
+                        self.take_tokens(&signals, false);
                     }
                 }
                 GateStep::Ring { doorbell, fence, value } => self.ring(queue, doorbell, fence, value),
@@ -439,6 +458,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             }
             Pending::CpuWait { signals, wake_on_any, event, release } => {
                 if self.signals_finished(&signals, wake_on_any) {
+                    self.take_tokens(&signals, wake_on_any);
                     self.notices.push(Notice::WakeEvent { event, release });
                     None
                 } else {
@@ -511,6 +531,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             queue,
             space: record.space,
             node: self.context_nodes.get(&record.context).copied().unwrap_or(0),
+            client_hint: self.context_hints.get(&record.context).copied().unwrap_or(0),
             private,
             fence,
             fence_gpu_address,

@@ -67,10 +67,11 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         out.extend_from_slice(escape.data);
         let ours = indirect::is_ours(escape.data);
         if !ours {
+            let process = MessageHeader::process_of(message)?;
             let total = self.config.limits.video_cap.unwrap_or(self.backend.facts().video_memory);
             let allocations = &self.allocations;
             let memory = || VideoMemoryUse { total, used: allocations.values().map(|one| one.size).sum() };
-            self.backend.escape(out, &memory);
+            self.backend.escape(process, out, &memory);
         }
         pad_to(out, align_up(escape.size as u64, ESCAPE_ALIGN) as usize);
         if ours {

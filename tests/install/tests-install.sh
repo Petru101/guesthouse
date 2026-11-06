@@ -11,9 +11,9 @@ t_it_installs_where_the_app_looks() {
     check_there "$root/1.0/guest/setup.ps1"
     check_there "$root/1.0/uninstall.sh"
     check_there "$root/manifest"
-    check_there "$H/.local/share/applications/net.gpupv.Guesthouse.desktop"
-    check_there "$H/.local/share/icons/hicolor/scalable/apps/net.gpupv.Guesthouse.svg"
-    check_there "$H/.local/share/icons/hicolor/symbolic/apps/net.gpupv.Guesthouse-symbolic.svg"
+    check_there "$H/.local/share/applications/io.github.xnixy.Guesthouse.desktop"
+    check_there "$H/.local/share/icons/hicolor/scalable/apps/io.github.xnixy.Guesthouse.svg"
+    check_there "$H/.local/share/icons/hicolor/symbolic/apps/io.github.xnixy.Guesthouse-symbolic.svg"
     [ -z "$(find "$root" -name '.incoming*')" ] || fail "staging was left behind"
 }
 
@@ -22,7 +22,7 @@ t_the_launcher_finds_the_program_with_no_help_from_path() {
     give_everything
     install_version 1.0
     grep -qxF "Exec=env \"GUESTHOUSE_PROGRAM=$H/.local/lib/guesthouse/current\" \"$H/.local/lib/guesthouse/current/guesthouse\"" \
-        "$H/.local/share/applications/net.gpupv.Guesthouse.desktop" || fail "the launcher's Exec is wrong"
+        "$H/.local/share/applications/io.github.xnixy.Guesthouse.desktop" || fail "the launcher's Exec is wrong"
 }
 
 t_a_home_with_a_space_works() {

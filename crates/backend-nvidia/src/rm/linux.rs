@@ -50,7 +50,7 @@ const MAP_FLAG_GPU_CACHED: u32 = 1 << 17;
 const DOORBELL_MAP_SIZE: usize = 0x10000;
 /// Where the doorbell register is in the page.
 const DOORBELL_REGISTER: usize = 0x90;
-/// The GPU's timer, in the same page: the usermode class's `TIME_0` and `TIME_1` in the public headers.
+/// The GPU's timer, in the same page: `NVC361_TIME_0` and `NVC361_TIME_1` in `clc361.h`.
 const TIMER_LOW_REGISTER: usize = 0x80;
 const TIMER_HIGH_REGISTER: usize = 0x84;
 /// The low word rolls over about every four seconds, so a second try can only fail if something

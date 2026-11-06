@@ -29,7 +29,7 @@ t_folders_that_were_there_stay() {
 
 t_a_changed_file_stays_and_is_named() {
     install_plain
-    launcher=$H/.local/share/applications/net.gpupv.Guesthouse.desktop
+    launcher=$H/.local/share/applications/io.github.xnixy.Guesthouse.desktop
     echo "my edit" >>"$launcher"
     answering 'yes\n' "$SHELL_UNDER_TEST" "$(uninstaller)"
     check_exit 0
@@ -238,7 +238,7 @@ t_the_installed_copy_removes_itself_too() {
 t_an_old_manifest_line_for_a_file_is_harmless() {
     install_plain
     manifest=$H/.local/lib/guesthouse/manifest
-    printf 'file\t%s\t%s\n' "0000" "$H/.local/share/applications/net.gpupv.Guesthouse.desktop" >>"$manifest"
+    printf 'file\t%s\t%s\n' "0000" "$H/.local/share/applications/io.github.xnixy.Guesthouse.desktop" >>"$manifest"
     answering 'yes\n' "$SHELL_UNDER_TEST" "$(uninstaller)"
     check_exit 0
     check_home_is "$T/empty"

@@ -293,7 +293,7 @@ impl Backend for StandIn {
         Ok(())
     }
 
-    fn escape(&mut self, data: &mut [u8], _memory: &dyn Fn() -> VideoMemoryUse) {
+    fn escape(&mut self, _process: u32, data: &mut [u8], _memory: &dyn Fn() -> VideoMemoryUse) {
         data.iter_mut().for_each(|byte| *byte ^= 0xFF);
     }
 

@@ -234,7 +234,7 @@ impl Backend for RecordedAnswers {
         Ok(())
     }
 
-    fn escape(&mut self, data: &mut [u8], _memory: &dyn Fn() -> VideoMemoryUse) {
+    fn escape(&mut self, _process: u32, data: &mut [u8], _memory: &dyn Fn() -> VideoMemoryUse) {
         self.note(Provenance::Recorded);
         let length = data.len().min(self.expected.len());
         data[..length].copy_from_slice(&self.expected[..length]);

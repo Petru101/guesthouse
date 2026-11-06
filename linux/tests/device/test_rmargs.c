@@ -11,6 +11,8 @@
 #define RM_CMD(nr, size) (0xc0000000u | (uint32_t)(size) << 16 | 'F' << 8 | (nr))
 #define CTRL_FB_GET_INFO 0x20801301u /* one embedded list: pointer at 8, count at 0, 8 bytes each */
 #define CTRL_EXPORT_FD 0x3d05u       /* fd at 16 of its parameters */
+#define CTRL_NO_PUBLIC_SOURCE 0x20808163u /* forwarded at exactly 4 bytes and no other size */
+#define CTRL_NO_PUBLIC_SOURCE_BYTES 4
 #define FUZZ_ROUNDS 3000000
 
 static uint8_t data[4096];
@@ -53,6 +55,29 @@ static void test_parse(void)
     assert(!rmargs_parse(&c, RM_CMD(ESC_XFER, 8), data, 64, NULL, 0));
     put32(RM_XFER_CMD, 0x100 | ESC_RM_ALLOC); /* the driver reads the whole word */
     assert(!rmargs_parse(&c, RM_CMD(ESC_XFER, 16), data, 64, NULL, 0));
+}
+
+static int control_of_size(uint32_t cmd, uint32_t size)
+{
+    struct nvfwd_fix fix = { NVFWD_FIX_PTR, RM_CONTROL_PARAMS, 64, 0 };
+
+    memset(data, 0, sizeof(data));
+    put32(RM_CONTROL_CMD, cmd);
+    put32(RM_CONTROL_PARAMS_SIZE, size);
+    return walk(RM_CMD(ESC_RM_CONTROL, 32), 192, &fix, 1);
+}
+
+/* Nobody can read what this control does, so its size is the one thing known about it. */
+static void test_a_pinned_control_goes_at_its_size_only(void)
+{
+    static const uint32_t wrong[] = { 0, 1, 3, 5, 8, 64, 100, UINT32_MAX };
+
+    assert(control_of_size(CTRL_NO_PUBLIC_SOURCE, CTRL_NO_PUBLIC_SOURCE_BYTES) == 1);
+    for (size_t i = 0; i < sizeof(wrong) / sizeof(wrong[0]); i++) {
+        assert(control_of_size(CTRL_NO_PUBLIC_SOURCE, wrong[i]) == -EINVAL);
+    }
+    /* Others aren't held to it. */
+    assert(control_of_size(0x20800110u, 100) == 1);
 }
 
 static void test_xfer_points_at_what_was_read(void)
@@ -232,6 +257,7 @@ static void fuzz(void)
 int main(void)
 {
     test_parse();
+    test_a_pinned_control_goes_at_its_size_only();
     test_xfer_points_at_what_was_read();
     test_control();
     test_alloc_and_memory();

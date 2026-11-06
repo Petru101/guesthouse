@@ -166,20 +166,20 @@ t_failing_on_an_icon_leaves_the_old_one() {
     make_main_name 2.0
     # New icons, so this update really has some to place, and the second one fails.
     tree=$T/releases/tree-2.0
-    echo '<svg/>' >"$tree/guesthouse-2.0-x86_64/share/icons/hicolor/scalable/apps/net.gpupv.Guesthouse.svg"
-    echo '<svg/>' >"$tree/guesthouse-2.0-x86_64/share/icons/hicolor/symbolic/apps/net.gpupv.Guesthouse-symbolic.svg"
+    echo '<svg/>' >"$tree/guesthouse-2.0-x86_64/share/icons/hicolor/scalable/apps/io.github.xnixy.Guesthouse.svg"
+    echo '<svg/>' >"$tree/guesthouse-2.0-x86_64/share/icons/hicolor/symbolic/apps/io.github.xnixy.Guesthouse-symbolic.svg"
     tar -C "$tree" -cJf "$T/releases/v2.0/guesthouse-2.0-x86_64.tar.xz" guesthouse-2.0-x86_64
     wanted=$(sha256sum "$T/releases/v2.0/guesthouse-2.0-x86_64.tar.xz" | cut -d ' ' -f 1)
     sed -i "s/^PAYLOAD_SHA256=.*/PAYLOAD_SHA256=\"$wanted\"/" "$T/releases/main-install.sh"
     mkdir -p "$H/.local/share/guesthouse" "$H/.config"
     cp "$root/manifest" "$T/manifest.1.0"
     (cd "$H" && find .local/share/guesthouse .config -type f -exec sha256sum {} + | sort) >"$T/user-files"
-    old_icon=$(sha256sum "$H/.local/share/icons/hicolor/scalable/apps/net.gpupv.Guesthouse.svg")
+    old_icon=$(sha256sum "$H/.local/share/icons/hicolor/scalable/apps/io.github.xnixy.Guesthouse.svg")
     fail_when mv "*Guesthouse-symbolic.svg*"
     answering 'yes\n' "$SHELL_UNDER_TEST" "$root/current/install.sh" --update
     check_exit 1
     check_old_version_works
-    [ "$(sha256sum "$H/.local/share/icons/hicolor/scalable/apps/net.gpupv.Guesthouse.svg")" = "$old_icon" ] ||
+    [ "$(sha256sum "$H/.local/share/icons/hicolor/scalable/apps/io.github.xnixy.Guesthouse.svg")" = "$old_icon" ] ||
         fail "the old icon wasn't put back"
 }
 

@@ -26,3 +26,8 @@ pub const ENGINE_COPY_0: u32 = 9;
 
 /// Entries of the bus information control that clear a counter when read. Their names end in `CLEAR`.
 pub const BUS_ENTRIES_THAT_CLEAR: [u32; 8] = [0x20, 0x21, 0x22, 0x23, 0x28, 0x29, 0x2A, 0x2B];
+
+/// No public names. A native encoding session takes a slot with the first when it opens and gives it
+/// back with the second, which is how these are known: by watching one.
+pub const CONTROL_ENCODE_SLOT_TAKE: u32 = 0x2080_8163;
+pub const CONTROL_ENCODE_SLOT_GIVE_BACK: u32 = 0x2080_8164;

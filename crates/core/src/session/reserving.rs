@@ -81,6 +81,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             found.map(|(address, placed)| ReservedRange { address, size, space, placed })
         });
         let address = found.map_or(NO_ADDRESS, |range| range.address);
+        log::debug!("reservation {request:x?} got {address:#x}");
         match found {
             Some(range) => self.reserved_addresses.push(range),
             None => log::warn!("refused a reservation: {request:x?}"),

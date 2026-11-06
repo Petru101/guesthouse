@@ -35,6 +35,21 @@ class VersionQuestion(unittest.TestCase):
         self.assertIsNone(driver_version.parse_reply(reply))
 
 
+class AllowList(unittest.TestCase):
+    def entries(self):
+        with open(os.path.join(os.path.dirname(SETUP), "allow.txt")) as f:
+            return {tuple(line.split()[:2]) for line in f if line.strip()}
+
+    def test_nvenc_has_what_it_needs(self):
+        for entry in (("ctrl", "0x800201"), ("ctrl", "0x801109"), ("ctrl", "0x801f02"), ("ctrl", "0x2080016c"),
+                      ("ctrl", "0x20808163"), ("class", "0x2")):
+            self.assertIn(entry, self.entries())
+
+    def test_its_two_neighbours_stay_refused(self):
+        for control in ("0x20808164", "0x20808165"):
+            self.assertFalse([entry for entry in self.entries() if entry[1] == control])
+
+
 class Units(unittest.TestCase):
     def test_a_dead_gpu_step_cannot_stop_the_desktop(self):
         desktop = unit("nvfwd-desktop.service")
