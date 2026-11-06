@@ -9,6 +9,7 @@ mod network;
 mod remove;
 mod sharing;
 mod snapshots;
+mod token;
 mod usb;
 
 use crate::window::{MachineHandle, Window};
@@ -53,6 +54,7 @@ struct Parts {
     display: display::Display,
     disk: disk::Disk,
     snapshots: snapshots::Snapshots,
+    _token: token::Token,
     sharing: sharing::Sharing,
     network: network::Network,
     usb: usb::Usb,
@@ -77,6 +79,7 @@ impl SettingsDialog {
             sharing: sharing::Sharing::new(&shared, &page),
             network: network::Network::new(&shared, &page),
             usb: usb::Usb::new(&shared, &page),
+            _token: token::Token::new(&shared, &page),
             remove: remove::Remove::new(&shared, &page),
             shared,
         }));

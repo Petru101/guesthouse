@@ -1,7 +1,7 @@
 //! The guest's agent: PowerShell over a socket, with each machine's own token.
 
 use crate::context::Context;
-use crate::failure::Result;
+use crate::failure::{Failure, Result};
 use crate::machine::Machine;
 use crate::random::random_hex;
 use crate::text::{base64_decode, base64_encode};
@@ -10,6 +10,7 @@ use std::fs;
 use std::io::{Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpStream};
 use std::os::unix::fs::OpenOptionsExt;
+use std::path::Path;
 use std::time::Duration;
 
 const CONNECT_SECONDS: u64 = 5;
@@ -51,6 +52,23 @@ pub fn make_token(context: &Context, machine: &Machine) -> Result<String> {
         writeln!(file, "{}", random_hex::<TOKEN_BYTES>())?;
     }
     Ok(fs::read_to_string(path)?.trim().to_owned())
+}
+
+/// Takes a token from a file the user chose, for a guest installed before each machine had its own.
+/// It's done once: a machine that has a token keeps it.
+pub fn import_token(context: &Context, machine: &Machine, file: &Path) -> Result<()> {
+    let text = fs::read_to_string(file)?;
+    let token = text.trim();
+    if token.len() != TOKEN_BYTES * 2 || !token.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(Failure::new("This file does not hold a guest token."));
+    }
+    let path = machine.token_file(context);
+    if path.exists() {
+        return Err(Failure::new("This machine already has its token."));
+    }
+    let mut new = fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(path)?;
+    writeln!(new, "{token}")?;
+    Ok(())
 }
 
 fn read_token(context: &Context, machine: &Machine) -> Option<String> {
@@ -183,6 +201,21 @@ mod tests {
         assert_eq!(make_token(&context, &first).unwrap(), token, "made once");
         assert_ne!(make_token(&context, &second).unwrap(), token);
         assert_eq!(fs::metadata(first.token_file(&context)).unwrap().mode() & 0o777, 0o600);
+    }
+
+    #[test]
+    fn an_old_token_is_taken_once_from_the_file_the_user_chose() {
+        let scratch = Scratch::new();
+        let context = scratch_context(&scratch);
+        let old = machine(&context, "old");
+        let junk = scratch.write("junk", "not a token");
+        assert!(import_token(&context, &old, &junk).unwrap_err().0.contains("does not hold"));
+        assert!(!old.token_file(&context).exists());
+        let file = scratch.write("token", format!("{}\n", "ab".repeat(TOKEN_BYTES)));
+        import_token(&context, &old, &file).unwrap();
+        assert_eq!(fs::read_to_string(old.token_file(&context)).unwrap().trim(), "ab".repeat(TOKEN_BYTES));
+        assert_eq!(fs::metadata(old.token_file(&context)).unwrap().mode() & 0o777, 0o600);
+        assert!(import_token(&context, &old, &file).unwrap_err().0.contains("already has"));
     }
 
     #[test]
