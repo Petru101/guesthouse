@@ -74,6 +74,9 @@ check_gpu() {
     if echo "$vulkan" | grep -q 'driverName *= *NVIDIA'; then pass 'Vulkan sees the NVIDIA driver'; else fail 'Vulkan sees the NVIDIA driver'; fi
     check_compute 'Vulkan compute, every value checked' "$built/vkcompute"
     check_compute 'CUDA kernel, every value checked' "$built/cudavec"
+    # Not a failure: the rest of the GPU doesn't need them.
+    timeout "$gpu_test_seconds" nvidia-smi --query-gpu=temperature.gpu --format=csv,noheader 2>&1 | grep -q '^[0-9]' ||
+        warn "no sensor readings, so nvidia-smi shows N/A: the host's sensor daemon isn't running, or doesn't know this driver"
 }
 
 in_session() {
