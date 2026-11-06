@@ -6,7 +6,7 @@ use super::driver_files::{self, PACKAGES};
 use super::driver_versions::{
     DriverHost, TESTED_VERSIONS, branch_refusal, installed_versions, refusal, untested_warning,
 };
-use super::tables::{TABLE_FILES, write_tables};
+use super::tables::{TABLE_FILES, match_the_device, write_tables};
 use crate::failure::Result;
 use crate::machine::sorted_names;
 use std::fs;
@@ -111,15 +111,12 @@ fn headers(tree: &Path) -> Vec<String> {
     found
 }
 
-fn write_sources(path: &Path, sources: &Path, tree: &Path, names: &[String], staging: &Path) -> Result<()> {
-    let tables = staging.join("tables");
-    fs::create_dir_all(&tables)?;
-    write_tables(tree, &tables)?;
+fn write_sources(path: &Path, sources: &Path, tree: &Path, names: &[String], tables: &Path) -> Result<()> {
     let generated = |name: &&String| TABLE_FILES.iter().any(|table| name.ends_with(*table));
     let plain: Vec<String> = names.iter().filter(|name| !generated(name)).cloned().collect();
     tar(path, "-cf", "nvfwd/", sources, &plain)?;
     let made: Vec<String> = TABLE_FILES.iter().map(|name| (*name).to_owned()).collect();
-    tar(path, "-rf", "nvfwd/guest/", &tables, &made)?;
+    tar(path, "-rf", "nvfwd/guest/", tables, &made)?;
     tar(path, "-rf", "nvidia/", tree, &["kernel-open".to_owned()])?;
     tar(path, "-rf", "nvidia/", tree, &headers(tree))
 }
@@ -171,12 +168,21 @@ fn build(
     (loaded, id): (&str, &str),
     (staging, image): (&Path, &Path),
 ) -> Result<Option<String>> {
+    let tables = staging.join("tables");
+    fs::create_dir_all(&tables)?;
+    write_tables(tree, &tables)?;
+    if !match_the_device(&tables)? {
+        return Ok(Some(format!(
+            "Driver {loaded} changes calls that the nvfwd device checks, so this QEMU can't forward them \
+             safely. It needs a Guesthouse that knows this driver."
+        )));
+    }
     let content = staging.join("image");
     fs::create_dir_all(&content)?;
     for (source, place) in pairs {
         copy_file(Path::new(source), &content.join(place), place)?;
     }
-    write_sources(&content.join("sources.tar"), sources, tree, names, staging)?;
+    write_sources(&content.join("sources.tar"), sources, tree, names, &tables)?;
     let tested = if TESTED_VERSIONS.contains(&loaded) { "yes" } else { "no" };
     fs::write(content.join("manifest"), format!("version={loaded}\nid={id}\ntested={tested}\n"))?;
     let partial = staging.join("image.iso");
