@@ -9,9 +9,21 @@ $settingsFolder = 'C:\VirtualDisplayDriver'
 $storeKey = 'HKLM:\SOFTWARE\Microsoft\SystemCertificates\TrustedPublisher\Certificates'
 $hardwareId = 'Root\GuesthouseDisplay'
 $subject = 'CN=Guesthouse display driver, this machine only'
+# Windows puts the name in quotes in what it reads back, as it has a comma in it.
+$ourCertificates = '*Guesthouse display driver, this machine only*'
 $yearsValid = 10
 
 "secure boot: $(Confirm-SecureBootUEFI)"
+
+# Only the newest root is ever needed, and a run that died part way could have left a key behind, which
+# must never stay. A driver already installed keeps working, as Windows checked it when it went in.
+foreach ($store in 'Root', 'TrustedPublisher') {
+    Get-ChildItem "Cert:\LocalMachine\$store" | Where-Object Subject -like $ourCertificates | Remove-Item
+}
+# -DeleteKey only exists once Remove-Item has a path it can see, so it can't come down a pipeline.
+Get-ChildItem Cert:\LocalMachine\My | Where-Object Subject -like $ourCertificates |
+    ForEach-Object { Remove-Item "Cert:\LocalMachine\My\$($_.Thumbprint)" -DeleteKey }
+
 New-Item -ItemType Directory -Force $settingsFolder | Out-Null
 Copy-Item "$folder\vdd_settings.xml" $settingsFolder -Force
 

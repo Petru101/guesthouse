@@ -13,4 +13,7 @@ Get-WindowsDriver -Online -ea 0 | Where-Object OriginalFileName -like '*guesthou
 foreach ($store in 'Root', 'TrustedPublisher') {
     Get-ChildItem "Cert:\LocalMachine\$store" | Where-Object Subject -like $subject | Remove-Item
 }
+# Only a run that died part way leaves one here, and that one still has its key.
+Get-ChildItem Cert:\LocalMachine\My | Where-Object Subject -like $subject |
+    ForEach-Object { Remove-Item "Cert:\LocalMachine\My\$($_.Thumbprint)" -DeleteKey }
 'removed'

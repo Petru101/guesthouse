@@ -48,7 +48,7 @@ Windows won't install a driver package unless someone it trusts signed the catal
 
 Step 2 is the part to think about. A trusted root is powerful: while its key exists, it could vouch for anything on that machine. That's why step 4 is there. The key can't be exported, it's deleted before the install, and nothing is ever signed with it again. So nobody has that key afterwards, me included, and a new build means a new certificate.
 
-Every install makes its own certificate, so there's nothing shared between machines to leak.
+Every install makes its own certificate, so there's nothing shared between machines to leak. A new install on the same machine removes the certificate from the last one first, along with any key a run that died might have left.
 
 If you want it gone, remove the driver with `pnputil`, then delete the certificate named "Guesthouse display driver, this machine only" from both stores in `certlm.msc`.
 
