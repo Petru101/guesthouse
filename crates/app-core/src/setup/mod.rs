@@ -5,6 +5,7 @@
 //! where.
 
 pub mod cards;
+pub mod checks;
 pub mod inf;
 
 use crate::context::Context;
