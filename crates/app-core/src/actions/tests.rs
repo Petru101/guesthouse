@@ -228,7 +228,9 @@ fn only_one_task_holds_the_lock() {
     fs::create_dir_all(context.run_folder(None)).unwrap();
     let held = take_lock(&context).unwrap();
     assert!(take_lock(&context).unwrap_err().0.contains("still in progress"));
-    drop(held);
+    // Not a drop: a child another test is forking can hold a copy of the file for a moment, and with
+    // that the lock. Unlocking goes for every copy.
+    flock(&held, FlockOperation::Unlock).unwrap();
     take_lock(&context).unwrap();
 }
 
