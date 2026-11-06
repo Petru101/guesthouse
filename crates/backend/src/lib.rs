@@ -99,7 +99,7 @@ pub trait Backend: Sized {
     fn gpu_clock(&mut self) -> Result<u64, BackendError>;
 
     /// Hands out memory as a file another process can use where it lies, for frames that stay in
-    /// video memory. No frame path needs this yet.
+    /// video memory. `size` is what [`Backend::allocate_video_memory`] said it really has.
     fn export_memory(&mut self, _memory: MemoryId, _size: u64) -> Result<OwnedFd, BackendError> {
         Err(BackendError::new("this backend can't export memory yet"))
     }
