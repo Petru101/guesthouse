@@ -6,8 +6,8 @@ use crate::disk_image::disk_size_gib;
 use crate::failure::{Failure, Result};
 use crate::iso::kernel_package;
 use crate::library::make_disk;
+use crate::linux::driver_host::LoaderHost;
 use crate::linux::driver_image::{Outcome, prepare};
-use crate::linux::driver_versions::RpmHost;
 use crate::linux::forwarding::forwarding_problem;
 use crate::linux::guest_sources;
 use crate::linux::seed::make_seed;
@@ -130,7 +130,7 @@ fn gpu_boot(task: &mut Task) -> Result<UbuntuBoot> {
     task.step("Getting the driver image ready");
     let store = &context.paths.store;
     let tree = env_folder("NVIDIA_SOURCE").unwrap_or_else(|| store.join("src/open-gpu-kernel-modules"));
-    let host = RpmHost { version_file: context.driver_version_file.clone() };
+    let host = LoaderHost::of_this_pc(context.driver_version_file.clone());
     match or_refused(prepare(&host, &sources, &tree, &store.join("linux-driver"))) {
         Outcome::Refused(reason) => {
             task.error = format!("Starting without the GPU: {reason}");

@@ -3,12 +3,25 @@
 
 use crate::failure::{Failure, Result};
 use crate::machine::Kind;
+use crate::vm_args::on_path;
 use std::collections::HashMap;
 use std::io::{ErrorKind, Read};
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
+
+/// These take the same words for what's asked of them here. Arch has no `genisoimage`.
+const ISO_MAKERS: [&str; 3] = ["genisoimage", "mkisofs", "xorrisofs"];
+
+/// The program that makes an ISO on this PC. With none, the first is named, and fails as itself.
+pub fn iso_maker() -> &'static str {
+    ISO_MAKERS.iter().copied().find(|program| on_path(program)).unwrap_or(ISO_MAKERS[0])
+}
+
+pub fn any_iso_maker() -> bool {
+    ISO_MAKERS.iter().any(|program| on_path(program))
+}
 
 /// What the answer file and its generic key install.
 pub const WINDOWS_EDITION: &str = "Windows 11 Pro";

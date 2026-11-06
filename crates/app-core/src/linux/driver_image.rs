@@ -2,12 +2,13 @@
 //! version and state of the guest's sources. An image already made for the loaded driver is used as it
 //! is, even if the files on disk have since moved on, because it still matches what is loaded.
 
-use super::driver_files::{self, PACKAGES};
+use super::driver_files;
 use super::driver_versions::{
     DriverHost, TESTED_VERSIONS, branch_refusal, installed_versions, refusal, untested_warning,
 };
 use super::tables::{TABLE_FILES, match_the_device, write_tables};
 use crate::failure::Result;
+use crate::iso::iso_maker;
 use crate::machine::sorted_names;
 use std::fs;
 use std::io::Write;
@@ -121,14 +122,20 @@ fn write_sources(path: &Path, sources: &Path, tree: &Path, names: &[String], tab
     tar(path, "-rf", "nvidia/", tree, &headers(tree))
 }
 
+/// Where a link goes, if that's beside it. Debian's links lead out through `/etc/alternatives`, and
+/// those would dangle in a guest, so what they point to is copied instead.
+fn sibling_link(source: &Path) -> Option<PathBuf> {
+    fs::read_link(source).ok().filter(|target| target.components().count() == 1)
+}
+
 fn copy_file(source: &Path, target: &Path, place: &str) -> Result<()> {
     if let Some(folder) = target.parent() {
         fs::create_dir_all(folder)?;
     }
     if place.ends_with("nvidia_icd.x86_64.json") {
         fs::write(target, driver_files::rewrite_icd(&fs::read_to_string(source)?))?;
-    } else if source.is_symlink() {
-        symlink(fs::read_link(source)?, target)?;
+    } else if let Some(sibling) = sibling_link(source) {
+        symlink(sibling, target)?;
     } else {
         fs::copy(source, target)?;
     }
@@ -187,7 +194,7 @@ fn build(
     fs::write(content.join("manifest"), format!("version={loaded}\nid={id}\ntested={tested}\n"))?;
     let partial = staging.join("image.iso");
     // -r makes every file root's and world readable. Rock Ridge keeps the library links.
-    run(Command::new("genisoimage")
+    run(Command::new(iso_maker())
         .args(["-quiet", "-r", "-V", VOLUME_LABEL, "-o"])
         .arg(&partial)
         .arg(&content))?;
@@ -218,7 +225,7 @@ pub fn prepare(host: &dyn DriverHost, sources: &Path, tree: &Path, folder: &Path
     if let Some(reason) = refusal(Some(&loaded), &installed_versions(host)) {
         return Ok(Outcome::Refused(reason));
     }
-    let pairs = driver_files::chosen(&host.packaged_files(&PACKAGES));
+    let pairs = driver_files::chosen(&host.driver_files());
     let places: Vec<String> = pairs.iter().map(|(_, place)| place.clone()).collect();
     let lacking = driver_files::missing(&places, &loaded);
     if !lacking.is_empty() {
@@ -237,7 +244,6 @@ pub fn prepare(host: &dyn DriverHost, sources: &Path, tree: &Path, folder: &Path
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::linux::driver_versions::DRIVER_PACKAGES;
     use crate::testing::Scratch;
 
     struct FakeHost {
@@ -251,12 +257,11 @@ mod tests {
             self.loaded.clone()
         }
 
-        fn installed_version(&self, _package: &str) -> Option<String> {
+        fn library_version(&self, _library: &str) -> Option<String> {
             self.installed.clone()
         }
 
-        fn packaged_files(&self, packages: &[&str]) -> Vec<String> {
-            assert!(DRIVER_PACKAGES.iter().all(|package| packages.contains(package)));
+        fn driver_files(&self) -> Vec<String> {
             self.files.clone()
         }
     }
@@ -352,11 +357,24 @@ mod tests {
     }
 
     #[test]
-    fn missing_files_name_their_packages() {
+    fn a_link_beside_its_file_stays_a_link_and_one_that_leads_away_is_copied() {
+        let scratch = Scratch::new();
+        scratch.write("real/libfoo.so.1.2", "the library");
+        symlink("libfoo.so.1.2", scratch.path("real/libfoo.so.1")).unwrap();
+        symlink(scratch.path("real/libfoo.so.1.2"), scratch.path("real/libbar.so.1")).unwrap();
+        assert!(sibling_link(&scratch.path("real/libfoo.so.1")).is_some());
+        let target = scratch.path("image/lib/libbar.so.1");
+        copy_file(&scratch.path("real/libbar.so.1"), &target, "lib/libbar.so.1").unwrap();
+        assert!(!target.is_symlink());
+        assert_eq!(fs::read_to_string(target).unwrap(), "the library");
+    }
+
+    #[test]
+    fn missing_files_are_named() {
         let scratch = Scratch::new();
         let tree = tree(&scratch, "615.78.08");
         let said =
             reason(prepare(&host("615.78.08"), &sources(&scratch), &tree, &scratch.path("images")).unwrap());
-        assert!(said.contains("libcuda.so.615.78.08, from the package"));
+        assert!(said.contains("libcuda.so.615.78.08, from NVIDIA's driver"));
     }
 }

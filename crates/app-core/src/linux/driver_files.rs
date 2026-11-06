@@ -1,85 +1,90 @@
-//! Picks which of the host's files go in a guest's driver image, and where. Everything comes from the
-//! package database, not a fixed list, so a library added in a later version comes along by itself.
-//! `REQUIRED` says what must be there for the guest to work at all.
+//! Picks which of the host's files go in a guest's driver image, and where. `driver_host` finds them,
+//! so a library added in a later version comes along by itself. `REQUIRED` says what must be there for
+//! the guest to work at all.
 
-/// The EGL platform libraries are Fedora's own packages, not the driver's, but the driver loads them
-/// when it starts, and a compositor has all five mapped.
-pub const PACKAGES: [&str; 7] = [
-    "xorg-x11-drv-nvidia-libs",
-    "xorg-x11-drv-nvidia-cuda-libs",
-    "xorg-x11-drv-nvidia-cuda",
-    "egl-gbm",
-    "egl-wayland",
-    "egl-wayland2",
-    "egl-x11",
-];
-const LIBRARY_FOLDER: &str = "/usr/lib64/";
-const LOOSE_FILES: [(&str, &str); 3] = [
-    ("/usr/bin/nvidia-smi", "bin/nvidia-smi"),
-    ("/usr/share/glvnd/egl_vendor.d/10_nvidia.json", "json/10_nvidia.json"),
-    ("/usr/share/vulkan/icd.d/nvidia_icd.x86_64.json", "json/nvidia_icd.x86_64.json"),
-];
-const EGL_PLATFORM_FOLDER: &str = "/usr/share/egl/egl_external_platform.d/";
+use super::driver_host::is_driver_library;
+use regex::Regex;
+
+const SMI: &str = "nvidia-smi";
+const EGL_VENDOR: &str = "10_nvidia.json";
+const VULKAN_MANIFEST_START: &str = "nvidia_icd";
+const VULKAN_MANIFEST_IN_IMAGE: &str = "json/nvidia_icd.x86_64.json";
+/// A 64-bit guest can't load the 32-bit library this one names.
+const THIRTY_TWO_BIT_MARK: &str = "i686";
+const EGL_PLATFORM_FOLDER: &str = "/egl_external_platform.d/";
 /// Where the driver is in the guest, which the Vulkan manifest has to say.
 const GUEST_LIBRARIES: &str = "/opt/nv/driver/lib/";
-/// The image's name for a file, and the package to install if it's missing. `{v}` is the version.
+const MANIFEST_LIBRARY: &str = r#"("library_path"\s*:\s*")(?:[^"]*/)?([^"/]+")"#;
+const DRIVER: &str = "NVIDIA's driver";
+/// The image's name for a file, and what brings it if it's missing. `{v}` is the version.
 const REQUIRED: [(&str, &str); 20] = [
-    ("lib/libcuda.so.{v}", "xorg-x11-drv-nvidia-cuda-libs"),
-    ("lib/libnvidia-ml.so.{v}", "xorg-x11-drv-nvidia-cuda-libs"),
-    ("lib/libnvidia-ptxjitcompiler.so.{v}", "xorg-x11-drv-nvidia-cuda-libs"),
-    ("lib/libGLX_nvidia.so.{v}", "xorg-x11-drv-nvidia-libs"),
-    ("lib/libEGL_nvidia.so.{v}", "xorg-x11-drv-nvidia-libs"),
-    ("lib/libnvidia-glcore.so.{v}", "xorg-x11-drv-nvidia-libs"),
-    ("lib/libnvidia-eglcore.so.{v}", "xorg-x11-drv-nvidia-libs"),
-    ("lib/libnvidia-glsi.so.{v}", "xorg-x11-drv-nvidia-libs"),
-    ("lib/libnvidia-glvkspirv.so.{v}", "xorg-x11-drv-nvidia-libs"),
-    ("lib/libnvidia-gpucomp.so.{v}", "xorg-x11-drv-nvidia-libs"),
-    ("lib/libnvidia-tls.so.{v}", "xorg-x11-drv-nvidia-libs"),
-    ("lib/libnvidia-allocator.so.{v}", "xorg-x11-drv-nvidia-libs"),
-    ("lib/libnvidia-egl-gbm.so.1", "egl-gbm"),
-    ("lib/libnvidia-egl-wayland.so.1", "egl-wayland"),
-    ("lib/libnvidia-egl-wayland2.so.1", "egl-wayland2"),
-    ("lib/libnvidia-egl-xcb.so.1", "egl-x11"),
-    ("lib/libnvidia-egl-xlib.so.1", "egl-x11"),
-    ("bin/nvidia-smi", "xorg-x11-drv-nvidia-cuda"),
-    ("json/10_nvidia.json", "xorg-x11-drv-nvidia-libs"),
-    ("json/nvidia_icd.x86_64.json", "xorg-x11-drv-nvidia-libs"),
+    ("lib/libcuda.so.{v}", DRIVER),
+    ("lib/libnvidia-ml.so.{v}", DRIVER),
+    ("lib/libnvidia-ptxjitcompiler.so.{v}", DRIVER),
+    ("lib/libGLX_nvidia.so.{v}", DRIVER),
+    ("lib/libEGL_nvidia.so.{v}", DRIVER),
+    ("lib/libnvidia-glcore.so.{v}", DRIVER),
+    ("lib/libnvidia-eglcore.so.{v}", DRIVER),
+    ("lib/libnvidia-glsi.so.{v}", DRIVER),
+    ("lib/libnvidia-glvkspirv.so.{v}", DRIVER),
+    ("lib/libnvidia-gpucomp.so.{v}", DRIVER),
+    ("lib/libnvidia-tls.so.{v}", DRIVER),
+    ("lib/libnvidia-allocator.so.{v}", DRIVER),
+    ("lib/libnvidia-egl-gbm.so.1", "NVIDIA's egl-gbm"),
+    ("lib/libnvidia-egl-wayland.so.1", "NVIDIA's egl-wayland"),
+    ("lib/libnvidia-egl-wayland2.so.1", "NVIDIA's egl-wayland2"),
+    ("lib/libnvidia-egl-xcb.so.1", "NVIDIA's egl-x11"),
+    ("lib/libnvidia-egl-xlib.so.1", "NVIDIA's egl-x11"),
+    ("bin/nvidia-smi", DRIVER),
+    ("json/10_nvidia.json", DRIVER),
+    ("json/nvidia_icd.x86_64.json", DRIVER),
 ];
 
 fn file_name(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
 }
 
-/// Where a packaged file goes in the image, or `None` if a guest has no use for it.
+/// Where a file of the driver goes in the image, or `None` if a guest has no use for it.
 pub fn place(path: &str) -> Option<String> {
-    if let Some((_, place)) = LOOSE_FILES.iter().find(|(file, _)| *file == path) {
-        return Some((*place).to_owned());
+    let name = file_name(path);
+    if name == SMI {
+        return Some(format!("bin/{SMI}"));
     }
-    if path.starts_with(EGL_PLATFORM_FOLDER) && path.ends_with(".json") {
-        return Some(format!("json/egl_external_platform.d/{}", file_name(path)));
+    if path.contains(EGL_PLATFORM_FOLDER) {
+        return name.ends_with(".json").then(|| format!("json/egl_external_platform.d/{name}"));
     }
-    let library =
-        path.strip_prefix(LIBRARY_FOLDER).filter(|name| name.contains(".so") && !name.contains('/'));
-    library.map(|name| format!("lib/{name}"))
+    if name == EGL_VENDOR {
+        return Some(format!("json/{EGL_VENDOR}"));
+    }
+    if name.starts_with(VULKAN_MANIFEST_START) {
+        return (!name.contains(THIRTY_TWO_BIT_MARK)).then(|| VULKAN_MANIFEST_IN_IMAGE.to_owned());
+    }
+    is_driver_library(name).then(|| format!("lib/{name}"))
 }
 
 /// Pairs of a file on the host and its path in the image.
 pub fn chosen(paths: &[String]) -> Vec<(String, String)> {
-    paths.iter().filter_map(|path| Some((path.clone(), place(path)?))).collect()
+    let mut pairs: Vec<(String, String)> =
+        paths.iter().filter_map(|path| Some((path.clone(), place(path)?))).collect();
+    // A name can be in two folders, as on Debian. An image holds it once.
+    pairs.sort_by(|one, other| one.1.cmp(&other.1));
+    pairs.dedup_by(|one, other| one.1 == other.1);
+    pairs
 }
 
 /// What the image would lack, as lines a person can act on.
 pub fn missing(places: &[String], version: &str) -> Vec<String> {
-    let needed = REQUIRED.iter().map(|(name, package)| (name.replace("{v}", version), package));
+    let needed = REQUIRED.iter().map(|(name, source)| (name.replace("{v}", version), source));
     needed
         .filter(|(name, _)| !places.contains(name))
-        .map(|(name, package)| format!("{name}, from the package {package}"))
+        .map(|(name, source)| format!("{name}, from {source}"))
         .collect()
 }
 
-/// Fedora's manifest names `/usr/lib64`. In the guest the driver is where the image is mounted.
+/// A host's manifest names its own folder, or none. In the guest the driver is where the image is mounted.
 pub fn rewrite_icd(text: &str) -> String {
-    text.replace(LIBRARY_FOLDER, GUEST_LIBRARIES)
+    let library = Regex::new(MANIFEST_LIBRARY).expect("a valid pattern");
+    library.replace(text, format!("${{1}}{GUEST_LIBRARIES}${{2}}")).into_owned()
 }
 
 #[cfg(test)]
@@ -97,19 +102,22 @@ mod tests {
     #[test]
     fn what_a_guest_has_no_use_for_stays_out() {
         assert_eq!(place("/usr/lib64/nvidia/xorg/libglxserver_nvidia.so"), None);
+        assert_eq!(place("/usr/share/vulkan/icd.d/nvidia_icd.i686.json"), None);
         assert_eq!(place("/usr/share/doc/README"), None);
     }
 
     #[test]
-    fn what_is_missing_names_the_package_to_install() {
+    fn what_is_missing_says_what_brings_it() {
         let all: Vec<String> = REQUIRED.iter().map(|(name, _)| name.replace("{v}", "615.78.08")).collect();
         assert!(missing(&all, "615.78.08").is_empty());
         let lacking = missing(&all[1..], "615.78.08");
-        assert_eq!(lacking, ["lib/libcuda.so.615.78.08, from the package xorg-x11-drv-nvidia-cuda-libs"]);
+        assert_eq!(lacking, ["lib/libcuda.so.615.78.08, from NVIDIA's driver"]);
     }
 
     #[test]
     fn the_vulkan_manifest_points_at_the_guests_copy() {
-        assert_eq!(rewrite_icd("/usr/lib64/libGLX_nvidia.so.0"), "/opt/nv/driver/lib/libGLX_nvidia.so.0");
+        let wanted = r#"{ "library_path": "/opt/nv/driver/lib/libGLX_nvidia.so.0" }"#;
+        assert_eq!(rewrite_icd(r#"{ "library_path": "/usr/lib64/libGLX_nvidia.so.0" }"#), wanted);
+        assert_eq!(rewrite_icd(r#"{ "library_path": "libGLX_nvidia.so.0" }"#), wanted);
     }
 }
