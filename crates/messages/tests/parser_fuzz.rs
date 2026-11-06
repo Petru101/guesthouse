@@ -5,7 +5,7 @@
 
 use guesthouse_messages::adapter::{AdapterQuery, CapsQuery, SetIoSpace, node_of};
 use guesthouse_messages::address::{
-    MapRequest, UpdateOperation, UpdateRequest, freed_address, memory_group, reserve_size,
+    MapRequest, ReserveRequest, UpdateOperation, UpdateRequest, freed_address, memory_group,
 };
 use guesthouse_messages::allocation::{
     CreateAllocation, DestroyAllocation, OpenResource, SetGuestPages, locked_allocation,
@@ -61,7 +61,7 @@ fn run_every_parser(message: &[u8]) {
         let _ = U64List::at(bytes, 0x28, count).map(|list| list.iter().count());
 
         let _ = MapRequest::parse(bytes);
-        let _ = reserve_size(bytes);
+        let _ = ReserveRequest::parse(bytes);
         let _ = freed_address(bytes);
         let _ = memory_group(bytes);
         if let Ok(update) = UpdateRequest::parse(bytes) {

@@ -4,13 +4,12 @@ use super::{Handled, Session, answer_status};
 use crate::deferred::{DeferredAction, FreedAllocation};
 use crate::gpu_addresses::{ADDRESSES_END, ALLOCATION_ALIGN, AddressUse, GpuAddresses, LARGE_ALIGN};
 use crate::pending::Pending;
-use crate::tables::{Mapping, ReservedRange};
+use crate::tables::Mapping;
 use guesthouse_backend::{Backend, BackendError, GuestMemory, MapRequest, MemoryId, SpaceId, UnmapRequest};
 use guesthouse_messages::address::{
-    MapRequest as GuestMap, PAGE_SIZE, UpdateOperation, UpdateRequest, freed_address, reserve_size,
-    two_values_and_status,
+    MapRequest as GuestMap, PAGE_SIZE, UpdateOperation, UpdateRequest, two_values_and_status,
 };
-use guesthouse_messages::wire::{Malformed, align_up, checked_align_up, put_u64};
+use guesthouse_messages::wire::{Malformed, align_up, checked_align_up};
 use guesthouse_messages::{MessageHeader, Status};
 
 /// From this size an allocation can use 2 MiB pages.
@@ -107,27 +106,6 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         self.mapped_addresses.insert(base, (whole, align));
         self.add_mapping(handle, Mapping { address: base, first: 0, length: size, space });
         map_answer(base + first, Status::SUCCESS, out);
-        Ok(())
-    }
-
-    pub(super) fn reserve_gpu_addresses(&mut self, message: &[u8], out: &mut Vec<u8>) -> Handled {
-        let size = checked_align_up(reserve_size(message)?, ALLOCATION_ALIGN).ok_or(RANGE_TOO_LONG)?;
-        let address = self.gpu_addresses.take(size, ALLOCATION_ALIGN, AddressUse::Reserved)?;
-        let space = self.space_for(MessageHeader::process_of(message)?)?;
-        self.reserved_addresses.push(ReservedRange { address, size, space });
-        put_u64(out, address);
-        put_u64(out, 0);
-        Ok(())
-    }
-
-    /// Takes back only what was reserved here, and not until the GPU has finished with it.
-    pub(super) fn free_gpu_addresses(&mut self, message: &[u8], out: &mut Vec<u8>) -> Handled {
-        let address = freed_address(message)?;
-        if let Some(index) = self.reserved_addresses.iter().position(|range| range.address == address) {
-            let size = self.reserved_addresses.remove(index).size;
-            self.defer(DeferredAction::GiveBackReserved { address, size });
-        }
-        answer_status(Status::SUCCESS, out);
         Ok(())
     }
 

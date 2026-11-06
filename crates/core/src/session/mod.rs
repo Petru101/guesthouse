@@ -6,6 +6,7 @@ mod context;
 mod copies;
 mod frame_ring;
 mod mapping;
+mod reserving;
 mod sync;
 #[cfg(test)]
 mod tests;

@@ -3,8 +3,7 @@
 use super::waiting::GpuTook;
 use super::{Handled, Session, answer_status};
 use crate::deferred::DeferredAction;
-use crate::gpu_addresses::{ALLOCATION_ALIGN, AddressUse};
-use crate::tables::Queue;
+use crate::tables::{Queue, ReservedRange};
 use guesthouse_backend::{Backend, GuestMemory, SpaceId, UnmapRequest, WorkSource};
 use guesthouse_messages::queue::{CreateContext, CreateHardwareQueue, SubmitToContext, SubmitToQueue};
 use guesthouse_messages::sync::first_handle;
@@ -55,10 +54,11 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         for (_, handle) in mapped {
             self.close_mappings(handle, space);
         }
-        for range in self.reserved_addresses.iter().filter(|range| range.space == space) {
-            self.gpu_addresses.give_back(range.address, range.size, ALLOCATION_ALIGN, AddressUse::Reserved);
-        }
-        self.reserved_addresses.retain(|range| range.space != space);
+        let (closing, kept) =
+            std::mem::take(&mut self.reserved_addresses).into_iter().partition(|range| range.space == space);
+        self.reserved_addresses = kept;
+        let closing: Vec<ReservedRange> = closing;
+        closing.into_iter().for_each(|range| self.give_back_reserved(range));
         self.closed_spaces.insert(space);
         if let Some(block) = self.fences.block {
             let unmap = UnmapRequest {

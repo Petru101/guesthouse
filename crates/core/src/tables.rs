@@ -82,4 +82,6 @@ pub struct ReservedRange {
     pub address: u64,
     pub size: u64,
     pub space: SpaceId,
+    /// At an address the guest asked for and not one handed out, so it goes back differently.
+    pub placed: bool,
 }

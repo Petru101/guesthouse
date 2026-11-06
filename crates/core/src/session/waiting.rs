@@ -2,7 +2,6 @@
 
 use super::{Handled, Session, answer_status, services};
 use crate::deferred::{Deferred, DeferredAction, FreedAllocation};
-use crate::gpu_addresses::{ALLOCATION_ALIGN, AddressUse};
 use crate::pending::{
     GATE_TIMEOUT, GateStep, MOST_QUEUE_FAILURES, Pending, QUEUE_TIMEOUT, QueueAction, RING_ROOM_TIMEOUT,
     Signal, Target, Waiting,
@@ -67,9 +66,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             DeferredAction::ReturnFence(fence) => self.fences.give_back(fence),
             DeferredAction::FreeAllocation(freed) => self.free_allocation(freed),
             DeferredAction::CloseSpace(space) => self.close_space(space),
-            DeferredAction::GiveBackReserved { address, size } => {
-                self.gpu_addresses.give_back(address, size, ALLOCATION_ALIGN, AddressUse::Reserved);
-            }
+            DeferredAction::GiveBackReserved(range) => self.give_back_reserved(range),
         }
     }
 

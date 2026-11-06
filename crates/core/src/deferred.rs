@@ -4,7 +4,7 @@
 //! would wait on real hardware, so the host must too: unmapping it now would make the GPU fault.
 
 use crate::fences::Fence;
-use crate::tables::Mapping;
+use crate::tables::{Mapping, ReservedRange};
 use guesthouse_backend::{MemoryId, PagesView, SpaceId};
 
 /// Something to do later.
@@ -13,7 +13,7 @@ pub enum DeferredAction {
     ReturnFence(Fence),
     FreeAllocation(FreedAllocation),
     CloseSpace(SpaceId),
-    GiveBackReserved { address: u64, size: u64 },
+    GiveBackReserved(ReservedRange),
 }
 
 /// What is left of a destroyed allocation.

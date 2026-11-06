@@ -9,6 +9,8 @@ use guesthouse_messages::{Command, HEADER_SIZE, Status};
 
 const TICKET: Option<ReplyTicket> = Some(ReplyTicket { channel: 1, transaction: 1 });
 const PROCESS: u32 = 0x4000_2000;
+/// A reservation has no status to fail with, so its answer holds no address.
+const NO_ADDRESS: [u8; 16] = [0; 16];
 const UNSUCCESSFUL: [u8; 4] = Status::UNSUCCESSFUL.0.to_le_bytes();
 const ADDRESS: u64 = 0x2000_0000;
 
@@ -85,14 +87,14 @@ fn mapped_page(session: &mut TestSession) -> u32 {
 fn a_reservation_too_large_to_round_up_is_refused() {
     let mut request = message(Command::ReserveGpuAddresses, 0x40);
     set_u64(&mut request, 0x38, u64::MAX);
-    assert_eq!(send(&mut session(), &request), UNSUCCESSFUL);
+    assert_eq!(send(&mut session(), &request), NO_ADDRESS);
 }
 
 #[test]
 fn a_reservation_past_the_addresses_there_are_is_refused() {
     let mut request = message(Command::ReserveGpuAddresses, 0x40);
     set_u64(&mut request, 0x38, u64::MAX - 0x10_0000);
-    assert_eq!(send(&mut session(), &request), UNSUCCESSFUL);
+    assert_eq!(send(&mut session(), &request), NO_ADDRESS);
 }
 
 #[test]

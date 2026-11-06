@@ -41,9 +41,32 @@ pub fn two_values_and_status(first: u64, second: u64, status: Status, out: &mut 
     put_u32(out, 0);
 }
 
-/// How much address space the guest wants set aside.
-pub fn reserve_size(message: &[u8]) -> Result<u64, Malformed> {
-    u64_at(message, 0x38)
+/// A request to set GPU addresses aside.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReserveRequest {
+    /// Exactly where, or zero to leave that to the host.
+    pub base: u64,
+    /// The lowest address that will do.
+    pub lowest: u64,
+    /// Where it must have ended by, or zero for no limit.
+    pub limit: u64,
+    pub size: u64,
+}
+
+impl ReserveRequest {
+    const BASE: usize = 0x20;
+    const LOWEST: usize = 0x28;
+    const LIMIT: usize = 0x30;
+    const SIZE: usize = 0x38;
+
+    pub fn parse(message: &[u8]) -> Result<Self, Malformed> {
+        Ok(Self {
+            base: u64_at(message, Self::BASE)?,
+            lowest: u64_at(message, Self::LOWEST)?,
+            limit: u64_at(message, Self::LIMIT)?,
+            size: u64_at(message, Self::SIZE)?,
+        })
+    }
 }
 
 /// The start of a range the guest gives back.

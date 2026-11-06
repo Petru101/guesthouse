@@ -1718,6 +1718,147 @@ mod address_reuse {
     }
 }
 
+mod reservations {
+    use super::*;
+
+    const WANTED: u64 = 0x3_0000_0000;
+    const OTHER_PROCESS: u32 = 0x4000_3000;
+
+    fn request(base: u64, lowest: u64, limit: u64, size: u64) -> Vec<u8> {
+        let mut bytes = message(Command::ReserveGpuAddresses, 0x40);
+        set_u64(&mut bytes, 0x20, base);
+        set_u64(&mut bytes, 0x28, lowest);
+        set_u64(&mut bytes, 0x30, limit);
+        set_u64(&mut bytes, 0x38, size);
+        bytes
+    }
+
+    fn reserve(session: &mut TestSession, bytes: &[u8]) -> u64 {
+        u64_at(&send(session, bytes), 0).unwrap()
+    }
+
+    fn from_other_process(mut bytes: Vec<u8>) -> Vec<u8> {
+        set_u32(&mut bytes, 8, OTHER_PROCESS);
+        bytes
+    }
+
+    fn free(process: Option<u32>, address: u64) -> Vec<u8> {
+        let mut bytes = message(Command::FreeGpuAddresses, 0x30);
+        set_u64(&mut bytes, 0x20, address);
+        if let Some(process) = process {
+            set_u32(&mut bytes, 8, process);
+        }
+        bytes
+    }
+
+    #[test]
+    fn a_named_address_is_given_exactly() {
+        let mut session = session();
+        assert_eq!(reserve(&mut session, &request(WANTED, 0, 0, 0x1_0000)), WANTED);
+    }
+
+    #[test]
+    fn a_named_address_costs_the_hand_outs_nothing() {
+        let mut session = session();
+        let first = reserve(&mut session, &request(0, 0, 0, 0x1_0000));
+        reserve(&mut session, &request(WANTED, 0, 0, 64 << 30));
+        let second = reserve(&mut session, &request(0, 0, 0, 0x1_0000));
+        assert_eq!(second, first + 0x1_0000);
+    }
+
+    #[test]
+    fn two_processes_can_hold_the_same_range_and_one_in_one_process_cannot() {
+        let mut session = session();
+        assert_eq!(reserve(&mut session, &request(WANTED, 0, 0, 0x1_0000)), WANTED);
+        assert_eq!(reserve(&mut session, &request(WANTED, 0, 0, 0x1_0000)), 0);
+        let other = from_other_process(request(WANTED, 0, 0, 0x1_0000));
+        assert_eq!(reserve(&mut session, &other), WANTED);
+    }
+
+    #[test]
+    fn an_address_no_range_holds_is_refused() {
+        let mut session = session();
+        assert_eq!(reserve(&mut session, &request(0x1_0000_0000, 0, 0, 0x1000)), 0, "in the hole");
+        assert_eq!(reserve(&mut session, &request(crate::GPU_RANGES[1].end, 0, 0, 0x1000)), 0);
+        let past_the_end = crate::GPU_RANGES[1].end - 0x1000;
+        assert_eq!(reserve(&mut session, &request(past_the_end, 0, 0, 0x2000)), 0);
+    }
+
+    #[test]
+    fn a_size_that_cannot_be_rounded_is_refused() {
+        let mut session = session();
+        assert_eq!(reserve(&mut session, &request(WANTED, 0, 0, u64::MAX)), 0);
+        assert_eq!(reserve(&mut session, &request(0, 0, 0, u64::MAX)), 0);
+    }
+
+    #[test]
+    fn hand_outs_jump_over_a_range_held_in_any_process() {
+        let mut session = session();
+        let next = reserve(&mut session, &request(0, 0, 0, 0x1_0000)) + 0x1_0000;
+        let holder = from_other_process(request(next, 0, 0, 0x2_0000));
+        assert_eq!(reserve(&mut session, &holder), next);
+        assert_eq!(reserve(&mut session, &request(0, 0, 0, 0x1_0000)), next + 0x2_0000);
+    }
+
+    #[test]
+    fn a_window_that_holds_the_next_address_uses_it() {
+        let mut session = session();
+        let first = reserve(&mut session, &request(0, 0, 0, 0x1_0000));
+        let second = reserve(&mut session, &request(0, first, 1 << 40, 0x1_0000));
+        assert_eq!(second, first + 0x1_0000);
+    }
+
+    #[test]
+    fn a_window_ahead_of_the_next_address_is_met() {
+        let mut session = session();
+        let address = reserve(&mut session, &request(0, WANTED, WANTED + 0x10_0000, 0x1_0000));
+        assert_eq!(address, WANTED);
+    }
+
+    #[test]
+    fn a_window_behind_the_next_address_finds_a_gap() {
+        let mut session = session();
+        let low = reserve(&mut session, &request(0, 0, 0, 0x1_0000));
+        reserve(&mut session, &from_other_process(request(0, 0, 0, 0x1000_0000)));
+        let address = reserve(&mut session, &request(0, low, low + 0x10_0000, 0x1_0000));
+        assert_eq!(address, low + 0x1_0000, "past this process's own, and over the other's");
+    }
+
+    #[test]
+    fn a_full_window_is_refused() {
+        let mut session = session();
+        let low = reserve(&mut session, &request(0, 0, 0, 0x1_0000));
+        reserve(&mut session, &request(0, 0, 0, 0x1000_0000));
+        assert_eq!(reserve(&mut session, &request(0, low, low + 0x1_0000, 0x1_0000)), 0);
+    }
+
+    #[test]
+    fn a_window_past_every_range_gets_an_ordinary_place() {
+        let mut session = session();
+        let address = reserve(&mut session, &request(0, 1 << 40, 2 << 40, 0x40_0000));
+        assert!(crate::GpuAddresses::in_a_range(address), "{address:#x}");
+    }
+
+    #[test]
+    fn freeing_lets_go_only_of_this_processs_range() {
+        let mut session = session();
+        reserve(&mut session, &request(WANTED, 0, 0, 0x1_0000));
+        reserve(&mut session, &from_other_process(request(WANTED, 0, 0, 0x1_0000)));
+        send(&mut session, &free(Some(OTHER_PROCESS), WANTED));
+        assert_eq!(reserve(&mut session, &request(WANTED, 0, 0, 0x1_0000)), 0, "this process keeps it");
+        send(&mut session, &free(None, WANTED));
+        assert_eq!(reserve(&mut session, &request(WANTED, 0, 0, 0x1_0000)), WANTED);
+    }
+
+    #[test]
+    fn a_placed_range_does_not_go_on_the_shelf_for_hand_outs() {
+        let mut session = session();
+        reserve(&mut session, &request(WANTED, 0, 0, 0x1_0000));
+        send(&mut session, &free(None, WANTED));
+        assert_ne!(reserve(&mut session, &request(0, 0, 0, 0x1_0000)), WANTED);
+    }
+}
+
 mod video_guard {
     use super::*;
     use guesthouse_backend_standin::NODE_WITHOUT_CHANNEL;
