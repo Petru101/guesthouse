@@ -5,6 +5,7 @@
 //! where.
 
 pub mod cards;
+pub mod inf;
 
 use crate::context::Context;
 use crate::settings::{driver_folder, read_setup};
