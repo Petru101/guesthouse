@@ -3,7 +3,12 @@
 //! A few of them are real work, and most only need the answer their kernel driver would give. Some
 //! carry a control for the RM, which runs on the host if it is on the list of what only reads.
 
+mod client_alloc;
 mod control;
+mod gpu_groups;
+mod gpu_range;
+
+pub use gpu_range::RUNTIME_GPU_RANGE;
 
 use crate::rm::device::Device;
 use crate::rm::{Rm, RmError};
@@ -62,9 +67,15 @@ pub fn answer<R: Rm>(
             put(data, GPU_LIST_HANDLES, gpu_id);
             put(data, GPU_LIST_KINDS, GPU_KIND_DISPLAY_DRIVER);
         }
+        FUNCTION_LIST_GPU_GROUPS => gpu_groups::answer(device.gpu_id()?, data),
         // A card under the display driver isn't a compute-only one, so this list stays empty.
         FUNCTION_LIST_COMPUTE_GPUS => {}
         FUNCTION_CHECK_DISPLAY => {}
+        FUNCTION_RUNTIME_GPU_RANGE => gpu_range::answer(data),
+        FUNCTION_RM_ALLOC => {
+            put(data, HEADER_SIZE_FIELD, HEADER_SIZE);
+            client_alloc::answer(data);
+        }
         _ => put(data, HEADER_SIZE_FIELD, HEADER_SIZE),
     }
     put(data, ANSWERED, 1);
