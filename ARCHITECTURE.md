@@ -107,7 +107,7 @@ The host's own clock in the clock answer is masked, since it can never repeat. M
 
 `Context` holds what the code needs from the PC, and tests swap its parts for stand-ins. A VM's QEMU arguments are built as data in `vm_args`. How a VM and the daemon come up is behind `VmHost`, and everything that knows the daemon's start-up is in `daemon.rs`, so a change there stays there.
 
-Nothing is relative to a project folder. Machines are in the data store, which `~/.config/guesthouse/store` can move, sockets are in the XDG runtime folder, the log is in the state folder, and what ships with the app is in a program folder found from where it runs. Each machine has its own token for the guest's agent. Files for the guest aren't in this repo: they ship with the app.
+Nothing is relative to a project folder. Machines are in the data store, which `~/.config/guesthouse/store` can move, sockets are in the XDG runtime folder, the log is in the state folder, and QEMU and the guest's files are in a program folder found from where it runs. Each machine has its own token for the guest's agent. That folder isn't in this repo, and without it the app runs plain VMs on the system's QEMU.
 
 Ubuntu guests take a route of their own, in `linux/` and `actions/ubuntu.rs`. Ubuntu's installer runs with no hands from a seed disc, and the host's driver reaches the guest on a read-only image, made from the files of the driver that's loaded. An unknown driver branch turns the GPU off and the VM still boots, and another point release warns. That GPU is a preview so far, and the app says so.
 

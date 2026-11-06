@@ -76,7 +76,7 @@ fn read_token(context: &Context, machine: &Machine) -> Option<String> {
     Some(text.trim().to_owned())
 }
 
-/// A script that comes with the app.
+/// A script from the program folder.
 pub fn guest_script(context: &Context, name: &str) -> Result<String> {
     Ok(fs::read_to_string(context.paths.guest_files().join(name))?)
 }

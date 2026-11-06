@@ -1,8 +1,8 @@
 //! Where everything lives. Nothing here is relative to a project folder, so an install can go anywhere.
 //!
 //! The data store is the only large thing, and `~/.config/guesthouse/store` can move it to another
-//! disk. A VM's sockets go in the runtime folder, the log in the state folder, and what ships with
-//! the app in the program folder.
+//! disk. A VM's sockets go in the runtime folder, the log in the state folder, and QEMU and the
+//! guest's files in the program folder.
 
 use guesthouse_daemon::slot::Slot;
 use std::collections::HashMap;
@@ -71,7 +71,8 @@ pub struct Paths {
     pub state: PathBuf,
     /// The folder that holds each slot's run folder, and what the daemon is given as its base.
     pub runtime: PathBuf,
-    /// What ships with the app: QEMU, the guest's files and the helpers.
+    /// The program folder: QEMU and the guest's files. It isn't in this repo, and the app runs plain
+    /// VMs without it.
     pub program: PathBuf,
     /// Where this app's own programs are, which is beside the running one if it can say.
     pub binaries: PathBuf,
@@ -184,12 +185,12 @@ impl Paths {
         self.config.join("app.json")
     }
 
-    /// The files that go into the guest. They ship with the app, and aren't in this repo.
+    /// The files that go into a Windows guest, from the program folder.
     pub fn guest_files(&self) -> PathBuf {
         self.program.join("guest")
     }
 
-    /// One of the helpers that ship with the app.
+    /// A file in the program folder.
     pub fn helper(&self, name: &str) -> PathBuf {
         self.program.join(name)
     }

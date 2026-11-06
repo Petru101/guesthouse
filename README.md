@@ -92,7 +92,7 @@ There are three pieces:
 
 - **A QEMU patch**, about 600 lines of code, which gives the guest the devices and the VMBus channels it expects to find on Hyper-V.
 - **A daemon**, which answers everything Windows asks, sets up real GPU channels through the Linux driver, and rings their doorbells when the guest has work.
-- **A desktop app**, Guesthouse, so that none of this needs a terminal. You pick a Windows ISO, and it installs Windows unattended and brings up the GPU.
+- **A desktop app**, Guesthouse, so that none of this needs a terminal. With the GPU part behind it, you pick a Windows ISO and it installs Windows unattended and brings up the GPU. From this repo alone it runs plain VMs.
 
 Apart from one small workaround, the guest's commands aren't translated. The Windows driver writes them, and the GPU runs them. Finished frames stay in video memory and reach the viewer as dmabufs.
 
