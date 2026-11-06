@@ -233,7 +233,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         let release = u64::from(request.release_event);
         let signals: Vec<Signal> = request.objects.iter().zip(request.values.iter()).collect();
         if self.signals_finished(&signals, request.wake_on_any) {
-            self.take_tokens(&signals);
+            self.take_tokens(&signals, request.wake_on_any);
             self.notices.push(Notice::WakeEvent { event: request.event, release });
         } else {
             let (wake_on_any, event) = (request.wake_on_any, request.event);
@@ -257,7 +257,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             if let Some(gate) = self.gates.get_mut(&queue) {
                 gate.push_back(GateStep::Wait { signals: signals.clone(), deadline });
             } else if self.signals_finished(&signals, false) {
-                self.take_tokens(&signals);
+                self.take_tokens(&signals, false);
             } else {
                 let step = GateStep::Wait { signals: signals.clone(), deadline };
                 self.gates.insert(queue, VecDeque::from([step]));
@@ -278,7 +278,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
                         self.gates.get_mut(&queue).expect("just read").push_front(held);
                         return false;
                     }
-                    self.take_tokens(&signals);
+                    self.take_tokens(&signals, false);
                 }
                 GateStep::Ring { doorbell, fence, value } => self.ring(queue, doorbell, fence, value),
                 GateStep::Copy { id } => {
@@ -407,7 +407,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             }
             Pending::CpuWait { signals, wake_on_any, event, release } => {
                 if self.signals_finished(&signals, wake_on_any) {
-                    self.take_tokens(&signals);
+                    self.take_tokens(&signals, wake_on_any);
                     self.notices.push(Notice::WakeEvent { event, release });
                     None
                 } else {

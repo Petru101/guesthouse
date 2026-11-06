@@ -154,11 +154,13 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         fence == 0 || self.fence_value(fence) >= value
     }
 
-    /// Takes what a finished wait holds, for those objects that are held.
-    pub(crate) fn take_tokens(&mut self, signals: &[(u32, u64)]) {
-        for &(handle, _) in signals {
-            self.sync_objects.take_token(self.resolve_shared(handle));
-        }
+    /// Takes what a finished wait holds, for those objects that are held. A wait for any one of them
+    /// takes only the one that let it through.
+    pub(crate) fn take_tokens(&mut self, signals: &[(u32, u64)], wake_on_any: bool) {
+        let reached = signals.iter().filter(|&&(handle, value)| self.fence_reached(handle, value));
+        let reached: Vec<u32> = reached.map(|&(handle, _)| self.resolve_shared(handle)).collect();
+        let taken = if wake_on_any { &reached[..reached.len().min(1)] } else { &reached };
+        taken.iter().for_each(|&handle| self.sync_objects.take_token(handle));
     }
 
     pub(super) fn signal_fence(&mut self, message: &[u8], out: &mut Vec<u8>) -> Handled {

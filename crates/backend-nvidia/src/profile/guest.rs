@@ -46,6 +46,8 @@ pub struct RecordLayout {
     pub pci: usize,
     pub cpu_short: usize,
     pub ram_megabytes: [usize; 3],
+    /// A word of flags whose meanings aren't known, bar the one in the builder.
+    pub flags: usize,
     pub current_clocks: usize,
     pub rated_clocks: usize,
     pub chipset: usize,
@@ -154,6 +156,7 @@ pub const GUEST_617: GuestBranch = GuestBranch {
         pci: 0x30,
         cpu_short: 0x40,
         ram_megabytes: [0x48, 0x4C, 0x50],
+        flags: 0x60,
         current_clocks: 0xA8,
         rated_clocks: 0xB4,
         chipset: 0xE4,

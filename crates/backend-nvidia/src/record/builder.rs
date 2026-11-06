@@ -80,6 +80,9 @@ const ECID_HIGH: u32 = 2;
 const FB_CLEARED_ON_ALLOCATION: (usize, u8) = (2, 0x02);
 const FIFO_NO_PIPELINED_PAGE_TABLE_BLIT: (usize, u8) = (0, 0x80);
 
+/// Measured: with this bit clear, Direct3D 11 offers no video decoders at all.
+const FLAG_VIDEO_DECODE: u32 = 1 << 20;
+
 /// The identifiers the guest's adapter goes by, which the core's identity answer repeats.
 const ADAPTER_ID: [u32; 2] = [0xABC, 1];
 
@@ -318,6 +321,7 @@ pub fn build<R: Rm>(
         record.word(layout.memory_low + index * 4, size as u32);
     }
 
+    record.word(layout.flags, FLAG_VIDEO_DECODE);
     record.counted_words(layout.classes, &card.classes().map_err(card_failed)?)?;
 
     let (graphics_hertz, memory_hertz) = host.rated_clocks;
