@@ -225,11 +225,8 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             return false;
         }
         self.first_locks_waited.insert(handle);
-        let action = QueueAction::Retry {
-            message: message.to_vec(),
-            ticket: self.ticket,
-            started: Instant::now(),
-        };
+        let action =
+            QueueAction::Retry { message: message.to_vec(), ticket: self.ticket, started: Instant::now() };
         self.after_queues(queues.iter().copied(), action);
         self.hold_reply();
         true

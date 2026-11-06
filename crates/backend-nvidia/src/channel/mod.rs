@@ -59,7 +59,7 @@ const MEM_OP_L2_SYSMEM_INVALIDATE: u32 = 0xE;
 /// A copy engine is reached through this subchannel, also on its own channel.
 pub(crate) const COPY_SUBCHANNEL: u32 = 4;
 /// So is a video engine, which is the only one on its channel.
-const VIDEO_SUBCHANNEL: u32 = 4;
+pub(crate) const VIDEO_SUBCHANNEL: u32 = 4;
 const VIDEO_CLASS_PARAMS: usize = 12;
 const SET_OBJECT: u32 = 0;
 const SCHEDULE_ENABLED: [u8; 3] = [1, 0, 0];
@@ -110,6 +110,7 @@ pub struct ChannelPlace {
 /// See the module documentation.
 #[derive(Debug)]
 pub struct Channel {
+    engine: Engine,
     area: Area,
     area_address: u64,
     memory: Handle,
@@ -220,6 +221,7 @@ impl Channel {
         words.extend(l2_invalidate_words());
         area.store_words(PRELUDE, &words);
         Ok(Self {
+            engine,
             area,
             area_address: place.area_address,
             memory,
@@ -229,6 +231,10 @@ impl Channel {
             bind_words,
             prelude_words: words.len() as u32,
         })
+    }
+
+    pub fn engine(&self) -> Engine {
+        self.engine
     }
 
     pub fn area(&self) -> &Area {
