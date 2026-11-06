@@ -191,11 +191,23 @@ for tests in "$HERE"/tests-*.sh; do
     . "$tests"
 done
 
+whole_run=
 if [ $# -eq 0 ]; then
+    whole_run=yes
     set -- $(declare -F | awk '$3 ~ /^t_/ { print $3 }')
 fi
 for name in "$@"; do
     run_test "$name"
 done
+# So the driver's licences and the release's refusals don't rest on anyone remembering to look.
+if [ -n "$whole_run" ]; then
+    if sh "$HERE/display-driver.sh" >"$TEST_ROOT/display-driver.txt" 2>&1; then
+        passed=$((passed + 1))
+    else
+        printf '  FAILED: display-driver.sh\n'
+        grep FAILED "$TEST_ROOT/display-driver.txt"
+        failed=$((failed + 1))
+    fi
+fi
 printf '%d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]

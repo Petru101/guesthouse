@@ -45,7 +45,7 @@ Below, `VERSION` is the version with no `v`, like `0.2.0`, and the build folder 
 
    The two sources are there for the GPL and the LGPL, so a release doesn't go out without them. They have to stay up for as long as the payload does.
 
-7. **Point `main` at it, last of all.** In `install.sh`, set `RELEASE_VERSION`, `PAYLOAD_SHA256` and `SOURCE_SHA256` to what step 3 printed, then commit and push. From that moment the one line installs this release, and `--update` and `--check-update` offer it to everyone.
+7. **Point `main` at it, last of all.** In `install.sh`, set `RELEASE_VERSION`, `PAYLOAD_SHA256` and `SOURCE_SHA256` to what step 4 printed, then commit and push. From that moment the one line installs this release, and `--update` and `--check-update` offer it to everyone.
 
 8. **Check it from the outside.** Run `install.sh --dry-run` from the raw URL, in a fake HOME. It should download, verify and show the plan.
 

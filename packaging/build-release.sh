@@ -11,6 +11,8 @@
 #   payload   guesthouse-VERSION-x86_64.tar.xz
 #   source    guesthouse-VERSION-source.tar.xz, and SHA256SUMS
 #
+# check-driver isn't one of these: it only looks at what --display-driver names, and builds nothing.
+#
 # Everything built here only runs on this system's glibc or a newer one, so a release doesn't run this
 # directly: packaging/build-in-images.sh runs each stage in its own image. On its own it builds for
 # this PC, which is what install.sh --from-source wants. QEMU_UPSTREAM can name a local clone of QEMU.
@@ -353,6 +355,7 @@ run_stage() {
         app) stage_app ;;
         payload) stage_payload ;;
         source) stage_source ;;
+        check-driver) check_display_driver ;;
         *) die "there's no stage called $1" ;;
     esac
 }

@@ -1,5 +1,5 @@
 #!/bin/sh
-# Tests what the packaging does with the display driver, on a copy of what's committed. It needs no
+# Tests what the packaging does with the display driver, on a copy of what's committed. run.sh runs it. It needs no
 # Windows and no real driver: a stand-in build is enough for this, and nothing here is compiled.
 #
 # Usage: tests/install/display-driver.sh
@@ -25,7 +25,11 @@ build() {
 }
 
 mkdir -p "$T/tree" "$T/good" "$T/source-inf"
-git -C "$REPO" archive HEAD | tar -xC "$T/tree"
+if [ -e "$REPO/.git" ]; then
+    git -C "$REPO" archive HEAD | tar -xC "$T/tree"
+else
+    cp -R "$REPO/." "$T/tree/"
+fi
 printf 'MZ a stand-in\n' >"$T/good/GuesthouseDisplay.dll"
 printf 'UmdfLibraryVersion=2.25.0\n' >"$T/good/GuesthouseDisplay.inf"
 cp "$T/good/GuesthouseDisplay.dll" "$T/source-inf/"
@@ -42,6 +46,13 @@ check 'a release with no driver is refused' '[ $? -ne 0 ] && grep -q "without th
 
 build --display-driver "$T/source-inf" payload
 check 'the INF from the source is refused' '[ $? -ne 0 ] && grep -q "not the build" "$T/said"'
+
+sh "$T/tree/packaging/build-in-images.sh" --out "$T/images" source >"$T/said" 2>&1
+check 'the images refuse a release with no driver at the start' '[ $? -ne 0 ] && grep -q "without the display driver" "$T/said"'
+sh "$T/tree/packaging/build-in-images.sh" --out "$T/images" --display-driver "$T/source-inf" source >"$T/said" 2>&1
+check 'and a folder that has no real build' '[ $? -ne 0 ] && grep -q "not the build" "$T/said"'
+sh "$T/tree/packaging/build-in-images.sh" --out "$T/images" --display-driver "$T/nothing" source >"$T/said" 2>&1
+check 'and a folder that is not there' '[ $? -ne 0 ] && grep -q "no folder" "$T/said"'
 
 build --display-driver "$T/good" payload
 check 'a build with the driver works' '[ $? -eq 0 ]'

@@ -91,6 +91,8 @@ refuse_a_release_with_no_driver() {
         [ "$stage" != source ] || [ -n "$DISPLAY_DRIVER" ] ||
             die "a release can't go out without the display driver. Name the build with --display-driver."
     done
+    [ -z "$DISPLAY_DRIVER" ] ||
+        sh "$REPO/packaging/build-release.sh" --out "$OUT" --display-driver "$DISPLAY_DRIVER" check-driver
 }
 
 main() {
@@ -99,6 +101,7 @@ main() {
         shift 2
     fi
     if [ "${1:-}" = --display-driver ]; then
+        [ -d "$2" ] || die "there's no folder called $2."
         DISPLAY_DRIVER=$(CDPATH='' cd -- "$2" && pwd)
         shift 2
     fi
