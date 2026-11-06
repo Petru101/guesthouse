@@ -4374,3 +4374,411 @@ index 0000000..cb26bd5
 -- 
 2.56.0
 
+From 268631bc838d4b1a71240ae010240eb637de7705 Mon Sep 17 00:00:00 2001
+From: xnixy <x@ruxn.com>
+Date: Thu, 5 Nov 2026 22:59:41 -0800
+Subject: [PATCH 17/21] hw/misc/nvfwd: the allow list and the table of host
+ files
+
+Calls are held to a text file of what may reach the host. A call holds the
+files it names until it ends.
+---
+ hw/misc/nvfwd/allow.c     | 107 ++++++++++++++++++++++++++++++++
+ hw/misc/nvfwd/fds.c       | 123 +++++++++++++++++++++++++++++++++++++
+ hw/misc/nvfwd/meson.build |   2 +
+ hw/misc/nvfwd/nvfwd.h     | 126 ++++++++++++++++++++++++++++++++++++++
+ 4 files changed, 358 insertions(+)
+ create mode 100644 hw/misc/nvfwd/allow.c
+ create mode 100644 hw/misc/nvfwd/fds.c
+ create mode 100644 hw/misc/nvfwd/nvfwd.h
+
+diff --git a/hw/misc/nvfwd/allow.c b/hw/misc/nvfwd/allow.c
+new file mode 100644
+index 0000000..fe5ec5c
+--- /dev/null
++++ b/hw/misc/nvfwd/allow.c
+@@ -0,0 +1,107 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++/* The allow list, and the log of what was forwarded, refused or answered here. See nvfwd.h. */
++#include "qemu/osdep.h"
++#include "nvfwd.h"
++
++#define SEEN_MAX (SEEN_CAPACITY / 2) /* the table never fills, and the log stops growing */
++
++static uint64_t mix(uint64_t k)
++{
++    k ^= k >> 33; k *= 0xff51afd7ed558ccdull; k ^= k >> 33;
++    return k;
++}
++
++bool set_has(AllowSet *s, uint64_t key)
++{
++    uint32_t i;
++    if (!s) {
++        return false;
++    }
++    for (i = mix(key) & (s->cap - 1); s->key[i]; i = (i + 1) & (s->cap - 1)) {
++        if (s->key[i] == key) {
++            return true;
++        }
++    }
++    return false;
++}
++
++static void set_add(AllowSet *s, uint64_t key)
++{
++    uint32_t i;
++    for (i = mix(key) & (s->cap - 1); s->key[i]; i = (i + 1) & (s->cap - 1)) {
++        if (s->key[i] == key) {
++            return;
++        }
++    }
++    s->key[i] = key;
++}
++
++AllowSet *set_new(uint32_t cap)
++{
++    AllowSet *s = g_malloc0(sizeof(*s) + cap * sizeof(uint64_t));
++    s->cap = cap;
++    return s;
++}
++
++
++/* Lines: a kind (ioctl, ctrl, class, memclass, uvm or emuctrl), a number, and a note. */
++void allow_reload(NvfwdState *s)
++{
++    struct stat st;
++    FILE *f;
++    char kind[16], line[512];
++    unsigned long long value;
++    AllowSet *set;
++
++    if (stat(s->allow_path, &st) || st.st_mtime == s->allow_mtime) {
++        return;
++    }
++    f = fopen(s->allow_path, "r");
++    if (!f) {
++        return;
++    }
++    set = set_new(1 << 14);
++    while (fgets(line, sizeof(line), f)) {
++        if (sscanf(line, "%15s %llx", kind, &value) != 2) {
++            continue;
++        }
++        set_add(set, KEY(!strcmp(kind, "ioctl") ? K_IOCTL : !strcmp(kind, "ctrl") ? K_CTRL :
++                         !strcmp(kind, "class") ? K_CLASS : !strcmp(kind, "uvm") ? K_UVM :
++                         !strcmp(kind, "memclass") ? K_MEMCLASS :
++                         !strcmp(kind, "emuctrl") ? K_EMUCTRL : 0, value));
++    }
++    fclose(f);
++    qatomic_set(&s->allow, set); /* the old set stays: a call may be reading it, and reloads are rare */
++    s->allow_mtime = st.st_mtime;
++}
++
++void note_once(NvfwdState *s, const char *outcome, const char *what, uint64_t key,
++                      uint64_t value)
++{
++    qemu_mutex_lock(&s->lock);
++    if (s->seen_count < SEEN_MAX && !set_has(s->seen, key)) {
++        set_add(s->seen, key);
++        s->seen_count++;
++        fprintf(s->log, "%s %s 0x%llx\n", outcome, what, (unsigned long long)value);
++        fflush(s->log);
++    }
++    qemu_mutex_unlock(&s->lock);
++}
++
++static void note(NvfwdState *s, const char *what, int kind, uint64_t value, bool allowed)
++{
++    note_once(s, allowed ? "FORWARD" : "REFUSED", what, KEY(kind + (allowed ? 0 : 16), value), value);
++}
++
++/* Answered in this device: the host never sees the call. */
++void note_local(NvfwdState *s, const char *what, int kind, uint64_t value)
++{
++    note_once(s, "LOCAL", what, KEY(kind + 32, value), value);
++}
++
++bool allowed(NvfwdState *s, const char *what, int kind, uint64_t value)
++{
++    bool ok = set_has(qatomic_read(&s->allow), KEY(kind, value));
++    note(s, what, kind, value, ok);
++    return ok;
++}
+diff --git a/hw/misc/nvfwd/fds.c b/hw/misc/nvfwd/fds.c
+new file mode 100644
+index 0000000..2433dda
+--- /dev/null
++++ b/hw/misc/nvfwd/fds.c
+@@ -0,0 +1,123 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++/* The table of host files a guest has opened. See nvfwd.h. */
++#include "qemu/osdep.h"
++#include "qemu/units.h"
++#include "nvfwd.h"
++
++#define NS_PER_US 1000
++
++int host_fd(NvfwdState *s, uint32_t id)
++{
++    return id < MAX_FDS ? qatomic_read(&s->fds[id]) : -1;
++}
++
++/*
++ * A guest can close a file on one vCPU while a call uses it on another, and QEMU may reuse a closed
++ * file's number. So a call holds each file it names, and a close waits for the last of them.
++ */
++bool fd_hold(NvfwdState *s, uint32_t id)
++{
++    bool held = false;
++
++    if (id < MAX_FDS) {
++        qemu_mutex_lock(&s->lock);
++        held = s->fds[id] >= 0;
++        s->fd_holds[id] += held;
++        qemu_mutex_unlock(&s->lock);
++    }
++    return held;
++}
++
++void fd_release(NvfwdState *s, uint32_t id)
++{
++    int closing = -1;
++
++    qemu_mutex_lock(&s->lock);
++    if (!--s->fd_holds[id]) {
++        closing = s->fd_closing[id];
++        s->fd_closing[id] = -1;
++    }
++    qemu_mutex_unlock(&s->lock);
++    if (closing >= 0) {
++        close(closing);
++    }
++}
++
++void fd_close(NvfwdState *s, uint32_t id)
++{
++    int fd;
++
++    qemu_mutex_lock(&s->lock);
++    fd = s->fds[id];
++    s->fds[id] = -1;
++    if (s->fd_holds[id]) {
++        s->fd_closing[id] = fd;
++        fd = -1;
++    }
++    qemu_mutex_unlock(&s->lock);
++    if (fd >= 0) {
++        close(fd);
++    }
++}
++
++
++/*
++ * Calls past the rate wait here, on the vCPU that made them. That costs the guest time and nothing
++ * else: no lock is held, and the host's driver gets a rest. A failure would crash a program for
++ * being busy.
++ */
++void throttle(NvfwdState *s)
++{
++    uint64_t wait = callrate_wait_ns(&s->rate, g_get_monotonic_time() * NS_PER_US);
++
++    if (wait) {
++        s->counters[2]++;
++        g_usleep(wait / NS_PER_US + 1);
++    }
++}
++
++void do_open(NvfwdState *s, struct nvfwd_req *r)
++{
++    static const char *const paths[] = { "/dev/nvidiactl", "/dev/nvidia0", "/dev/nvidia-uvm" };
++    int fd, i;
++
++    if (r->a0 >= ARRAY_SIZE(paths)) {
++        r->ret = -EINVAL;
++        return;
++    }
++    throttle(s);
++    if (s->no_gpu) { /* transport test: nothing touches the driver */
++        fd = memfd_create("nvfwd-nogpu", MFD_CLOEXEC);
++        if (fd >= 0 && ftruncate(fd, 1 * GiB)) {
++            close(fd);
++            fd = -1;
++        }
++    } else {
++        fd = open(paths[r->a0], O_RDWR | O_CLOEXEC | (r->a1 ? O_NONBLOCK : 0));
++    }
++    if (fd < 0) {
++        r->ret = -errno;
++        return;
++    }
++    allow_reload(s);
++    if (s->trace) { /* what a real session holds, for choosing the limits */
++        fprintf(s->log, "S objects=%u maps=%u vram=%" PRIu64 " sysmem=%" PRIu64 " throttled=%" PRIu64 "\n",
++                objects_count(s->objects), maps_count(s->maps), objects_bytes(s->objects, MEMORY_VIDEO),
++                objects_bytes(s->objects, MEMORY_SYSTEM), s->counters[2]);
++    }
++    qemu_mutex_lock(&s->lock);
++    for (i = 1; i < MAX_FDS; i++) {
++        if (s->fds[i] < 0 && !s->fd_holds[i]) {
++            s->fds[i] = fd;
++            s->fd_kind[i] = r->a0;
++            break;
++        }
++    }
++    qemu_mutex_unlock(&s->lock);
++    if (i == MAX_FDS) {
++        close(fd);
++        r->ret = -EMFILE;
++        return;
++    }
++    r->ret = i;
++}
+diff --git a/hw/misc/nvfwd/meson.build b/hw/misc/nvfwd/meson.build
+index 9e07076..5851bc2 100644
+--- a/hw/misc/nvfwd/meson.build
++++ b/hw/misc/nvfwd/meson.build
+@@ -9,6 +9,8 @@ nvfwd_ss = files(
+   'clients.c',
+   'accounting.c',
+   'sensors.c',
++  'allow.c',
++  'fds.c',
+ )
+ system_ss.add(when: 'CONFIG_PCI', if_true: nvfwd_ss)
+ 
+diff --git a/hw/misc/nvfwd/nvfwd.h b/hw/misc/nvfwd/nvfwd.h
+new file mode 100644
+index 0000000..3d1d25f
+--- /dev/null
++++ b/hw/misc/nvfwd/nvfwd.h
+@@ -0,0 +1,126 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++/*
++ * nvfwd: forwards NVIDIA driver calls from a Linux guest to the host's kernel driver.
++ *
++ * BAR0 is a kick register, BAR2 the call slots, BAR4 a window of guest physical space in which host
++ * mappings of /dev/nvidia* appear. A call runs on the vCPU thread that made it, without the BQL, so
++ * there is no hop to another process or thread. This header is what the parts of the device share.
++ */
++#ifndef HW_MISC_NVFWD_H
++#define HW_MISC_NVFWD_H
++
++#include "qemu/thread.h"
++#include "hw/pci/pci_device.h"
++#include "qom/object.h"
++#include "system/memory.h"
++#include "accounting.h"
++#include "bounce.h"
++#include "callrate.h"
++#include "maps.h"
++#include "nvfwd_proto.h"
++#include "objects.h"
++#include "sensors.h"
++
++#define TYPE_NVFWD "nvfwd"
++OBJECT_DECLARE_SIMPLE_TYPE(NvfwdState, NVFWD)
++
++#define MAX_FDS 4096
++#define MAX_RANGES 8192
++#define SEEN_CAPACITY (1 << 16)
++
++typedef struct { uint64_t off, len; } WinRange;
++
++/* Allow list: open addressing, rebuilt from a text file, swapped in whole. */
++typedef struct { uint32_t cap; uint64_t key[]; } AllowSet;
++
++struct NvfwdState {
++    PCIDevice pdev;
++    MemoryRegion mmio, slots, window;
++    uint8_t *slot_mem;
++    uint8_t *win;
++    uint64_t win_size;
++    char *allow_path, *log_path, *sensord_path;
++    bool trace, no_gpu;
++
++    QemuMutex lock;
++    int fds[MAX_FDS];
++    uint8_t fd_kind[MAX_FDS];
++    bool fd_read_only[MAX_FDS]; /* the next mapping of this file was asked for without write */
++    uint32_t fd_holds[MAX_FDS]; /* calls using this entry now */
++    int fd_closing[MAX_FDS];    /* closed by the guest, and to go when the last of those ends */
++    Bounce bounce[NVFWD_SLOTS];
++    WinRange free_ranges[MAX_RANGES];
++    int free_count;
++    AllowSet *allow;
++    time_t allow_mtime;
++    char *show_path; /* path prefix: <path>.sock and <path>.display */
++    QemuMutex show_lock;
++    QemuThread show_thread;
++    int render, listener, viewer;
++    int show_fd[NVFWD_SHOW_SLOTS];
++    uint32_t show_ready, show_pending, show_turn, show_w, show_h, show_pitch;
++    int show_newest;
++    uint64_t show_sequence;
++    uint64_t *show_latest;
++    uint32_t *show_held;
++    uint64_t *show_present;
++    uint64_t *show_reading;
++    uint64_t *show_rate;
++    uint32_t *show_claimed;
++    uint32_t show_have;
++    uint32_t surf_have;
++    int surf_fd[NVFWD_SHOW_MAX_SURFACES];
++    uint32_t surf_w[NVFWD_SHOW_MAX_SURFACES], surf_h[NVFWD_SHOW_MAX_SURFACES];
++    uint32_t surf_pitch[NVFWD_SHOW_MAX_SURFACES], surf_format[NVFWD_SHOW_MAX_SURFACES];
++    uint64_t surf_modifier[NVFWD_SHOW_MAX_SURFACES];
++    AllowSet *seen; /* first-seen keys, for the list of forwarded calls */
++    uint32_t seen_count;
++    Sensors *sensors;
++    Objects *objects;
++    Maps *maps;
++    CallRate rate;
++    uint32_t max_call_rate, max_call_burst, max_objects, max_maps;
++    uint64_t max_vram, max_sysmem, max_uvm;
++    FILE *log;
++    uint64_t counters[8];
++};
++
++enum { K_IOCTL = 1, K_CTRL = 2, K_CLASS = 3, K_UVM = 4, K_MEMCLASS = 5, K_EMUCTRL = 6, K_LIMIT = 7, K_CLIENT = 8 };
++
++#define KEY(kind, value) (((uint64_t)(kind) << 32) | (uint32_t)(value))
++
++/* allow.c */
++bool set_has(AllowSet *s, uint64_t key);
++AllowSet *set_new(uint32_t cap);
++void allow_reload(NvfwdState *s);
++void note_once(NvfwdState *s, const char *outcome, const char *what, uint64_t key, uint64_t value);
++void note_local(NvfwdState *s, const char *what, int kind, uint64_t value);
++bool allowed(NvfwdState *s, const char *what, int kind, uint64_t value);
++
++/* fds.c */
++void throttle(NvfwdState *s);
++int host_fd(NvfwdState *s, uint32_t id);
++bool fd_hold(NvfwdState *s, uint32_t id);
++void fd_release(NvfwdState *s, uint32_t id);
++void fd_close(NvfwdState *s, uint32_t id);
++void do_open(NvfwdState *s, struct nvfwd_req *r);
++
++/* forward.c */
++void unmap_runs(void *opaque, void *range, uint64_t bytes);
++void do_ioctl(NvfwdState *s, Bounce *b);
++
++/* window.c */
++void window_init(NvfwdState *s);
++void do_mmap(NvfwdState *s, struct nvfwd_req *r);
++void do_munmap(NvfwdState *s, struct nvfwd_req *r);
++
++/* show.c */
++void show_init(NvfwdState *s, Error **errp);
++void do_show_buffer(NvfwdState *s, struct nvfwd_req *r);
++void do_show_surface(NvfwdState *s, struct nvfwd_req *r);
++void do_show_next(NvfwdState *s, struct nvfwd_req *r);
++void do_show_frame(NvfwdState *s, struct nvfwd_req *r);
++void do_show_reading(NvfwdState *s, struct nvfwd_req *r);
++void do_show_rate(NvfwdState *s, struct nvfwd_req *r);
++
++#endif
+-- 
+2.56.0
+
