@@ -28,7 +28,7 @@ They're in `crates/`, listed here from the bottom up. Each depends only on crate
 | `backend-standin` | A pretend GPU, for tests only. |
 | `core` | `Session`: the tables for one guest, and the answer to each message. Vendor-neutral. |
 | `frame-socket` | The four messages that bring frames to a viewer, on their own so a producer can use them as they are. |
-| `daemon` | Slots, shared memory, sockets, and the main loop. |
+| `daemon` | Slots, shared memory, sockets, the viewer's socket, and the main loop. |
 | `replay` | Replays a recording and compares every reply. |
 
 To follow one message, start at `Server::read_channel` in `daemon`, go through `Router::handle_frame`, and land in `Session::dispatch` in `core/src/session/mod.rs`. The handlers are grouped by subject in that folder.
@@ -37,13 +37,13 @@ To follow one message, start at `Server::read_channel` in `daemon`, go through `
 
 Everything happens on one thread. That's why the message path has no locks, and why both channels share a single order of events. Things that have to wait for a fence go in a list, and the main loop calls `Session::poll` while that list has anything in it.
 
-The cost is that a slow backend call holds up both channels, so backend calls on the message path must not block. The one exception is moving an allocation's contents on its first lock, which spins on the copy engine for a moment, and which nothing else can get ahead of.
+The cost is that a slow backend call holds up both channels, so backend calls on the message path must not block. The one exception is moving an allocation's contents on its first lock, which spins on the copy engine for a moment, and which nothing else can get ahead of. The blocking copy order, below, is another for now, and so is fetching a picture for the frame ring when the screen is still.
 
 ### Holding a reply
 
 The thread must never wait, because one guest thread waiting is no reason to stop the others. So a handler that can't answer yet returns `Answer::Held`, and keeps the `ReplyTicket` it was given. The reply goes out later through `Session::take_replies`, and the guest thread that sent the message stays blocked on it, which is the whole point: it can't get ahead. Every other message goes on being served.
 
-Three things use this. A submission to a queue that's too far behind holds its reply until the ring has room. A copy to the staging surface can become a job that waits for its frame, runs, and then replies, though for now that's off and `GUESTHOUSE_HELD_COPIES` turns it on: by default a copy runs on the message thread, in the order the prototype was proven in, as the held order met a fault on its first real run and is not cleared of it yet. And a message that frees or moves a surface in use by such a job is parked, whole, and run again from the start when the jobs are done. A thread instead of a list would have needed locks on every table, and a wait on the message thread stalls every other guest thread behind it.
+Three things use this, and a copy into the frame ring rides along with the second of them. A submission to a queue that's too far behind holds its reply until the ring has room. A copy to the staging surface can become a job that waits for its frame, runs, and then replies, though for now that's off and `GUESTHOUSE_HELD_COPIES` turns it on: by default a copy runs on the message thread, in the order the prototype was proven in, as the held order met a fault on its first real run and is not cleared of it yet. And a message that frees or moves a surface in use by such a job is parked, whole, and run again from the start when the jobs are done. A thread instead of a list would have needed locks on every table, and a wait on the message thread stalls every other guest thread behind it.
 
 ### Waiting for fences
 
@@ -67,7 +67,20 @@ AMD and Intel backends should be possible through this same trait. None exist ye
 
 ## Frames
 
-`FrameSink` in `core/src/frames.rs` is the boundary between what makes the guest's frames and what shows them. A sink hears of rings of buffers and the frames in them, and doesn't know how a frame came to be. Copies to the staging surface are the only producer so far, and the only sink is a small file for today's viewer. `Backend::export_memory` is there for a frame path that stays in video memory, and nothing uses it yet. This part is expected to change.
+`FrameSink` in `core/src/frames/` is the boundary between what makes the guest's frames and what shows them. A sink hears of rings of buffers and the frames in them, and doesn't know how a frame came to be. Copies to the staging surface are the only producer so far, and the only sink is `ViewerPort` in `daemon/src/viewer.rs`, which serves `frames.sock` in the run folder.
+
+The staging surface lies in guest pages, so a viewer can't use it where it is. The daemon keeps its own ring of slots in video memory, exported with `Backend::export_memory`, and each screen frame gets a second copy, into the next free slot. The guest's image is read directly if it's the screen's size, and otherwise the staging surface is, because each slot needs the whole picture.
+
+The rules:
+
+- A ring exists only while a viewer is here, so a guest with nobody watching pays nothing. Each viewer gets new buffers, and so does each new screen size, under a new generation.
+- `Slots` is the only thing that decides who has a slot: free, being written, waiting to leave, or the viewer's. A slot goes to the viewer when its frame has really left, and comes back only by a release of a slot the viewer has. Anything else a viewer says changes nothing.
+- A frame goes out once its copy has finished on the GPU. A newer frame replaces one that hasn't left, and its slot is free again.
+- With no free slot the frame is skipped. Nothing ever waits on a viewer.
+- A ring copy reads the guest's image, so it runs before the guest's reply, in the order the prototype was proven in. The blocking order waits for it on the message thread, and the held order keeps its job and its held reply until it's done. Either way it costs the guest one more copy on the GPU. If it fails, a frame is lost and the guest hears nothing.
+- Making a ring, closing one and catching up all happen in `Session::poll`, away from any message. Making a ring takes a few calls to the card, once for each viewer or screen size.
+- A skipped frame might be the last one for a while, as an idle desktop draws nothing. So when a slot is free and the screen has been still for a moment, the ring fetches the picture from the staging surface. A new viewer gets its first picture the same way.
+- Frames go out as SDR XRGB8888. The ring can't hold a 10-bit picture, and a plain copy can't narrow one, so those frames don't reach the viewer yet. HDR comes with the indirect display driver.
 
 ## Three layers inside a backend
 
@@ -120,7 +133,6 @@ The host's own clock in the clock answer is masked, since it can never repeat. M
 Left out for now, because they're still changing in the prototype:
 
 - the NVIDIA backend, and with it real submissions
-- the frame path to the viewer, beyond the small file
 - the app
 
 Also not ported: the arena (video memory the guest's CPU can reach), the experiment switches in the prototype's run folder, and turning 10-bit frames into 8-bit ones for an app's staging surface.
