@@ -9,6 +9,7 @@
 // Parts wait for what uses them. This goes when the backend is joined up, later in this series.
 #![allow(dead_code, unused_imports)]
 
+pub mod answers;
 pub mod channel;
 pub mod inf;
 pub mod profile;
