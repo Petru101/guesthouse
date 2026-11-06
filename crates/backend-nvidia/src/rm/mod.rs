@@ -6,6 +6,7 @@
 
 pub mod classes;
 pub mod device;
+pub mod dmabuf;
 #[cfg(any(test, feature = "fake-rm"))]
 pub mod fake;
 
