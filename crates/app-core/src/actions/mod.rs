@@ -2,9 +2,13 @@
 //! the app watches the small file it leaves.
 
 mod desktop;
+mod install;
 
 pub use desktop::{apply_refresh, apply_share, boots, rebooted};
 use desktop::{note_boot, set_up_desktop, wait_for_desktop};
+pub use install::{
+    INSTALL_STEPS, answer_disc_path, answer_file, install, install_step, make_answer_disc, wait_for_setup,
+};
 
 use crate::context::Context;
 use crate::disk_image::disk_size_gib;
@@ -251,6 +255,7 @@ fn run_action(task: &mut Task, arguments: &[String]) -> Result<()> {
         "resume" => resume(task),
         "clean_up" => clean_up(task),
         "after_reboot" => after_reboot(task),
+        "install" => install(task),
         other => Err(Failure(format!("There is no action called {}.", shell_quote(other)))),
     }
 }
