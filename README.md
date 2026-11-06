@@ -147,7 +147,7 @@ I'd rather you hear this from me:
 - **CUDA, NVENC and NVDEC don't work in Windows yet.** `nvidia-smi` can't open the card there either, and Task Manager doesn't show the GPU.
 - **No HDR in the app yet.** It's a must for me. The new display driver already gets HDR frames to the host in tests, but it isn't in the app.
 - **The viewer drops frames.** With the old viewer, at 144 Hz about 116 frames a second reached it, and about 90 at 4K. I haven't measured the new one yet. It also costs speed: Superposition scored 16,240 with it open.
-- **Several GPU VMs at once isn't proven.** Two Windows VMs have sat at the desktop together on one card, but I haven't tested them both busy yet.
+- **Several GPU VMs at once is early.** Three Windows VMs have run together on one card with their tests passing and no GPU faults, but that was during my testing, not a proper test of its own. I haven't tried it through the app, and they share the card's speed.
 
 ## What's next
 
@@ -159,7 +159,7 @@ The full list, with what's already done, is in the [roadmap](https://github.com/
 4. CUDA and video in Windows
 5. Find the missing third of the speed
 6. Lock down Linux guests, and put jails around the daemon and QEMU
-7. Test several GPU VMs at once properly
+7. Several GPU VMs at once through the app, tested properly
 
 ## Trying the code
 
