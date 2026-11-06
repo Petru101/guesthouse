@@ -2,7 +2,7 @@
 
 use super::desktop::{BOOT_LINE, SERIAL_FILE, count, wait_for_desktop};
 use super::{KEY_POLL, Task, plan_for, start};
-use crate::agent::{QUICK_SECONDS, guest_script, make_token};
+use crate::agent::{QUICK_SECONDS, guest_script, make_password, make_token};
 use crate::context::Context;
 use crate::disk_image::disk_size_gib;
 use crate::failure::{Failure, Result};
@@ -47,11 +47,21 @@ const ANSWER_DISC: &str = "answer.iso";
 const ANSWER_LABEL: &str = "GPUPV_SETUP";
 const SETMODE_FILE: &str = "setmode.ps1";
 const TOKEN_ON_DISC: &str = "token.txt";
+const PASSWORD_MARK: &str = "@PASSWORD@";
 
-/// The answer file for a host in this IANA zone. The template says UTC.
-pub fn answer_file(context: &Context, zone: &str) -> Result<String> {
+/// The answer file for a host in this IANA zone, with this password. The template says UTC.
+pub fn answer_file(context: &Context, zone: &str, password: &str) -> Result<String> {
     let name = zones::windows_zone(zone);
-    Ok(guest_script(context, "autounattend.xml")?.replace("<TimeZone>UTC<", &format!("<TimeZone>{name}<")))
+    let template = guest_script(context, "autounattend.xml")?;
+    Ok(template.replace("<TimeZone>UTC<", &format!("<TimeZone>{name}<")).replace(PASSWORD_MARK, password))
+}
+
+/// An account with the template's own text for a password is one nobody chose, so no disc gets made.
+fn password_is_filled(answers: String) -> Result<String> {
+    if answers.contains(PASSWORD_MARK) {
+        return Err(Failure::new("The answer file has no password in it, so nothing was installed."));
+    }
+    Ok(answers)
 }
 
 pub fn answer_disc_path(context: &Context, machine: &Machine) -> PathBuf {
@@ -75,10 +85,9 @@ fn fill_answer_disc(context: &Context, machine: &Machine, files: &Path) -> Resul
         fs::copy(context.paths.guest_files().join(name), files.join(name))?;
     }
     fs::copy(context.paths.guest_files().join(SETMODE_FILE), files.join(SETMODE_FILE))?;
-    fs::write(
-        files.join("autounattend.xml"),
-        answer_file(context, &zones::host_zone(zones::HOST_ZONE_LINK))?,
-    )?;
+    let password = make_password(context, machine)?;
+    let answers = answer_file(context, &zones::host_zone(zones::HOST_ZONE_LINK), &password)?;
+    fs::write(files.join("autounattend.xml"), password_is_filled(answers)?)?;
     fs::write(files.join(TOKEN_ON_DISC), make_token(context, machine)? + "\n")?;
     let path = answer_disc_path(context, machine);
     // Made private first: the disc holds the token, and genisoimage keeps a file's mode.

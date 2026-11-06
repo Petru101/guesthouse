@@ -10,7 +10,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
-/// What the answer file and its generic key install.
+/// What the answer file and its key install.
 pub const WINDOWS_EDITION: &str = "Windows 11 Pro";
 const FIRST_WINDOWS_11_BUILD: u32 = 22000;
 const WIM_AMD64: &str = "9";
