@@ -154,20 +154,16 @@ glibc_needed() {
         sed 's/GLIBC_//; s/\.$//' | sort -Vu | tail -n 1
 }
 
-# The folder names are the app's: see paths.rs and linux/layout.rs.
+# The folder names are the app's, in paths.rs and linux/mod.rs.
 copy_guest_files() {
     [ ! -d "$REPO/guest" ] || cp -R "$REPO/guest" "$OUT/stage/"
-    [ -d "$REPO/linux" ] || return 0
-    mkdir -p "$OUT/stage/linuxguest"
-    cp -R "$REPO/linux/." "$OUT/stage/linuxguest/"
-    mkdir -p "$OUT/stage/linuxguest/qemu"
-    cp "$(qemu_tree)/hw/misc/nvfwd/nvfwd_proto.h" "$OUT/stage/linuxguest/qemu/"
+    [ ! -d "$REPO/linux" ] || cp -R "$REPO/linux" "$OUT/stage/"
 }
 
 release_parts() {
     parts=app
     [ ! -d "$OUT/stage/guest" ] || parts="$parts windows"
-    [ ! -d "$OUT/stage/linuxguest" ] || parts="$parts linux"
+    [ ! -d "$OUT/stage/linux" ] || parts="$parts linux"
     printf '%s' "$parts"
 }
 

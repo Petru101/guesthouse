@@ -37,7 +37,7 @@ printf 'adw_new_thing\ngtk_new_thing\n' >"$tree/needs-symbols"
 for part in $parts; do
     case $part in
         windows) mkdir -p "$tree/guest" && echo script >"$tree/guest/setup.ps1" ;;
-        linux) mkdir -p "$tree/linuxguest/setup/seed" && echo seed >"$tree/linuxguest/setup/seed/meta-data" ;;
+        linux) mkdir -p "$tree/linux/setup/seed" && echo seed >"$tree/linux/setup/seed/meta-data" ;;
     esac
 done
 printf 'version=%s\ncommit=test\nglibc=2.30\nparts=app %s\n' "$version" "$parts" >"$tree/RELEASE"

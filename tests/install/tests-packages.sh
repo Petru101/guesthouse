@@ -36,7 +36,7 @@ t_opensuse_packages() {
 t_gpu_machines_bring_their_tools() {
     release 1.0 "windows linux"
     no_terminal "$SHELL_UNDER_TEST" "$(script_for 1.0)" --dry-run
-    check_said "edk2-ovmf 7zip genisoimage swtpm swtpm-tools openssl openssh'"
+    check_said "edk2-ovmf 7zip genisoimage swtpm swtpm-tools openssl openssh bubblewrap gcc'"
 }
 
 t_root_runs_once_and_exactly_what_was_shown() {

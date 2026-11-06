@@ -4,7 +4,7 @@ printf '%s %s\n' "${0##*/}" "$*" >>"$STAND_IN_LOG"
 [ "$*" != update ] || exit 0
 touch "$STAND_IN_LOG.installed"
 printf '{"targets": [{"architecture": "x86_64"}]}' >"$FAKE_FIRMWARE/x.json"
-for tool in qemu-img 7z genisoimage swtpm isoinfo openssl ssh-keygen; do
+for tool in qemu-img 7z genisoimage swtpm isoinfo openssl ssh-keygen bwrap gcc; do
     printf '#!/bin/sh\n' >"${0%/*}/$tool"
     chmod +x "${0%/*}/$tool"
 done

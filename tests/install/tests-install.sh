@@ -49,7 +49,7 @@ t_a_card_that_cannot_run_still_installs_plain_vms() {
     check_said "No supported card."
     check_there "$H/.local/lib/guesthouse/current/qemu/build/qemu-system-x86_64"
     check_gone "$H/.local/lib/guesthouse/1.0/guest"
-    check_gone "$H/.local/lib/guesthouse/1.0/linuxguest"
+    check_gone "$H/.local/lib/guesthouse/1.0/linux"
 }
 
 t_a_release_with_no_gpu_part_says_so() {

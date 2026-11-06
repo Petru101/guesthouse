@@ -92,7 +92,7 @@ give_tools() {
 
 # Libraries with every symbol the pretend releases ask for, and firmware, so nothing needs installing.
 give_everything() {
-    give_tools qemu-img 7z genisoimage swtpm isoinfo openssl ssh-keygen
+    give_tools qemu-img 7z genisoimage swtpm isoinfo openssl ssh-keygen bwrap gcc
     export LIBRARIES_PRESENT=yes
     FIRMWARE_HERE=yes
 }

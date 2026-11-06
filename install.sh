@@ -435,7 +435,7 @@ print_host_report() {
 }
 
 release_has_gpu_files() {
-    [ -d "$TREE/guest" ] || [ -d "$TREE/linuxguest" ]
+    [ -d "$TREE/guest" ] || [ -d "$TREE/linux" ]
 }
 
 # GPU_NOTE is what the plan says about it. An install that had the GPU keeps its files whatever the
@@ -491,6 +491,8 @@ package_for() {
         fedora:swtpm) say swtpm swtpm-tools ;;
         fedora:openssl) say openssl ;;
         fedora:ssh-keygen) say openssh ;;
+        fedora:bwrap) say bubblewrap ;;
+        fedora:gcc) say gcc ;;
         debian:gtk) say libgtk-4-1 ;;
         debian:adwaita) say libadwaita-1-0 ;;
         debian:pipewire) say libpipewire-0.3-0t64 ;;
@@ -501,6 +503,8 @@ package_for() {
         debian:swtpm) say swtpm swtpm-tools ;;
         debian:openssl) say openssl ;;
         debian:ssh-keygen) say openssh-client ;;
+        debian:bwrap) say bubblewrap ;;
+        debian:gcc) say gcc ;;
         arch:gtk) say gtk4 ;;
         arch:adwaita) say libadwaita ;;
         arch:pipewire) say libpipewire ;;
@@ -511,6 +515,8 @@ package_for() {
         arch:swtpm) say swtpm ;;
         arch:openssl) say openssl ;;
         arch:ssh-keygen) say openssh ;;
+        arch:bwrap) say bubblewrap ;;
+        arch:gcc) say gcc ;;
         suse:gtk) say libgtk-4-1 ;;
         suse:adwaita) say libadwaita-1-0 ;;
         suse:pipewire) say libpipewire-0_3-0 ;;
@@ -521,16 +527,18 @@ package_for() {
         suse:swtpm) say swtpm ;;
         suse:openssl) say openssl ;;
         suse:ssh-keygen) say openssh-clients ;;
+        suse:bwrap) say bubblewrap ;;
+        suse:gcc) say gcc ;;
     esac
 }
 
-# Every machine needs the first five. The rest only matter to what a GPU machine's install does, and
+# Every machine needs the first five. The rest are what a GPU machine's install and its jail use, and
 # setarch comes with util-linux, which every one of these systems has.
 wanted_needs() {
     say gtk adwaita pipewire qemu-img firmware
     [ "$MODE" = plain ] || say 7z genisoimage swtpm
-    if [ "$MODE" = gpu ] && [ -d "$TREE/linuxguest" ]; then
-        say isoinfo openssl ssh-keygen
+    if [ "$MODE" = gpu ] && [ -d "$TREE/linux" ]; then
+        say isoinfo openssl ssh-keygen bwrap gcc
     fi
 }
 
@@ -713,7 +721,7 @@ make_launcher() {
 # A plain install leaves these out, as the app takes them to mean GPU machines can run.
 drop_gpu_files() {
     [ "$MODE" = plain ] || return 0
-    for part in guest linuxguest; do
+    for part in guest linux; do
         [ ! -d "$TREE/$part" ] || rm -rf -- "${TREE:?}/${part:?}"
     done
 }
