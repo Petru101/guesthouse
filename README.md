@@ -6,7 +6,7 @@
 
 That's Godot's full Forward+ renderer on Vulkan, in Windows, in a VM on Fedora. Nothing is passed through. The host never gives up the card, so my GNOME desktop keeps running on it the whole time.
 
-> **Status:** you can't install this yet. The version that works is a prototype on my PC, and this repo is its rewrite in Rust, which doesn't run a guest so far. See [where this is at](#where-this-is-at).
+> **Status:** you can't install this yet. The app is here and runs plain VMs. The GPU part only runs on my PC so far, and it isn't in this repo. See [where this is at](#where-this-is-at).
 
 ## Why I'm building this
 
@@ -18,7 +18,7 @@ So this project teaches KVM to speak Hyper-V's GPU protocol. Windows boots, find
 
 ## Where this is at
 
-The prototype is a Python daemon and a desktop app. It's still private while I sort out licensing and clean it up.
+The GPU backend is still private while I sort out licensing and clean it up.
 
 This repo is where it's all heading. So far it has:
 
@@ -27,8 +27,9 @@ This repo is where it's all heading. So far it has:
 - the tracking of processes, allocations, fences and GPU addresses
 - the line a GPU vendor's backend plugs in at, so AMD and Intel can fit in later
 - a tool that replays a recorded session and compares every reply with the prototype's
+- the desktop app, in `crates/app`, which runs plain VMs today
 
-There's no GPU backend here yet, so a build starts, tells you that, and stops. The next big step is moving the NVIDIA part over, and after that the app and an installer.
+There's no GPU backend here yet, so the daemon starts, tells you that, and stops. The app still works: it makes and runs plain VMs, and says why GPU machines aren't there. A plain VM needs QEMU and its D-Bus display, which Fedora calls `qemu-ui-dbus`. The next big step is moving the NVIDIA part over, and after that an installer.
 
 ## What the prototype does
 
@@ -122,7 +123,7 @@ I'd rather you hear this from me:
 ## What's next
 
 1. Move the NVIDIA backend here, so this repo can boot a guest
-2. The app and an installer, so you can try it
+2. An installer, so you can try it
 3. CUDA and video in Windows
 4. Find the missing third of the speed
 5. HDR

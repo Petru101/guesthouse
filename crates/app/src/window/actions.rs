@@ -117,7 +117,7 @@ fn show_about(window: &Window) {
     let dialog = adw::AboutDialog::builder()
         .application_name("Guesthouse")
         .application_icon(APP_ID)
-        .comments("Runs Windows in a VM with NVIDIA's own driver, on the card the host keeps using.")
+        .comments("Runs VMs on this PC. With its GPU part, Windows gets NVIDIA's own driver on the card the host keeps using.")
         .license_type(gtk::License::Gpl20)
         .build();
     dialog.present(Some(window.widget()));

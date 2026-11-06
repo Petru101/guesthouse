@@ -87,7 +87,7 @@ The driver version the guest is told comes from setup, which reads it from the d
 
 ## The record-and-compare test
 
-The Python prototype is the reference for behaviour, and the replay tool is how we check we match it.
+The prototype is the reference for behaviour, and the replay tool is how we check we match it.
 
 A recording holds what the prototype received and sent in a real session, along with what the replay can't work out alone: when fences moved, when the prototype took GPU addresses for its own channels, and whether each submission reached the GPU. The format is described in `replay/src/recording.rs`.
 

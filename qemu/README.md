@@ -9,7 +9,7 @@ git clone --depth 1 --branch v11.1.3 https://gitlab.com/qemu-project/qemu.git
 cd qemu
 git am /path/to/qemu-gpupv.patch
 mkdir build && cd build
-../configure --target-list=x86_64-softmmu --enable-kvm --enable-slirp --enable-vnc \
+../configure --target-list=x86_64-softmmu --enable-kvm --enable-slirp --enable-dbus-display \
   --enable-pipewire --audio-drv-list=pipewire --enable-libusb \
   --disable-docs --disable-guest-agent --disable-tools --disable-werror --disable-gtk \
   --disable-sdl --disable-opengl --disable-virglrenderer --disable-spice --disable-curses \
