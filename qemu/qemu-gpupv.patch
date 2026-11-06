@@ -2786,3 +2786,241 @@ index 0000000..3687d71
 -- 
 2.56.0
 
+From eee0729952e8d3686b928a7c455cd4c153f57a29 Mon Sep 17 00:00:00 2001
+From: xnixy <x@ruxn.com>
+Date: Thu, 5 Nov 2026 22:59:41 -0800
+Subject: [PATCH 13/21] hw/misc/nvfwd: list the clients a call names
+
+Every field that holds a client, across the allow list.
+---
+ hw/misc/nvfwd/clients.c   | 174 ++++++++++++++++++++++++++++++++++++++
+ hw/misc/nvfwd/clients.h   |  24 ++++++
+ hw/misc/nvfwd/meson.build |   1 +
+ 3 files changed, 199 insertions(+)
+ create mode 100644 hw/misc/nvfwd/clients.c
+ create mode 100644 hw/misc/nvfwd/clients.h
+
+diff --git a/hw/misc/nvfwd/clients.c b/hw/misc/nvfwd/clients.c
+new file mode 100644
+index 0000000..9cfdac4
+--- /dev/null
++++ b/hw/misc/nvfwd/clients.c
+@@ -0,0 +1,174 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++/* See clients.h. */
++#include "clients.h"
++
++#include <stddef.h>
++#include <string.h>
++
++#define CLASS_ROOT 0x0
++#define CLASS_ROOT_CLIENT 0x41
++#define CLASS_DEVICE 0x80
++#define CLASS_DEBUGGER 0x83de
++#define CLASS_CONFIDENTIAL_COMPUTE 0xcb33
++#define CTRL_GR_ZCULL_BIND 0x20801208u
++#define ESC_RM_MAP_MEMORY_DMA 0x57
++#define ESC_RM_UNMAP_MEMORY_DMA 0x58
++#define ESC_RM_BIND_CONTEXT_DMA 0x59
++#define ESC_RM_UPDATE_DEVICE_MAPPING_INFO 0x5e
++#define HANDLE_BYTES 4u
++#define NO_CLIENT 0 /* these fields are optional, and 0 is how a call says it has none */
++
++#define ARRAY_LENGTH(a) (sizeof(a) / sizeof((a)[0]))
++
++typedef struct Extra {
++    uint32_t id, at;
++} Extra;
++
++/* Client fields in the parameters of an allocation, by class. */
++static const Extra alloc_clients[] = {
++    { CLASS_DEVICE, 4 },               /* hClientShare */
++    { CLASS_DEVICE, 8 },               /* hTargetClient */
++    { CLASS_DEBUGGER, 4 },             /* hAppClient */
++    { CLASS_EVENT, 0 },                /* hParentClient */
++    { CLASS_OS_EVENT, 0 },             /* hParentClient */
++    { CLASS_CONFIDENTIAL_COMPUTE, 0 }, /* hClient */
++};
++
++/* And in the parameters of a control. */
++static const Extra control_clients[] = {
++    { CTRL_GR_ZCULL_BIND, 0 },
++};
++
++/* And in UVM's, by ioctl number. */
++static const Extra uvm_clients[] = {
++    { 25, 20 },   /* UVM_REGISTER_GPU_VASPACE */
++    { 27, 20 },   /* UVM_REGISTER_CHANNEL */
++    { 28, 0 },    /* UVM_UNREGISTER_CHANNEL */
++    { 33, 9252 }, /* UVM_MAP_EXTERNAL_ALLOCATION */
++    { 37, 28 },   /* UVM_REGISTER_GPU */
++};
++
++static uint32_t read32(const uint8_t *at)
++{
++    uint32_t v;
++
++    memcpy(&v, at, sizeof(v));
++    return v;
++}
++
++static bool names_client_first(uint32_t nr)
++{
++    switch (nr) {
++    case ESC_RM_FREE:
++    case ESC_RM_CONTROL:
++    case ESC_RM_ALLOC:
++    case ESC_RM_ALLOC_MEMORY:
++    case ESC_RM_DUP_OBJECT:
++    case ESC_RM_SHARE:
++    case ESC_RM_VID_HEAP_CONTROL:
++    case ESC_RM_MAP_MEMORY:
++    case ESC_RM_UNMAP_MEMORY:
++    case ESC_RM_ALLOC_CONTEXT_DMA2:
++    case ESC_RM_MAP_MEMORY_DMA:
++    case ESC_RM_UNMAP_MEMORY_DMA:
++    case ESC_RM_BIND_CONTEXT_DMA:
++    case ESC_RM_UPDATE_DEVICE_MAPPING_INFO:
++    case ESC_ALLOC_OS_EVENT:
++    case ESC_FREE_OS_EVENT:
++        return true;
++    default:
++        return false;
++    }
++}
++
++/* Where a fixed pointer leads. False for one the guest left alone, which the device clears. */
++static bool target_of(const RmCall *call, uint32_t at, uint32_t *target)
++{
++    for (uint32_t i = 0; i < call->nfix; i++) {
++        if (call->fix[i].at == at && call->fix[i].kind == NVFWD_FIX_PTR) {
++            *target = call->fix[i].target;
++            return true;
++        }
++    }
++    return false;
++}
++
++static bool extras_known(const Extra *extras, size_t count, uint32_t id, const uint8_t *data,
++                         uint64_t size, ClientKnownFn *known, void *opaque)
++{
++    for (size_t i = 0; i < count; i++) {
++        if (extras[i].id == id && extras[i].at + HANDLE_BYTES <= size) {
++            uint32_t client = read32(data + extras[i].at);
++
++            if (client != NO_CLIENT && !known(opaque, client)) {
++                return false;
++            }
++        }
++    }
++    return true;
++}
++
++static bool idle_list_known(const RmCall *call, const uint8_t *arg, ClientKnownFn *known, void *opaque)
++{
++    uint32_t count = read32(arg + RM_IDLE_COUNT), list;
++
++    if (!target_of(call, call->arg_at + RM_IDLE_CLIENTS, &list)) {
++        return read32(arg) == NO_CLIENT || known(opaque, read32(arg));
++    }
++    /* rmargs_fields() has checked that the list fits. */
++    for (uint32_t i = 0; i < count; i++) {
++        if (!known(opaque, read32(call->data + list + i * HANDLE_BYTES))) {
++            return false;
++        }
++    }
++    return read32(arg) == NO_CLIENT || known(opaque, read32(arg));
++}
++
++bool clients_rm_known(const RmCall *call, ClientKnownFn *known, void *opaque)
++{
++    const uint8_t *arg = call->data + call->arg_at;
++    uint32_t params;
++
++    if (call->nr == ESC_RM_IDLE_CHANNELS) {
++        return idle_list_known(call, arg, known, opaque);
++    }
++    if (!names_client_first(call->nr)) {
++        return true;
++    }
++    if (call->size < HANDLE_BYTES) {
++        return false;
++    }
++    if (call->nr == ESC_RM_ALLOC) {
++        uint32_t hclass = read32(arg + RM_ALLOC_CLASS);
++        bool long_form = call->size == RM_ALLOC_LONG_BYTES;
++        uint32_t size = read32(arg + (long_form ? RM_ALLOC_LONG_PARAMS_SIZE : RM_ALLOC_SHORT_PARAMS_SIZE));
++
++        if (hclass == CLASS_ROOT || hclass == CLASS_ROOT_CLIENT) {
++            return true; /* this makes the client */
++        }
++        if (!known(opaque, read32(arg))) {
++            return false;
++        }
++        return !target_of(call, call->arg_at + RM_ALLOC_PARAMS, &params) ||
++               extras_known(alloc_clients, ARRAY_LENGTH(alloc_clients), hclass, call->data + params,
++                            size ? size : call->len - params, known, opaque);
++    }
++    if (!known(opaque, read32(arg))) {
++        return false;
++    }
++    if (call->nr == ESC_RM_DUP_OBJECT) {
++        return call->size >= RM_DUP_BYTES && known(opaque, read32(arg + RM_DUP_SOURCE_CLIENT));
++    }
++    if (call->nr == ESC_RM_CONTROL && target_of(call, call->arg_at + RM_CONTROL_PARAMS, &params)) {
++        return extras_known(control_clients, ARRAY_LENGTH(control_clients),
++                            read32(arg + RM_CONTROL_CMD), call->data + params,
++                            read32(arg + RM_CONTROL_PARAMS_SIZE), known, opaque);
++    }
++    return true;
++}
++
++bool clients_uvm_known(uint32_t cmd, const uint8_t *data, uint32_t len, ClientKnownFn *known,
++                       void *opaque)
++{
++    return extras_known(uvm_clients, ARRAY_LENGTH(uvm_clients), cmd, data, len, known, opaque);
++}
+diff --git a/hw/misc/nvfwd/clients.h b/hw/misc/nvfwd/clients.h
+new file mode 100644
+index 0000000..1524731
+--- /dev/null
++++ b/hw/misc/nvfwd/clients.h
+@@ -0,0 +1,24 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++/*
++ * Which clients a call names. Every guest call runs in QEMU's process, and the driver treats the
++ * clients of one process as one owner. So a guest names only clients it made here, and any other
++ * handle stops at the device.
++ *
++ * Handles can sit in more than the first field: see the tables in clients.c, made by going through
++ * the parameters of everything on the allow list.
++ */
++#ifndef NVFWD_CLIENTS_H
++#define NVFWD_CLIENTS_H
++
++#include <stdbool.h>
++#include <stdint.h>
++#include "rmargs.h"
++
++typedef bool ClientKnownFn(void *opaque, uint32_t client);
++
++/* After rmargs_fields() has passed the call: true if every client it names is known. */
++bool clients_rm_known(const RmCall *call, ClientKnownFn *known, void *opaque);
++bool clients_uvm_known(uint32_t cmd, const uint8_t *data, uint32_t len, ClientKnownFn *known,
++                       void *opaque);
++
++#endif
+diff --git a/hw/misc/nvfwd/meson.build b/hw/misc/nvfwd/meson.build
+index 1dedc3a..c44ddb6 100644
+--- a/hw/misc/nvfwd/meson.build
++++ b/hw/misc/nvfwd/meson.build
+@@ -6,5 +6,6 @@ nvfwd_ss = files(
+   'runs.c',
+   'bounce.c',
+   'rmargs.c',
++  'clients.c',
+ )
+ system_ss.add(when: 'CONFIG_PCI', if_true: nvfwd_ss)
+-- 
+2.56.0
+
