@@ -2,11 +2,15 @@
 //! card can do is read from the card.
 
 use crate::context::Context;
+use crate::failure::{Failure, Result};
 use crate::machine::sorted_names;
+use crate::settings::{CARD_MEMORY_FIELD, write_setup};
 use crate::usb::sysfs_text;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use std::fs;
 use std::path::Path;
+use std::process::{Command, Stdio};
 
 const NVIDIA_VENDOR: &str = "0x10de";
 const NVIDIA_NAMES_START: &str = "\n10de  ";
@@ -39,6 +43,29 @@ pub struct Card {
     pub chip: String,
     pub support: Support,
     pub revision: u32,
+}
+
+/// The card's memory in MiB, as the driver reports it. `nvidia-smi` says one number a card.
+fn parse_card_memory(said: &str) -> Option<u64> {
+    said.lines().next()?.trim().parse().ok()
+}
+
+fn card_memory_mib() -> Option<u64> {
+    let said = Command::new("nvidia-smi")
+        .args(["--query-gpu=memory.total", "--format=csv,noheader,nounits"])
+        .stdin(Stdio::null())
+        .output()
+        .ok()?;
+    parse_card_memory(&String::from_utf8_lossy(&said.stdout))
+}
+
+/// Writes down the card for the daemon, and how much memory it has for the video memory cap.
+pub fn remember_card(context: &Context) -> Result<()> {
+    let cards = find_cards(context);
+    let card = cards.first().ok_or_else(|| Failure::new("No NVIDIA card was found."))?;
+    let memory = card_memory_mib().unwrap_or(0);
+    let changes = json!({"card": card, CARD_MEMORY_FIELD: memory});
+    write_setup(context, changes.as_object().cloned().unwrap_or_default())
 }
 
 fn chip_of(device: u32) -> &'static str {
@@ -125,6 +152,12 @@ mod tests {
         context.pci_devices = scratch.path("pci");
         context.pci_names = scratch.write("pci.ids", NAMES);
         context
+    }
+
+    #[test]
+    fn the_cards_memory_is_its_first_line() {
+        assert_eq!(parse_card_memory("32607\n"), Some(32607));
+        assert_eq!(parse_card_memory("Failed to initialize NVML\n"), None);
     }
 
     #[test]
