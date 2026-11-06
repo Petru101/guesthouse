@@ -287,3 +287,44 @@ fn a_row_past_a_tiled_sources_pitch_is_refused() {
     let request = copy(source, target, [1, 0, 257, 1], [0, 0]);
     assert_eq!(outcome(&mut session, &request), (UNSUCCESSFUL, 0));
 }
+
+const ADDRESS_STEP: u64 = 0x1_0000;
+
+/// Whether the next addresses to hand out come straight after the ones `run` started from.
+fn takes_no_addresses(session: &mut TestSession, run: impl FnOnce(&mut TestSession)) -> bool {
+    let before = session.take_gpu_addresses(ADDRESS_STEP, ADDRESS_STEP).unwrap();
+    run(session);
+    session.take_gpu_addresses(ADDRESS_STEP, ADDRESS_STEP).unwrap() == before + ADDRESS_STEP
+}
+
+#[test]
+fn a_surface_with_no_pages_yet_uses_up_no_addresses() {
+    let mut session = session();
+    let reply = send(&mut session, &create_message(0x20, &[shape(WHOLE, 256, 256, ROW)]));
+    let waiting = u32_at(&reply, 0x10).unwrap();
+    let target = plain(&mut session);
+    let request = copy(waiting, target, [0, 0, 256, 256], [0, 0]);
+    session.own_space().unwrap();
+    let quiet = takes_no_addresses(&mut session, |session| {
+        assert_eq!(outcome(session, &request), (UNSUCCESSFUL, 0));
+    });
+    assert!(quiet);
+}
+
+#[test]
+fn a_map_that_fails_gives_its_addresses_back() {
+    let mut session = session();
+    let (source, target) = (plain(&mut session), plain(&mut session));
+    let request = copy(source, target, [0, 0, 256, 256], [0, 0]);
+    session.own_space().unwrap();
+    let first = session.take_gpu_addresses(WHOLE, ADDRESS_STEP).unwrap();
+    session.backend_mut().fail_next_map = true;
+    assert_eq!(outcome(&mut session, &request), (UNSUCCESSFUL, 0));
+    let mappings = session.allocations[&source].mappings.len();
+    assert_eq!(mappings, 0);
+    assert_eq!(
+        session.take_gpu_addresses(WHOLE, ADDRESS_STEP).unwrap(),
+        first + WHOLE,
+        "the spare is reused"
+    );
+}
