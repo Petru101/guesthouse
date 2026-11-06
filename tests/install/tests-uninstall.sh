@@ -37,6 +37,16 @@ t_a_changed_file_stays_and_is_named() {
     check_said "left alone"
 }
 
+t_the_driver_files_stay_and_are_named() {
+    install_plain
+    mkdir -p "$H/.local/share/guesthouse/setup/driver-1"
+    echo file >"$H/.local/share/guesthouse/setup/driver-1/a.dll"
+    answering 'yes\n' "$SHELL_UNDER_TEST" "$(uninstaller)"
+    check_exit 0
+    check_said "guesthouse/setup stay too"
+    check_there "$H/.local/share/guesthouse/setup/driver-1/a.dll"
+}
+
 t_a_file_of_yours_in_its_folder_stays() {
     install_plain
     echo notes >"$H/.local/lib/guesthouse/1.0/my-notes.txt"
