@@ -4,7 +4,7 @@ Everything in this repo is under GPL-2.0-or-later, apart from what's listed here
 
 - `crates/app-core/data/windows-zones.txt` comes from Unicode's CLDR, under the [Unicode License v3](https://www.unicode.org/license.txt).
 - The card names in `crates/app-core/src/setup/cards.rs` come from the PCI ID repository's `pci.ids`, under the 3-clause BSD licence.
-- `drivers/windows-display/` is a fork of [zako-vdd](https://github.com/qiin2333/zako-vdd), and the whole folder, my part included, is under the MIT licence in its own `LICENSE` file.
+- `drivers/windows-display/` is a fork of [zako-vdd](https://github.com/qiin2333/zako-vdd), and the folder, my part included, is under the MIT licence in its own `LICENSE` file, apart from what's left of Microsoft's [indirect display sample](https://github.com/microsoft/Windows-driver-samples/tree/main/video/IndirectDisplay), which the driver started from. That stays under the Microsoft Public License, in `LICENSE-MS-PL` in the same folder.
 - The tables and class numbers in the NVIDIA backend come from NVIDIA's open GPU kernel modules, under the MIT licence. Its notice is below.
 - The tables in the `nvfwd` device in `qemu/qemu-gpupv.patch` (`nv_tables.h`, `nv_tables_extra.h`, `fd_controls.h`, `class_tables.h`, `uvm_tables.h`), and `linux/guest/fd_controls.h` and `linux/guest/nv_tables_extra.h`, are made from those same modules, and each carries that notice. The offsets in `rm_layout.h` and `rusd.c` are from their public headers, and so are the numbers in `linux/allow.txt`, apart from a few control numbers those headers don't have.
 - `linux/layer/zink_on_nvidia.c` and `linux/cast/glx_dri3.c` are mine, under the MIT licence, so that their fixes can go to Mesa.
