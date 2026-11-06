@@ -47,9 +47,8 @@ impl VmPlan {
     }
 
     fn install_arguments(&self, install: &UbuntuInstall) -> Vec<String> {
-        let mut arguments = words(&[
-            "-L",
-            &self.qemu_files.to_string_lossy(),
+        let mut arguments = self.qemu_files_arguments();
+        arguments.extend(words(&[
             "-name",
             &format!("{}-install", self.name),
             "-pidfile",
@@ -82,7 +81,7 @@ impl VmPlan {
             "std",
             "-serial",
             &format!("file:{}", self.in_run_folder(INSTALL_LOG)),
-        ]);
+        ]));
         arguments.extend(self.monitors());
         arguments
     }
@@ -126,9 +125,8 @@ impl VmPlan {
 
     fn boot_ubuntu_arguments(&self, boot: &UbuntuBoot) -> Vec<String> {
         let ssh_port = self.ssh_port();
-        let mut arguments = words(&[
-            "-L",
-            &self.qemu_files.to_string_lossy(),
+        let mut arguments = self.qemu_files_arguments();
+        arguments.extend(words(&[
             "-name",
             &self.name,
             "-pidfile",
@@ -159,7 +157,7 @@ impl VmPlan {
             "dbus,p2p=yes",
             "-serial",
             &format!("file:{}", self.in_run_folder(SERIAL_LOG)),
-        ]);
+        ]));
         arguments.extend(self.monitors());
         arguments.extend(self.with_gpu_arguments(boot));
         arguments

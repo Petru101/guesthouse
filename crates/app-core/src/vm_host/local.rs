@@ -15,6 +15,11 @@ use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
 const LAST_WORDS_BYTES: usize = 300;
+/// QEMU's words when its D-Bus display isn't installed, which is a package of its own.
+const NO_DBUS_DISPLAY: &str = "Display 'dbus' is not available";
+const NO_DBUS_DISPLAY_HELP: &str = "This QEMU can't show its screen in Guesthouse. Install its D-Bus \
+                                    display, which Fedora calls qemu-ui-dbus, and start the machine again.";
+const NO_QEMU_HELP: &str = "QEMU isn't installed. Install qemu-system-x86_64, and start the machine again.";
 const STOP_POLL: Duration = Duration::from_millis(500);
 const MONITOR_WAIT: Duration = Duration::from_secs(20);
 const POLL: Duration = Duration::from_millis(200);
@@ -95,14 +100,15 @@ impl LocalHost<'_> {
     /// QEMU with no daemon and no shared memory. Returns once its monitor answers.
     fn start_plain(&self, plan: &VmPlan) -> Result<()> {
         let _ = fs::remove_file(self.run_file(BOOTS_FILE));
+        if !plan.qemu.exists() {
+            return Err(Failure::new(NO_QEMU_HELP));
+        }
         let mut process = self.spawn_qemu(plan)?;
         let clock = &self.context.clock;
         let end = clock.now() + MONITOR_WAIT;
         while clock.now() < end {
             if process.try_wait()?.is_some() {
-                return Err(Failure(
-                    format!("The VM did not start. {}", self.last_words()).trim().to_owned(),
-                ));
+                return Err(Failure(start_failure(&self.last_words())));
             }
             if self.context.run_state(None).is_some() {
                 return Ok(());
@@ -265,6 +271,14 @@ fn sound_on_this_host() -> Option<Sound> {
 }
 
 /// The end of QEMU's output, which says why it failed to start.
+/// What to tell the user when QEMU stops at once. Most of what QEMU says is clear as it is.
+pub(super) fn start_failure(said: &str) -> String {
+    if said.contains(NO_DBUS_DISPLAY) {
+        return NO_DBUS_DISPLAY_HELP.to_owned();
+    }
+    format!("The VM did not start. {said}").trim().to_owned()
+}
+
 pub fn last_words(context: &Context) -> String {
     let path = context.run_folder(None).join(OUTPUT_FILE);
     let text = fs::read(path).unwrap_or_default();

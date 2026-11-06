@@ -192,11 +192,15 @@ impl VmPlan {
     }
 
     /// The program's arguments.
+    pub(super) fn qemu_files_arguments(&self) -> Vec<String> {
+        self.qemu_files.iter().flat_map(|folder| words(&["-L", &folder.to_string_lossy()])).collect()
+    }
+
     pub fn qemu_arguments(&self) -> Vec<String> {
         if let Some(arguments) = self.ubuntu_arguments() {
             return arguments;
         }
-        let mut arguments = words(&["-L", &self.qemu_files.to_string_lossy()]);
+        let mut arguments = self.qemu_files_arguments();
         arguments.extend(self.common_arguments());
         arguments.extend(self.boot_arguments());
         if self.mouse {

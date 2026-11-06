@@ -87,7 +87,8 @@ pub struct VmPlan {
     /// The machine's id, which an Ubuntu guest's QEMU goes by.
     pub name: String,
     pub qemu: PathBuf,
-    pub qemu_files: PathBuf,
+    /// QEMU's own files, if it isn't the system's, which knows where its files are.
+    pub qemu_files: Option<PathBuf>,
     pub firmware: Firmware,
     pub run_folder: PathBuf,
     pub agent_port: u16,
@@ -132,7 +133,7 @@ impl VmPlan {
             slot,
             name: machine.id.clone(),
             qemu: context.paths.qemu.clone(),
-            qemu_files: context.paths.helper("qemu/pc-bios"),
+            qemu_files: Some(context.paths.helper("qemu/pc-bios")).filter(|folder| folder.is_dir()),
             firmware: context.paths.firmware.clone(),
             agent_port: context.paths.agent_port(slot),
             cores: machine.cores,

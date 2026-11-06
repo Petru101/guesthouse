@@ -27,6 +27,7 @@ const USER_PROGRAM: &str = ".local/lib/guesthouse/current";
 const PROGRAM_MARK: &str = "guest";
 const SHARED_MEMORY: &str = "/dev/shm";
 const QEMU_PROGRAM: &str = "qemu/build/qemu-system-x86_64";
+const SYSTEM_QEMU: &str = "qemu-system-x86_64";
 
 /// The environment, as a value, so that a test can say what it holds.
 #[derive(Debug, Clone, Default)]
@@ -129,7 +130,7 @@ impl Paths {
             .map_or_else(|| state.join("runtime"), |folder| folder.join(APP_FOLDER));
         let program = program_folder(variables, running_from);
         Self {
-            qemu: variables.folder(QEMU_VARIABLE).unwrap_or_else(|| program.join(QEMU_PROGRAM)),
+            qemu: variables.folder(QEMU_VARIABLE).unwrap_or_else(|| qemu_program(variables, &program)),
             binaries: running_from.map_or_else(|| program.clone(), Path::to_owned),
             store,
             machines,
@@ -209,6 +210,17 @@ fn store_pointer(pointer: &Path, home: &Path) -> Option<PathBuf> {
     }
 }
 
+/// The QEMU that comes with the program folder, or else the system's, which runs plain VMs.
+fn qemu_program(variables: &Variables, program: &Path) -> PathBuf {
+    let own = program.join(QEMU_PROGRAM);
+    if own.exists() {
+        return own;
+    }
+    let path = variables.get("PATH").unwrap_or_default();
+    let system = env::split_paths(&path).map(|folder| folder.join(SYSTEM_QEMU)).find(|file| file.exists());
+    system.unwrap_or(own)
+}
+
 fn program_folder(variables: &Variables, running_from: Option<&Path>) -> PathBuf {
     if let Some(folder) = variables.folder(PROGRAM_VARIABLE) {
         return folder;
@@ -227,6 +239,17 @@ mod tests {
 
     fn slot(number: &str) -> Slot {
         Slot::parse(Some(number)).unwrap()
+    }
+
+    #[test]
+    fn with_no_qemu_of_its_own_the_systems_is_used() {
+        let folder = env::temp_dir().join(format!("gh-paths-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("qemu-system-x86_64"), "").unwrap();
+        let path = folder.to_string_lossy().into_owned();
+        let paths = Paths::new(&Variables::of(&[("HOME", "/h"), ("PATH", &path)]), None);
+        assert_eq!(paths.qemu, folder.join("qemu-system-x86_64"));
+        std::fs::remove_dir_all(&folder).unwrap();
     }
 
     #[test]

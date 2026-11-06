@@ -38,7 +38,7 @@ fn a_gpu_vms_arguments_stay_word_for_word_the_same() {
     let (_scratch, plan) = plan(&windows(), Boot::Gpu);
     let run_folder = PathBuf::from("/x/run");
     let plan = VmPlan {
-        qemu_files: "/x/p/qemu/pc-bios".into(),
+        qemu_files: Some("/x/p/qemu/pc-bios".into()),
         firmware: Firmware::default(),
         ram_file: "/dev/shm/gpupv-ram".into(),
         io_file: "/dev/shm/gpupv-iomem".into(),

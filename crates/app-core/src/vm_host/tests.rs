@@ -86,3 +86,23 @@ fn last_words_are_the_end_of_the_output() {
     assert_eq!(words.chars().count(), 300);
     assert!(words.ends_with("end"));
 }
+
+#[test]
+fn qemu_with_no_display_says_what_to_install() {
+    assert!(
+        super::local::start_failure("qemu-system-x86_64: Display 'dbus' is not available.")
+            .contains("qemu-ui-dbus")
+    );
+    assert_eq!(super::local::start_failure("it broke"), "The VM did not start. it broke");
+}
+
+#[test]
+fn no_qemu_at_all_says_so() {
+    let scratch = Scratch::new();
+    let mut context = scratch_context(&scratch);
+    context.paths.qemu = scratch.path("not-installed");
+    let host = LocalHost { context: &context };
+    let machine = Machine { kind: Kind::Plain, ..Machine::new("vm", "VM", "/d", "/v") };
+    let plan = VmPlan::new(&context, &machine, Boot::Plain { iso: String::new() }, slots::first(), 0);
+    assert!(host.start(&plan, &machine).unwrap_err().0.contains("isn't installed"));
+}
