@@ -12,11 +12,16 @@ license.workspace = true
 name = "guesthouse"
 path = "src/main.rs"
 
+[features]
+default = ["hdr"]
+# HDR needs GTK 4.16 for a frame's colour. A build without it runs on GTK 4.14 and shows SDR only.
+hdr = ["gtk/v4_16"]
+
 [dependencies]
 guesthouse-app-core.workspace = true
-# The UI, and the features each version brings: spinners and dialogs from libadwaita 1.8.
-adw = { package = "libadwaita", version = "0.9", features = ["v1_8"] }
-gtk = { package = "gtk4", version = "0.11", features = ["v4_20"] }
+# The UI. These are the oldest that do: what Ubuntu 24.04 has.
+adw = { package = "libadwaita", version = "0.9", features = ["v1_5"] }
+gtk = { package = "gtk4", version = "0.11", features = ["v4_14"] }
 # Progress from a thread to GTK's main loop, which glib no longer has a channel for.
 async-channel = "2"
 # Local time for snapshot dates.

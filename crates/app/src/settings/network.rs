@@ -224,7 +224,6 @@ impl Network {
 /// The one step only the user can do, with commands that can be copied.
 pub fn show_root_step(shared: &Shared, body: &str, commands: Option<&str>) {
     let dialog = adw::AlertDialog::new(Some("One Step Needs Root"), Some(body));
-    dialog.set_prefer_wide_layout(true);
     if let Some(commands) = commands {
         let no_hyphens = gtk::pango::AttrList::new();
         no_hyphens.insert(gtk::pango::AttrInt::new_insert_hyphens(false));

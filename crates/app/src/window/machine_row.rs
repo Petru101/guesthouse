@@ -24,7 +24,7 @@ struct Parts {
     icon: gtk::Image,
     picture: gtk::Picture,
     frame: adw::Clamp,
-    spinner: adw::Spinner,
+    spinner: gtk::Spinner,
     start: gtk::Button,
     show: gtk::Button,
     stop: gtk::Button,
@@ -72,8 +72,7 @@ impl MachineRow {
             .height_request(THUMBNAIL_HEIGHT)
             .build();
         row.add_prefix(&frame);
-        let spinner = adw::Spinner::new();
-        spinner.set_visible(false);
+        let spinner = gtk::Spinner::builder().spinning(true).visible(false).build();
         row.add_suffix(&spinner);
         let start = suffix_button(&row, "Start", Some("suggested-action"));
         let show = suffix_button(&row, "Show Screen", None);

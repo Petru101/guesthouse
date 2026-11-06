@@ -34,7 +34,7 @@ pub(super) struct Inner {
     pub(super) root: gtk::Overlay,
     pub(super) picture: gtk::Picture,
     pub(super) aspect: gtk::AspectFrame,
-    pub(super) spinner: adw::Spinner,
+    pub(super) spinner: gtk::Spinner,
     /// The guest's cursor as the host's pointer, once it has one.
     pub(super) guest_pointer: RefCell<Option<gdk::Cursor>>,
     /// The guest's cursor, while there's no host pointer to show it.
@@ -85,7 +85,7 @@ impl Screen {
             .focusable(true)
             .build();
         let aspect = gtk::AspectFrame::builder().child(&picture).obey_child(false).ratio(FIRST_RATIO).build();
-        let spinner = adw::Spinner::new();
+        let spinner = gtk::Spinner::builder().spinning(true).build();
         spinner.set_size_request(SPINNER_SIZE, SPINNER_SIZE);
         spinner.set_halign(gtk::Align::Center);
         spinner.set_valign(gtk::Align::Center);

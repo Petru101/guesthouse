@@ -17,7 +17,8 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 const LINEAR: u64 = 0;
 /// What a copy can show, so the producer always has something it can send.
 const COPYABLE: [u32; 2] = [u32::from_le_bytes(*b"XR24"), u32::from_le_bytes(*b"AR24")];
-/// What an HDR desktop is. A guest only sends it to a viewer that offers it.
+/// What an HDR desktop is. A guest only sends it to a viewer that offers it, and a build with no way to
+/// give a frame its colour doesn't.
 const HDR_FORMAT: Format = Format { fourcc: u32::from_le_bytes(*b"XB30"), modifier: LINEAR };
 
 pub struct SocketFrames {
@@ -49,14 +50,14 @@ fn formats(display: &gdk::Display) -> Vec<Format> {
 
 /// HDR is only offered if the display has it, and it comes early, as the list can be cut short.
 fn in_order(offered: Vec<Format>) -> Vec<Format> {
-    let hdr = offered.contains(&HDR_FORMAT).then_some(HDR_FORMAT);
+    let hdr = (cfg!(feature = "hdr") && offered.contains(&HDR_FORMAT)).then_some(HDR_FORMAT);
     let (usual, others): (Vec<Format>, Vec<Format>) =
         offered.into_iter().partition(|format| COPYABLE.contains(&format.fourcc));
     let linear = COPYABLE.map(|fourcc| Format { fourcc, modifier: LINEAR });
     let mut all = linear.to_vec();
     all.extend(hdr);
     let rest = usual.into_iter().chain(others);
-    all.extend(rest.filter(|format| !linear.contains(format) && Some(*format) != hdr));
+    all.extend(rest.filter(|format| !linear.contains(format) && *format != HDR_FORMAT));
     all
 }
 
@@ -194,11 +195,18 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "hdr")]
     fn hdr_is_offered_only_by_a_display_that_has_it() {
         assert!(!in_order(vec![format(b"XR24", 0)]).contains(&HDR_FORMAT));
         let found = in_order(vec![format(b"NV12", 0), HDR_FORMAT]);
         assert_eq!(found[2], HDR_FORMAT);
         assert_eq!(found.iter().filter(|format| **format == HDR_FORMAT).count(), 1);
+    }
+
+    #[test]
+    #[cfg(not(feature = "hdr"))]
+    fn a_build_with_no_colour_never_offers_hdr() {
+        assert!(!in_order(vec![HDR_FORMAT]).contains(&HDR_FORMAT));
     }
 
     #[test]
