@@ -11,8 +11,10 @@
 //! A peer of another protocol version is refused, and the viewer can't be left guessing.
 
 mod message;
+mod socket;
 
 pub use message::{
     Colour, DecodeError, Descriptor, Format, Frame, Hello, MOST_FORMATS, MOST_SLOTS, Message, Release, Ring,
     VERSION,
 };
+pub use socket::{FrameListener, FrameSocket, Packet, SOCKET_NAME};

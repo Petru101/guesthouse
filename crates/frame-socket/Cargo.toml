@@ -7,5 +7,9 @@ rust-version.workspace = true
 publish.workspace = true
 license.workspace = true
 
+[dependencies]
+# SEQPACKET sockets and passing file descriptors, which the standard library doesn't offer.
+rustix = { version = "1", features = ["fs", "net"] }
+
 [lints]
 workspace = true
