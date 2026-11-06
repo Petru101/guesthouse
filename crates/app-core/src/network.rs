@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::net::{TcpListener, UdpSocket};
+use std::path::Path;
 
 pub const MOST_PORT: u32 = 65535;
 /// The guest's agent listens here.
@@ -17,13 +18,23 @@ pub const DEFAULT_MAC: &str = "52:54:00:12:34:56";
 /// The second NIC's, which only ever sits on the VM's private link.
 pub const CONTROL_MAC: &str = "52:54:00:67:68:01";
 pub const DEFAULT_BRIDGE: &str = "br0";
-/// Makes a tap as root, for a QEMU that runs as this user.
-pub const BRIDGE_HELPER: &str = "/usr/libexec/qemu-bridge-helper";
+/// Makes a tap as root, for a QEMU that runs as this user. Fedora keeps it in the first of these, and
+/// Debian, Ubuntu and Arch in the second.
+const BRIDGE_HELPERS: [&str; 2] = ["/usr/libexec/qemu-bridge-helper", "/usr/lib/qemu/qemu-bridge-helper"];
 /// The kernel's limit on an interface's name.
 const MOST_BRIDGE_NAME: usize = 15;
 const FIRST_FREE_PORT_FILE: &str = "/proc/sys/net/ipv4/ip_unprivileged_port_start";
 /// If this kernel won't say.
 const USUAL_FIRST_PORT: u16 = 1024;
+
+fn first_that_exists<'a>(places: &[&'a str], exists: impl Fn(&str) -> bool) -> &'a str {
+    places.iter().copied().find(|place| exists(place)).unwrap_or(places[0])
+}
+
+/// Where this PC keeps the helper. If it has none, the bridge check says so about the usual place.
+pub fn bridge_helper() -> &'static str {
+    first_that_exists(&BRIDGE_HELPERS, |place| Path::new(place).exists())
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -273,6 +284,15 @@ pub fn bridge_name_problem(bridge: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_helper_is_found_where_each_distribution_keeps_it() {
+        let debian = |place: &str| place.starts_with("/usr/lib/qemu/");
+        assert_eq!(first_that_exists(&BRIDGE_HELPERS, debian), "/usr/lib/qemu/qemu-bridge-helper");
+        let fedora = |place: &str| place.starts_with("/usr/libexec/");
+        assert_eq!(first_that_exists(&BRIDGE_HELPERS, fedora), "/usr/libexec/qemu-bridge-helper");
+        assert_eq!(first_that_exists(&BRIDGE_HELPERS, |_| false), BRIDGE_HELPERS[0]);
+    }
 
     fn tcp(host: u16, guest: u16) -> Forward {
         Forward::new(Protocol::Tcp, host, guest)

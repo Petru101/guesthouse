@@ -6,8 +6,10 @@ use crate::disk_image::disk_size_gib;
 use crate::failure::{Failure, Result};
 use crate::iso::kernel_package;
 use crate::library::make_disk;
+use crate::linux::driver_host::LoaderHost;
 use crate::linux::driver_image::{Outcome, prepare};
-use crate::linux::driver_versions::RpmHost;
+use crate::linux::forwarding::forwarding_problem;
+use crate::linux::gpu_off::{GUEST_NO_IMAGE, GUEST_TURNED_OFF, GpuOff};
 use crate::linux::layout::ALLOW_LIST;
 use crate::linux::seed::make_seed;
 use crate::linux::{guest_sources, sensor_daemon};
@@ -23,7 +25,6 @@ use std::time::Duration;
 const INSTALL_FINISHED: &[u8] = b"nvfwd-install-finished";
 const INSTALL_HOURS: u64 = 2;
 const REASON_FILE: &str = "gpu-off-reason";
-const TURNED_OFF: &str = "The GPU is turned off in this machine's settings.";
 
 fn isoinfo_files(iso: &str) -> Result<String> {
     let listing = Command::new("isoinfo").args(["-R", "-f", "-i", iso]).output()?;
@@ -110,36 +111,44 @@ fn wait_for_poweroff(task: &Task) -> Result<()> {
 fn gpu_boot(task: &mut Task) -> Result<UbuntuBoot> {
     let context = task.context;
     let reason_file = task.run_file(REASON_FILE);
-    let refused = |task: &mut Task, reason: String| -> Result<UbuntuBoot> {
+    let refused = |task: &mut Task, off: GpuOff| -> Result<UbuntuBoot> {
         task.context.make_run_folder(None)?;
-        fs::write(&reason_file, format!("{reason}\n"))?;
+        fs::write(&reason_file, off.guest_text())?;
         Ok(UbuntuBoot::NoGpu { reason_file: reason_file.clone() })
     };
     if !task.machine.gpu_preview {
-        return refused(task, TURNED_OFF.to_owned());
+        return refused(task, GpuOff::new(GUEST_TURNED_OFF, GUEST_TURNED_OFF));
     }
-    let sensor_daemon = sensor_daemon(context);
-    if !sensor_daemon.exists() {
-        return refused(
-            task,
-            "This QEMU has no nvfwd device. It needs a build with the device added.".to_owned(),
-        );
-    }
-    task.step("Getting the driver image ready");
     let sources = guest_sources(context);
+    let allow_list = sources.join(ALLOW_LIST);
+    if let Some(off) = forwarding_problem(&context.paths.qemu, &allow_list) {
+        task.error = format!("Starting without the GPU: {}", off.detail);
+        return refused(task, off);
+    }
+    // It's fine if this isn't there: the device goes on without sensors, and logs why.
+    let sensor_daemon = sensor_daemon(context);
+    task.step("Getting the driver image ready");
     let store = &context.paths.store;
     let tree = env_folder("NVIDIA_SOURCE").unwrap_or_else(|| store.join("src/open-gpu-kernel-modules"));
-    let host = RpmHost { version_file: context.driver_version_file.clone() };
-    match prepare(&host, &sources, &tree, &store.join("linux-driver"))? {
-        Outcome::Refused(reason) => {
-            task.error = format!("Starting without the GPU: {reason}");
-            refused(task, reason)
+    let host = LoaderHost::of_this_pc(context.driver_version_file.clone());
+    match or_refused(prepare(&host, &sources, &tree, &store.join("linux-driver"))) {
+        Outcome::Refused(off) => {
+            task.error = format!("Starting without the GPU: {}", off.detail);
+            refused(task, off)
         }
         Outcome::Ready { image, warning } => {
             task.error = warning.unwrap_or_default();
-            Ok(UbuntuBoot::WithGpu { image, allow_list: sources.join(ALLOW_LIST), sensor_daemon })
+            Ok(UbuntuBoot::WithGpu { image, allow_list, sensor_daemon })
         }
     }
+}
+
+/// Anything that goes wrong making the image is a reason to lose the GPU, and never the VM.
+fn or_refused(prepared: Result<Outcome>) -> Outcome {
+    prepared.unwrap_or_else(|failure| {
+        let detail = format!("The driver image could not be made: {}", failure.0);
+        Outcome::Refused(GpuOff::new(GUEST_NO_IMAGE, detail))
+    })
 }
 
 fn env_folder(name: &str) -> Option<PathBuf> {
@@ -170,6 +179,7 @@ mod tests {
     use crate::machine::{Kind, Machine};
     use crate::testing::{Scratch, scratch_context};
     use crate::vm_host::stand_in::RecordingHost;
+    use std::os::unix::fs::PermissionsExt;
 
     fn ubuntu(context: &crate::context::Context) -> Machine {
         let folder = context.paths.machines.join("ubuntu");
@@ -206,7 +216,7 @@ mod tests {
         let vm = Machine { gpu_preview: false, ..ubuntu(&context) };
         let host = RecordingHost::default();
         let mut task = Task::new(&context, &host, "start", vm);
-        assert_eq!(off_reason(&mut task).trim(), TURNED_OFF);
+        assert!(off_reason(&mut task).starts_with(GUEST_TURNED_OFF));
     }
 
     #[test]
@@ -216,6 +226,46 @@ mod tests {
         let host = RecordingHost::default();
         let mut task = Task::new(&context, &host, "start", ubuntu(&context));
         assert!(off_reason(&mut task).contains("no nvfwd device"));
+    }
+
+    /// A folder where QEMU has the device and bwrap works, whatever this PC has.
+    fn qemu_with_the_device(scratch: &Scratch, context: &mut crate::context::Context) {
+        context.paths.qemu = scratch.path("qemu/qemu-system-x86_64");
+        scratch.write("qemu/qemu-system-x86_64", "#!/bin/sh\necho 'nvfwd options:'\n");
+        fs::set_permissions(&context.paths.qemu, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[test]
+    fn a_missing_sensor_daemon_is_not_what_turns_the_gpu_off() {
+        let scratch = Scratch::new();
+        let mut context = scratch_context(&scratch);
+        qemu_with_the_device(&scratch, &mut context);
+        let host = RecordingHost::default();
+        let mut task = Task::new(&context, &host, "start", ubuntu(&context));
+        assert!(!off_reason(&mut task).contains("no nvfwd device"));
+    }
+
+    #[test]
+    fn host_paths_stay_with_the_host() {
+        let scratch = Scratch::new();
+        let mut context = scratch_context(&scratch);
+        qemu_with_the_device(&scratch, &mut context);
+        let host = RecordingHost::default();
+        let mut task = Task::new(&context, &host, "start", ubuntu(&context));
+        let said = off_reason(&mut task);
+        assert!(!said.contains('/'), "{said}");
+        assert!(task.error.contains("allow.txt"));
+    }
+
+    #[test]
+    fn a_failure_making_the_image_only_turns_the_gpu_off() {
+        let Outcome::Refused(off) =
+            or_refused(Err(Failure::new("/home/me/store: gcc found no such header.")))
+        else {
+            panic!("it should have been refused")
+        };
+        assert!(off.detail.contains("gcc found no such header"));
+        assert!(!off.guest_text().contains("gcc") && !off.guest_text().contains("/home"));
     }
 
     #[test]

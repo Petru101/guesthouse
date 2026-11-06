@@ -149,6 +149,16 @@ class Verdict(unittest.TestCase):
             f.write(text)
         self.assertIn("FAIL firefox opens no window", self.guest.run().stdout)
 
+    def test_no_sensors_is_a_warning_and_not_a_failure(self):
+        self.guest.fake("nvidia-smi", """case "$*" in *temperature*) echo '[N/A]' ;; *) echo 'GPU 0: RTX' ;; esac""")
+        result = self.guest.run()
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("WARN no sensor readings", result.stdout)
+
+    def test_sensors_that_read_say_nothing(self):
+        self.guest.fake("nvidia-smi", """case "$*" in *temperature*) echo 42 ;; *) echo 'GPU 0: RTX' ;; esac""")
+        self.assertNotIn("no sensor readings", self.guest.run().stdout)
+
     def test_an_untested_driver_is_warned_about(self):
         self.guest.state(f"gpu=on\nversion={V}\ntested=no\n")
         result = self.guest.run()

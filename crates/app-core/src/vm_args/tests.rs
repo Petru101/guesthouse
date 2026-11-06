@@ -120,7 +120,10 @@ fn bridged_goes_through_the_helper_and_adds_the_private_link_last() {
     let arguments = plan.qemu_arguments();
     assert_eq!(
         value_after(&arguments, "-nic"),
-        "bridge,model=e1000e,mac=52:54:00:aa:bb:cc,br=br0,helper=/usr/libexec/qemu-bridge-helper"
+        format!(
+            "bridge,model=e1000e,mac=52:54:00:aa:bb:cc,br=br0,helper={}",
+            crate::network::bridge_helper()
+        )
     );
     assert!(value_after(&arguments, "-netdev").ends_with("-:8765,hostfwd=udp:127.0.0.1:5000-:50"));
     assert_eq!(arguments.last().unwrap(), "e1000e,netdev=link,mac=52:54:00:67:68:01,bus=pcie.0,addr=0x1e");

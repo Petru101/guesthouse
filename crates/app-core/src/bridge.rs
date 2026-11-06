@@ -1,6 +1,6 @@
 //! What the host needs for a bridged machine, and what to tell the user to do about it.
 
-use crate::network::{BRIDGE_HELPER, bridge_name_problem};
+use crate::network::{bridge_helper, bridge_name_problem};
 use crate::text::shell_quote;
 use rustix::fs::{Mode, stat};
 use std::fs;
@@ -24,7 +24,7 @@ impl Default for BridgeHost {
     fn default() -> Self {
         Self {
             net: "/sys/class/net".into(),
-            helper: BRIDGE_HELPER.into(),
+            helper: bridge_helper().into(),
             config: "/etc/qemu/bridge.conf".into(),
             routes: "/proc/net/route".into(),
             firewall: "/proc/sys/net/bridge/bridge-nf-call-iptables".into(),

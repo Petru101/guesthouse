@@ -2,7 +2,7 @@
 
 use super::arguments::words;
 use super::{SHARE_ADDRESS, VmPlan};
-use crate::network::{self, BRIDGE_HELPER, CONTROL_MAC, GUEST_AGENT_PORT, Mode};
+use crate::network::{self, CONTROL_MAC, GUEST_AGENT_PORT, Mode, bridge_helper};
 use crate::text::{qemu_value, shell_quote};
 
 /// Passt copies the host's address by default, and these can't clash with the private link. The
@@ -51,7 +51,7 @@ impl VmPlan {
                 } else {
                     &self.network.bridge
                 };
-                format!("bridge,{model},br={bridge},helper={BRIDGE_HELPER}")
+                format!("bridge,{model},br={bridge},helper={}", bridge_helper())
             }
         }
     }

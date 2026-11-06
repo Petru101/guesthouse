@@ -5,54 +5,25 @@
 //! module stays the old one until a reboot, so the loaded module is what everything is compared to.
 
 use std::collections::BTreeMap;
-use std::fs;
-use std::path::PathBuf;
-use std::process::Command;
 
-/// The packages that hold what a guest runs. Their versions must all be the loaded one.
-pub const DRIVER_PACKAGES: [&str; 3] =
-    ["xorg-x11-drv-nvidia-libs", "xorg-x11-drv-nvidia-cuda-libs", "xorg-x11-drv-nvidia-cuda"];
+/// Three libraries that stand for the driver as a whole. What they end in must all be the loaded version.
+pub const DRIVER_LIBRARIES: [&str; 3] = ["libcuda.so.1", "libnvidia-ml.so.1", "libGLX_nvidia.so.0"];
 /// Versions a person has run the whole check on. Another point release of a branch runs with a
 /// warning, and a branch nobody knows doesn't run, as a new branch can change what the driver asks of
 /// the host, on a card the host's own desktop is using.
 pub const TESTED_VERSIONS: [&str; 1] = ["615.78.08"];
 
-/// What the host's package database and kernel say.
+/// What the host's kernel and files say.
 pub trait DriverHost {
     fn loaded_version(&self) -> Option<String>;
-    fn installed_version(&self, package: &str) -> Option<String>;
-    /// Every file of these packages.
-    fn packaged_files(&self, packages: &[&str]) -> Vec<String>;
-}
-
-pub struct RpmHost {
-    pub version_file: PathBuf,
-}
-
-impl DriverHost for RpmHost {
-    fn loaded_version(&self) -> Option<String> {
-        let text = fs::read_to_string(&self.version_file).ok()?;
-        Some(text.trim().to_owned()).filter(|version| !version.is_empty())
-    }
-
-    fn installed_version(&self, package: &str) -> Option<String> {
-        let name = format!("{package}.x86_64");
-        let result = Command::new("rpm").args(["-q", "--qf", "%{VERSION}", &name]).output().ok()?;
-        result.status.success().then(|| String::from_utf8_lossy(&result.stdout).trim().to_owned())
-    }
-
-    /// rpm says a package isn't installed on stdout, and the list of what's required then names it.
-    fn packaged_files(&self, packages: &[&str]) -> Vec<String> {
-        let names = packages.iter().map(|package| format!("{package}.x86_64"));
-        let listing = Command::new("rpm").arg("-ql").args(names).output();
-        let text =
-            listing.map(|result| String::from_utf8_lossy(&result.stdout).into_owned()).unwrap_or_default();
-        text.lines().filter(|line| line.starts_with('/')).map(str::to_owned).collect()
-    }
+    /// The version of one of the driver's libraries, or `None` if the loader can't find it.
+    fn library_version(&self, library: &str) -> Option<String>;
+    /// Every file of the driver that a guest might want.
+    fn driver_files(&self) -> Vec<String>;
 }
 
 pub fn installed_versions(host: &dyn DriverHost) -> BTreeMap<String, Option<String>> {
-    DRIVER_PACKAGES.iter().map(|package| ((*package).to_owned(), host.installed_version(package))).collect()
+    DRIVER_LIBRARIES.iter().map(|library| ((*library).to_owned(), host.library_version(library))).collect()
 }
 
 pub fn branch(version: &str) -> &str {
@@ -83,7 +54,10 @@ pub fn refusal(loaded: Option<&str>, installed: &BTreeMap<String, Option<String>
     let missing: Vec<&str> =
         installed.iter().filter(|(_, version)| version.is_none()).map(|(name, _)| name.as_str()).collect();
     if !missing.is_empty() {
-        return Some(format!("These host packages are not installed: {}.", missing.join(", ")));
+        return Some(format!(
+            "The loader can't find these libraries of NVIDIA's driver: {}.",
+            missing.join(", ")
+        ));
     }
     let mut different: Vec<&str> =
         installed.values().flatten().map(String::as_str).filter(|version| *version != loaded).collect();
@@ -103,7 +77,8 @@ pub fn untested_warning(loaded: &str) -> Option<String> {
     (!TESTED_VERSIONS.contains(&loaded)).then(|| {
         format!(
             "Driver {loaded} is a known branch, but this exact version has not been tested. The modules and \
-             tables are built for it, but the allow list may refuse what it needs."
+             tables are built for it, and the guest checks CUDA and Vulkan before it turns the GPU on. Sensors \
+             show N/A, as the sensor daemon only knows the tested version."
         )
     })
 }
@@ -113,7 +88,7 @@ mod tests {
     use super::*;
 
     fn versions(version: Option<&str>) -> BTreeMap<String, Option<String>> {
-        DRIVER_PACKAGES.iter().map(|name| ((*name).to_owned(), version.map(str::to_owned))).collect()
+        DRIVER_LIBRARIES.iter().map(|name| ((*name).to_owned(), version.map(str::to_owned))).collect()
     }
 
     #[test]
@@ -142,7 +117,7 @@ mod tests {
     #[test]
     fn no_module_missing_packages_and_a_pending_reboot_each_say_so() {
         assert!(refusal(None, &versions(None)).unwrap().contains("no NVIDIA kernel module"));
-        assert!(refusal(Some("615.78.08"), &versions(None)).unwrap().contains("not installed"));
+        assert!(refusal(Some("615.78.08"), &versions(None)).unwrap().contains("can't find"));
         let said = refusal(Some("615.78.08"), &versions(Some("615.90.01"))).unwrap();
         assert!(said.contains("615.90.01") && said.contains("Reboot"));
     }

@@ -14,24 +14,32 @@ The app does the host's side of this: the install, the driver image, the QEMU ar
 - **`cast/`** carries the viewer's keys and pointer into the session, and has a GLX vendor and the Xwayland wrapper for X11 clients.
 - **`setup/`** is the guest's side of the install: the seed, first boot, and `gpu-up.sh`, which brings the GPU up on each boot or turns it off and says why.
 
-The card's sensor readings go through `nvfwd-sensord`, a separate program. It keeps the driver's sensor page and copies the parts a guest may see into a page of its own, so `nvidia-smi` shows real readings and QEMU holds no host client.
+The card's sensor readings go through `nvfwd-sensord`, a separate program. It keeps the driver's sensor page and copies the parts a guest may see into a page of its own, so `nvidia-smi` shows real readings and QEMU holds no host client. If the daemon can't start, or doesn't know the driver, or dies, the guest keeps the GPU and `nvidia-smi` shows N/A. The VM's `calls.log` says why.
 
 ## Trying it
 
-You need a Fedora host with RPM Fusion's NVIDIA packages, an NVIDIA card with the open kernel modules loaded, and the driver version in `TESTED_VERSIONS` in `crates/app-core/src/linux/driver_versions.rs`. The app reads the driver's files out of those packages with `rpm`, so another distribution won't work yet. You also need `bwrap`, `genisoimage`, `qemu-img` and `swtpm`. It has only been tried on an AMD CPU.
+You need an NVIDIA card with the open kernel modules, and the driver version in `TESTED_VERSIONS` in `crates/app-core/src/linux/driver_versions.rs`. The host's side doesn't ask a package manager: it finds the driver through the loader. I've only run it on Fedora. Debian, Ubuntu and Arch layouts are tested with fixtures and not on real machines.
 
 1. Build QEMU as `qemu/README.md` says, and copy `hw/misc/nvfwd/nvfwd-sensord` next to `qemu-system-x86_64`.
 2. `cargo build --release`, and `cargo build --release -p guesthouse-app` for the viewer.
 3. Get NVIDIA's source at the loaded driver's version, into `src/open-gpu-kernel-modules` in the data store, which is `~/.local/share/guesthouse`, or say where it is with `NVIDIA_SOURCE`. The guest's modules build against its headers, which aren't in this repository.
 4. Set `GUESTHOUSE_PROGRAM` to this repository and `QEMU` to your build, and make an Ubuntu machine from Ubuntu's server ISO.
 
-The install takes about ten minutes with no hands, and the first boot builds everything. If anything about the driver is in doubt the GPU stays off and the VM still boots, and the guest says why. As root in the guest, `nvfwd-check` says which parts work.
+The install takes about ten minutes with no hands, and the first boot builds everything. If anything about the driver is in doubt the GPU stays off and the VM still boots. The guest gets one plain sentence and the app has the details, as those can hold your paths. As root in the guest, `nvfwd-check` says which parts work.
+
+## On a driver I haven't tried
+
+Another point release of the same branch gets a warning and a try. In order, you'd see:
+
+1. The app wants NVIDIA's source at your exact version, and says how to get it.
+2. The tables made from that source have to match the ones in the device. If a driver moved a field the device checks, the GPU stays off, as QEMU would need a new build. They're the same at 615.71.09, 615.71.10 and 615.78.08.
+3. The guest builds its modules against your driver. A change there fails the build, which turns the GPU off and names the log.
+4. The guest runs CUDA and Vulkan before it calls the GPU on. A call the allow list doesn't have shows up here: the GPU goes off, the plain desktop comes up, and the VM's `calls.log` has a `REFUSED` line for it.
+5. The sensor daemon only knows one exact version, so on any other `nvidia-smi` shows N/A. Everything else works.
 
 ## How far to trust a guest
 
 A Linux guest gets the GPU the way a program of yours does. It can do what your user can do to the card, it sees whole-card sensor and memory readings, and it can slow or crash your GPU session, which takes your desktop with it. It only gets calls on the list, it can only name its own GPU clients, and QEMU runs in a sandbox with no root. As far as I could test, it can't reach QEMU's memory or anyone else's GPU work. There's no full jail yet, so a bug in NVIDIA's driver or in this device is still a bug in your user account. Treat a guest as being as trusted as you, and don't run one you don't trust.
-
-On a driver point release the sensor daemon doesn't know, CUDA and Vulkan may fail outright instead of just losing sensors. I haven't tried one.
 
 ## Limits
 
@@ -63,4 +71,4 @@ This is the first step and no more. QEMU still opens `/dev/nvidia*` itself, with
 
 `make -C linux/tests/device QEMU=/path/to/patched/qemu BUILD=/somewhere` runs the device's checks with no GPU and no VM, under ASan and UBSan. It needs `libasan`, `libubsan` and glib's headers.
 
-`tests/` has small programs for CUDA, Vulkan and OpenGL. The CUDA and Vulkan ones count wrong values, and `glbench` writes an image to compare with a run on the host.
+`tests/` has small programs for CUDA, Vulkan and OpenGL, and `sensorrate`, which shows that sensor calls wait for the call rate. The CUDA and Vulkan ones count wrong values, and `glbench` writes an image to compare with a run on the host.
