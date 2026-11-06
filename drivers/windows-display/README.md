@@ -24,7 +24,7 @@ Everything of mine is in `GuesthouseDisplay/Guesthouse/`, plus a few lines in th
 
 The driver makes its monitor when it starts. It keeps it until the guest stops, and ignores `DESTROYMONITOR`, as Sunshine sends that whenever it exits. `setup/take-over-display.ps1` makes that the only display at logon, as only a user's session can do that. Windows then remembers it.
 
-The hardware cursor is off in `vdd_settings.xml` for now, so Windows draws it into the frames.
+The hardware cursor is on in `vdd_settings.xml`. It goes to the viewer by the frame socket, and with no viewer asking for it the frame pass draws it into the frames.
 
 The frame channel for Sunshine is still here. It only starts copying frames once something asks about it. Its contract with Sunshine keeps zako-vdd's names, in `Common/Include/vdd_control_ioctl.h` and in the shared object names, because Sunshine looks for those. Nobody using this sees them.
 

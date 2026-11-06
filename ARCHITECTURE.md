@@ -92,7 +92,7 @@ AMD and Intel backends should be possible through this same trait. None exist ye
 
 ## Frames
 
-`FrameSink` in `core/src/frames/` is the boundary between what makes the guest's frames and what shows them. A sink hears of rings of buffers and the frames in them, and doesn't know how a frame came to be. Copies to the staging surface are the only producer so far, and the only sink is `ViewerPort` in `daemon/src/viewer.rs`, which serves `frames.sock` in the run folder.
+`FrameSink` in `core/src/frames/` is the boundary between what makes the guest's frames and what shows them. A sink hears of rings of buffers and the frames in them, and doesn't know how a frame came to be. Copies to the staging surface make frames for the basic display, the indirect display driver makes its own, and the only sink is `ViewerPort` in `daemon/src/viewer.rs`, which serves `frames.sock` in the run folder.
 
 The staging surface lies in guest pages, so a viewer can't use it where it is. The daemon keeps its own ring of slots in video memory, exported with `Backend::export_memory`, and each screen frame gets a second copy, into the next free slot. The guest's image is read directly if it's the screen's size, and otherwise the staging surface is, because each slot needs the whole picture. On NVIDIA an export goes through an RM file and a GEM object on the render node, in `rm/dmabuf.rs`.
 
@@ -186,6 +186,18 @@ Ubuntu guests take a route of their own, in `crates/app-core/src/linux/` and `ac
 The guest's driver calls go through `nvfwd`, a device in the QEMU patch, to the host's driver, on the vCPU that made them. No daemon carries the calls on this route. The device works on a private copy of each call and holds it to an allow list and to limits per VM, and `linux/README.md` has the details. QEMU runs in a bubblewrap sandbox here, from `vm_args/jail.rs`.
 
 The viewer only knows `FrameSource`, which has three kinds. `SocketFrames` takes a guest's frames from the frame socket, with a new texture for each frame, and gives a slot back when GTK lets go of its texture. `ForwardedFrames` takes an Ubuntu guest's frames from its QEMU device. `DbusFrames` listens to QEMU's D-Bus display, which is all that firmware, an install and a plain VM have, and a guest on a GPU has it too until its first frame and again after a reset.
+
+### Windows' screen
+
+A Windows machine ends up on our display driver, from `drivers/windows-display/`, with no hands. `actions/display.rs` does this on every boot, so a new machine gets it on its first GPU boot, in the install's own task, and an existing one gets it at its next start. It asks Windows for the device by its hardware id, and if it's missing it sends the package through the agent, runs `sign-and-install.ps1` as SYSTEM, and leaves the logon task that makes it the only display. The certificate is made in that guest, and the settings say what it means. Then `data/apply-display.ps1` runs in the user's session, with the machine's size, rate and HDR, and says what Windows really gave.
+
+Three things can say what's on the screen, and the app believes the one that knows. Windows knows the rate. The daemon knows the size and whether it's HDR, as it has the frames, and leaves that in `display-ring` in the run folder (`daemon/src/display_note.rs`). `display.json` in the machine's folder keeps the rest: whether the driver is in, which build, and why not. The row goes by those and never by what was asked for. A rate changed by hand inside Windows only shows after the next change or boot.
+
+Nothing here can stop a machine. A driver that won't install, or that Windows says is up while no ring comes, is taken out with `guest/display-remove.ps1`, certificate and all. Windows goes back to the basic display by itself, and the reason stays in `display.json`. A start won't try that build again, but a new build or the button in the settings will.
+
+The built driver isn't in git. It's in the program folder's `display-driver/` if the packaging was given one, with its licences, scripts and settings, and with `package.txt` to tell builds apart. A build with none says so on the row.
+
+HDR is the machine's setting and the screen's ability together, because a viewer that can't take an HDR frame gets no frame. Only the app can find out about the screen, so it leaves the answer in its settings (`window/screen_hdr.rs`) for tasks to read.
 
 A guest's driver can send HDR frames and its hardware cursor over the same socket. The viewer offers `XB30` only if the display has it, so an SDR desktop never meets an HDR frame. GTK needs `GDK_DEBUG=color-mgmt` for Wayland's colour management, so `main.rs` sets it before GTK starts. It's a debug flag, so a new GTK could change it. The cursor is the host's pointer wearing the guest's picture, as that moves with no delay. While the mouse is captured there's no pointer, so `cursor_layer` draws it in the window.
 
