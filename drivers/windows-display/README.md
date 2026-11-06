@@ -2,7 +2,7 @@
 
 This is the indirect display driver for Windows guests. It gives Windows a real monitor at the host's refresh rate, with HDR, and sends each frame to the host without a CPU copy.
 
-It's a fork of [zako-vdd](https://github.com/qiin2333/Virtual-Display-Driver) by the people behind Foundation Sunshine, at v0.18.2, commit abadb3a. Nearly all of it is their work and it stays under their MIT licence, in [LICENSE](LICENSE). Their README is [README-zako.md](README-zako.md). I left their folders and names alone so that their fixes stay easy to take.
+It's a fork of [zako-vdd](https://github.com/qiin2333/zako-vdd), by qiin2333 and its other authors, at v0.18.2, commit abadb3a. Nearly all of it is their work and it stays under their MIT licence, in [LICENSE](LICENSE). Their README is [README-zako.md](README-zako.md). I left their folders and names alone so that their fixes stay easy to take.
 
 Nothing here has run in a guest yet, and it hasn't been built with the WDK either. See "What's been checked".
 
