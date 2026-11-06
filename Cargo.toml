@@ -8,6 +8,7 @@ default-members = [
     "crates/backend-standin",
     "crates/core",
     "crates/daemon",
+    "crates/frame-socket",
     "crates/messages",
     "crates/replay",
     "crates/transport",
@@ -28,6 +29,7 @@ guesthouse-backend-standin = { path = "crates/backend-standin" }
 guesthouse-core = { path = "crates/core" }
 guesthouse-daemon = { path = "crates/daemon" }
 guesthouse-app-core = { path = "crates/app-core" }
+guesthouse-frame-socket = { path = "crates/frame-socket" }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
