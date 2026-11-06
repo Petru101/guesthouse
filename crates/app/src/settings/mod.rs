@@ -4,6 +4,8 @@
 mod disk;
 mod display;
 mod hardware;
+mod remove;
+mod sharing;
 mod snapshots;
 
 use crate::window::{MachineHandle, Window};
@@ -48,6 +50,8 @@ struct Parts {
     display: display::Display,
     disk: disk::Disk,
     snapshots: snapshots::Snapshots,
+    sharing: sharing::Sharing,
+    remove: remove::Remove,
 }
 
 #[derive(Clone)]
@@ -65,6 +69,8 @@ impl SettingsDialog {
             display: display::Display::new(&shared, &page),
             disk: disk::Disk::new(&shared, &page),
             snapshots: snapshots::Snapshots::new(&shared, &page),
+            sharing: sharing::Sharing::new(&shared, &page),
+            remove: remove::Remove::new(&shared, &page),
             shared,
         }));
         let window = window.clone();
@@ -86,5 +92,7 @@ impl SettingsDialog {
         parts.display.set_status(status);
         parts.disk.set_status(status);
         parts.snapshots.set_status(status);
+        parts.sharing.set_status(status);
+        parts.remove.set_status(status);
     }
 }
