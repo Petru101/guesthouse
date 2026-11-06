@@ -39,8 +39,8 @@ impl VmPlan {
 
     fn firmware_drives(&self) -> Vec<String> {
         let (code, format) = match self.tpm {
-            Some(_) => (&self.firmware.code_secure, "qcow2"),
-            None => (&self.firmware.code, "raw"),
+            Some(_) => (&self.firmware.code_secure, &self.firmware.format_secure),
+            None => (&self.firmware.code, &self.firmware.format),
         };
         words(&[
             "-global",

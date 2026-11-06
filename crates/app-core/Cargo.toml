@@ -15,6 +15,10 @@ path = "src/bin/task.rs"
 name = "guesthouse-share"
 path = "src/bin/share.rs"
 
+[[bin]]
+name = "guesthouse-check"
+path = "src/bin/check.rs"
+
 [dependencies]
 # Only for its slot names, so the app and the daemon can never disagree about what a VM owns.
 guesthouse-daemon.workspace = true

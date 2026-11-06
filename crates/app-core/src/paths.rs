@@ -5,6 +5,7 @@
 //! guest's files in the program folder.
 
 use guesthouse_daemon::slot::Slot;
+use serde_json::Value;
 use std::collections::HashMap;
 use std::env;
 use std::fs;
@@ -29,6 +30,8 @@ const PROGRAM_MARK: &str = "guest";
 const REPO_GUEST_MARK: &str = "setup.ps1";
 const SHARED_MEMORY: &str = "/dev/shm";
 const QEMU_PROGRAM: &str = "qemu/build/qemu-system-x86_64";
+/// Where each distribution's firmware package says what it installed, in QEMU's own format.
+const FIRMWARE_DESCRIPTORS: &str = "/usr/share/qemu/firmware";
 const SYSTEM_QEMU: &str = "qemu-system-x86_64";
 
 /// The environment, as a value, so that a test can say what it holds.
@@ -98,6 +101,10 @@ pub struct Firmware {
     pub code_secure: PathBuf,
     /// With Microsoft's keys, so Secure Boot is on. It goes with `code_secure`.
     pub vars_secure: PathBuf,
+    /// How `code` and `vars` are stored, in QEMU's word for it.
+    pub format: String,
+    /// The same for `code_secure` and `vars_secure`.
+    pub format_secure: String,
 }
 
 impl Default for Firmware {
@@ -109,8 +116,69 @@ impl Default for Firmware {
             vars: file("OVMF_VARS.fd"),
             code_secure: file("OVMF_CODE_4M.secboot.qcow2"),
             vars_secure: file("OVMF_VARS_4M.secboot.qcow2"),
+            format: "raw".to_owned(),
+            format_secure: "qcow2".to_owned(),
         }
     }
+}
+
+impl Firmware {
+    /// Fedora's files are the ones this has run on, so they win if they're here. Elsewhere the names
+    /// differ, and the distribution's descriptors say what they are.
+    pub fn find() -> Self {
+        Self::find_in(Path::new(FIRMWARE_DESCRIPTORS))
+    }
+
+    fn find_in(descriptors: &Path) -> Self {
+        let known = Self::default();
+        if known.code.exists() { known } else { Self::described_in(descriptors).unwrap_or(known) }
+    }
+
+    fn described_in(folder: &Path) -> Option<Self> {
+        let mut names: Vec<PathBuf> =
+            fs::read_dir(folder).ok()?.flatten().map(|entry| entry.path()).collect();
+        // Descriptors are numbered so that the first of a kind is the distribution's preference.
+        names.sort();
+        let usable: Vec<Value> = names.iter().filter_map(|path| read_descriptor(path)).collect();
+        let secure = |enrolled: bool| usable.iter().find(|found| has_features(found, enrolled));
+        let plain = secure(false)?;
+        // Arch ships no firmware with keys. A VM with no TPM never uses it, and one with a TPM gets
+        // Secure Boot off.
+        let keys = secure(true).unwrap_or(plain);
+        Some(Self {
+            code: flash_file(plain, "executable")?.0,
+            vars: flash_file(plain, "nvram-template")?.0,
+            format: flash_file(plain, "executable")?.1,
+            code_secure: flash_file(keys, "executable")?.0,
+            vars_secure: flash_file(keys, "nvram-template")?.0,
+            format_secure: flash_file(keys, "executable")?.1,
+        })
+    }
+}
+
+/// Only a split flash image for x86_64's q35 machine fits how a VM is started.
+fn read_descriptor(path: &Path) -> Option<Value> {
+    let found: Value = serde_json::from_str(&fs::read_to_string(path).ok()?).ok()?;
+    let is_split = found["mapping"]["device"] == "flash" && found["mapping"]["mode"] == "split";
+    let targets = found["targets"].as_array()?;
+    let is_q35 = targets.iter().any(|target| {
+        let machines = target["machines"].as_array();
+        let q35 = machines.is_some_and(|all| all.iter().any(|name| name == "pc-q35-*"));
+        target["architecture"] == "x86_64" && q35
+    });
+    (is_split && is_q35).then_some(found)
+}
+
+/// Both firmwares have Secure Boot, and the one with the keys has them enrolled.
+fn has_features(descriptor: &Value, enrolled: bool) -> bool {
+    let features = descriptor["features"].as_array();
+    let has = |wanted: &str| features.is_some_and(|all| all.iter().any(|name| name == wanted));
+    has("secure-boot") && has("enrolled-keys") == enrolled
+}
+
+fn flash_file(descriptor: &Value, part: &str) -> Option<(PathBuf, String)> {
+    let file = &descriptor["mapping"][part];
+    Some((file["filename"].as_str()?.into(), file["format"].as_str()?.to_owned()))
 }
 
 impl Paths {
@@ -149,7 +217,7 @@ impl Paths {
                 .unwrap_or_else(|| PathBuf::from(SHARED_MEMORY)),
             own_run: variables.folder(RUN_VARIABLE),
             own_agent_port: variables.get(AGENT_PORT_VARIABLE).and_then(|text| text.parse().ok()),
-            firmware: Firmware::default(),
+            firmware: Firmware::find(),
         }
     }
 
@@ -263,6 +331,41 @@ mod tests {
 
     fn slot(number: &str) -> Slot {
         Slot::parse(Some(number)).unwrap()
+    }
+
+    fn descriptor(features: &str, code: &str, vars: &str) -> String {
+        format!(
+            r#"{{"mapping": {{"device": "flash", "mode": "split",
+                "executable": {{"filename": "{code}", "format": "raw"}},
+                "nvram-template": {{"filename": "{vars}", "format": "raw"}}}},
+              "targets": [{{"architecture": "x86_64", "machines": ["pc-q35-*"]}}],
+              "features": [{features}]}}"#
+        )
+    }
+
+    #[test]
+    fn another_distributions_firmware_comes_from_its_descriptors() {
+        let scratch = Scratch::new();
+        scratch.write(
+            "d/40-keys.json",
+            descriptor(r#""secure-boot", "enrolled-keys""#, "/s/CODE", "/s/VARS.ms"),
+        );
+        scratch.write("d/50-secure.json", descriptor(r#""secure-boot""#, "/s/CODE", "/s/VARS"));
+        scratch.write("d/60-plain.json", descriptor("", "/s/PLAIN", "/s/PLAIN_VARS"));
+        scratch.write("d/70-not-json.json", "nothing");
+        let found = Firmware::described_in(&scratch.path("d")).unwrap();
+        assert_eq!(found.vars, Path::new("/s/VARS"));
+        assert_eq!(found.vars_secure, Path::new("/s/VARS.ms"));
+        assert_eq!((found.format.as_str(), found.format_secure.as_str()), ("raw", "raw"));
+    }
+
+    #[test]
+    fn with_no_firmware_with_keys_the_plain_one_stands_in() {
+        let scratch = Scratch::new();
+        scratch.write("d/50-secure.json", descriptor(r#""secure-boot""#, "/s/CODE", "/s/VARS"));
+        let found = Firmware::described_in(&scratch.path("d")).unwrap();
+        assert_eq!(found.vars_secure, Path::new("/s/VARS"));
+        assert_eq!(Firmware::described_in(&scratch.path("nothing")), None);
     }
 
     #[test]

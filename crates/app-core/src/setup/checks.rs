@@ -19,6 +19,7 @@ const UBUNTU_TOOLS: [&str; 6] = ["isoinfo", "genisoimage", "openssl", "ssh-keyge
 const TOOLS_FIX: &str = "On Fedora: sudo dnf install 7zip genisoimage qemu-img swtpm edk2-ovmf, and nvidia-smi from NVIDIA's driver";
 const BUILD_FIX: &str = "qemu/README.md in Guesthouse's source says how to build it.";
 const QEMU_LIBRARIES_FIX: &str = "On Fedora: sudo dnf install pixman libslirp libfdt libusb1 pipewire-libs";
+const BRANCH_FIX: &str = "GPU machines stay off until the branches match. Plain VMs still run.";
 const CARD_FIX: &str = "GPU-PV needs an RTX 5090, or another consumer RTX 50-series card.";
 /// The Linux driver this has been run on. The guest's graphics depend on the exact version.
 pub const TESTED_DRIVER: &str = "615.78.08";
@@ -268,6 +269,31 @@ pub fn check_pc(context: &Context) -> Vec<Check> {
     ]
 }
 
+/// A host driver on a branch this build has no profile for runs nothing on the card, whatever else is
+/// right, so the GPU's verdict needs this as well as the version check above.
+fn check_driver_branch(context: &Context) -> Option<Check> {
+    const TITLE: &str = "Host driver branch";
+    let version = sysfs_text(&context.driver_version_file);
+    let refusal = Some(version).filter(|text| !text.is_empty()).and_then(|text| branch_refusal(&text))?;
+    Some(Check::new(TITLE, CheckState::Failed, refusal, BRANCH_FIX))
+}
+
+/// What an installer asks before it has put anything on this PC: only what no install can bring, so no
+/// tools and no QEMU. The checks for room say what a machine will need, and don't decide.
+pub struct HostReport {
+    pub checks: Vec<Check>,
+    /// Whether this PC can run a GPU machine, as far as the host can say.
+    pub gpu: bool,
+}
+
+pub fn check_host(context: &Context) -> HostReport {
+    let mut deciding = vec![check_card(context), check_host_driver(context), check_kvm(context)];
+    deciding.extend(check_driver_branch(context));
+    let gpu = deciding.iter().all(|check| check.state != CheckState::Failed);
+    deciding.extend([check_shared_memory(context), check_disk(context)]);
+    HostReport { checks: deciding, gpu }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -275,6 +301,29 @@ mod tests {
     use crate::testing::{Scratch, scratch_context};
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn only_a_driver_of_another_branch_is_a_branch_failure() {
+        let scratch = Scratch::new();
+        let mut context = scratch_context(&scratch);
+        context.driver_version_file = scratch.path("nothing");
+        assert!(check_driver_branch(&context).is_none(), "the driver check says when none is loaded");
+        context.driver_version_file = scratch.write("version", "615.90.01\n");
+        assert!(check_driver_branch(&context).is_none(), "another point release only warns");
+        fs::write(&context.driver_version_file, "620.11\n").unwrap();
+        let found = check_driver_branch(&context).unwrap();
+        assert!(found.state == CheckState::Failed && found.text.contains("620"));
+    }
+
+    #[test]
+    fn a_failed_host_check_turns_the_gpu_off_and_room_does_not() {
+        let scratch = Scratch::new();
+        let mut context = scratch_context(&scratch);
+        context.driver_version_file = scratch.write("version", "620.11\n");
+        let report = check_host(&context);
+        assert!(!report.gpu);
+        assert!(report.checks.iter().any(|check| check.title == "Host driver branch"));
+    }
 
     #[test]
     fn the_card_check_says_what_is_known() {
