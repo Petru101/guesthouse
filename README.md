@@ -49,7 +49,7 @@ Direct3D 12, Direct3D 11, Vulkan and OpenGL all run on the real card, along with
 
 Once work reaches the card it runs at full speed. Getting it there is what costs extra.
 
-**How fast is a real program?** Superposition at 1080p Extreme in Direct3D 11 scores about **21,000** on a fresh boot, averaging around 157 fps. That's with no viewer open. The lowest 5090 I could find on Unigine's leaderboard is around 31,000, so call it two thirds of what the card can do. Something is still eating the rest, and I don't know what yet.
+**How fast is a real program?** Superposition at 1080p Extreme in Direct3D 11 scores **20,912**, averaging 156 fps with a minimum of 98. That's with no viewer open. The lowest 5090 I could find on Unigine's leaderboard is around 31,000, so call it two thirds of what the card can do. Something is still eating the rest, and I don't know what yet.
 
 ![Superposition's result in the VM: 20,912 at 1080p Extreme](docs/images/superposition-result.jpg)
 
@@ -72,12 +72,6 @@ A heavy Godot test scene at 1280x720 does about 690 fps natively. In the VM it's
 Linux takes a different route. The guest runs NVIDIA's real Linux driver and its calls get forwarded to the host's driver. So far that's Ubuntu 26.04.1.
 
 `nvidia-smi`, CUDA and Vulkan work, and speed is about the same as the host: 111–113 TFLOPS on Vulkan in both, and a CUDA launch takes 14.5 µs against 13.9. GNOME runs on it through Zink, with Firefox, Files, Settings and a terminal all working. Godot's Windows build even runs in there through Wine on Wayland.
-
-![nvidia-smi and a small CUDA test in a terminal on the Ubuntu guest's desktop](docs/images/nvidia-smi-in-ubuntu.jpg)
-
-That's `nvidia-smi` and a small CUDA test of mine, on the guest's own desktop. The load and memory it shows are for the whole card, because other VMs were using it at the time.
-
-In theory this route isn't tied to the 5090 the way the Windows one is. It forwards the real driver's calls, so it should work on anything NVIDIA's open driver supports, from the 20 series up, as long as its tables get rebuilt for that driver version. That's only theory for now: it has run on my 5090, on driver 615.78.08, with an AMD CPU, and nothing else.
 
 Delay is where it's behind. A simple app takes about 20 to 30 ms from key press to picture, against about 11.5 on the host, and Godot takes 50 to 100 ms.
 
@@ -126,8 +120,6 @@ I'd rather you hear this from me:
 - **One GPU VM at a time** for now.
 
 ## What's next
-
-The full list, with what's already done, is in the [roadmap](https://github.com/xnixy/guesthouse/issues/2). The short version:
 
 1. Move the NVIDIA backend here, so this repo can boot a guest
 2. The app and an installer, so you can try it

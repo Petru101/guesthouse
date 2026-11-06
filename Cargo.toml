@@ -1,6 +1,17 @@
 [workspace]
 resolver = "3"
 members = ["crates/*"]
+# The app needs GTK's development files, which nothing else here does. Build it with `-p guesthouse-app`.
+default-members = [
+    "crates/app-core",
+    "crates/backend",
+    "crates/backend-standin",
+    "crates/core",
+    "crates/daemon",
+    "crates/messages",
+    "crates/replay",
+    "crates/transport",
+]
 
 [workspace.package]
 version = "0.1.0"
@@ -16,6 +27,7 @@ guesthouse-backend = { path = "crates/backend" }
 guesthouse-backend-standin = { path = "crates/backend-standin" }
 guesthouse-core = { path = "crates/core" }
 guesthouse-daemon = { path = "crates/daemon" }
+guesthouse-app-core = { path = "crates/app-core" }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
