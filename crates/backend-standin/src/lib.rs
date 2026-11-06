@@ -14,11 +14,13 @@ mod memory;
 
 use guesthouse_backend::{
     AdapterFacts, AllocationShape, Backend, BackendError, CardLabel, DriverFound, DriverSurvey, GpuRange,
-    HostServices, MapRequest, MemoryId, PciCard, Refusal, RegistryName, RegistryValue, Setup, SpaceId,
-    StagingCopy, StagingStart, Status, SurfaceShape, UnmapRequest, VendorQuery, Work, WorkStart,
+    HostServices, MapRequest, MemoryId, PciCard, Refusal, RegistryName, RegistryValue, Setup, SlotCopy,
+    SpaceId, StagingCopy, StagingStart, Status, SurfaceShape, UnmapRequest, VendorQuery, Work, WorkStart,
 };
 pub use memory::SparseMemory;
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::fs::File;
+use std::os::fd::OwnedFd;
 use std::time::Instant;
 
 const STAND_IN_VENDOR: u16 = 0xFFFE;
@@ -33,6 +35,7 @@ const NODE_COUNT: u32 = 8;
 pub const NODE_WITHOUT_CHANNEL: u32 = 7;
 const COLOUR_8_BIT: u32 = 7;
 const FORMAT_32_BIT: u32 = 21;
+const EXPORTED_FILE: &str = "/dev/null";
 
 /// See the crate documentation.
 #[derive(Debug)]
@@ -49,6 +52,11 @@ pub struct StandIn {
     pub closed_queues: Vec<u32>,
     pub preserved: Vec<(MemoryId, MemoryId, u64)>,
     pub copies: Vec<StagingCopy>,
+    pub slot_copies: Vec<SlotCopy>,
+    /// Slot copies end in this. A test sets it to see a copy fail.
+    pub slot_copy_status: Status,
+    /// Set to make every export fail.
+    pub refuse_exports: bool,
     /// Addresses taken through [`HostServices`] by the first submission.
     pub channel_address: Option<u64>,
     /// Copies stay under way until a test sets `copy_done`.
@@ -97,6 +105,9 @@ impl StandIn {
             closed_queues: Vec::new(),
             preserved: Vec::new(),
             copies: Vec::new(),
+            slot_copies: Vec::new(),
+            slot_copy_status: Status::SUCCESS,
+            refuse_exports: false,
             channel_address: None,
             slow_copies: false,
             copy_done: false,
@@ -316,6 +327,20 @@ impl Backend for StandIn {
 
     fn poll_staging_copy(&mut self, _host: &mut dyn HostServices, _now: Instant) -> Option<Status> {
         std::mem::take(&mut self.copy_done).then_some(Status::SUCCESS)
+    }
+
+    fn start_slot_copy(&mut self, _host: &mut dyn HostServices, copy: &SlotCopy) -> StagingStart {
+        self.slot_copies.push(*copy);
+        if self.slow_copies { StagingStart::Running } else { StagingStart::Finished(self.slot_copy_status) }
+    }
+
+    /// Anything that is a file will do, as nothing here has pixels.
+    fn export_memory(&mut self, _memory: MemoryId, _size: u64) -> Result<OwnedFd, BackendError> {
+        if self.refuse_exports {
+            return Err(BackendError::new("the stand-in was told to refuse"));
+        }
+        let file = File::open(EXPORTED_FILE).map_err(|error| BackendError::new(error.to_string()))?;
+        Ok(file.into())
     }
 
     fn context_allowed(&mut self, node: u32, _client_hint: u32) -> bool {

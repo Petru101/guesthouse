@@ -131,6 +131,12 @@ pub trait Backend: Sized {
 
     /// Looks at a copy that [`StagingStart::Running`] said was under way. `None` means not yet.
     fn poll_staging_copy(&mut self, host: &mut dyn HostServices, now: Instant) -> Option<Status>;
+
+    /// Starts copying a whole picture into a slot of the frame ring. It runs when no other copy is
+    /// under way, and a backend that can't show this picture says so with a failure.
+    fn start_slot_copy(&mut self, _host: &mut dyn HostServices, _copy: &SlotCopy) -> StagingStart {
+        StagingStart::Finished(Status::UNSUCCESSFUL)
+    }
 }
 
 /// What a backend may ask of the host while it works.

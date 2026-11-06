@@ -198,8 +198,23 @@ pub struct SharedSpan {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StagingStart {
     Finished(Status),
-    /// Under way. There is one at a time, and [`crate::Backend::poll_staging_copy`] says when it ends.
+    /// Under way. There is one at a time, of either kind, and [`crate::Backend::poll_staging_copy`]
+    /// says when it ends.
     Running,
+}
+
+/// A whole picture to copy into a slot of the frame ring, which lies in video memory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SlotCopy {
+    pub source: SurfaceShape,
+    pub source_address: u64,
+    pub slot_address: u64,
+    /// Bytes from one row to the next in the slot.
+    pub slot_pitch: u32,
+    pub width: u32,
+    pub height: u32,
+    /// The daemon's own address space, where the two addresses above are.
+    pub own_space: SpaceId,
 }
 
 /// A frame to copy to a staging surface.
