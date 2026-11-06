@@ -11,6 +11,7 @@
 
 pub mod answers;
 pub mod channel;
+pub mod escape;
 pub mod inf;
 pub mod profile;
 pub mod pushbuffer;

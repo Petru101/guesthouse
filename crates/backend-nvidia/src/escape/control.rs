@@ -1,0 +1,343 @@
+//! Controls for the RM inside an escape. Each runs on this daemon's own objects, and only if it is on
+//! the list. The guest's handles mean nothing here: a control's number names its class, and so the
+//! object it belongs on.
+
+use super::{get, put};
+use crate::rm::classes::{
+    BUS_ENTRIES_THAT_CLEAR, CONTROL_GET_CLASS_ENGINE, CONTROL_GET_PROBED_IDS, ENGINE_GRAPHICS,
+};
+use crate::rm::device::Device;
+use crate::rm::{Rm, RmError, STATUS_INVALID_PARAM_STRUCT, STATUS_NOT_SUPPORTED};
+
+// An RM control inside an escape.
+const CONTROL_COMMAND: usize = 0x38;
+const CONTROL_SIZE: usize = 0x3C;
+const CONTROL_STATUS: usize = 0x40;
+const CONTROL_PARAMS: usize = 0x44;
+
+const CLASS_PARAM_ANSWER: usize = 4;
+
+/// These ask about one GPU by ID, and a guest has no business asking about the host's others.
+const CONTROLS_ABOUT_ONE_GPU: [u32; 7] =
+    [0x0000_0203, 0x0000_0205, 0x0000_021B, 0x0000_0275, 0x0000_0279, 0x0000_0289, 0x0000_0290];
+/// Lists the GPUs in use. The guest hears of its own card and no other.
+const CONTROL_GET_ATTACHED_IDS: u32 = 0x0000_0201;
+
+/// Our rule, not the driver's: a sensor control that isn't on the list is refused. Success with an
+/// empty buffer would tell the guest its card is at 0 degrees and 0 MHz, and a refusal is honest.
+/// Real readings reach the guest another way, from the host's sampler.
+const SENSOR_CONTROL_CLASS: u32 = 0x2080;
+/// Thermal, clock, perf and voltage, each in its plain, legacy and privileged numbering.
+const SENSOR_CONTROL_CATEGORIES: [u32; 12] =
+    [0x05, 0x85, 0xC5, 0x10, 0x90, 0xD0, 0x20, 0xA0, 0xE0, 0x32, 0xB2, 0xF2];
+
+const CONTROL_BUS_INFO: u32 = crate::record::card::BUS_INFO.0;
+const BUS_LIST_SIZE: usize = 0;
+const BUS_LIST: usize = 4;
+const BUS_ENTRY_SIZE: usize = 8;
+const BUS_LIST_LONGEST: u32 = 0x34;
+
+const MAX_PROBED_GPUS: usize = 32;
+const INVALID_GPU_ID: u32 = 0xFFFF_FFFF;
+
+/// The answer to the list of probed GPUs: this card, and invalid entries, not zeros.
+fn probed_ids(gpu_id: u32, params: &mut [u8]) {
+    let mut words = [INVALID_GPU_ID; 2 * MAX_PROBED_GPUS].to_vec();
+    words[0] = gpu_id;
+    words.extend([0; MAX_PROBED_GPUS]);
+    for (index, word) in words.into_iter().enumerate() {
+        put(params, index * 4, word);
+    }
+}
+
+/// The answer to the list of attached GPUs: this card, and invalid entries after it.
+fn attached_ids(gpu_id: u32, params: &mut [u8]) {
+    for at in (0..params.len()).step_by(4) {
+        put(params, at, if at == 0 { gpu_id } else { INVALID_GPU_ID });
+    }
+}
+
+fn is_sensor_control(command: u32) -> bool {
+    command >> 16 == SENSOR_CONTROL_CLASS && SENSOR_CONTROL_CATEGORIES.contains(&(command >> 8 & 0xFF))
+}
+
+/// Whether a list of bus entries asks for one that clears a counter as it is read, which would
+/// change the host's own error counts. The RM refuses a list longer than this, so that's all it reads.
+fn clears_counters(params: &[u8]) -> bool {
+    let Some(size) = get(params, BUS_LIST_SIZE) else { return false };
+    (0..size.min(BUS_LIST_LONGEST) as usize).any(|entry| {
+        get(params, BUS_LIST + entry * BUS_ENTRY_SIZE)
+            .is_some_and(|index| BUS_ENTRIES_THAT_CLEAR.contains(&index))
+    })
+}
+
+/// Whether this listed control must stop here, on what the guest put in it.
+fn refused<R: Rm>(device: &mut Device<R>, command: u32, params: &[u8]) -> Result<bool, RmError> {
+    if CONTROLS_ABOUT_ONE_GPU.contains(&command) {
+        return Ok(get(params, 0) != Some(device.gpu_id()?));
+    }
+    Ok(command == CONTROL_BUS_INFO && clears_counters(params))
+}
+
+pub(super) fn run<R: Rm>(
+    device: &mut Device<R>,
+    channel_classes: &[(u32, u32)],
+    data: &mut [u8],
+) -> Result<(), RmError> {
+    let (Some(command), Some(size)) = (get(data, CONTROL_COMMAND), get(data, CONTROL_SIZE)) else {
+        return Ok(());
+    };
+    if command == CONTROL_GET_CLASS_ENGINE
+        && let Some(handle) = get(data, CONTROL_PARAMS)
+        && let Some(&(_, class)) = channel_classes.iter().find(|object| object.0 == handle)
+    {
+        let at = CONTROL_PARAMS + CLASS_PARAM_ANSWER;
+        put(data, at, class);
+        put(data, at + 4, class);
+        put(data, at + 8, ENGINE_GRAPHICS);
+        return Ok(());
+    }
+    if command == CONTROL_GET_PROBED_IDS {
+        // The guest gets the one card it uses, whatever else the host has.
+        let gpu_id = device.gpu_id()?;
+        if data.len() > CONTROL_PARAMS {
+            probed_ids(gpu_id, &mut data[CONTROL_PARAMS..]);
+        }
+        put(data, CONTROL_STATUS, 0);
+        return Ok(());
+    }
+    let Some(params_size) = device.guest_control_size(command) else {
+        log::debug!("control {command:#x} is not run for a guest");
+        if is_sensor_control(command) {
+            put(data, CONTROL_STATUS, STATUS_NOT_SUPPORTED);
+        }
+        return Ok(());
+    };
+    // The RM says the same for a size that isn't its structure's, so the guest can't tell, and only
+    // parameters of the right shape are ever handed over.
+    let params = data.get_mut(CONTROL_PARAMS..).and_then(|rest| rest.get_mut(..params_size));
+    let Some(params) = params.filter(|_| size as usize == params_size) else {
+        put(data, CONTROL_STATUS, STATUS_INVALID_PARAM_STRUCT);
+        return Ok(());
+    };
+    if refused(device, command, params)? {
+        log::debug!("control {command:#x} asked for more than a guest may have");
+        put(data, CONTROL_STATUS, STATUS_NOT_SUPPORTED);
+        return Ok(());
+    }
+    if command == CONTROL_GET_ATTACHED_IDS {
+        attached_ids(device.gpu_id()?, params);
+        put(data, CONTROL_STATUS, 0);
+        return Ok(());
+    }
+    let target = device.control_target(command);
+    let status = device.rm.control(target, command, params)?;
+    put(data, CONTROL_STATUS, status);
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::FUNCTION_RM_CONTROL;
+    use super::super::tests::{device, escape};
+    use super::*;
+    use crate::profile::{BLACKWELL, GUEST_617, HOST_615, guest_channel_classes};
+    use crate::rm::fake::{Call, FakeRm};
+
+    const GET_NAME_STRING: u32 = 0x2080_0110;
+    const NAME_SIZE: usize = 68;
+
+    fn control(command: u32, params: usize) -> Vec<u8> {
+        let mut data = escape(FUNCTION_RM_CONTROL, CONTROL_PARAMS + params);
+        put(&mut data, CONTROL_COMMAND, command);
+        put(&mut data, CONTROL_SIZE, params as u32);
+        data
+    }
+
+    #[test]
+    fn a_control_not_on_the_list_never_reaches_the_rm() {
+        let mut device = device();
+        let mut data = control(0x2080_9999, 8);
+        run(&mut device, &[], &mut data).unwrap();
+        assert!(!device.rm.calls.iter().any(|call| matches!(call, Call::Control { .. })));
+    }
+
+    #[test]
+    fn a_control_on_the_list_runs_on_the_object_its_number_names() {
+        let mut device = device();
+        let mut data = control(GET_NAME_STRING, NAME_SIZE);
+        run(&mut device, &[], &mut data).unwrap();
+        let ran = device.rm.calls.iter().find_map(|call| match call {
+            Call::Control { object, command, .. } => Some((*object, *command)),
+            _ => None,
+        });
+        assert_eq!(ran, Some((device.subdevice, GET_NAME_STRING)));
+        assert_eq!(get(&data, CONTROL_STATUS), Some(crate::rm::STATUS_NOT_SUPPORTED));
+    }
+
+    #[test]
+    fn a_control_of_the_wrong_size_never_reaches_the_rm() {
+        for size in [0, NAME_SIZE - 1, NAME_SIZE + 1, 0xFFFF_FFFF] {
+            let mut device = device();
+            let mut data = control(GET_NAME_STRING, 0x100);
+            put(&mut data, CONTROL_SIZE, size as u32);
+            run(&mut device, &[], &mut data).unwrap();
+            assert!(!device.rm.calls.iter().any(|call| matches!(call, Call::Control { .. })), "{size}");
+            assert_eq!(get(&data, CONTROL_STATUS), Some(crate::rm::STATUS_INVALID_PARAM_STRUCT));
+        }
+    }
+
+    #[test]
+    fn a_control_cut_short_by_its_escape_never_reaches_the_rm() {
+        let mut device = device();
+        let mut data = control(GET_NAME_STRING, NAME_SIZE - 4);
+        put(&mut data, CONTROL_SIZE, NAME_SIZE as u32);
+        run(&mut device, &[], &mut data).unwrap();
+        assert!(!device.rm.calls.iter().any(|call| matches!(call, Call::Control { .. })));
+        assert_eq!(get(&data, CONTROL_STATUS), Some(crate::rm::STATUS_INVALID_PARAM_STRUCT));
+    }
+
+    #[test]
+    fn a_guest_channel_object_is_answered_from_the_generation() {
+        let classes = guest_channel_classes(&GUEST_617, &BLACKWELL);
+        let mut data = control(CONTROL_GET_CLASS_ENGINE, 16);
+        put(&mut data, CONTROL_PARAMS, classes[2].0);
+        run(&mut device(), &classes, &mut data).unwrap();
+        assert_eq!(get(&data, CONTROL_PARAMS + 4), Some(classes[2].1));
+        assert_eq!(get(&data, CONTROL_PARAMS + 12), Some(ENGINE_GRAPHICS));
+    }
+
+    #[test]
+    fn the_probed_list_names_this_card_and_marks_the_rest_invalid() {
+        let mut data = control(CONTROL_GET_PROBED_IDS, 3 * MAX_PROBED_GPUS * 4);
+        run(&mut device(), &[], &mut data).unwrap();
+        assert_eq!(get(&data, CONTROL_PARAMS), Some(0x300));
+        assert_eq!(get(&data, CONTROL_PARAMS + 4), Some(INVALID_GPU_ID));
+        assert_eq!(get(&data, CONTROL_PARAMS + 2 * MAX_PROBED_GPUS * 4), Some(0));
+    }
+
+    fn reached_the_rm(device: &Device<FakeRm>, wanted: u32) -> bool {
+        device.rm.calls.iter().any(|call| match call {
+            Call::Control { command, .. } => *command == wanted,
+            _ => false,
+        })
+    }
+
+    #[test]
+    fn every_listed_control_is_listed_once() {
+        let mut sorted: Vec<u32> = HOST_615.guest_controls.iter().map(|control| control.command).collect();
+        sorted.sort_unstable();
+        assert!(sorted.windows(2).all(|pair| pair[0] != pair[1]));
+    }
+
+    #[test]
+    fn the_attached_list_names_this_card_alone_and_never_reaches_the_rm() {
+        let mut device = device();
+        let size = device.guest_control_size(CONTROL_GET_ATTACHED_IDS).unwrap();
+        let mut data = control(CONTROL_GET_ATTACHED_IDS, size);
+        run(&mut device, &[], &mut data).unwrap();
+        assert_eq!(get(&data, CONTROL_PARAMS), Some(0x300));
+        assert_eq!(get(&data, CONTROL_PARAMS + 4), Some(INVALID_GPU_ID));
+        assert!(!reached_the_rm(&device, CONTROL_GET_ATTACHED_IDS));
+    }
+
+    #[test]
+    fn a_question_about_this_card_reaches_the_rm() {
+        for command in CONTROLS_ABOUT_ONE_GPU {
+            let mut device = device();
+            let mut data = control(command, device.guest_control_size(command).unwrap());
+            put(&mut data, CONTROL_PARAMS, 0x300);
+            run(&mut device, &[], &mut data).unwrap();
+            assert!(reached_the_rm(&device, command), "{command:#x}");
+        }
+    }
+
+    #[test]
+    fn a_question_about_another_gpu_stops_here() {
+        for command in CONTROLS_ABOUT_ONE_GPU {
+            let mut device = device();
+            let mut data = control(command, device.guest_control_size(command).unwrap());
+            put(&mut data, CONTROL_PARAMS, 0x400);
+            run(&mut device, &[], &mut data).unwrap();
+            assert!(!reached_the_rm(&device, command), "{command:#x}");
+            assert_eq!(get(&data, CONTROL_STATUS), Some(STATUS_NOT_SUPPORTED));
+        }
+    }
+
+    fn bus_list(entries: &[u32]) -> Vec<u8> {
+        let mut data = control(CONTROL_BUS_INFO, crate::record::card::BUS_INFO.1);
+        put(&mut data, CONTROL_PARAMS + BUS_LIST_SIZE, entries.len() as u32);
+        for (slot, &index) in entries.iter().enumerate() {
+            put(&mut data, CONTROL_PARAMS + BUS_LIST + slot * BUS_ENTRY_SIZE, index);
+        }
+        data
+    }
+
+    #[test]
+    fn plain_bus_entries_reach_the_rm() {
+        let mut device = device();
+        run(&mut device, &[], &mut bus_list(&[0, 1, 0x1F])).unwrap();
+        assert!(reached_the_rm(&device, CONTROL_BUS_INFO));
+    }
+
+    #[test]
+    fn a_bus_entry_that_clears_a_counter_never_reaches_the_rm() {
+        for index in BUS_ENTRIES_THAT_CLEAR {
+            let mut device = device();
+            let mut data = bus_list(&[1, index]);
+            run(&mut device, &[], &mut data).unwrap();
+            assert!(!reached_the_rm(&device, CONTROL_BUS_INFO), "{index:#x}");
+            assert_eq!(get(&data, CONTROL_STATUS), Some(STATUS_NOT_SUPPORTED));
+        }
+    }
+
+    #[test]
+    fn a_clearing_entry_past_the_stated_list_is_not_read_by_the_rm_either() {
+        let mut data = bus_list(&[1, BUS_ENTRIES_THAT_CLEAR[0]]);
+        put(&mut data, CONTROL_PARAMS + BUS_LIST_SIZE, 1);
+        let mut device = device();
+        run(&mut device, &[], &mut data).unwrap();
+        assert!(reached_the_rm(&device, CONTROL_BUS_INFO));
+    }
+
+    #[test]
+    fn attaching_stays_off_the_list() {
+        const CONTROL_ATTACH_IDS: u32 = 0x0000_0215;
+        let mut device = device();
+        let mut data = control(CONTROL_ATTACH_IDS, 0x84);
+        run(&mut device, &[], &mut data).unwrap();
+        assert!(!reached_the_rm(&device, CONTROL_ATTACH_IDS));
+        assert_eq!(get(&data, CONTROL_STATUS), Some(0), "the guest's one card is attached already");
+    }
+
+    #[test]
+    fn a_sensor_control_is_refused_and_not_answered_with_zeros() {
+        for command in [0x2080_852A, 0x2080_0522, 0x2080_9009, 0x2080_A040, 0x2080_B201, 0x2080_2096] {
+            let mut device = device();
+            let mut data = control(command, 8);
+            run(&mut device, &[], &mut data).unwrap();
+            assert_eq!(get(&data, CONTROL_STATUS), Some(STATUS_NOT_SUPPORTED), "{command:#x}");
+            assert!(!reached_the_rm(&device, command), "{command:#x}");
+        }
+    }
+
+    #[test]
+    fn controls_the_guests_drivers_need_to_succeed_keep_their_status() {
+        // The first two limit clocks and change how a context caches, so they must not run. All
+        // three are sent while a guest's drivers start, and they get success on a real install.
+        for command in [0x0080_1909, 0x0090_010B, 0x0080_9908] {
+            let mut device = device();
+            let mut data = control(command, 16);
+            run(&mut device, &[], &mut data).unwrap();
+            assert_eq!(get(&data, CONTROL_STATUS), Some(0), "{command:#x}");
+            assert!(!reached_the_rm(&device, command), "{command:#x}");
+        }
+    }
+
+    #[test]
+    fn other_unlisted_controls_keep_their_status() {
+        let mut data = control(0x2080_1399, 8);
+        run(&mut device(), &[], &mut data).unwrap();
+        assert_eq!(get(&data, CONTROL_STATUS), Some(0));
+    }
+}
