@@ -1,0 +1,13 @@
+{
+    "file_format_version": "1.1.2",
+    "layer": {
+        "name": "VK_LAYER_ZINK_on_nvidia",
+        "type": "GLOBAL",
+        "library_path": "/opt/nv/layer/libVkLayer_zink_on_nvidia.so",
+        "api_version": "1.4.335",
+        "implementation_version": "1",
+        "description": "Corrects calls from Zink in a compositor on NVIDIA's driver",
+        "functions": { "vkNegotiateLoaderLayerInterfaceVersion": "vkNegotiateLoaderLayerInterfaceVersion" },
+        "disable_environment": { "DISABLE_ZINK_ON_NVIDIA": "1" }
+    }
+}
