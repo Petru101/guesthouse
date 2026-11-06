@@ -60,6 +60,8 @@ fn read_answer(stream: &mut TcpStream, patience: Duration) -> std::io::Result<Ve
         match stream.read(&mut chunk) {
             Ok(0) => break,
             Ok(size) => answer.extend_from_slice(&chunk[..size]),
+            // A read with a timeout isn't restarted for us, and this says nothing about the answer.
+            Err(error) if error.kind() == ErrorKind::Interrupted => {}
             Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => break,
             Err(error) => return Err(error),
         }

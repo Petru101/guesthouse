@@ -179,7 +179,6 @@ mod tests {
     use crate::machine::{Kind, Machine};
     use crate::testing::{Scratch, scratch_context};
     use crate::vm_host::stand_in::RecordingHost;
-    use std::os::unix::fs::PermissionsExt;
 
     fn ubuntu(context: &crate::context::Context) -> Machine {
         let folder = context.paths.machines.join("ubuntu");
@@ -230,9 +229,7 @@ mod tests {
 
     /// A folder where QEMU has the device and bwrap works, whatever this PC has.
     fn qemu_with_the_device(scratch: &Scratch, context: &mut crate::context::Context) {
-        context.paths.qemu = scratch.path("qemu/qemu-system-x86_64");
-        scratch.write("qemu/qemu-system-x86_64", "#!/bin/sh\necho 'nvfwd options:'\n");
-        fs::set_permissions(&context.paths.qemu, fs::Permissions::from_mode(0o755)).unwrap();
+        context.paths.qemu = scratch.program("qemu/qemu-system-x86_64", "#!/bin/sh\necho 'nvfwd options:'\n");
     }
 
     #[test]
@@ -278,9 +275,11 @@ mod tests {
         let host = RecordingHost::default();
         let mut task = Task::new(&context, &host, "start", ubuntu(&context));
         let found = start(&mut task);
-        // Whoever holds the port, this test or another program, the words are the same.
-        assert!(listener.is_ok() || found.is_err());
-        assert!(found.unwrap_err().0.contains("Set SSH_PORT"));
+        // Whoever holds the port, this test or another program, the words are the same. Another
+        // program can let go of it first, as a second run of these tests does, and then it can start.
+        if listener.is_ok() || found.is_err() {
+            assert!(found.unwrap_err().0.contains("Set SSH_PORT"));
+        }
     }
 
     #[test]

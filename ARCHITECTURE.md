@@ -28,7 +28,7 @@ They're in `crates/`, listed here from the bottom up. Each depends only on crate
 | `backend-standin` | A pretend GPU, for tests only. |
 | `backend-nvidia` | The NVIDIA backend: the host's resource manager, channels, and what the guest's driver expects to hear. |
 | `core` | `Session`: the tables for one guest, and the answer to each message. Vendor-neutral. |
-| `frame-socket` | The four messages that bring frames to a viewer, on their own so a producer can use them as they are. |
+| `frame-socket` | The messages that bring frames and the cursor to a viewer, on their own so a producer can use them as they are. |
 | `daemon` | Slots, shared memory, sockets, the viewer's socket, and the main loop. |
 | `replay` | Replays a recording and compares every reply. |
 | `app-core` | The desktop app's work with no UI: machines, tasks, setup, a VM's start, and `guesthouse-task` and `guesthouse-share`. |
@@ -177,7 +177,7 @@ NVIDIA limits how many encoding sessions a GeForce card runs at once, and this p
 
 `Context` holds what the code needs from the PC, and tests swap its parts for stand-ins. A VM's QEMU arguments are built as data in `vm_args`. How a VM and the daemon come up is behind `VmHost`, and everything that knows the daemon's start-up is in `daemon.rs`, so a change there stays there.
 
-Nothing is relative to a project folder. Machines are in the data store, which `~/.config/guesthouse/store` can move, sockets are in the XDG runtime folder, the log is in the state folder, and QEMU and the guest's files are in a program folder found from where it runs. Each machine has its own token for the guest's agent. That folder isn't in this repo, and without it the app runs plain VMs on the system's QEMU.
+Nothing is relative to a project folder. Machines are in the data store, which `~/.config/guesthouse/store` can move, sockets are in the XDG runtime folder, the log is in the state folder, and QEMU is in a program folder found from where it runs. Each machine has its own token for the guest's agent. That folder isn't in this repo. Without it the app uses the system's QEMU, and it finds what goes into a guest in the repo it was built from, if there is one.
 
 What goes into a Windows guest is in `guest/`. The app finds it in the program folder, or in the repo if it's a build of the repo. There's no token or password in there: each machine gets its own at install, and they go on an answer disc the app makes and deletes afterwards. Having those files doesn't mean a GPU can work, so a build of the repo also has to find a QEMU with the patch before it offers one.
 

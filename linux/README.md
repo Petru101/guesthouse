@@ -71,7 +71,7 @@ Vulkan needs more than a 2 GiB `max-vram`: at that value pipelines fail to creat
 
 ## The jail
 
-QEMU runs in a bubblewrap sandbox when a guest has the forwarded GPU: `crates/app-core/src/vm_args/jail.rs`. It sees the system's programs read-only, the GPU's device nodes, KVM, the VM's disk folder and sockets, and it needs no root. The device won't run as root at all.
+QEMU runs in a bubblewrap sandbox when a guest has the forwarded GPU: `crates/app-core/src/vm_args/jail.rs`. It sees the system's programs read-only, the GPU's device nodes, KVM, the VM's disk and sockets, and it needs no root. The device won't run as root at all.
 
 This is the first step and no more. QEMU still opens `/dev/nvidia*` itself, with no syscall filter. The rest of the plan is a small proxy that owns those files and passes them to QEMU over a socket, then seccomp around QEMU. That proxy has to answer live, as a guest opens a new file for each mapping.
 
