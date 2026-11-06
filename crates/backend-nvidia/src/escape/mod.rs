@@ -3,9 +3,7 @@
 //! A few of them are real work, and most only need the answer their kernel driver would give. Some
 //! carry a control for the RM, which runs on the host if it is on the list of what only reads.
 
-mod client_alloc;
 mod control;
-mod gpu_groups;
 mod gpu_range;
 mod node_list;
 mod time_pairs;
@@ -34,11 +32,8 @@ const FUNCTION_CHECK_DISPLAY: u32 = 0x0100_0001;
 /// Which GPUs there are.
 const FUNCTION_LIST_GPUS: u32 = 0x0700_0002;
 const FUNCTION_LIST_COMPUTE_GPUS: u32 = 0x0700_0003;
-/// How those GPUs are grouped.
-const FUNCTION_LIST_GPU_GROUPS: u32 = 0x0700_0004;
 /// Which GPU addresses the compute runtime may treat as its own.
 const FUNCTION_RUNTIME_GPU_RANGE: u32 = 0x0100_0113;
-const FUNCTION_RM_ALLOC: u32 = 0x0500_002A;
 /// How much video memory there is, for OpenGL's memory queries.
 const FUNCTION_VIDEO_MEMORY: u32 = 0x0100_0012;
 /// Which node is which engine, for the video runtime.
@@ -98,17 +93,12 @@ pub fn answer<R: Rm>(device: &mut Device<R>, facts: EscapeFacts<'_>, data: &mut 
             put(data, GPU_LIST_HANDLES, gpu_id);
             put(data, GPU_LIST_KINDS, GPU_KIND_DISPLAY_DRIVER);
         }
-        FUNCTION_LIST_GPU_GROUPS => gpu_groups::answer(device.gpu_id()?, data),
         // A card under the display driver isn't a compute-only one, so this list stays empty.
         FUNCTION_LIST_COMPUTE_GPUS => {}
         FUNCTION_CHECK_DISPLAY => {}
         FUNCTION_RUNTIME_GPU_RANGE => gpu_range::answer(data),
         FUNCTION_VIDEO_MEMORY => video_memory::answer((facts.memory)(), data),
         FUNCTION_LIST_NODES => node_list::answer(facts.nodes, data),
-        FUNCTION_RM_ALLOC => {
-            put(data, HEADER_SIZE_FIELD, HEADER_SIZE);
-            client_alloc::answer(data);
-        }
         _ => put(data, HEADER_SIZE_FIELD, HEADER_SIZE),
     }
     put(data, ANSWERED, 1);

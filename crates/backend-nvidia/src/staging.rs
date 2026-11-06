@@ -11,8 +11,8 @@ use std::time::Instant;
 
 const BYTES_PER_PIXEL: i64 = 4;
 const SMALL_PAGE: u64 = 0x1000;
-/// The guest driver's word for a surface of 10 bits a colour. The ring holds 8-bit pictures, and a
-/// plain copy can't narrow one.
+/// What a guest's 10-bit surfaces carry here, as a Direct3D 11 `R10G10B10A2` swap chain's do. The ring
+/// holds 8-bit pictures, and a plain copy can't narrow one.
 const SURFACE_COLOUR_10_BIT: u32 = 0x36;
 
 /// The copy channel, and where it lives.

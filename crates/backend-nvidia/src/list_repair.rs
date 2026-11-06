@@ -7,7 +7,7 @@
 //!
 //! So this takes everything from the end of the last list to the oldest entry left as what the lost
 //! entries pointed at, and one entry stands for all of it. Zero is the GPU's word for doing nothing,
-//! so any zeros in that stretch cost nothing.
+//! and in OpenGL's lists we've only seen zeros between neighbouring entries, so those cost nothing.
 
 use crate::pushbuffer::{ENTRY_SIZE, RingEntry, ring_entry};
 
