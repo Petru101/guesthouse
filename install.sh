@@ -218,6 +218,129 @@ require_tools() {
     done
 }
 
+manifest_value() {
+    [ -f "$MANIFEST" ] || return 0
+    awk -F "$TAB" -v key="$1" '$1 == key { print $3; exit }' "$MANIFEST"
+}
+
+fetch() {
+    curl --proto '=https' --tlsv1.2 -fL --retry 3 --connect-timeout "$CURL_SECONDS" "$@"
+}
+
+newer_than() {
+    [ "$1" != "$2" ] && [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -n 1)" = "$1" ]
+}
+
+ensure_dir() {
+    [ ! -d "$1" ] || return 0
+    ensure_dir "$(dirname "$1")"
+    mkdir "$1"
+    CREATED_DIRS="$CREATED_DIRS$1
+"
+}
+
+remove_created_dirs() {
+    printf '%s' "$CREATED_DIRS" | sort -r | while IFS= read -r folder; do
+        [ -z "$folder" ] || rmdir "$folder" 2>/dev/null || true
+    done
+}
+
+# Staging is on the same disk as the install. /tmp is often RAM, can be noexec, and a move from it
+# wouldn't be one step. A killed run leaves a folder of this name, and only this script makes those.
+make_staging() {
+    ensure_dir "$LIB_ROOT"
+    for stale in "$LIB_ROOT"/.incoming.*; do
+        [ ! -e "$stale" ] || rm -rf -- "${stale:?}"
+    done
+    STAGING=$(mktemp -d "$LIB_ROOT/.incoming.XXXXXX")
+}
+
+check_room() {
+    free_kib=$(df -Pk "$LIB_ROOT" | awk 'NR == 2 { print $4 }')
+    [ "$free_kib" -ge $((ROOM_NEEDED_MIB * 1024)) ] ||
+        die "this needs ${ROOM_NEEDED_MIB} MiB free in your home folder, and there's $((free_kib / 1024)) MiB."
+}
+
+download_verified() {
+    name=$1
+    wanted=$2
+    url=$RELEASE_URL/v$RELEASE_VERSION/$name
+    say "Downloading $url"
+    fetch -# -o "$STAGING/$name" "$url" || die "couldn't download $url"
+    found=$(sha256sum "$STAGING/$name" | cut -d ' ' -f 1)
+    [ "$found" = "$wanted" ] || die "$name isn't the file this script expects, so I'm stopping.
+  expected $wanted
+  got      $found"
+    say "Verified $name"
+}
+
+get_payload() {
+    payload=guesthouse-$RELEASE_VERSION-$ARCH.tar.xz
+    download_verified "$payload" "$PAYLOAD_SHA256"
+    tar -xJf "$STAGING/$payload" -C "$STAGING" --no-same-owner || die "$payload wouldn't unpack."
+    TREE=$STAGING/guesthouse-$RELEASE_VERSION-$ARCH
+    [ -f "$TREE/RELEASE" ] || die "$payload has no RELEASE file, so it's not a Guesthouse release."
+    [ "$(release_field version)" = "$RELEASE_VERSION" ] ||
+        die "$payload says it's version $(release_field version), not $RELEASE_VERSION."
+}
+
+release_field() {
+    sed -n "s/^$1=//p" "$TREE/RELEASE" | head -n 1
+}
+
+# Without this, the failure would be a loader error the first time someone opens the app.
+check_glibc() {
+    needed=$(release_field glibc)
+    [ -n "$needed" ] || return 0
+    have=$(getconf GNU_LIBC_VERSION 2>/dev/null | awk '{ print $2 }')
+    if newer_than "$needed" "${have:-0}"; then
+        die "this release needs glibc $needed, and this system has ${have:-an unknown one}. A newer distro release would do, or --from-source if you have the tools to build it."
+    fi
+}
+
+# The release's own program does the looking, so what a GPU needs is a backend's business and not this
+# script's. It needs nothing but glibc, and it's only ever asked questions.
+ask_the_release() {
+    HOST_REPORT=$STAGING/host-report
+    GPU_ANSWER=no
+    if [ -x "$TREE/guesthouse-check" ] &&
+        GUESTHOUSE_PROGRAM=$TREE "$TREE/guesthouse-check" >"$HOST_REPORT" 2>/dev/null; then
+        GPU_ANSWER=$(awk -F "$TAB" '$1 == "gpu" { print $2 }' "$HOST_REPORT")
+    else
+        : >"$HOST_REPORT"
+    fi
+}
+
+print_host_report() {
+    awk -F "$TAB" '$1 == "check" {
+        print "  " $3 ": " $4
+        if ($2 != "ok" && $5 != "") print "    " $5
+    }' "$HOST_REPORT"
+}
+
+on_exit() {
+    status=$?
+    trap - EXIT
+    [ "$ROLLBACK" = no ] || [ "$status" -eq 0 ] || roll_back
+    [ -z "$STAGING" ] || rm -rf -- "${STAGING:?}"
+    [ "$KEEP_CREATED_DIRS" = yes ] || remove_created_dirs
+    exit "$status"
+}
+
+# Which release this run is about, and whether there's anything to do.
+choose_release() {
+    installed=$(manifest_value version)
+    [ -n "$RELEASE_VERSION" ] || die "there's no release yet, so there's nothing to install."
+    if [ -n "$installed" ] && newer_than "$installed" "$RELEASE_VERSION"; then
+        die "you have $installed, which is newer than $RELEASE_VERSION. I won't go backwards."
+    fi
+    # A plain install of this version goes on, as the GPU may be able to run now.
+    if [ "$installed" = "$RELEASE_VERSION" ] && [ "$(manifest_value mode)" = gpu ]; then
+        say "Guesthouse $installed is the latest release."
+        exit 0
+    fi
+}
+
 main() {
     parse_arguments "$@"
     refuse_root
@@ -228,7 +351,20 @@ main() {
     refuse_unsupported
     report_host
     require_tools
-    die "there's no release yet, so there's nothing to install."
+    choose_release
+
+    trap on_exit EXIT
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+
+    make_staging
+    check_room
+    get_payload
+    check_glibc
+    ask_the_release
+    print_host_report
+    say "Nothing installs yet, so that's all for now."
 }
 
 # In braces, so that a download cut off anywhere in this line, even right after `main`, is a syntax error.
