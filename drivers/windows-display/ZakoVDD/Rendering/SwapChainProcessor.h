@@ -3,6 +3,7 @@
 #include "Direct3DDevice.h"
 #include "CursorExporter.h"
 #include "SharedFrameExporter.h"
+#include "..\Guesthouse\HostExporter.h"
 
 #include <memory>
 
@@ -22,7 +23,8 @@ namespace Microsoft
 		{
 		public:
 			SwapChainProcessor(IDDCX_SWAPCHAIN hSwapChain, std::shared_ptr<Direct3DDevice> Device, HANDLE NewFrameEvent,
-			                    unsigned int MonitorIndex, IDDCX_MONITOR Monitor, HANDLE hMouseEvent);
+			                    unsigned int MonitorIndex, IDDCX_MONITOR Monitor, HANDLE hMouseEvent,
+			                    std::shared_ptr<Guesthouse::MonitorColour> Colour);
 			~SwapChainProcessor();
 
 			void PublishModeMetadata(const DISPLAYCONFIG_VIDEO_SIGNAL_INFO &mode,
@@ -48,6 +50,8 @@ namespace Microsoft
 			Microsoft::WRL::Wrappers::Event m_hTerminateEvent;
 			unsigned int m_MonitorIndex;
 			std::unique_ptr<SharedFrameExporter> m_Exporter;
+			std::unique_ptr<Guesthouse::HostExporter> m_HostExporter;
+			std::shared_ptr<Guesthouse::CursorImage> m_CursorImage;
 			std::unique_ptr<CursorExporter> m_CursorExporter;
 		};
 	}

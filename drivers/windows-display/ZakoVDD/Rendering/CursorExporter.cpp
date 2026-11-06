@@ -172,8 +172,9 @@ const wchar_t* CursorReadyEventName(unsigned int monitorIndex)
 
 }
 
-CursorExporter::CursorExporter(unsigned int monitorIndex, IDDCX_MONITOR monitor, HANDLE hNewCursorDataAvailable)
-	: m_MonitorIndex(monitorIndex), m_Monitor(monitor), m_hCursorDataAvailable(hNewCursorDataAvailable)
+CursorExporter::CursorExporter(unsigned int monitorIndex, IDDCX_MONITOR monitor, HANDLE hNewCursorDataAvailable,
+                               std::shared_ptr<Guesthouse::CursorImage> image)
+	: m_MonitorIndex(monitorIndex), m_Monitor(monitor), m_Image(std::move(image)), m_hCursorDataAvailable(hNewCursorDataAvailable)
 {
 }
 
@@ -309,6 +310,11 @@ void CursorExporter::Run()
 			if (m_CachedShape.BufferSize > 0)
 			{
 				m_CachedShape.Buffer.assign(shapeBuffer.begin(), shapeBuffer.begin() + m_CachedShape.BufferSize);
+				if (m_Image && queryResult.CursorShapeInfo.CursorType == IDDCX_CURSOR_SHAPE_TYPE_ALPHA)
+				{
+					m_Image->SetShape(m_CachedShape.ShapeId, m_CachedShape.Width, m_CachedShape.Height, m_CachedShape.Pitch,
+					                  m_CachedShape.Buffer.data());
+				}
 			}
 			else
 			{
@@ -342,6 +348,10 @@ void CursorExporter::Run()
 			continue;
 		}
 		m_LastVisibility = visibility;
+		if (m_Image)
+		{
+			m_Image->SetPosition(visibility != 0, m_LastX, m_LastY);
+		}
 
 		if (!m_MetaView)
 		{

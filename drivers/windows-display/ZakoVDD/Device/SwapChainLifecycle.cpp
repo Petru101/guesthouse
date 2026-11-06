@@ -118,7 +118,7 @@ void IndirectDeviceContext::AssignSwapChain(IDDCX_MONITOR Monitor, IDDCX_SWAPCHA
 	}
 
 	m_ProcessingThreads[Monitor] = unique_ptr<SwapChainProcessor>(
-	    new SwapChainProcessor(SwapChain, Device, NewFrameEvent, monitorIndex, Monitor, hMouseEventForProcessor));
+	    new SwapChainProcessor(SwapChain, Device, NewFrameEvent, monitorIndex, Monitor, hMouseEventForProcessor, ColourOf(Monitor)));
 
 	auto procIt = m_ProcessingThreads.find(Monitor);
 	if (procIt != m_ProcessingThreads.end() && procIt->second)
@@ -238,6 +238,17 @@ void IndirectDeviceContext::CommitModes2(const IDARG_IN_COMMITMODES2 *pInArgs)
 			}
 		}
 	}
+}
+
+shared_ptr<Guesthouse::MonitorColour> IndirectDeviceContext::ColourOf(IDDCX_MONITOR Monitor)
+{
+	std::lock_guard<std::recursive_mutex> lock(m_monitorsMutex);
+	auto &colour = m_MonitorColours[Monitor];
+	if (!colour)
+	{
+		colour = make_shared<Guesthouse::MonitorColour>();
+	}
+	return colour;
 }
 
 void IndirectDeviceContext::UpdateMonitorHdrLuminanceMetadata(IDDCX_MONITOR Monitor, float maxNits, float minNits, float maxFALL)

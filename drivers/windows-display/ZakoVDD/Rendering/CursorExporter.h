@@ -2,7 +2,9 @@
 
 #include "..\Driver.h"
 #include "vdd_cursor_shared.h"
+#include "..\Guesthouse\CursorImage.h"
 
+#include <memory>
 #include <vector>
 
 namespace Microsoft
@@ -13,7 +15,8 @@ namespace IndirectDisp
 class CursorExporter
 {
 public:
-	CursorExporter(unsigned int monitorIndex, IDDCX_MONITOR monitor, HANDLE hNewCursorDataAvailable);
+	CursorExporter(unsigned int monitorIndex, IDDCX_MONITOR monitor, HANDLE hNewCursorDataAvailable,
+	               std::shared_ptr<Guesthouse::CursorImage> image);
 	~CursorExporter();
 	CursorExporter(const CursorExporter&) = delete;
 	CursorExporter& operator=(const CursorExporter&) = delete;
@@ -45,6 +48,7 @@ private:
 
 	unsigned int m_MonitorIndex = 0;
 	IDDCX_MONITOR m_Monitor = nullptr;
+	std::shared_ptr<Guesthouse::CursorImage> m_Image;
 	HANDLE m_hCursorDataAvailable = nullptr; // Owned by IndirectDeviceContext.
 	HANDLE m_hTerminateEvent = nullptr;
 	HANDLE m_hThread = nullptr;

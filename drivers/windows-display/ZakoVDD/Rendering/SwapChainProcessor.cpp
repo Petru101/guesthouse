@@ -1,7 +1,9 @@
 #include "SwapChainProcessor.h"
 
+#include "..\Core\DriverState.h"
 #include "..\Logging\Logger.h"
 
+#include <cstring>
 #include <exception>
 
 using namespace std;
@@ -13,8 +15,10 @@ namespace IndirectDisp
 {
 
 SwapChainProcessor::SwapChainProcessor(IDDCX_SWAPCHAIN hSwapChain, shared_ptr<Direct3DDevice> Device, HANDLE NewFrameEvent,
-	                                       unsigned int MonitorIndex, IDDCX_MONITOR Monitor, HANDLE hMouseEvent)
-	: m_hSwapChain(hSwapChain), m_Device(Device), m_hAvailableBufferEvent(NewFrameEvent), m_MonitorIndex(MonitorIndex)
+	                                       unsigned int MonitorIndex, IDDCX_MONITOR Monitor, HANDLE hMouseEvent,
+	                                       shared_ptr<Guesthouse::MonitorColour> Colour)
+	: m_hSwapChain(hSwapChain), m_Device(Device), m_hAvailableBufferEvent(NewFrameEvent), m_MonitorIndex(MonitorIndex),
+	  m_CursorImage(make_shared<Guesthouse::CursorImage>())
 {
 	VDD_LOG_DEBUG_STREAM("Constructing SwapChainProcessor:"
 	                     << "\n  SwapChain Handle: " << static_cast<void*>(hSwapChain)
@@ -33,6 +37,18 @@ SwapChainProcessor::SwapChainProcessor(IDDCX_SWAPCHAIN hSwapChain, shared_ptr<Di
 		m_Exporter.reset();
 	}
 
+	// The way frames reach the host. Best effort, like the exporter above: without it the desktop still runs.
+	try
+	{
+		m_HostExporter = std::make_unique<Guesthouse::HostExporter>(Device->Device.Get(), Device->DeviceContext.Get(), Device->AdapterLuid,
+		                                                            MonitorIndex, Colour, m_CursorImage);
+	}
+	catch (...)
+	{
+		VDD_LOG_ERROR("[Guesthouse] Failed to construct HostExporter (non-fatal)");
+		m_HostExporter.reset();
+	}
+
 	// The cursor is rendered by IddCx out-of-band and is not present in the
 	// framebuffer copied by SharedFrameExporter. Export its metadata alongside
 	// the frame channel when hardware-cursor setup provided an event.
@@ -40,7 +56,7 @@ SwapChainProcessor::SwapChainProcessor(IDDCX_SWAPCHAIN hSwapChain, shared_ptr<Di
 	{
 		try
 		{
-			m_CursorExporter = std::make_unique<CursorExporter>(MonitorIndex, Monitor, hMouseEvent);
+			m_CursorExporter = std::make_unique<CursorExporter>(MonitorIndex, Monitor, hMouseEvent, m_CursorImage);
 			if (!m_CursorExporter->Start())
 			{
 				VDD_LOG_WARNING("[VddCursor] Start failed; cursor will not be exported for this monitor");
@@ -123,6 +139,11 @@ void SwapChainProcessor::PublishModeMetadata(const DISPLAYCONFIG_VIDEO_SIGNAL_IN
                                              bool hasExpectedHdrState,
                                              bool expectedIsHdr)
 {
+	if (m_HostExporter)
+	{
+		m_HostExporter->SetCommittedMode(hasExpectedHdrState, expectedIsHdr);
+	}
+
 	if (!m_Exporter)
 	{
 		return;
@@ -306,6 +327,7 @@ void SwapChainProcessor::RunCore()
 		UINT dirtyRectCount = 0;
 		DXGI_COLOR_SPACE_TYPE surfaceColorSpace = DXGI_COLOR_SPACE_CUSTOM;
 		bool hasSurfaceColorSpace = false;
+		Guesthouse::SurfaceFacts surfaceFacts;
 
 		if (useBuffer2)
 		{
@@ -317,6 +339,18 @@ void SwapChainProcessor::RunCore()
 			dirtyRectCount = Buffer.MetaData.DirtyRectCount;
 			surfaceColorSpace = Buffer.MetaData.SurfaceColorSpace;
 			hasSurfaceColorSpace = surfaceColorSpace != DXGI_COLOR_SPACE_CUSTOM;
+			if (hasSurfaceColorSpace)
+			{
+				surfaceFacts.colourSpace = surfaceColorSpace;
+			}
+			surfaceFacts.sdrWhiteNits = Buffer.MetaData.SdrWhiteLevel;
+			if (Buffer.MetaData.ValidFlags & IDDCX_METADATA2_VALID_FLAGS_HDR10METADATA)
+			{
+				const auto& hdr = Buffer.MetaData.Hdr10FrameMetaData;
+				surfaceFacts.hdrChange = static_cast<Guesthouse::HdrMetadataChange>(hdr.Type);
+				static_assert(sizeof(surfaceFacts.hdr) == sizeof(hdr.NewMetaData), "Both are IddCx's twelve USHORTs, in order");
+				std::memcpy(&surfaceFacts.hdr, &hdr.NewMetaData, sizeof(surfaceFacts.hdr));
+			}
 		}
 		else
 		{
@@ -360,9 +394,18 @@ void SwapChainProcessor::RunCore()
 		{
 			AcquiredBuffer.Attach(pSurface);
 
+			surfaceFacts.presentQpc = presentDisplayQpc;
+			surfaceFacts.windowsFrame = presentationFrameNumber;
+			if (m_HostExporter)
+			{
+				m_HostExporter->Process(AcquiredBuffer.Get(), surfaceFacts);
+			}
+
 			// VDD->Sunshine direct-capture export. Best-effort, never throws,
 			// failure here MUST NOT stall the IddCx swap-chain loop.
-			if (m_Exporter)
+			// It costs a whole copy of each frame and a keyed mutex, which the daemon doesn't handle yet, so it only
+			// runs once something has asked about the frame channel.
+			if (m_Exporter && frameChannelWanted.load())
 			{
 				m_Exporter->PushFrame(AcquiredBuffer.Get(),
 				                      surfaceColorSpace,
@@ -377,6 +420,12 @@ void SwapChainProcessor::RunCore()
 			if (FAILED(hr))
 			{
 				break;
+			}
+
+			// After Windows has its surface back, as this waits for the host's reply.
+			if (m_HostExporter)
+			{
+				m_HostExporter->Announce();
 			}
 
 			// Frame statistics can be reported here once encode/send timings are tracked.

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "..\Driver.h"
+#include "..\Guesthouse\MonitorColour.h"
 #include "..\Rendering\SwapChainProcessor.h"
 
 #include <cstddef>
@@ -38,6 +39,8 @@ namespace Microsoft
 			void CommitModes(const IDARG_IN_COMMITMODES *pInArgs);
 			void CommitModes2(const IDARG_IN_COMMITMODES2 *pInArgs);
 			void UpdateMonitorHdrLuminanceMetadata(IDDCX_MONITOR Monitor, float maxNits, float minNits, float maxFALL);
+			// One for each monitor, made on first use. It outlives the monitor's swap chains.
+			std::shared_ptr<Guesthouse::MonitorColour> ColourOf(IDDCX_MONITOR Monitor);
 			NTSTATUS OpenFrameChannel(const VDD_FRAME_CHANNEL_OPEN_REQUEST& request,
 			                          HANDLE targetProcess,
 			                          VDD_FRAME_CHANNEL_OPEN_RESPONSE& response);
@@ -85,6 +88,7 @@ namespace Microsoft
 			std::map<IDDCX_MONITOR, bool> m_CommittedTargetHdrStates;
 			std::map<IDDCX_MONITOR, std::unique_ptr<SwapChainProcessor>> m_ProcessingThreads;
 			std::map<IDDCX_MONITOR, HANDLE> m_MouseEvents;
+			std::map<IDDCX_MONITOR, std::shared_ptr<Guesthouse::MonitorColour>> m_MonitorColours;
 
 		public:
 			static const DISPLAYCONFIG_VIDEO_SIGNAL_INFO s_KnownMonitorModes[];
