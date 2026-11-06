@@ -3024,3 +3024,318 @@ index 1dedc3a..c44ddb6 100644
 -- 
 2.56.0
 
+From d1b29a7fb14f808730368995cdedc5877d421007 Mon Sep 17 00:00:00 2001
+From: xnixy <x@ruxn.com>
+Date: Thu, 5 Nov 2026 22:59:41 -0800
+Subject: [PATCH 14/21] hw/misc/nvfwd: work out what a call adds
+
+Looked at before the driver sees a call, to refuse what would pass a limit, and
+after, to record what the driver did.
+---
+ hw/misc/nvfwd/accounting.c | 235 +++++++++++++++++++++++++++++++++++++
+ hw/misc/nvfwd/accounting.h |  39 ++++++
+ hw/misc/nvfwd/meson.build  |   1 +
+ 3 files changed, 275 insertions(+)
+ create mode 100644 hw/misc/nvfwd/accounting.c
+ create mode 100644 hw/misc/nvfwd/accounting.h
+
+diff --git a/hw/misc/nvfwd/accounting.c b/hw/misc/nvfwd/accounting.c
+new file mode 100644
+index 0000000..76933e6
+--- /dev/null
++++ b/hw/misc/nvfwd/accounting.c
+@@ -0,0 +1,235 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++/* See accounting.h. */
++#include "accounting.h"
++
++#include <stddef.h>
++#include <string.h>
++#include "rm_layout.h"
++
++#define CLASS_ROOT 0x0
++#define CLASS_ROOT_CLIENT 0x41
++
++static uint32_t read32(const uint8_t *at)
++{
++    uint32_t v;
++
++    memcpy(&v, at, sizeof(v));
++    return v;
++}
++
++static uint64_t read64(const uint8_t *at)
++{
++    uint64_t v;
++
++    memcpy(&v, at, sizeof(v));
++    return v;
++}
++
++static MemoryKind kind_of_class(uint32_t hclass)
++{
++    switch (hclass) {
++    case CLASS_MEMORY_LOCAL:
++        return MEMORY_VIDEO;
++    case CLASS_MEMORY_SYSTEM:
++        return MEMORY_SYSTEM;
++    default:
++        return MEMORY_NONE;
++    }
++}
++
++/* Parameters come as a pointer: their size field counts only if they lie in this call's buffer. */
++static const uint8_t *memory_params(const AccountCall *call)
++{
++    uint64_t start = (uint64_t)(uintptr_t)call->data, pointer = read64(call->arg + RM_ALLOC_PARAMS);
++
++    if (pointer < start || pointer - start > call->data_size ||
++        call->data_size - (pointer - start) < RM_MEMORY_PARAMS_SIZE + sizeof(uint64_t)) {
++        return NULL;
++    }
++    return (const uint8_t *)(uintptr_t)pointer;
++}
++
++static bool claim_of_alloc(const AccountCall *call, ObjectClaim *claim)
++{
++    const uint8_t *params;
++
++    claim->kind = kind_of_class(read32(call->arg + RM_ALLOC_CLASS));
++    claim->bytes = 0;
++    if (claim->kind == MEMORY_NONE) {
++        return true;
++    }
++    params = memory_params(call);
++    if (!params) {
++        return false;
++    }
++    claim->bytes = read64(params + RM_MEMORY_PARAMS_SIZE);
++    return claim->bytes != 0; /* the charge has to be known before the memory is taken */
++}
++
++static bool claim_of_memory(const AccountCall *call, ObjectClaim *claim)
++{
++    uint64_t limit = read64(call->arg + RM_MEMORY_LIMIT);
++
++    /* Video memory through this call is a handle with no allocation behind it, for a normal user. */
++    uint32_t hclass = read32(call->arg + RM_MEMORY_CLASS);
++
++    claim->kind = hclass == CLASS_MEMORY_SYSTEM ? MEMORY_SYSTEM : MEMORY_NONE;
++    claim->bytes = claim->kind == MEMORY_NONE ? 0 : limit + 1;
++    return claim->kind == MEMORY_NONE || limit != UINT64_MAX;
++}
++
++/* The driver's own choice of class for this call, from the same bytes it will read. */
++static bool claim_of_vid_heap(const AccountCall *call, ObjectClaim *claim)
++{
++    uint32_t flags = read32(call->arg + RM_VID_HEAP_FLAGS);
++    uint32_t location = read32(call->arg + RM_VID_HEAP_ATTR) >> ATTR_LOCATION_SHIFT & ATTR_LOCATION_MASK;
++
++    if (flags & ALLOC_FLAGS_VIRTUAL) { /* addresses only, with no memory behind them */
++        claim->kind = MEMORY_NONE;
++        claim->bytes = 0;
++        return true;
++    }
++    claim->kind = location == ATTR_LOCATION_VIDMEM ? MEMORY_VIDEO : MEMORY_SYSTEM;
++    claim->bytes = read64(call->arg + RM_VID_HEAP_SIZE);
++    return claim->bytes != 0;
++}
++
++static bool makes_object(const AccountCall *call)
++{
++    switch (call->nr) {
++    case ESC_RM_ALLOC:
++        return call->size == RM_ALLOC_SHORT_BYTES || call->size == RM_ALLOC_LONG_BYTES;
++    case ESC_RM_ALLOC_MEMORY:
++        return call->size == RM_MEMORY_BYTES;
++    case ESC_RM_DUP_OBJECT:
++        return call->size == RM_DUP_BYTES;
++    case ESC_RM_ALLOC_CONTEXT_DMA2:
++        return call->size == RM_DMA_BYTES;
++    case ESC_RM_VID_HEAP_CONTROL:
++        return call->size == RM_VID_HEAP_BYTES &&
++               read32(call->arg + RM_VID_HEAP_FUNCTION) == VID_HEAP_ALLOC_SIZE;
++    default:
++        return false;
++    }
++}
++
++uint32_t account_before(Objects *o, const AccountCall *call, AccountHold *hold)
++{
++    bool known = true;
++
++    hold->held = false;
++    hold->claim = (ObjectClaim){ MEMORY_NONE, 0 };
++    if (!makes_object(call)) {
++        return STATUS_OK;
++    }
++    if (call->nr == ESC_RM_ALLOC) {
++        known = claim_of_alloc(call, &hold->claim);
++    } else if (call->nr == ESC_RM_ALLOC_MEMORY) {
++        known = claim_of_memory(call, &hold->claim);
++    } else if (call->nr == ESC_RM_VID_HEAP_CONTROL) {
++        known = claim_of_vid_heap(call, &hold->claim);
++    }
++    if (!known) {
++        return STATUS_INVALID_ARGUMENT;
++    }
++    if (!objects_claim(o, &hold->claim)) {
++        return hold->claim.kind == MEMORY_NONE ? STATUS_INSUFFICIENT_RESOURCES : STATUS_NO_MEMORY;
++    }
++    hold->held = true;
++    return STATUS_OK;
++}
++
++int account_status_at(uint32_t nr, uint32_t size)
++{
++    switch (nr) {
++    case ESC_RM_ALLOC:
++        return size == RM_ALLOC_SHORT_BYTES ? RM_ALLOC_SHORT_STATUS : RM_ALLOC_LONG_STATUS;
++    case ESC_RM_ALLOC_MEMORY:
++        return RM_MEMORY_STATUS;
++    case ESC_RM_DUP_OBJECT:
++        return RM_DUP_STATUS;
++    case ESC_RM_ALLOC_CONTEXT_DMA2:
++        return RM_DMA_STATUS;
++    case ESC_RM_VID_HEAP_CONTROL:
++        return RM_VID_HEAP_STATUS;
++    case ESC_RM_FREE:
++        return RM_FREE_STATUS;
++    default:
++        return -1;
++    }
++}
++
++/* What the driver reports it made. Handles it chose are in the same fields, filled in by now. */
++static void describe(const AccountCall *call, MemoryKind hold_kind, ObjectInfo *info, uint64_t *bytes)
++{
++    const uint8_t *arg = call->arg;
++
++    info->file = call->file;
++    switch (call->nr) {
++    case ESC_RM_ALLOC: {
++        const uint8_t *params = memory_params(call);
++
++        info->client = read32(arg + RM_ALLOC_ROOT);
++        info->parent = read32(arg + RM_ALLOC_PARENT);
++        info->object = read32(arg + RM_ALLOC_OBJECT);
++        if (read32(arg + RM_ALLOC_CLASS) == CLASS_ROOT_CLIENT ||
++            read32(arg + RM_ALLOC_CLASS) == CLASS_ROOT) {
++            info->client = info->parent = info->object;
++        } else if (kind_of_class(read32(arg + RM_ALLOC_CLASS)) != MEMORY_NONE && params) {
++            *bytes = read64(params + RM_MEMORY_PARAMS_SIZE);
++        }
++        break;
++    }
++    case ESC_RM_ALLOC_MEMORY:
++        info->client = read32(arg + RM_MEMORY_ROOT);
++        info->parent = read32(arg + RM_MEMORY_PARENT);
++        info->object = read32(arg + RM_MEMORY_OBJECT);
++        info->host_range = call->host_range;
++        info->host_bytes = call->host_bytes;
++        break;
++    case ESC_RM_DUP_OBJECT:
++        info->client = read32(arg + RM_DUP_CLIENT);
++        info->parent = read32(arg + RM_DUP_PARENT);
++        info->object = read32(arg + RM_DUP_OBJECT);
++        break;
++    case ESC_RM_ALLOC_CONTEXT_DMA2:
++        info->client = read32(arg + RM_DMA_ROOT);
++        info->parent = read32(arg + RM_DMA_PARENT);
++        info->object = read32(arg + RM_DMA_OBJECT);
++        break;
++    case ESC_RM_VID_HEAP_CONTROL:
++        info->client = read32(arg + RM_VID_HEAP_ROOT);
++        info->parent = read32(arg + RM_VID_HEAP_PARENT);
++        info->object = read32(arg + RM_VID_HEAP_MEMORY);
++        if (hold_kind != MEMORY_NONE) {
++            *bytes = read64(arg + RM_VID_HEAP_SIZE);
++        }
++        break;
++    }
++}
++
++bool account_after(Objects *o, const AccountCall *call, AccountHold *hold)
++{
++    int status_at = account_status_at(call->nr, call->size);
++    bool worked = !call->failed && status_at >= 0 &&
++                  (uint32_t)status_at + sizeof(uint32_t) <= call->size &&
++                  read32(call->arg + status_at) == STATUS_OK;
++
++    if (call->nr == ESC_RM_FREE && worked) {
++        objects_remove(o, read32(call->arg + RM_FREE_ROOT), read32(call->arg + RM_FREE_OBJECT));
++    }
++    if (!hold->held) {
++        return false;
++    }
++    hold->held = false;
++    if (worked) {
++        ObjectInfo info = { 0 };
++        uint64_t bytes = hold->claim.bytes;
++
++        describe(call, hold->claim.kind, &info, &bytes);
++        objects_add(o, &hold->claim, bytes, &info);
++        return true;
++    }
++    objects_drop_claim(o, &hold->claim);
++    return false;
++}
+diff --git a/hw/misc/nvfwd/accounting.h b/hw/misc/nvfwd/accounting.h
+new file mode 100644
+index 0000000..240fff1
+--- /dev/null
++++ b/hw/misc/nvfwd/accounting.h
+@@ -0,0 +1,39 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++/*
++ * Keeps objects.c up to date from the calls going past. A call is looked at twice: before it
++ * goes to the driver, to refuse what would pass a limit, and after, to record what the driver did.
++ */
++#ifndef NVFWD_ACCOUNTING_H
++#define NVFWD_ACCOUNTING_H
++
++#include <stdbool.h>
++#include <stdint.h>
++#include "objects.h"
++
++typedef struct AccountCall {
++    uint32_t nr;   /* the escape */
++    uint8_t *arg;  /* its arguments */
++    uint32_t size; /* bytes at arg */
++    uint32_t file; /* the guest file it came in on */
++    const uint8_t *data; /* the buffer the call's pointers lie in */
++    uint64_t data_size;
++    void *host_range; /* guest pages mapped for this call, if any */
++    uint64_t host_bytes;
++    bool failed; /* the ioctl itself failed, so the driver wrote no status */
++} AccountCall;
++
++typedef struct AccountHold {
++    ObjectClaim claim;
++    bool held;
++} AccountHold;
++
++/* STATUS_OK to send the call on, or the status to answer it with. */
++uint32_t account_before(Objects *o, const AccountCall *call, AccountHold *hold);
++
++/* After the driver has answered. Gives back the hold and returns false if the call made nothing. */
++bool account_after(Objects *o, const AccountCall *call, AccountHold *hold);
++
++/* Where a status goes in these arguments, or -1 for calls that do not make or free anything. */
++int account_status_at(uint32_t nr, uint32_t size);
++
++#endif
+diff --git a/hw/misc/nvfwd/meson.build b/hw/misc/nvfwd/meson.build
+index c44ddb6..9e9e288 100644
+--- a/hw/misc/nvfwd/meson.build
++++ b/hw/misc/nvfwd/meson.build
+@@ -7,5 +7,6 @@ nvfwd_ss = files(
+   'bounce.c',
+   'rmargs.c',
+   'clients.c',
++  'accounting.c',
+ )
+ system_ss.add(when: 'CONFIG_PCI', if_true: nvfwd_ss)
+-- 
+2.56.0
+
