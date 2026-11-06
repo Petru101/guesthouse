@@ -31,6 +31,7 @@ ROOM_NEEDED_MIB=1024
 CURL_SECONDS=20
 TAB=$(printf '\t')
 
+DRY_RUN=no
 
 STAGING=""
 CREATED_DIRS=""
@@ -63,6 +64,7 @@ Usage: install.sh [OPTION]
 With nothing installed this installs the release it names, and with an older release installed it
 updates to that one.
 
+  --dry-run       Check everything, download and verify, show the plan, and stop
   --help          Show this
 EOF
 }
@@ -70,6 +72,7 @@ EOF
 parse_arguments() {
     for argument in "$@"; do
         case $argument in
+            --dry-run) DRY_RUN=yes ;;
             --help)
                 usage
                 exit 0
@@ -318,6 +321,212 @@ print_host_report() {
     }' "$HOST_REPORT"
 }
 
+release_has_gpu_files() {
+    [ -d "$TREE/guest" ] || [ -d "$TREE/linuxguest" ]
+}
+
+# GPU_NOTE is what the plan says about it. An install that had the GPU keeps its files whatever the
+# host says today, because machines depend on them, and a driver is something that gets fixed. The
+# daemon's own check still judges every Start.
+decide_mode() {
+    previous=$(manifest_value mode)
+    GPU_NOTE=""
+    if ! release_has_gpu_files; then
+        MODE=plain
+        GPU_NOTE="This release has no GPU part in it, so it's plain VMs only."
+    elif [ "$GPU_ANSWER" = yes ]; then
+        MODE=gpu
+    elif [ "$previous" = gpu ]; then
+        MODE=gpu
+        GPU_NOTE="The checks above say this PC can't run GPU machines right now. Often that's a driver update that moved to another branch: host and guest have to match. This update doesn't change that, and doesn't touch your driver. GPU machines won't start until it's fixed, your machines and disks stay as they are, and plain VMs still run."
+    else
+        MODE=plain
+        GPU_NOTE="This PC can't run GPU machines, for the reasons above, so this installs plain VMs only. They need nothing from your GPU. If you fix that, run this again."
+    fi
+}
+
+library_path() {
+    PATH=$PATH:/sbin:/usr/sbin ldconfig -p 2>/dev/null |
+        awk -v name="$1" '$1 == name && /x86-64/ { print $NF; exit }'
+}
+
+firmware_present() {
+    grep -qs '"x86_64"' "$FIRMWARE_DESCRIPTORS"/*.json
+}
+
+need_present() {
+    case $1 in
+        gtk) [ -n "$(library_path libgtk-4.so.1)" ] ;;
+        adwaita) [ -n "$(library_path libadwaita-1.so.0)" ] ;;
+        pipewire) [ -n "$(library_path libpipewire-0.3.so.0)" ] ;;
+        firmware) firmware_present ;;
+        *) command -v "$1" >/dev/null 2>&1 ;;
+    esac
+}
+
+# Debian's and Arch's come from their package indexes, and Fedora's from a real system. openSUSE's are
+# from memory: it's best effort until someone tries them.
+package_for() {
+    case $FAMILY:$1 in
+        fedora:gtk) say gtk4 ;;
+        fedora:adwaita) say libadwaita ;;
+        fedora:pipewire) say pipewire-libs ;;
+        fedora:qemu-img) say qemu-img ;;
+        fedora:firmware) say edk2-ovmf ;;
+        fedora:7z) say 7zip ;;
+        fedora:genisoimage | fedora:isoinfo) say genisoimage ;;
+        fedora:swtpm) say swtpm swtpm-tools ;;
+        fedora:openssl) say openssl ;;
+        fedora:ssh-keygen) say openssh ;;
+        debian:gtk) say libgtk-4-1 ;;
+        debian:adwaita) say libadwaita-1-0 ;;
+        debian:pipewire) say libpipewire-0.3-0t64 ;;
+        debian:qemu-img) say qemu-utils ;;
+        debian:firmware) say ovmf ;;
+        debian:7z) say 7zip ;;
+        debian:genisoimage | debian:isoinfo) say genisoimage ;;
+        debian:swtpm) say swtpm swtpm-tools ;;
+        debian:openssl) say openssl ;;
+        debian:ssh-keygen) say openssh-client ;;
+        arch:gtk) say gtk4 ;;
+        arch:adwaita) say libadwaita ;;
+        arch:pipewire) say libpipewire ;;
+        arch:qemu-img) say qemu-img ;;
+        arch:firmware) say edk2-ovmf ;;
+        arch:7z) say 7zip ;;
+        arch:genisoimage | arch:isoinfo) say cdrtools ;;
+        arch:swtpm) say swtpm ;;
+        arch:openssl) say openssl ;;
+        arch:ssh-keygen) say openssh ;;
+        suse:gtk) say libgtk-4-1 ;;
+        suse:adwaita) say libadwaita-1-0 ;;
+        suse:pipewire) say libpipewire-0_3-0 ;;
+        suse:qemu-img) say qemu-img ;;
+        suse:firmware) say qemu-ovmf-x86_64 ;;
+        suse:7z) say 7zip ;;
+        suse:genisoimage | suse:isoinfo) say genisoimage ;;
+        suse:swtpm) say swtpm ;;
+        suse:openssl) say openssl ;;
+        suse:ssh-keygen) say openssh-clients ;;
+    esac
+}
+
+# Every machine needs the first five. The rest only matter to what a GPU machine's install does, and
+# setarch comes with util-linux, which every one of these systems has.
+wanted_needs() {
+    say gtk adwaita pipewire qemu-img firmware
+    [ "$MODE" = plain ] || say 7z genisoimage swtpm
+    if [ "$MODE" = gpu ] && [ -d "$TREE/linuxguest" ]; then
+        say isoinfo openssl ssh-keygen
+    fi
+}
+
+find_missing() {
+    MISSING_NEEDS=""
+    PACKAGES=""
+    for need in $(wanted_needs); do
+        need_present "$need" && continue
+        MISSING_NEEDS="$MISSING_NEEDS $need"
+        for package in $(package_for "$need"); do
+            case " $PACKAGES " in
+                *" $package "*) ;;
+                *) PACKAGES="$PACKAGES $package" ;;
+            esac
+        done
+    done
+    PACKAGES=${PACKAGES# }
+    MISSING_NEEDS=${MISSING_NEEDS# }
+}
+
+install_command() {
+    case $FAMILY in
+        fedora) say "dnf install -y $1" ;;
+        # --no-remove: yes to installing isn't yes to whatever apt decides to take away for it.
+        debian) say "apt-get update && apt-get install -y --no-remove $1" ;;
+        # Never -Sy: that's the partial upgrade Arch warns about.
+        arch) say "pacman -S --needed --noconfirm $1" ;;
+        suse) say "zypper --non-interactive install $1" ;;
+    esac
+}
+
+# What root does, as one string, so what's shown is exactly what runs.
+plan_root_work() {
+    ROOT_COMMAND=""
+    ADD_TO_KVM=no
+    [ "$IMMUTABLE" = no ] || return 0
+    [ -z "$PACKAGES" ] || ROOT_COMMAND=$(install_command "$PACKAGES")
+    if kvm_group_would_help; then
+        ADD_TO_KVM=yes
+        ROOT_COMMAND="${ROOT_COMMAND:+$ROOT_COMMAND && }usermod -aG kvm $(id -un)"
+    fi
+}
+
+# A too-old library stops this. The app couldn't start, and the failure would be a loader error. The
+# release lists what it calls, so this needs no table of versions.
+symbols_missing_from() {
+    library=$1
+    wanted=$STAGING/symbols-wanted
+    grep -E "$2" "$TREE/needs-symbols" | sort -u >"$wanted" || return 0
+    LC_ALL=C grep -aowFf "$wanted" "$library" | LC_ALL=C sort -u >"$wanted.found" || true
+    LC_ALL=C sort -u "$wanted" | LC_ALL=C comm -23 - "$wanted.found"
+}
+
+check_toolkit_library() {
+    library=$(library_path "$1")
+    [ -n "$library" ] || return 0
+    lacking=$(symbols_missing_from "$library" "$2" | head -n 3 | tr '\n' ' ')
+    [ -z "$lacking" ] ||
+        die "the $3 on this system is too old for this release: it has no ${lacking}. It needs a newer distro release, and this script won't replace it."
+}
+
+check_toolkit() {
+    [ -f "$TREE/needs-symbols" ] || return 0
+    check_toolkit_library libgtk-4.so.1 '^(gtk|gdk|gsk)_' GTK
+    check_toolkit_library libadwaita-1.so.0 '^adw_' libadwaita
+}
+
+print_plan() {
+    installed=$(manifest_value version)
+    say ""
+    say "The plan: install Guesthouse $RELEASE_VERSION."
+    say "  Program: $LIB_ROOT/$RELEASE_VERSION, reached through $CURRENT_LINK"
+    say "  Launcher: $LAUNCHER"
+    say "  Icons: $ICON_FOLDER/hicolor"
+    say "  List of what's installed: $MANIFEST"
+    if [ "$MODE" = gpu ]; then
+        say "  VMs: GPU machines and plain VMs"
+    else
+        say "  VMs: plain VMs only"
+    fi
+    [ -z "$GPU_NOTE" ] || say "  $GPU_NOTE"
+    print_root_plan
+}
+
+print_root_plan() {
+    say ""
+    if [ "$IMMUTABLE" = yes ] && [ -n "$PACKAGES" ]; then
+        say "This system is immutable, so I won't touch it. You'll need these, and a reboot:"
+        say "  ${LAYER_COMMAND:-(however your system adds packages)} $PACKAGES"
+    elif [ -n "$MISSING_NEEDS" ] && [ "$FAMILY" = unknown ]; then
+        say "These are missing, and I don't know your distro's names for them: $MISSING_NEEDS"
+    elif [ -n "$ROOT_COMMAND" ]; then
+        say "This is everything that runs as root:"
+        say "  sudo sh -c '$ROOT_COMMAND'"
+    else
+        say "Nothing here needs root."
+    fi
+    [ -z "$ROOT_COMMAND" ] || [ "$ADD_TO_KVM" = no ] ||
+        say "You'd join the kvm group to open /dev/kvm, and that takes a new login."
+}
+
+# A plain install leaves these out, as the app takes them to mean GPU machines can run.
+drop_gpu_files() {
+    [ "$MODE" = plain ] || return 0
+    for part in guest linuxguest; do
+        [ ! -d "$TREE/$part" ] || rm -rf -- "${TREE:?}/${part:?}"
+    done
+}
+
 on_exit() {
     status=$?
     trap - EXIT
@@ -337,6 +546,13 @@ choose_release() {
     # A plain install of this version goes on, as the GPU may be able to run now.
     if [ "$installed" = "$RELEASE_VERSION" ] && [ "$(manifest_value mode)" = gpu ]; then
         say "Guesthouse $installed is the latest release."
+        exit 0
+    fi
+}
+
+stop_if_nothing_changes() {
+    if [ "$(manifest_value version)" = "$RELEASE_VERSION" ] && [ "$(manifest_value mode)" = "$MODE" ]; then
+        say "Guesthouse $RELEASE_VERSION is the latest release, and it's installed the way this PC can run it."
         exit 0
     fi
 }
@@ -364,7 +580,14 @@ main() {
     check_glibc
     ask_the_release
     print_host_report
-    say "Nothing installs yet, so that's all for now."
+    decide_mode
+    drop_gpu_files
+    find_missing
+    plan_root_work
+    check_toolkit
+    print_plan
+    say ""
+    say "That was a dry run, so nothing was changed."
 }
 
 # In braces, so that a download cut off anywhere in this line, even right after `main`, is a syntax error.

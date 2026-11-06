@@ -71,3 +71,27 @@ t_a_wrong_download_stops_before_anything_changes() {
     check_said "isn't the file this script expects"
     check_home_is "$T/before"
 }
+
+t_a_dry_run_changes_nothing() {
+    release 1.0
+    snapshot >"$T/before"
+    no_terminal "$SHELL_UNDER_TEST" "$(script_for 1.0)" --dry-run
+    check_exit 0
+    check_said "sudo sh -c 'dnf install -y gtk4"
+    check_said "That was a dry run"
+    check_not_log "sudo "
+    check_home_is "$T/before"
+}
+
+t_a_toolkit_that_is_too_old_stops_it() {
+    release 1.0
+    give_everything
+    printf 'adw_something_older' >"$T/libraries/libadwaita-1.so.0"
+    snapshot >"$T/before"
+    install_version 1.0
+    check_exit 1
+    check_said "libadwaita on this system is too old"
+    check_said "adw_new_thing"
+    check_not_log "sudo "
+    check_home_is "$T/before"
+}
