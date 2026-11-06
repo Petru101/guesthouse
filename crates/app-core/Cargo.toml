@@ -20,6 +20,8 @@ path = "src/bin/share.rs"
 guesthouse-daemon.workspace = true
 # Local time for the log and for snapshot dates. The standard library has no time zones.
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+# Reading C headers for the tables a guest's modules are built with.
+regex = "1"
 # Safe calls for statvfs, flock, kill, access, getxattr and a send that never waits, which keeps `unsafe` out of this crate.
 rustix = { version = "1", features = ["fs", "net", "process"] }
 # Machine files, task files and QMP are all JSON.

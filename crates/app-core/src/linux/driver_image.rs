@@ -6,6 +6,7 @@ use super::driver_files::{self, PACKAGES};
 use super::driver_versions::{
     DriverHost, TESTED_VERSIONS, branch_refusal, installed_versions, refusal, untested_warning,
 };
+use super::tables::{TABLE_FILES, write_tables};
 use crate::failure::Result;
 use crate::machine::sorted_names;
 use std::fs;
@@ -18,7 +19,6 @@ const VOLUME_LABEL: &str = "NVFWD_DRIVER";
 /// What a guest builds. The device's wire format travels with the modules, so a guest always builds
 /// against the QEMU these sources go with.
 const OUR_SOURCES: [&str; 6] = ["guest", "kapi", "layer", "cast", "tests", "qemu/nvfwd_proto.h"];
-const GENERATED_TABLES: [&str; 3] = ["nv_tables.h", "uvm_tables.h", "class_tables.h"];
 /// The folders the guest's modules include from, and only their headers.
 const HEADER_FOLDERS: [&str; 8] = [
     "src/nvidia-modeset/kapi/interface",
@@ -115,16 +115,11 @@ fn headers(tree: &Path) -> Vec<String> {
 fn write_sources(path: &Path, sources: &Path, tree: &Path, names: &[String], staging: &Path) -> Result<()> {
     let tables = staging.join("tables");
     fs::create_dir_all(&tables)?;
-    run(Command::new("python3")
-        .arg("-I")
-        .arg(sources.join("tools/gen_tables.py"))
-        .arg(tree)
-        .arg(tables.join("nv_tables.h"))
-        .arg(tables.join("names.txt")))?;
-    let generated = |name: &&String| GENERATED_TABLES.iter().any(|table| name.ends_with(*table));
+    write_tables(tree, &tables)?;
+    let generated = |name: &&String| TABLE_FILES.iter().any(|table| name.ends_with(*table));
     let plain: Vec<String> = names.iter().filter(|name| !generated(name)).cloned().collect();
     tar(path, "-cf", "nvfwd/", sources, &plain)?;
-    let made: Vec<String> = GENERATED_TABLES.iter().map(|name| (*name).to_owned()).collect();
+    let made: Vec<String> = TABLE_FILES.iter().map(|name| (*name).to_owned()).collect();
     tar(path, "-rf", "nvfwd/guest/", &tables, &made)?;
     tar(path, "-rf", "nvidia/", tree, &["kernel-open".to_owned()])?;
     tar(path, "-rf", "nvidia/", tree, &headers(tree))
