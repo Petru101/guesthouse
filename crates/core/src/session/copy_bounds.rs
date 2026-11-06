@@ -5,6 +5,7 @@
 //! against the allocation's real size, and these rules don't lean on the description being right.
 //! The sums are done in 128 bits, where two of our 64-bit numbers can't wrap.
 
+use crate::frames::Picture;
 use guesthouse_backend::{Backend, COPY_PIXEL_BYTES, SurfaceShape};
 use guesthouse_messages::queue::Rectangle;
 
@@ -40,6 +41,12 @@ impl Rows {
         let width = i64::from(rectangle.right) - i64::from(rectangle.left);
         let count = i64::from(rectangle.bottom) - i64::from(rectangle.top);
         Self::of(left, top, width, count)
+    }
+
+    /// A whole picture, from the top left corner.
+    pub fn whole(width_in_pixels: u32, count: u32) -> Self {
+        let width = u64::from(width_in_pixels) * u64::from(COPY_PIXEL_BYTES);
+        Self { x: 0, y: 0, width, count: u64::from(count) }
     }
 
     fn end_of_row(&self) -> u128 {
@@ -78,6 +85,17 @@ pub(super) fn read_fits<B: Backend>(backend: &B, rows: &Rows, surface: &SurfaceS
         && backend.tiled_bytes(surface, rows.x, rows.y).is_some_and(|bytes| bytes <= memory)
 }
 
+/// Whether a whole picture can be read from a surface in this much memory, and written to a slot.
+pub(super) fn picture_fits<B: Backend>(
+    backend: &B,
+    picture: &Picture,
+    (surface, memory): (&SurfaceShape, u64),
+    slot_memory: u64,
+) -> bool {
+    let rows = Rows::whole(picture.width, picture.height);
+    read_fits(backend, &rows, surface, memory) && rows.fit_linear(picture.pitch, slot_memory)
+}
+
 /// Whether a copy of a rectangle stays inside both surfaces and their memory. The target's tiling
 /// plays no part, as a copy writes it row by row whatever it says.
 pub(super) fn copy_fits<B: Backend>(
@@ -96,6 +114,7 @@ pub(super) fn copy_fits<B: Backend>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use guesthouse_backend_standin::StandIn;
 
     fn surface(width: u32, height: u32, pitch: u32) -> SurfaceShape {
         SurfaceShape {
@@ -167,6 +186,38 @@ mod tests {
         let rows = Rows::read_by(&rectangle).unwrap();
         assert_eq!(rows.width, i32::MAX as u64 * 4, "wider than a u32, and not cut down to fit one");
         assert!(!rows.fit_linear(u32::MAX, u64::MAX));
+    }
+
+    #[test]
+    fn a_surface_must_really_hold_a_picture() {
+        let backend = StandIn::new();
+        let picture = Picture::sized(1024, 768).unwrap();
+        let exact = 4096 * 768;
+        let fits =
+            |surface: &SurfaceShape, memory| picture_fits(&backend, &picture, (surface, memory), exact);
+        assert!(fits(&surface(1024, 768, 4096), exact));
+        assert!(!fits(&surface(1024, 768, 4096), exact - 1));
+        assert!(!fits(&surface(1024, 768, 4092), exact), "rows would overlap");
+        assert!(!fits(&surface(1024, 768, u32::MAX), exact), "products must not wrap");
+    }
+
+    #[test]
+    fn a_slot_must_really_hold_a_picture() {
+        let backend = StandIn::new();
+        let picture = Picture::sized(1024, 768).unwrap();
+        let exact = 4096 * 768;
+        assert!(!picture_fits(&backend, &picture, (&surface(1024, 768, 4096), exact), exact - 1));
+    }
+
+    #[test]
+    fn a_tiled_surface_must_hold_a_picture_to_the_end_of_its_last_block() {
+        let backend = StandIn::new();
+        let picture = Picture::sized(1024, 760).unwrap();
+        let tiled = SurfaceShape { tiling: Some(4), ..surface(1024, 760, 4096) };
+        let (rows, slot) = (4096 * 768, picture.bytes());
+        assert!(picture_fits(&backend, &picture, (&tiled, rows), slot));
+        assert!(!picture_fits(&backend, &picture, (&tiled, rows - 1), slot));
+        assert!(!picture_fits(&backend, &picture, (&tiled, picture.bytes()), slot));
     }
 
     #[test]

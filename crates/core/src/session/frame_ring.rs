@@ -5,6 +5,7 @@
 //! is the order the prototype was proven in. It costs the guest one more copy on the GPU, and never
 //! a wait on the viewer: with no free slot, the frame is skipped.
 
+use super::copy_bounds::picture_fits;
 use super::{Session, services};
 use crate::frames::{Delivery, Frame, FrameCounts, FrameRing, FrameSink, Picture, Slots, ViewerFacts};
 use crate::frames::{LiveRing, RING_SLOTS, SlotInFlight, SlotMemory};
@@ -26,6 +27,8 @@ const SLOT_GRAIN: u64 = 64 << 10;
 struct Source {
     surface: SurfaceShape,
     address: u64,
+    /// The bytes of the allocation behind it.
+    size: u64,
 }
 
 impl<B: Backend, M: GuestMemory> Session<B, M> {
@@ -301,15 +304,19 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
     /// size has it all and is in video memory. Anything else goes by the staging surface.
     fn source_of(&self, copy: &StagingCopy, handles: [u32; 2], picture: &Picture) -> Option<Source> {
         let size = |handle| self.allocations.get(&handle).map_or(0, |allocation| allocation.size);
+        let holds = |surface: &SurfaceShape, size: u64| {
+            picture_fits(&self.backend, picture, (surface, size), picture.bytes())
+        };
         let (image, staging) = (copy.source, copy.target);
-        if (image.width, image.height) == (staging.width, staging.height)
-            && picture.lies_inside(&image, size(handles[0]))
-        {
-            return Some(Source { surface: image, address: copy.source_address });
+        if (image.width, image.height) == (staging.width, staging.height) && holds(&image, size(handles[0])) {
+            return Some(Source { surface: image, address: copy.source_address, size: size(handles[0]) });
         }
-        picture
-            .lies_inside(&staging, size(handles[1]))
-            .then_some(Source { surface: staging, address: copy.target_address })
+        log::debug!("the ring reads the staging surface, as the image is {image:?}");
+        holds(&staging, size(handles[1])).then_some(Source {
+            surface: staging,
+            address: copy.target_address,
+            size: size(handles[1]),
+        })
     }
 
     /// A frame has reached the staging surface. Starts its copy into the ring, if there's a place for
@@ -338,6 +345,11 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             self.frames.behind = true;
             return None;
         };
+        let slot_memory = ring.memory.iter().map(|slot| slot.size).min().unwrap_or(0);
+        if !picture_fits(&self.backend, &ring.picture, (&source.surface, source.size), slot_memory) {
+            self.frames.complain("a screen's surfaces are smaller than their numbers say");
+            return None;
+        }
         let Some(slot) = ring.slots.claim() else {
             self.frames.counts.skipped += 1;
             self.frames.behind = true;
@@ -390,15 +402,11 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
     fn catch_up(&mut self) {
         self.frames.behind = false;
         let Some(screen) = self.frames.screen else { return };
-        let Some(picture) = Picture::of(&screen.surface) else { return };
         let size = self.allocations.get(&screen.staging).map_or(0, |allocation| allocation.size);
-        if !picture.lies_inside(&screen.surface, size) {
-            return;
-        }
         let (Ok(space), Ok(address)) = (self.own_space(), self.surface_address(screen.staging)) else {
             return;
         };
-        let source = Source { surface: screen.surface, address };
+        let source = Source { surface: screen.surface, address, size };
         if let Some(flight) = self.start_ring_copy(source, space) {
             let status = self.wait_for_copy();
             self.ring_copy_ended(flight, status);
