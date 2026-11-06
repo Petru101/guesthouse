@@ -271,8 +271,8 @@ stage_payload() {
     say "the payload is $OUT/guesthouse-$version-$ARCH.tar.xz"
 }
 
-# Everything the GPL asks for in one file: this repo with the patch and these scripts, and QEMU's whole
-# tree with its subprojects, so that nothing depends on upstream staying where it is.
+# Everything the GPL asks for in one file: this repo with the patch and these scripts, QEMU's whole tree
+# with its subprojects, and the Rust crates, so that nothing depends on anywhere else staying as it is.
 stage_source() {
     version=$(release_version)
     name=guesthouse-$version-source
@@ -281,6 +281,8 @@ stage_source() {
     mkdir -p "$bundle/qemu-source"
     git -C "$REPO" archive HEAD | tar -C "$bundle" -xf -
     tar -C "$(qemu_tree)" --exclude=.git -cf - . | tar -C "$bundle/qemu-source" -xf -
+    # The crates are linked into the programs, and carry their licences with them here.
+    (cd "$REPO" && cargo vendor --locked --quiet "$bundle/vendor" >/dev/null)
     tar -C "$bundle" --transform "s,^\.,$name," --owner=0 --group=0 --sort=name -cJf "$OUT/$name.tar.xz" .
     rm -rf "${bundle:?}"
     bundled=guesthouse-$version-bundled-source.tar
