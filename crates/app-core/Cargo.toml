@@ -7,6 +7,10 @@ rust-version.workspace = true
 publish.workspace = true
 license.workspace = true
 
+[[bin]]
+name = "guesthouse-share"
+path = "src/bin/share.rs"
+
 [dependencies]
 # Only for its slot names, so the app and the daemon can never disagree about what a VM owns.
 guesthouse-daemon.workspace = true
