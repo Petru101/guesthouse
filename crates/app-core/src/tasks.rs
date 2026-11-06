@@ -114,12 +114,17 @@ pub fn slot_of(context: &Context, machine: &Machine) -> Option<Slot> {
 /// The lowest slot with no VM, no task, nothing left behind and no other VM on its memory.
 pub fn free_slot(context: &Context) -> Option<Slot> {
     let running = running_slots(context);
-    slots::all().find(|slot| {
+    let is_free = |slot: &Slot| {
         !running.contains_key(&slot.number())
             && !task_alive(context, &read_task(context, Some(*slot)))
             && !memory_taken(context, Some(*slot))
             && leftovers(context, Some(*slot)).is_none()
-    })
+    };
+    // A window started with a slot named keeps to it, so it can stay clear of the others.
+    if context.slot.number() != slots::first().number() {
+        return Some(context.slot).filter(is_free);
+    }
+    slots::all().find(is_free)
 }
 
 /// Looks at what is really running, so a VM started some other way counts like any other.
@@ -209,6 +214,15 @@ mod tests {
             step: "x".into(),
             error: error.into(),
         }
+    }
+
+    #[test]
+    fn a_window_with_a_slot_named_keeps_to_it() {
+        let scratch = Scratch::new();
+        let mut context = scratch_context(&scratch);
+        assert_eq!(free_slot(&context).map(Slot::number), Some(0));
+        context.slot = slots::number(3);
+        assert_eq!(free_slot(&context).map(Slot::number), Some(3));
     }
 
     #[test]
