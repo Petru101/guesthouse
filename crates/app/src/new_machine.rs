@@ -50,8 +50,26 @@ struct Parts {
     note: gtk::Label,
     iso_path: RefCell<Option<String>>,
     iso: RefCell<Option<Iso>>,
+    /// The name last offered, to tell it from one the user typed.
+    suggested: RefCell<String>,
     no_driver: Cell<bool>,
     vm_running: Cell<bool>,
+}
+
+fn suggested_name(kind: Kind, path: &str) -> String {
+    match kind {
+        Kind::Windows => "Windows 11".to_owned(),
+        Kind::Linux => "Ubuntu".to_owned(),
+        Kind::Plain => {
+            Path::new(path).file_stem().map_or_else(String::new, |name| name.to_string_lossy().into_owned())
+        }
+    }
+}
+
+/// A name the user typed stays when they choose another disc. One this dialog offered goes with its
+/// disc, or a machine ends up named after the disc they changed their mind about.
+fn keeps_following_the_disc(name: &str, suggested: &str) -> bool {
+    name.is_empty() || name == suggested
 }
 
 #[derive(Clone)]
@@ -126,6 +144,7 @@ impl NewMachineDialog {
             note,
             iso_path: RefCell::default(),
             iso: RefCell::default(),
+            suggested: RefCell::default(),
             no_driver: Cell::new(false),
             vm_running: Cell::new(false),
         }));
@@ -258,14 +277,11 @@ impl NewMachineDialog {
         let iso = Iso { kind, ..iso };
         self.describe(&iso);
         self.set_sizes(iso.kind);
-        if self.0.name.text().is_empty() {
-            let stem = Path::new(path).file_stem().map(|name| name.to_string_lossy().into_owned());
-            self.0.name.set_text(&match iso.kind {
-                Kind::Windows => "Windows 11".to_owned(),
-                Kind::Linux => "Ubuntu".to_owned(),
-                Kind::Plain => stem.unwrap_or_default(),
-            });
+        let suggestion = suggested_name(iso.kind, path);
+        if keeps_following_the_disc(&self.0.name.text(), &self.0.suggested.borrow()) {
+            self.0.name.set_text(&suggestion);
         }
+        *self.0.suggested.borrow_mut() = suggestion;
         *self.0.iso.borrow_mut() = Some(iso);
         self.0.hardware.set_sensitive(true);
         self.update();
@@ -314,5 +330,29 @@ impl NewMachineDialog {
                 }
             },
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_suggested_name_goes_with_its_disc() {
+        assert!(keeps_following_the_disc("", ""));
+        assert!(keeps_following_the_disc("win11-eval", "win11-eval"));
+    }
+
+    #[test]
+    fn a_typed_name_stays() {
+        assert!(!keeps_following_the_disc("My VM", "win11-eval"));
+        assert!(!keeps_following_the_disc("My VM", ""));
+    }
+
+    #[test]
+    fn each_kind_of_disc_has_its_name() {
+        assert_eq!(suggested_name(Kind::Windows, "/discs/win.iso"), "Windows 11");
+        assert_eq!(suggested_name(Kind::Linux, "/discs/server.iso"), "Ubuntu");
+        assert_eq!(suggested_name(Kind::Plain, "/discs/tiny-linux.iso"), "tiny-linux");
     }
 }
