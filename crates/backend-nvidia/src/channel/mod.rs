@@ -6,8 +6,10 @@
 //! prelude, the commands that bind the classes the guest's commands assume.
 
 mod area;
+pub mod copy;
 
 pub use area::Area;
+pub use copy::{COPY_AREA_EXTRA, COPY_WINDOW, CopyChannel};
 
 use crate::profile::{Generation, HostBranch};
 use crate::pushbuffer::{increasing, ring_entry};
