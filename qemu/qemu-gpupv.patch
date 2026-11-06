@@ -1555,3 +1555,192 @@ index 0000000..4c85607
 -- 
 2.56.0
 
+From c57a294ad1bbc3bb411f53c7f9028866e7181070 Mon Sep 17 00:00:00 2001
+From: xnixy <x@ruxn.com>
+Date: Thu, 5 Nov 2026 22:59:41 -0800
+Subject: [PATCH 09/21] hw/misc/nvfwd: a private copy of each call
+
+A call is copied out of its slot once, into a buffer with guard pages round it.
+Everything after that works on the copy, and host values are taken back out
+before the results go home.
+---
+ hw/misc/nvfwd/bounce.c    | 92 +++++++++++++++++++++++++++++++++++++++
+ hw/misc/nvfwd/bounce.h    | 55 +++++++++++++++++++++++
+ hw/misc/nvfwd/meson.build |  1 +
+ 3 files changed, 148 insertions(+)
+ create mode 100644 hw/misc/nvfwd/bounce.c
+ create mode 100644 hw/misc/nvfwd/bounce.h
+
+diff --git a/hw/misc/nvfwd/bounce.c b/hw/misc/nvfwd/bounce.c
+new file mode 100644
+index 0000000..ec69c7b
+--- /dev/null
++++ b/hw/misc/nvfwd/bounce.c
+@@ -0,0 +1,92 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++/* See bounce.h. */
++#include "bounce.h"
++
++#include <stddef.h>
++#include <string.h>
++#include <sys/mman.h>
++
++#define GUARD_BYTES 4096u
++#define REQUEST_FIXED_BYTES offsetof(struct nvfwd_req, fix)
++
++/* Stops the compiler reading the slot again in place of the copy it has just made. */
++#define COPY_IS_FINAL() __asm__ volatile("" ::: "memory")
++
++bool bounce_init(Bounce *b)
++{
++    size_t total = NVFWD_DATA_SIZE + 2 * GUARD_BYTES;
++    uint8_t *area = mmap(NULL, total, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
++
++    memset(b, 0, sizeof(*b));
++    if (area == MAP_FAILED || mprotect(area + GUARD_BYTES, NVFWD_DATA_SIZE, PROT_READ | PROT_WRITE)) {
++        return false;
++    }
++    b->data = area + GUARD_BYTES;
++    return true;
++}
++
++bool bounce_enter(Bounce *b)
++{
++    return !__atomic_exchange_n(&b->busy, 1, __ATOMIC_ACQUIRE);
++}
++
++void bounce_leave(Bounce *b)
++{
++    __atomic_store_n(&b->busy, 0, __ATOMIC_RELEASE);
++}
++
++void bounce_take_request(Bounce *b, const void *slot)
++{
++    memcpy(&b->req, slot, REQUEST_FIXED_BYTES);
++    COPY_IS_FINAL();
++    b->patches = 0;
++}
++
++bool bounce_take_call(Bounce *b, const void *slot)
++{
++    const uint8_t *from = slot;
++
++    if (b->req.nfix > NVFWD_MAX_FIX || b->req.len > NVFWD_DATA_SIZE) {
++        return false;
++    }
++    memcpy(b->req.fix, from + REQUEST_FIXED_BYTES, b->req.nfix * sizeof(b->req.fix[0]));
++    memcpy(b->data, from + NVFWD_HDR_SIZE, b->req.len);
++    COPY_IS_FINAL();
++    return true;
++}
++
++void bounce_patch(Bounce *b, uint32_t at, const void *value, uint32_t size)
++{
++    BouncePatch *p = &b->patch[b->patches++];
++
++    p->at = at;
++    p->size = size;
++    memcpy(p->old, b->data + at, size);
++    memcpy(b->data + at, value, size);
++}
++
++void bounce_undo(Bounce *b)
++{
++    while (b->patches) { /* last first, in case two patches share bytes */
++        BouncePatch *p = &b->patch[--b->patches];
++
++        memcpy(b->data + p->at, p->old, p->size);
++    }
++}
++
++void bounce_give_result(Bounce *b, void *slot)
++{
++    struct nvfwd_req *to = slot;
++
++    to->a3 = b->req.a3;
++    __atomic_store_n(&to->ret, b->req.ret, __ATOMIC_RELEASE);
++}
++
++void bounce_give_call(Bounce *b, void *slot)
++{
++    bounce_undo(b);
++    if (b->req.ret >= 0) {
++        memcpy((uint8_t *)slot + NVFWD_HDR_SIZE, b->data, b->req.len);
++    }
++    bounce_give_result(b, slot);
++}
+diff --git a/hw/misc/nvfwd/bounce.h b/hw/misc/nvfwd/bounce.h
+new file mode 100644
+index 0000000..d50b430
+--- /dev/null
++++ b/hw/misc/nvfwd/bounce.h
+@@ -0,0 +1,55 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++/*
++ * The private copy of a call. Slots are guest memory, and another vCPU can rewrite one at any
++ * moment, so a call is copied out once and everything after that looks only at the copy: the
++ * filter, the fixes, and the host's driver, which is handed this buffer and nothing else.
++ *
++ * Guard pages sit on both sides, because the driver takes sizes from the arguments and a size too
++ * big for the buffer must end in a fault it can report, not in whatever is mapped next door.
++ */
++#ifndef NVFWD_BOUNCE_H
++#define NVFWD_BOUNCE_H
++
++#include <stdbool.h>
++#include <stdint.h>
++#include "nvfwd_proto.h"
++
++#define BOUNCE_MAX_PATCH 8u /* a patched value's largest size */
++
++typedef struct BouncePatch {
++    uint32_t at, size;
++    uint8_t old[BOUNCE_MAX_PATCH];
++} BouncePatch;
++
++typedef struct Bounce {
++    struct nvfwd_req req; /* the guest's request as it was when copied */
++    uint8_t *data;
++    uint32_t patches;
++    BouncePatch patch[NVFWD_MAX_FIX];
++    int busy;
++} Bounce;
++
++bool bounce_init(Bounce *b);
++
++/* One call at a time per slot. A second kick while one runs is refused, not queued. */
++bool bounce_enter(Bounce *b);
++void bounce_leave(Bounce *b);
++
++/* Copies the request's fixed part from the slot. */
++void bounce_take_request(Bounce *b, const void *slot);
++
++/* Copies its fixes and data, once their counts have been checked. False if they are out of range. */
++bool bounce_take_call(Bounce *b, const void *slot);
++
++/*
++ * Writes a host value into the data, remembering what it replaced. Host addresses and fd numbers
++ * mean nothing to a guest, so bounce_undo() puts every one back before anything goes home.
++ */
++void bounce_patch(Bounce *b, uint32_t at, const void *value, uint32_t size);
++void bounce_undo(Bounce *b);
++
++/* Hands the results back: data only for a call that worked. */
++void bounce_give_call(Bounce *b, void *slot);
++void bounce_give_result(Bounce *b, void *slot);
++
++#endif
+diff --git a/hw/misc/nvfwd/meson.build b/hw/misc/nvfwd/meson.build
+index e30ccea..1fba80e 100644
+--- a/hw/misc/nvfwd/meson.build
++++ b/hw/misc/nvfwd/meson.build
+@@ -4,5 +4,6 @@ nvfwd_ss = files(
+   'objects.c',
+   'maps.c',
+   'runs.c',
++  'bounce.c',
+ )
+ system_ss.add(when: 'CONFIG_PCI', if_true: nvfwd_ss)
+-- 
+2.56.0
+
