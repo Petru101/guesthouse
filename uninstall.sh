@@ -244,6 +244,8 @@ print_plan() {
     else
         say "They all stay. Settings in $CONFIG and the log in $STATE stay too."
     fi
+    [ ! -d "$STORE/setup" ] ||
+        say "NVIDIA's driver files in $STORE/setup stay too. They're copied from your installer."
     packages=$(awk -F "$TAB" '$1 == "package" { printf "%s ", $3 }' "$MANIFEST")
     [ -z "$packages" ] || say "Packages stay, as something else may use them. The install added: $packages"
     if group_was_added; then

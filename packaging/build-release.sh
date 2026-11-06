@@ -68,6 +68,28 @@ refuse_uncommitted() {
         die "there are uncommitted changes, and a release must be rebuildable from its tag"
 }
 
+# A link that's bent still packs and unpacks, and only building from the archive would show it. So each
+# archive gets unpacked here, and every link in it has to land on something inside it.
+check_links() {
+    unpacked=$(mktemp -d "$OUT/links.XXXXXX")
+    tar -xf "$1" -C "$unpacked"
+    bad=$(find "$unpacked" -type l | while read -r link; do
+        case $(readlink -f "$link") in
+            "$unpacked"/*) [ -e "$link" ] || printf '  %s\n' "${link#"$unpacked"/}" ;;
+            *) printf '  %s\n' "${link#"$unpacked"/}" ;;
+        esac
+    done)
+    rm -rf "${unpacked:?}"
+    [ -z "$bad" ] || die "$1 has links that point nowhere:
+$bad"
+}
+
+# Packs a folder under a top folder of the archive's own name. The S keeps that rename off link targets.
+pack() { # folder, top folder, archive, tar's flags for it
+    tar -C "$1" --transform "s,^\.,$2,S" --owner=0 --group=0 --sort=name "$4" "$3" .
+    check_links "$3"
+}
+
 # The source bundle carries QEMU's tree, and a clone fetches one.
 qemu_tree() {
     if [ -d "$REPO/qemu-source" ]; then
@@ -211,7 +233,7 @@ stage_bundled() {
     cp "$REPO/packaging/Containerfile.qemu" "$REPO/packaging/qemu-configure-flags" \
         "$REPO/packaging/build-release.sh" "$bundle/recipes/"
     write_sources_note >"$bundle/SOURCES.txt"
-    tar -C "$bundle" --transform "s,^\.,$name," --owner=0 --group=0 --sort=name -cf "$OUT/$name.tar" .
+    pack "$bundle" "$name" "$OUT/$name.tar" -cf
     rm -rf "${bundle:?}"
     say "the bundled source is $OUT/$name.tar"
 }
@@ -304,7 +326,7 @@ release_parts() {
 
 # Packs the stage under a folder of the archive's own name, without leaving a second copy behind.
 pack_stage() {
-    tar -C "$OUT/stage" --transform "s,^\.,$1," --owner=0 --group=0 --sort=name -cJf "$OUT/$1.tar.xz" .
+    pack "$OUT/stage" "$1" "$OUT/$1.tar.xz" -cJf
 }
 
 stage_payload() {
@@ -333,10 +355,13 @@ stage_source() {
     [ ! -d "$bundle" ] || rm -rf "${bundle:?}"
     mkdir -p "$bundle/qemu-source"
     git -C "$REPO" archive HEAD | tar -C "$bundle" -xf -
-    tar -C "$(qemu_tree)" --exclude=.git -cf - . | tar -C "$bundle/qemu-source" -xf -
+    tar -C "$(qemu_tree)" --exclude=.git --exclude=__pycache__ -cf - . | tar -C "$bundle/qemu-source" -xf -
     # The crates are linked into the programs, and carry their licences with them here.
     (cd "$REPO" && cargo vendor --locked --quiet "$bundle/vendor" >/dev/null)
-    tar -C "$bundle" --transform "s,^\.,$name," --owner=0 --group=0 --sort=name -cJf "$OUT/$name.tar.xz" .
+    mkdir -p "$bundle/.cargo"
+    printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "vendor"\n' \
+        >"$bundle/.cargo/config.toml"
+    pack "$bundle" "$name" "$OUT/$name.tar.xz" -cJf
     rm -rf "${bundle:?}"
     bundled=guesthouse-$version-bundled-source.tar
     [ -f "$OUT/$bundled" ] || bundled=""

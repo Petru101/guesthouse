@@ -208,6 +208,13 @@ if [ -n "$whole_run" ]; then
         grep FAILED "$TEST_ROOT/display-driver.txt"
         failed=$((failed + 1))
     fi
+    if sh "$HERE/archives.sh" >"$TEST_ROOT/archives.txt" 2>&1; then
+        passed=$((passed + 1))
+    else
+        printf '  FAILED: archives.sh\n'
+        grep FAILED "$TEST_ROOT/archives.txt"
+        failed=$((failed + 1))
+    fi
 fi
 printf '%d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]
