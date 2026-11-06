@@ -33,7 +33,14 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
     pub fn viewer_arrived(&mut self) {
         self.frames.viewer = true;
         self.frames.viewer_facts = ViewerFacts::default();
+        self.frames.viewer_wants_cursor = false;
         self.frames.refused = None;
+    }
+
+    /// The viewer will draw the cursor, which the guest then leaves out of the frames.
+    pub fn viewer_wants_cursor(&mut self) {
+        self.frames.viewer_wants_cursor = true;
+        self.frames.cursor.send_again();
     }
 
     /// What the viewer that has just arrived can do.
@@ -46,6 +53,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
     pub fn viewer_left(&mut self) {
         self.frames.viewer = false;
         self.frames.viewer_facts = ViewerFacts::default();
+        self.frames.viewer_wants_cursor = false;
         if self.frames.indirect.is_some() {
             self.keep_ring_for_next_viewer();
         } else {
@@ -90,6 +98,33 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
                 self.viewer_left();
             }
         }
+        if self.frames.viewer_wants_cursor && self.deliver_cursor(sink) == Delivery::Gone {
+            self.viewer_left();
+        }
+    }
+
+    /// The shape first, as a position means nothing without it.
+    fn deliver_cursor(&mut self, sink: &mut dyn FrameSink) -> Delivery {
+        let cursor = &mut self.frames.cursor;
+        if cursor.shape_unsent
+            && let Some(shape) = &cursor.shape
+        {
+            let delivery = sink.cursor_shape(shape);
+            if delivery != Delivery::Sent {
+                return delivery;
+            }
+            cursor.shape_unsent = false;
+        }
+        if cursor.position_unsent
+            && let Some(position) = &cursor.position
+        {
+            let delivery = sink.cursor_moved(position);
+            if delivery != Delivery::Sent {
+                return delivery;
+            }
+            cursor.position_unsent = false;
+        }
+        Delivery::Sent
     }
 
     /// Offers the ring if it hasn't gone yet. [`Delivery::Sent`] means frames can follow.

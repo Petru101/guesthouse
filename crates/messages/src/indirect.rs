@@ -15,11 +15,15 @@ const VERSION: u16 = 1;
 const KIND_REGISTER: u16 = 1;
 const KIND_FRAME: u16 = 2;
 const KIND_CLOSE: u16 = 3;
+const KIND_CURSOR_SHAPE: u16 = 4;
+const KIND_CURSOR_MOVE: u16 = 5;
 
 const HEADER_SIZE: usize = 24;
 const REGISTER_SIZE: usize = 64;
 const FRAME_SIZE: usize = 80;
 const REPLY_SIZE: usize = 40;
+const CURSOR_PIECE_HEADER: usize = 64;
+const CURSOR_MOVE_SIZE: usize = 40;
 /// The first bytes of a slot, until the first frame writes over them.
 pub const STAMP_SIZE: usize = 16;
 
@@ -50,6 +54,21 @@ const STATUS_AT: usize = 24;
 const NEXT_SLOT_AT: usize = 28;
 const REFRESH_AT: usize = 32;
 const PEAK_AT: usize = 36;
+// In a piece of a cursor.
+const CURSOR_SHAPE_AT: usize = 24;
+const CURSOR_WIDTH_AT: usize = 28;
+const CURSOR_HEIGHT_AT: usize = 32;
+const CURSOR_PITCH_AT: usize = 36;
+const CURSOR_HOT_X_AT: usize = 40;
+const CURSOR_HOT_Y_AT: usize = 44;
+const CURSOR_TOTAL_AT: usize = 48;
+const CURSOR_OFFSET_AT: usize = 52;
+const CURSOR_BYTES_AT: usize = 56;
+// In a cursor's move.
+const CURSOR_X_AT: usize = 24;
+const CURSOR_Y_AT: usize = 28;
+const CURSOR_VISIBLE_AT: usize = 32;
+const CURSOR_WHITE_AT: usize = 36;
 // In a stamp.
 const STAMP_GENERATION_AT: usize = 8;
 const STAMP_SLOT_AT: usize = 12;
@@ -58,6 +77,10 @@ const NO_SLOT: u32 = u32::MAX;
 const HAS_HDR: u32 = 1;
 /// More would be a mistake, and each is a descriptor sent to the viewer.
 pub const MOST_SLOTS: u32 = 8;
+
+/// A cursor bigger than this on a side is refused. It's held in the host's memory and sent to the viewer.
+pub const MOST_CURSOR_SIDE: u32 = 256;
+const CURSOR_BYTES_PER_PIXEL: u32 = 4;
 
 const CICP_BT709: u8 = 1;
 const CICP_BT2020: u8 = 9;
@@ -136,11 +159,38 @@ pub struct FrameDone {
     pub mastering: Option<Mastering>,
 }
 
+/// One piece of a cursor's picture. A piece that parses is inside its picture, and the picture is small.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Request {
+pub struct CursorPiece<'a> {
+    pub monitor: u32,
+    pub shape: u32,
+    pub width: u32,
+    pub height: u32,
+    pub pitch: u32,
+    pub hot_x: u32,
+    pub hot_y: u32,
+    pub total: u32,
+    pub offset: u32,
+    pub pixels: &'a [u8],
+}
+
+/// Where the cursor's picture is, top left, on the screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CursorMove {
+    pub monitor: u32,
+    pub x: i32,
+    pub y: i32,
+    pub visible: bool,
+    pub sdr_white_nits: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Request<'a> {
     Register(Register),
     Frame(FrameDone),
     Close(RingName),
+    CursorShape(CursorPiece<'a>),
+    CursorMove(CursorMove),
 }
 
 /// What became of a request.
@@ -151,6 +201,8 @@ pub enum Outcome {
     StaleGeneration,
     /// The host can't use this ring. The driver waits for a new mode.
     Refused,
+    /// No viewer draws a cursor of its own, so it has to stay in the frames.
+    CursorNotWanted,
 }
 
 impl Outcome {
@@ -159,6 +211,7 @@ impl Outcome {
             Self::Accepted => 0,
             Self::StaleGeneration => 1,
             Self::Refused => 2,
+            Self::CursorNotWanted => 3,
         }
     }
 }
@@ -246,9 +299,50 @@ fn frame_at(data: &[u8], name: RingName) -> Result<FrameDone, Malformed> {
     })
 }
 
-impl Request {
+fn cursor_piece_at(data: &[u8], monitor: u32, size: usize) -> Result<CursorPiece<'_>, Malformed> {
+    let (width, height) = (u32_at(data, CURSOR_WIDTH_AT)?, u32_at(data, CURSOR_HEIGHT_AT)?);
+    let pitch = u32_at(data, CURSOR_PITCH_AT)?;
+    let total = u32_at(data, CURSOR_TOTAL_AT)?;
+    let offset = u32_at(data, CURSOR_OFFSET_AT)?;
+    let bytes = u32_at(data, CURSOR_BYTES_AT)?;
+    let side = 1..=MOST_CURSOR_SIDE;
+    let shape_makes_sense = side.contains(&width)
+        && side.contains(&height)
+        && (width * CURSOR_BYTES_PER_PIXEL..=MOST_CURSOR_SIDE * CURSOR_BYTES_PER_PIXEL).contains(&pitch)
+        && pitch * height == total;
+    let piece_fits = bytes > 0
+        && offset.checked_add(bytes).is_some_and(|end| end <= total)
+        && bytes as usize + CURSOR_PIECE_HEADER == size;
+    if !shape_makes_sense || !piece_fits {
+        return Err(Malformed);
+    }
+    Ok(CursorPiece {
+        monitor,
+        shape: u32_at(data, CURSOR_SHAPE_AT)?,
+        width,
+        height,
+        pitch,
+        hot_x: u32_at(data, CURSOR_HOT_X_AT)?,
+        hot_y: u32_at(data, CURSOR_HOT_Y_AT)?,
+        total,
+        offset,
+        pixels: &data[CURSOR_PIECE_HEADER..size],
+    })
+}
+
+fn cursor_move_at(data: &[u8], monitor: u32) -> Result<CursorMove, Malformed> {
+    Ok(CursorMove {
+        monitor,
+        x: u32_at(data, CURSOR_X_AT)? as i32,
+        y: u32_at(data, CURSOR_Y_AT)? as i32,
+        visible: u32_at(data, CURSOR_VISIBLE_AT)? != 0,
+        sdr_white_nits: u32_at(data, CURSOR_WHITE_AT)?,
+    })
+}
+
+impl<'a> Request<'a> {
     /// Reads a message, which [`is_ours`] said it was.
-    pub fn parse(data: &[u8]) -> Result<Self, Malformed> {
+    pub fn parse(data: &'a [u8]) -> Result<Self, Malformed> {
         if !is_ours(data) || u16_at(data, VERSION_AT)? != VERSION {
             return Err(Malformed);
         }
@@ -262,6 +356,8 @@ impl Request {
             (KIND_REGISTER, REGISTER_SIZE) => Ok(Self::Register(register_at(data, name)?)),
             (KIND_FRAME, FRAME_SIZE) => Ok(Self::Frame(frame_at(data, name)?)),
             (KIND_CLOSE, HEADER_SIZE) => Ok(Self::Close(name)),
+            (KIND_CURSOR_SHAPE, _) => Ok(Self::CursorShape(cursor_piece_at(data, name.monitor, size)?)),
+            (KIND_CURSOR_MOVE, CURSOR_MOVE_SIZE) => Ok(Self::CursorMove(cursor_move_at(data, name.monitor)?)),
             _ => Err(Malformed),
         }
     }
@@ -347,6 +443,33 @@ pub mod as_the_driver_sends {
 
     pub fn close(name: RingName) -> Vec<u8> {
         head(KIND_CLOSE, HEADER_SIZE, name)
+    }
+
+    pub fn cursor_piece(piece: &CursorPiece<'_>) -> Vec<u8> {
+        let size = CURSOR_PIECE_HEADER + piece.pixels.len();
+        let mut data = head(KIND_CURSOR_SHAPE, size, RingName { generation: 0, monitor: piece.monitor });
+        data.resize(size, 0);
+        set_u32(&mut data, CURSOR_SHAPE_AT, piece.shape);
+        set_u32(&mut data, CURSOR_WIDTH_AT, piece.width);
+        set_u32(&mut data, CURSOR_HEIGHT_AT, piece.height);
+        set_u32(&mut data, CURSOR_PITCH_AT, piece.pitch);
+        set_u32(&mut data, CURSOR_HOT_X_AT, piece.hot_x);
+        set_u32(&mut data, CURSOR_HOT_Y_AT, piece.hot_y);
+        set_u32(&mut data, CURSOR_TOTAL_AT, piece.total);
+        set_u32(&mut data, CURSOR_OFFSET_AT, piece.offset);
+        set_u32(&mut data, CURSOR_BYTES_AT, piece.pixels.len() as u32);
+        data[CURSOR_PIECE_HEADER..].copy_from_slice(piece.pixels);
+        data
+    }
+
+    pub fn cursor_move(position: &CursorMove) -> Vec<u8> {
+        let name = RingName { generation: 0, monitor: position.monitor };
+        let mut data = head(KIND_CURSOR_MOVE, CURSOR_MOVE_SIZE, name);
+        set_u32(&mut data, CURSOR_X_AT, position.x as u32);
+        set_u32(&mut data, CURSOR_Y_AT, position.y as u32);
+        set_u32(&mut data, CURSOR_VISIBLE_AT, position.visible.into());
+        set_u32(&mut data, CURSOR_WHITE_AT, position.sdr_white_nits);
+        data
     }
 
     pub fn stamp(stamp: Stamp) -> Vec<u8> {
@@ -468,7 +591,7 @@ mod tests {
         let changed = |at: usize, value: u32| {
             let mut data = register();
             set_u32(&mut data, at, value);
-            Request::parse(&data)
+            Request::parse(&data).map(|_| ())
         };
         assert_eq!(changed(SIZE_AT, u32::MAX), Err(Malformed), "a size past the buffer");
         assert_eq!(changed(SIZE_AT, 0), Err(Malformed), "a size that isn't this kind's");
@@ -524,6 +647,69 @@ mod tests {
             .write_over(&mut data);
         assert_eq!(u32_at(&data, STATUS_AT), Ok(2));
         assert_eq!(u32_at(&data, NEXT_SLOT_AT), Ok(NO_SLOT));
+    }
+
+    fn piece(pixels: &[u8]) -> CursorPiece<'_> {
+        CursorPiece {
+            monitor: 1,
+            shape: 7,
+            width: 4,
+            height: 4,
+            pitch: 16,
+            hot_x: 1,
+            hot_y: 2,
+            total: 64,
+            offset: 0,
+            pixels,
+        }
+    }
+
+    #[test]
+    fn a_cursor_piece_is_read_as_the_driver_writes_it() {
+        let pixels = [9; 64];
+        let bytes = as_the_driver_sends::cursor_piece(&piece(&pixels));
+        assert_eq!(Request::parse(&bytes), Ok(Request::CursorShape(piece(&pixels))));
+    }
+
+    #[test]
+    fn a_cursor_piece_must_lie_in_a_small_picture() {
+        let pixels = [9; 16];
+        let good = CursorPiece { offset: 48, ..piece(&pixels) };
+        assert!(Request::parse(&as_the_driver_sends::cursor_piece(&good)).is_ok());
+
+        let bad = [
+            CursorPiece { offset: 49, ..good },
+            CursorPiece { offset: u32::MAX, ..good },
+            CursorPiece { total: 63, ..good },
+            CursorPiece { width: 0, ..good },
+            CursorPiece { height: 0, total: 0, ..good },
+            CursorPiece { width: MOST_CURSOR_SIDE + 1, pitch: 2048, total: 8192, ..good },
+            CursorPiece { height: MOST_CURSOR_SIDE + 1, total: 16 * 257, ..good },
+            CursorPiece { pitch: 15, total: 60, ..good },
+            CursorPiece { pitch: u32::MAX, ..good },
+            CursorPiece { height: u32::MAX, ..good },
+        ];
+        for piece in bad {
+            assert_eq!(
+                Request::parse(&as_the_driver_sends::cursor_piece(&piece)),
+                Err(Malformed),
+                "{piece:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_cursor_piece_shorter_than_it_says_is_refused() {
+        let pixels = [9; 16];
+        let bytes = as_the_driver_sends::cursor_piece(&piece(&pixels));
+        assert_eq!(Request::parse(&bytes[..bytes.len() - 1]), Err(Malformed));
+    }
+
+    #[test]
+    fn a_cursor_move_can_be_off_the_screen() {
+        let position = CursorMove { monitor: 0, x: -5, y: 40, visible: true, sdr_white_nits: 240 };
+        let bytes = as_the_driver_sends::cursor_move(&position);
+        assert_eq!(Request::parse(&bytes), Ok(Request::CursorMove(position)));
     }
 
     #[test]

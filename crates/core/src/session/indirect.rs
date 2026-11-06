@@ -7,7 +7,7 @@
 
 use super::{Handled, HeldReply, Session, services};
 use crate::frames::{
-    FrameLight, GuestSlot, IndirectRing, Landing, LiveRing, Picture, Registering, ReplyWaiting, Slots,
+    Cursor, FrameLight, GuestSlot, IndirectRing, Landing, LiveRing, Picture, Registering, ReplyWaiting, Slots,
 };
 use guesthouse_backend::{Backend, BackendError, GuestMemory, SpaceId};
 use guesthouse_messages::indirect::{FrameDone, Outcome, Register, Reply, Request, STAMP_SIZE, Stamp};
@@ -46,6 +46,14 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
                 let reply = self.frame_done(process, &done);
                 reply.write_over(out);
             }
+            Request::CursorShape(piece) => {
+                let reply = self.cursor_message(process, piece.monitor, |cursor| cursor.piece_came(&piece));
+                reply.write_over(out);
+            }
+            Request::CursorMove(position) => {
+                let reply = self.cursor_message(process, position.monitor, |cursor| cursor.moved(position));
+                reply.write_over(out);
+            }
             Request::Close(name) => {
                 if self.frames.owns_ring(process, name) {
                     self.end_indirect_ring("the driver closed it");
@@ -54,6 +62,18 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             }
         }
         Ok(())
+    }
+
+    /// A cursor's first shape comes before there's a ring. After that, only the ring's owner speaks for it.
+    fn cursor_message(&mut self, process: u32, monitor: u32, change: impl FnOnce(&mut Cursor)) -> Reply {
+        let someone_else = |ring: &IndirectRing| ring.owner != process || ring.name.monitor != monitor;
+        if self.frames.indirect.as_ref().is_some_and(someone_else) {
+            return self.reply(Outcome::CursorNotWanted, None);
+        }
+        change(&mut self.frames.cursor);
+        let outcome =
+            if self.frames.viewer_wants_cursor { Outcome::Accepted } else { Outcome::CursorNotWanted };
+        self.reply(outcome, None)
     }
 
     fn ring_makes_sense(ring: &Register) -> bool {

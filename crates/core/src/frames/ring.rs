@@ -5,6 +5,7 @@
 //! viewer gets buffers of its own. The ring is made and closed from the main loop, never during a
 //! copy to the screen. So a frame that finds no ring is skipped, and remembered as being behind.
 
+use super::Cursor;
 use super::IndirectRing;
 use super::Registering;
 use super::{Picture, Slots};
@@ -89,6 +90,9 @@ pub(crate) struct ScreenFrames {
     /// The guest's display driver is the screen. Copies to the old screen are ignored meanwhile.
     pub indirect: Option<IndirectRing>,
     pub registering: Option<Registering>,
+    pub cursor: Cursor,
+    /// The viewer draws the cursor itself.
+    pub viewer_wants_cursor: bool,
     pub ring: Option<LiveRing>,
     /// Rings to close, once nothing is writing them.
     pub retired: Vec<LiveRing>,

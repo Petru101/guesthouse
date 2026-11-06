@@ -7,12 +7,14 @@
 
 use crate::server::OWNER_ONLY;
 use guesthouse_backend::{Backend, GuestMemory};
-use guesthouse_core::{Delivery, Frame as ReadyFrame, FrameRing, FrameSink, Session, ViewerFacts};
-use guesthouse_frame_socket::{
-    Colour, Descriptor, Format, Frame, FrameListener, FrameSocket, Hello, Light, Mastering, Message, Packet,
-    Ring, SOCKET_NAME,
+use guesthouse_core::{
+    CursorShape as ReadyCursor, Delivery, Frame as ReadyFrame, FrameRing, FrameSink, Session, ViewerFacts,
 };
-use guesthouse_messages::indirect::Look;
+use guesthouse_frame_socket::{
+    Colour, CursorMove, CursorShape, Descriptor, Format, Frame, FrameListener, FrameSocket, Hello, Light,
+    Mastering, Message, Packet, Ring, SOCKET_NAME, sealed_bytes,
+};
+use guesthouse_messages::indirect::{CursorMove as ReadyMove, Look};
 use std::fs::{self, Permissions};
 use std::io::{self, ErrorKind};
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
@@ -131,6 +133,10 @@ impl ViewerPort {
                 log::warn!("the viewer can't show XRGB8888, which every viewer must");
                 false
             }
+            Message::CursorWanted if viewer.greeted => {
+                session.viewer_wants_cursor();
+                true
+            }
             Message::Release(release) if viewer.greeted => {
                 session.slot_released(release.generation, release.slot);
                 true
@@ -161,7 +167,40 @@ impl ViewerPort {
     }
 }
 
+const CURSOR_FILE_NAME: &str = "guesthouse-cursor";
+
 impl FrameSink for ViewerPort {
+    fn cursor_shape(&mut self, shape: &ReadyCursor) -> Delivery {
+        let file = match sealed_bytes(CURSOR_FILE_NAME, &shape.pixels) {
+            Ok(file) => file,
+            Err(error) => {
+                // A viewer can live without this picture, and nothing here would go better next time.
+                log::warn!("making a file for the cursor: {error}");
+                return Delivery::Sent;
+            }
+        };
+        let message = CursorShape {
+            shape: shape.shape,
+            width: shape.width,
+            height: shape.height,
+            pitch: shape.pitch,
+            hot_x: shape.hot_x,
+            hot_y: shape.hot_y,
+            size: shape.pixels.len() as u32,
+        };
+        self.send(&Message::CursorShape(message), &[file.as_fd()])
+    }
+
+    fn cursor_moved(&mut self, position: &ReadyMove) -> Delivery {
+        let message = CursorMove {
+            x: position.x,
+            y: position.y,
+            visible: position.visible,
+            sdr_white_nits: position.sdr_white_nits,
+        };
+        self.send(&Message::CursorMove(message), &[])
+    }
+
     fn ring_opened(&mut self, ring: &FrameRing, buffers: &[BorrowedFd<'_>]) -> Delivery {
         let ring = Ring { generation: ring.generation, slots: ring.slots, size: ring.size };
         self.send(&Message::Ring(ring), buffers)

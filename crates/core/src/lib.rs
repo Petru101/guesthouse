@@ -26,8 +26,8 @@ mod timing;
 pub use config::{Config, CopyOrder, MemoryLimits, video_budget};
 pub use fences::{FENCE_AREA, FENCE_PAGE};
 pub use frames::{
-    Delivery, Frame, FrameCounts, FrameLight, FrameRing, FrameSink, NotTheViewers, Picture, Slots,
-    ViewerFacts,
+    CursorShape, Delivery, Frame, FrameCounts, FrameLight, FrameRing, FrameSink, NotTheViewers, Picture,
+    Slots, ViewerFacts,
 };
 pub use gpu_addresses::{ALLOCATION_ALIGN, AddressUse, GPU_RANGES, GpuAddresses, LARGE_ALIGN, Window};
 pub use guest_ranges::{GUEST_RANGE_GRAIN, GuestRanges};
