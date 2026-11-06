@@ -852,6 +852,37 @@ mod declared_sizes {
         set_u32(&mut request, HEADER_SIZE + 4, MAX_ANSWER_SIZE as u32);
         assert_eq!(send(&mut session(), &request).len(), 4 + MAX_ANSWER_SIZE);
     }
+
+    #[test]
+    fn a_guest_backed_surface_can_not_be_larger_than_the_guest() {
+        let mut record = b"GPVS".to_vec();
+        record.resize(32, 0);
+        set_u32(&mut record, 12, u32::MAX);
+        set_u32(&mut record, 20, u32::MAX);
+        let reply = send(&mut session(), &create_message(0x20, &[record]));
+        assert_eq!(status_of(&reply), Status::NO_MEMORY.0);
+    }
+
+    #[test]
+    fn a_video_surface_too_big_to_map_is_refused() {
+        let mut record = b"GPVS".to_vec();
+        record.resize(32, 0);
+        set_u32(&mut record, 12, u32::MAX);
+        set_u32(&mut record, 20, u32::MAX);
+        let reply = send(&mut session(), &create_message(0, &[record]));
+        assert_eq!(status_of(&reply), Status::NO_VIDEO_MEMORY.0);
+    }
+
+    #[test]
+    fn page_lists_stop_at_the_size_of_the_allocation() {
+        let mut session = session();
+        let reply = send(&mut session, &create_message(0x20, &[private(0x2000)]));
+        let handle = u32_at(&reply, 0x10).unwrap();
+        let mut request = message(Command::SetGuestPages, 0x28 + 3 * 8);
+        set_u32(&mut request, HEADER_SIZE + 4, handle);
+        set_u32(&mut request, HEADER_SIZE + 8, 3);
+        assert_eq!(status_of(&send(&mut session, &request)), Status::INVALID_PARAMETER.0);
+    }
 }
 
 mod io_space {

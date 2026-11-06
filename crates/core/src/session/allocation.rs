@@ -2,6 +2,7 @@
 
 use super::{Handled, OUTSIDE_WINDOW, Session, answer_status};
 use crate::deferred::{DeferredAction, FreedAllocation};
+use crate::gpu_addresses::GPU_RANGES;
 use crate::tables::Allocation;
 use guesthouse_backend::{AllocationShape, Backend, GuestMemory, MapRequest, SurfaceShape, UnmapRequest};
 use guesthouse_messages::Status;
@@ -11,7 +12,7 @@ use guesthouse_messages::allocation::{
     SetGuestPages, lock_answer, locked_allocation,
 };
 use guesthouse_messages::standard::StandardRecord;
-use guesthouse_messages::wire::align_up;
+use guesthouse_messages::wire::{align_up, checked_align_up};
 
 /// The guest's own number for 32-bit colour.
 const FORMAT_32_BIT: u32 = 21;
@@ -20,9 +21,13 @@ const STANDARD_GRAIN: u64 = 64 << 10;
 /// The colour word of a standard surface, which is never a vendor's special case.
 const STANDARD_COLOUR: u32 = 0;
 
+/// The most video memory one allocation can have, as a larger one could never get GPU addresses.
+const LARGEST_VIDEO_ALLOCATION: u64 = GPU_RANGES[1].end;
+
 fn standard_shape(record: &StandardRecord) -> AllocationShape {
     AllocationShape {
-        size: align_up(record.exact_size(), STANDARD_GRAIN),
+        // Past the largest allocation either way, which is refused when it's made.
+        size: checked_align_up(record.exact_size(), STANDARD_GRAIN).unwrap_or(u64::MAX),
         exact_size: record.exact_size(),
         surface: Some(SurfaceShape {
             width: record.width,
@@ -48,34 +53,51 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
 
     /// Guest memory does not count: it is not on the card.
     fn over_video_cap(&self, cap: u64, wanted: u64) -> bool {
-        let used: u64 = self
+        let used = self
             .allocations
             .values()
             .filter(|allocation| {
                 allocation.memory.is_some() && allocation.guest_address.is_none() && allocation.view.is_none()
             })
-            .map(|allocation| allocation.size)
-            .sum();
-        used + wanted > cap
+            .map(|allocation| allocation.size);
+        used.fold(wanted, u64::saturating_add) > cap
+    }
+
+    /// Whether memory the guest is yet to list would be more than it has. Each page waiting for its
+    /// number takes room here, so the list can't be left to grow with what a message says.
+    fn over_guest_memory(&self, wanted: u64) -> bool {
+        let waiting = self.allocations.values().filter(|allocation| allocation.pending_pages.is_some());
+        let waiting = waiting.map(|allocation| allocation.size);
+        waiting.fold(wanted, u64::saturating_add) > self.config.limits.system_budget
+    }
+
+    /// What stops these allocations being made, if anything does.
+    fn refusal(&self, guest_backed: bool, shapes: &[AllocationShape]) -> Option<Status> {
+        if guest_backed {
+            let wanted = shapes.iter().map(|shape| shape.exact_size).fold(0, u64::saturating_add);
+            return self.over_guest_memory(wanted).then_some(Status::NO_MEMORY);
+        }
+        let wanted = shapes.iter().map(|shape| shape.size).fold(0, u64::saturating_add);
+        let too_large = shapes.iter().any(|shape| shape.size > LARGEST_VIDEO_ALLOCATION);
+        let over_cap = self.config.limits.video_cap.is_some_and(|cap| self.over_video_cap(cap, wanted));
+        (too_large || over_cap).then_some(Status::NO_VIDEO_MEMORY)
     }
 
     pub(super) fn create_allocation(&mut self, message: &[u8], out: &mut Vec<u8>) -> Handled {
         let request = CreateAllocation::parse(message)?;
         let guest_backed = request.guest_backed();
         CreateAllocationAnswer::begin(request.count, out);
-        if let (false, Some(cap)) = (guest_backed, self.config.limits.video_cap) {
-            // All of it or none, as nothing has been made yet that would need taking back.
-            let wanted = request.entries().map(|entry| self.shape_of(entry.private).size).sum();
-            if self.over_video_cap(cap, wanted) {
-                CreateAllocationAnswer::fail(Status::NO_VIDEO_MEMORY, out);
-                return Ok(());
-            }
+        let shapes: Vec<AllocationShape> =
+            request.entries().map(|entry| self.shape_of(entry.private)).collect();
+        // All of it or none, as nothing has been made yet that would need taking back.
+        if let Some(status) = self.refusal(guest_backed, &shapes) {
+            CreateAllocationAnswer::fail(status, out);
+            return Ok(());
         }
         let resource = self.handles.take();
         self.resources.insert(resource, Vec::with_capacity(request.count));
         CreateAllocationAnswer::set_resource(resource, out);
-        for (index, entry) in request.entries().enumerate() {
-            let shape = self.shape_of(entry.private);
+        for (index, (entry, shape)) in request.entries().zip(shapes).enumerate() {
             let handle = self.handles.take();
             let mut allocation = Allocation {
                 resource,
@@ -274,9 +296,13 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             answer_status(Status::INVALID_PARAMETER, out);
             return Ok(());
         };
-        let start = request.first.min(pending.len());
-        let end = request.first.saturating_add(request.count).min(pending.len());
-        pending.splice(start..end, request.pages()?.iter().map(Some));
+        let slots =
+            request.first.checked_add(request.count).and_then(|end| pending.get_mut(request.first..end));
+        let Some(slots) = slots else {
+            answer_status(Status::INVALID_PARAMETER, out);
+            return Ok(());
+        };
+        slots.iter_mut().zip(request.pages()?.iter()).for_each(|(slot, page)| *slot = Some(page));
         answer_status(Status::SUCCESS, out);
         if pending.iter().any(Option::is_none) {
             return Ok(());
