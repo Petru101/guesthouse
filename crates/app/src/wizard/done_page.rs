@@ -17,7 +17,7 @@ pub fn done_page(wizard: &Rc<Wizard>) -> adw::NavigationPage {
     let status = adw::StatusPage::builder()
         .icon_name(APP_ID)
         .title("Guesthouse Is Ready")
-        .description("All that is left is a Windows 11 ISO.")
+        .description("All that is left is a Windows 11 ISO, or an Ubuntu server ISO.")
         .child(&button)
         .build();
     let toolbar = adw::ToolbarView::new();

@@ -22,7 +22,9 @@ pub struct Sharing(Rc<Parts>);
 impl Sharing {
     pub fn new(shared: &Shared, page: &adw::PreferencesPage) -> Self {
         let machine = shared.machine.borrow().clone();
-        let group = adw::PreferencesGroup::builder().title("Sharing").build();
+        // The shared folder and the clipboard both reach a guest through what Ubuntu doesn't have yet.
+        let group =
+            adw::PreferencesGroup::builder().title("Sharing").visible(machine.kind != Kind::Linux).build();
         page.add(&group);
         let clipboard = adw::SwitchRow::builder()
             .title("Clipboard")

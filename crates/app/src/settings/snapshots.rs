@@ -5,6 +5,7 @@ use crate::common::in_background;
 use crate::rows::{boxed_rows, confirm, icon_button, on_yes, question, row_button};
 use adw::prelude::*;
 use chrono::{Local, TimeZone};
+use guesthouse_app_core::machine::Kind;
 use guesthouse_app_core::snapshots::{MAX_SNAPSHOT_NAME, Snapshot, list_snapshots};
 use guesthouse_app_core::tasks::Status;
 use std::cell::{Cell, RefCell};
@@ -36,6 +37,8 @@ impl Snapshots {
             .title("Snapshots")
             .description("They live inside the disk file, which grows as the guest changes what they hold.")
             .build();
+        // Ubuntu's are left out for now: a snapshot here keeps a firmware file, and it has none.
+        group.set_visible(shared.machine.borrow().kind != Kind::Linux);
         page.add(&group);
         let take = row_button("Take Snapshot");
         take.set_sensitive(false);

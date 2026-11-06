@@ -68,8 +68,8 @@ impl CheckPage {
         }
         let failed = checks.iter().any(|check| check.state == CheckState::Failed);
         parts.group.set_description(Some(if failed {
-            "Windows with GPU-PV cannot run yet. Fix what has a red mark, then check again. Plain VMs do not \
-             need any of this."
+            "Windows with GPU-PV cannot run yet. Fix what has a red mark, then check again. Plain VMs and Ubuntu \
+             do not need any of this."
         } else {
             "This PC can run Windows with GPU-PV. Nothing has been changed."
         }));

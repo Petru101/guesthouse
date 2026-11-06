@@ -18,6 +18,8 @@ use std::path::Path;
 use std::rc::Rc;
 
 const NO_GPU: &str = "This machine gets no GPU acceleration. It runs on the CPU, with a basic display.";
+const UBUNTU_NOTE: &str =
+    "Installs by itself. Its GPU is a preview, and if the GPU can't start it boots with a plain screen.";
 const WIDTH: i32 = 520;
 const HEIGHT: i32 = 620;
 const NOTE_MARGIN: i32 = 12;
@@ -31,6 +33,7 @@ struct Sizes {
 
 const WINDOWS_SIZES: Sizes = Sizes { cores: 8, ram: 16, disk: 128 };
 const PLAIN_SIZES: Sizes = Sizes { cores: 4, ram: 4, disk: 32 };
+const UBUNTU_SIZES: Sizes = Sizes { cores: 8, ram: 8, disk: 80 };
 
 struct Parts {
     window: Window,
@@ -208,6 +211,10 @@ impl NewMachineDialog {
     fn describe(&self, iso: &Iso) {
         let context = self.0.window.context();
         let windows = iso.kind == Kind::Windows;
+        if iso.kind == Kind::Linux {
+            self.show_verdict(&iso.title, UBUNTU_NOTE);
+            return;
+        }
         self.0.no_driver.set(windows && !driver_folder(&context).is_dir());
         if self.0.no_driver.get() {
             self.show_verdict(&iso.title, NO_DRIVER_FILES);
@@ -222,9 +229,14 @@ impl NewMachineDialog {
         }
     }
 
-    fn set_sizes(&self, windows: bool) {
+    fn set_sizes(&self, kind: Kind) {
         let context = self.0.window.context();
-        let sizes = if windows { WINDOWS_SIZES } else { PLAIN_SIZES };
+        let windows = kind == Kind::Windows;
+        let sizes = match kind {
+            Kind::Windows => WINDOWS_SIZES,
+            Kind::Linux => UBUNTU_SIZES,
+            Kind::Plain => PLAIN_SIZES,
+        };
         let limit = if windows { host_ram_limit(&context).unwrap_or(0) } else { plain_ram_limit(&context) };
         let parts = &self.0;
         let cores = physical_cores(&context.cpus);
@@ -240,12 +252,15 @@ impl NewMachineDialog {
     }
 
     fn show_iso(&self, path: &str, iso: Iso) {
-        let windows = iso.kind == Kind::Windows;
         self.describe(&iso);
-        self.set_sizes(windows);
+        self.set_sizes(iso.kind);
         if self.0.name.text().is_empty() {
             let stem = Path::new(path).file_stem().map(|name| name.to_string_lossy().into_owned());
-            self.0.name.set_text(&if windows { "Windows 11".to_owned() } else { stem.unwrap_or_default() });
+            self.0.name.set_text(&match iso.kind {
+                Kind::Windows => "Windows 11".to_owned(),
+                Kind::Linux => "Ubuntu".to_owned(),
+                Kind::Plain => stem.unwrap_or_default(),
+            });
         }
         *self.0.iso.borrow_mut() = Some(iso);
         self.0.hardware.set_sensitive(true);
@@ -284,7 +299,7 @@ impl NewMachineDialog {
             move |result| match result {
                 Ok(machine) => {
                     let window = &this.0.window;
-                    let action = if machine.kind == Kind::Windows { "install" } else { "start" };
+                    let action = if machine.installing { "install" } else { "start" };
                     window.add_machine(machine.clone());
                     window.launch(action, &machine, &[], None);
                     this.0.dialog.close();

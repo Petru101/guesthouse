@@ -7,6 +7,7 @@ use crate::rows::{choice_row, row_button};
 use adw::prelude::*;
 use guesthouse_app_core::bridge;
 use guesthouse_app_core::library::unused_mac;
+use guesthouse_app_core::machine::Kind;
 use guesthouse_app_core::network::{self, DEFAULT_MAC, InUse, Mode};
 use guesthouse_app_core::network_settings::{network_in_use, set_bridge, set_mac, set_network};
 use guesthouse_app_core::tasks::{State, Status};
@@ -35,7 +36,9 @@ pub struct Network(Rc<Parts>);
 impl Network {
     pub fn new(shared: &Shared, page: &adw::PreferencesPage) -> Self {
         let machine = shared.machine.borrow().clone();
-        let group = adw::PreferencesGroup::builder().title("Network").build();
+        // Ubuntu's network is fixed, with its SSH port forwarded.
+        let shown = machine.kind != Kind::Linux;
+        let group = adw::PreferencesGroup::builder().title("Network").visible(shown).build();
         page.add(&group);
         let names: Vec<&str> = Mode::ALL.iter().map(|mode| mode.name()).collect();
         let mode = choice_row("Mode", &names);

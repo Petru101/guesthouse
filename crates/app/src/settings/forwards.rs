@@ -3,6 +3,7 @@
 use super::Shared;
 use crate::rows::{boxed_rows, choice_row, icon_button, on_yes, question, row_button};
 use adw::prelude::*;
+use guesthouse_app_core::machine::Kind;
 use guesthouse_app_core::network::{Forward, Protocol};
 use guesthouse_app_core::network_settings::{add_forward, read_forward, remove_forward};
 use std::cell::RefCell;
@@ -50,6 +51,7 @@ impl Forwards {
         let group = adw::PreferencesGroup::builder()
             .title("Port Forwards")
             .description("They reach the guest from this PC only. Other PCs can use Bridged.")
+            .visible(shared.machine.borrow().kind != Kind::Linux)
             .build();
         page.add(&group);
         let add = row_button("Add");

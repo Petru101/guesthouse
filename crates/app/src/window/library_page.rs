@@ -59,7 +59,7 @@ impl LibraryPage {
         let empty = adw::StatusPage::builder()
             .icon_name(APP_ID)
             .title("No Machines")
-            .description("A machine is Windows with GPU-PV, or anything else that boots from an ISO.")
+            .description("A machine is Windows with GPU-PV, Ubuntu, or anything else that boots from an ISO.")
             .child(&start)
             .build();
         let stack = gtk::Stack::new();

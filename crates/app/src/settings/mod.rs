@@ -4,6 +4,7 @@
 mod disk;
 mod display;
 mod forwards;
+mod gpu_preview;
 mod hardware;
 mod network;
 mod remove;
@@ -55,6 +56,7 @@ struct Parts {
     disk: disk::Disk,
     snapshots: snapshots::Snapshots,
     _token: token::Token,
+    _gpu_preview: gpu_preview::GpuPreview,
     sharing: sharing::Sharing,
     network: network::Network,
     usb: usb::Usb,
@@ -80,6 +82,7 @@ impl SettingsDialog {
             network: network::Network::new(&shared, &page),
             usb: usb::Usb::new(&shared, &page),
             _token: token::Token::new(&shared, &page),
+            _gpu_preview: gpu_preview::GpuPreview::new(&shared, &page),
             remove: remove::Remove::new(&shared, &page),
             shared,
         }));
