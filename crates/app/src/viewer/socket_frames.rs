@@ -24,15 +24,19 @@ pub struct SocketFrames {
     alive: bool,
 }
 
+/// What this display can show, in the producer's order of preference. The message holds a limited
+/// number and a display can offer hundreds, so the formats a guest's desktop uses go first.
 fn formats(display: &gdk::Display) -> Vec<Format> {
     let dmabuf = display.dmabuf_formats();
-    let usable = (0..dmabuf.n_formats()).map(|index| {
+    let offered = (0..dmabuf.n_formats()).map(|index| {
         let (fourcc, modifier) = dmabuf.format(index);
         Format { fourcc, modifier }
     });
+    let (usual, others): (Vec<Format>, Vec<Format>) =
+        offered.partition(|format| COPYABLE.contains(&format.fourcc));
     let linear = COPYABLE.map(|fourcc| Format { fourcc, modifier: LINEAR });
-    let mut all: Vec<Format> = usable.chain(linear).collect();
-    all.dedup();
+    let mut all = linear.to_vec();
+    all.extend(usual.into_iter().chain(others).filter(|format| !linear.contains(format)));
     all
 }
 
