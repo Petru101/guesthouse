@@ -226,6 +226,10 @@ manifest_value() {
     awk -F "$TAB" -v key="$1" '$1 == key { print $3; exit }' "$MANIFEST"
 }
 
+manifest_lists() {
+    [ -f "$MANIFEST" ] && awk -F "$TAB" -v path="$1" '$3 == path { found = 1 } END { exit !found }' "$MANIFEST"
+}
+
 fetch() {
     curl --proto '=https' --tlsv1.2 -fL --retry 3 --connect-timeout "$CURL_SECONDS" "$@"
 }
@@ -485,6 +489,22 @@ check_toolkit() {
     check_toolkit_library libadwaita-1.so.0 '^adw_' libadwaita
 }
 
+# Nothing here replaces a file it didn't put there, because then uninstall.sh couldn't tell whose it is.
+refuse_strangers() {
+    for path in "$LAUNCHER" "$CURRENT_LINK" "$LIB_ROOT/$RELEASE_VERSION"; do
+        if [ -e "$path" ] || [ -L "$path" ]; then
+            manifest_lists "$path" ||
+                die "$path is already there, and this script didn't put it there. Move it away and run this again."
+        fi
+    done
+    (cd "$TREE/share/icons" && find . -type f) | while IFS= read -r icon; do
+        path=$ICON_FOLDER/${icon#./}
+        if [ -e "$path" ] && ! manifest_lists "$path"; then
+            die "$path is already there, and this script didn't put it there. Move it away and run this again."
+        fi
+    done
+}
+
 print_plan() {
     installed=$(manifest_value version)
     say ""
@@ -519,12 +539,230 @@ print_root_plan() {
         say "You'd join the kvm group to open /dev/kvm, and that takes a new login."
 }
 
+# Piped into a shell, stdin is this script, so the answer has to come from the terminal itself.
+confirm() {
+    (: </dev/tty) 2>/dev/null || die "I need a terminal to ask you, so nothing was installed. Download this script and run it in one."
+    printf 'Go ahead? Type yes: ' >/dev/tty
+    IFS= read -r answer </dev/tty || answer=""
+    case $answer in
+        y | Y | yes | Yes | YES) ;;
+        *) die "stopped. Nothing was changed." ;;
+    esac
+}
+
+run_root_work() {
+    [ -n "$ROOT_COMMAND" ] || return 0
+    command -v sudo >/dev/null 2>&1 ||
+        die "this needs sudo, and it's not here. Run this as root yourself, then run me again: $ROOT_COMMAND"
+    sudo sh -c "$ROOT_COMMAND" </dev/tty || die "that command failed, so I'm stopping. Nothing of Guesthouse's was installed."
+    PACKAGES_ADDED=$PACKAGES
+}
+
+# What's still missing can't be fixed here, and on a system with no packages to install it's up to you.
+check_after_root() {
+    check_toolkit
+    [ "$IMMUTABLE" = no ] || return 0
+    find_missing
+    [ -z "$MISSING_NEEDS" ] || [ "$FAMILY" = unknown ] ||
+        die "these are still missing after installing packages: $MISSING_NEEDS"
+    [ -z "$MISSING_NEEDS" ] || warn "these are missing, so the app may not work until you add them: $MISSING_NEEDS"
+}
+
+# The app is found through `current` from every launch, so a running VM and a new app agree on QEMU's
+# path. That also tells the app where its QEMU is when the guest files that mark the folder aren't there.
+make_launcher() {
+    exec_line="Exec=env \"GUESTHOUSE_PROGRAM=$CURRENT_LINK\" \"$CURRENT_LINK/guesthouse\""
+    awk -v line="$exec_line" '/^Exec=/ { print line; next } { print }' \
+        "$TREE/share/$APP_ID.desktop" >"$STAGING/launcher"
+}
+
 # A plain install leaves these out, as the app takes them to mean GPU machines can run.
 drop_gpu_files() {
     [ "$MODE" = plain ] || return 0
     for part in guest linuxguest; do
         [ ! -d "$TREE/$part" ] || rm -rf -- "${TREE:?}/${part:?}"
     done
+}
+
+manifest_line() {
+    printf '%s\t%s\t%s\n' "$1" "$2" "$3"
+}
+
+hash_of() {
+    sha256sum "$1" | cut -d ' ' -f 1
+}
+
+# Lines for the files of the new version, as they'll be once they're in place.
+list_version_files() {
+    target=$LIB_ROOT/$RELEASE_VERSION
+    manifest_line dir - "$target"
+    (cd "$TREE" && find . -mindepth 1 -type d) | while IFS= read -r name; do
+        manifest_line dir - "$target/${name#./}"
+    done
+    (cd "$TREE" && find . -type f -exec sha256sum {} +) | while read -r hash name; do
+        manifest_line file "$hash" "$target/${name#./}"
+    done
+    (cd "$TREE" && find . -type l) | while IFS= read -r name; do
+        manifest_line link "$(readlink "$TREE/$name")" "$target/${name#./}"
+    done
+}
+
+list_desktop_files() {
+    manifest_line file "$(hash_of "$STAGING/launcher")" "$LAUNCHER"
+    (cd "$TREE/share/icons" && find . -type f) | while IFS= read -r icon; do
+        manifest_line file "$(hash_of "$TREE/share/icons/$icon")" "$ICON_FOLDER/${icon#./}"
+    done
+}
+
+list_created_dirs() {
+    printf '%s' "$CREATED_DIRS" | while IFS= read -r folder; do
+        [ -z "$folder" ] || manifest_line dir - "$folder"
+    done
+}
+
+list_root_work() {
+    for package in $PACKAGES_ADDED; do
+        manifest_line package - "$package"
+    done
+    [ "$ADD_TO_KVM" = no ] || manifest_line group - kvm
+}
+
+write_manifest_header() {
+    manifest_line format "$MANIFEST_FORMAT" -
+    manifest_line version - "$1"
+    manifest_line mode - "$2"
+    manifest_line data-home - "$DATA_HOME"
+}
+
+write_file_atomically() {
+    cat >"$1.new"
+    mv -f "$1.new" "$1"
+}
+
+# Everything old and new, before anything moves, so that uninstall.sh can find it all whatever happens
+# from here on. A path can be listed twice for now, with both hashes.
+write_manifest_ahead() {
+    MANIFEST_BEFORE=$STAGING/manifest.before
+    [ ! -f "$MANIFEST" ] || cp "$MANIFEST" "$MANIFEST_BEFORE"
+    NEW_ENTRIES=$STAGING/new-entries
+    {
+        list_version_files
+        list_desktop_files
+        manifest_line link "$RELEASE_VERSION" "$CURRENT_LINK"
+        list_root_work
+    } >"$NEW_ENTRIES"
+    {
+        if [ -f "$MANIFEST" ]; then
+            cat "$MANIFEST"
+        else
+            write_manifest_header "" ""
+        fi
+        cat "$NEW_ENTRIES"
+        list_created_dirs
+    } | write_file_atomically "$MANIFEST"
+}
+
+# The last line for a path wins. The old version's own files stay listed until they're gone.
+write_final_manifest() {
+    {
+        write_manifest_header "$RELEASE_VERSION" "$MODE"
+        awk -F "$TAB" '$1 != "format" && $1 != "version" && $1 != "mode" && $1 != "data-home" {
+            key = $1 FS $3
+            if (!(key in line)) order[++count] = key
+            line[key] = $0
+        }
+        END { for (i = 1; i <= count; i++) print line[order[i]] }' "$MANIFEST"
+    } | write_file_atomically "$MANIFEST"
+}
+
+place_version() {
+    target=$LIB_ROOT/$RELEASE_VERSION
+    if [ -d "$target" ]; then
+        MOVED_ASIDE=$STAGING/replaced
+        mv "$target" "$MOVED_ASIDE"
+    fi
+    mv "$TREE" "$target"
+    VERSION_PLACED=yes
+}
+
+# A copy of what's there goes in staging first, so a failure can put it back.
+place_file() {
+    source=$1
+    path=$2
+    backup=
+    if [ -f "$path" ]; then
+        [ "$(hash_of "$source")" != "$(hash_of "$path")" ] || return 0
+        backup=$STAGING/backup.$(hash_of "$path")
+        cp "$path" "$backup"
+    fi
+    printf '%s\t%s\n' "$path" "$backup" >>"$STAGING/placed"
+    cp "$source" "$path.new"
+    mv -f "$path.new" "$path"
+}
+
+place_desktop_files() {
+    target=$LIB_ROOT/$RELEASE_VERSION
+    place_file "$STAGING/launcher" "$LAUNCHER"
+    (cd "$target/share/icons" && find . -type f) | while IFS= read -r icon; do
+        place_file "$target/share/icons/$icon" "$ICON_FOLDER/${icon#./}" || exit 1
+    done
+}
+
+# Until this one step, the old version is what runs.
+flip_current() {
+    OLD_LINK=$(readlink "$CURRENT_LINK" 2>/dev/null || true)
+    ln -s "$RELEASE_VERSION" "$CURRENT_LINK.new"
+    mv -Tf "$CURRENT_LINK.new" "$CURRENT_LINK"
+    LINK_FLIPPED=yes
+}
+
+restore_placed_files() {
+    [ -f "$STAGING/placed" ] || return 0
+    while IFS="$TAB" read -r path backup; do
+        rm -f -- "$path.new"
+        if [ -n "$backup" ]; then
+            mv -f "$backup" "$path"
+        else
+            rm -f -- "$path"
+        fi
+    done <"$STAGING/placed"
+}
+
+restore_link() {
+    rm -f -- "$CURRENT_LINK.new"
+    [ "$LINK_FLIPPED" = yes ] || return 0
+    if [ -n "$OLD_LINK" ]; then
+        ln -s "$OLD_LINK" "$CURRENT_LINK.new"
+        mv -Tf "$CURRENT_LINK.new" "$CURRENT_LINK"
+    else
+        rm -f -- "$CURRENT_LINK"
+    fi
+}
+
+restore_version() {
+    target=$LIB_ROOT/$RELEASE_VERSION
+    [ "$VERSION_PLACED" = no ] || rm -rf -- "${target:?}"
+    [ -z "$MOVED_ASIDE" ] || [ ! -d "$MOVED_ASIDE" ] || mv "$MOVED_ASIDE" "$target"
+}
+
+restore_manifest() {
+    rm -f -- "$MANIFEST.new"
+    if [ -n "$MANIFEST_BEFORE" ] && [ -f "$MANIFEST_BEFORE" ]; then
+        mv -f "$MANIFEST_BEFORE" "$MANIFEST"
+    else
+        rm -f -- "$MANIFEST"
+    fi
+}
+
+# Everything up to the new manifest can be undone, and this leaves what was there before.
+roll_back() {
+    warn "that failed part-way, so I'm putting everything back as it was."
+    # One step failing here is no reason to give up on the others.
+    set +e
+    restore_link
+    restore_placed_files
+    restore_version
+    restore_manifest
 }
 
 on_exit() {
@@ -534,6 +772,36 @@ on_exit() {
     [ -z "$STAGING" ] || rm -rf -- "${STAGING:?}"
     [ "$KEEP_CREATED_DIRS" = yes ] || remove_created_dirs
     exit "$status"
+}
+
+# Every folder exists first, so that the manifest can list the ones made for this.
+make_desktop_dirs() {
+    ensure_dir "$(dirname "$LAUNCHER")"
+    for icon in $(cd "$TREE/share/icons" && find . -type f); do
+        ensure_dir "$(dirname "$ICON_FOLDER/${icon#./}")"
+    done
+}
+
+install_files() {
+    make_launcher
+    make_desktop_dirs
+    ROLLBACK=yes
+    write_manifest_ahead
+    place_version
+    place_desktop_files
+    flip_current
+    write_final_manifest
+    ROLLBACK=no
+    KEEP_CREATED_DIRS=yes
+}
+
+say_done() {
+    say ""
+    say "Guesthouse $RELEASE_VERSION is installed. It's in your apps, or run it with:"
+    say "  env \"GUESTHOUSE_PROGRAM=$CURRENT_LINK\" \"$CURRENT_LINK/guesthouse\""
+    say "To remove it: sh \"$CURRENT_LINK/uninstall.sh\""
+    [ "$ADD_TO_KVM" = no ] || say "Log out and in again, so that you're in the kvm group."
+    [ "$IMMUTABLE" = no ] || [ -z "$PACKAGES" ] || say "Add the packages listed above before you open it."
 }
 
 # Which release this run is about, and whether there's anything to do.
@@ -581,13 +849,23 @@ main() {
     ask_the_release
     print_host_report
     decide_mode
+    stop_if_nothing_changes
     drop_gpu_files
     find_missing
     plan_root_work
     check_toolkit
+    refuse_strangers
     print_plan
-    say ""
-    say "That was a dry run, so nothing was changed."
+    if [ "$DRY_RUN" = yes ]; then
+        say ""
+        say "That was a dry run, so nothing was changed."
+        return
+    fi
+    confirm
+    run_root_work
+    check_after_root
+    install_files
+    say_done
 }
 
 # In braces, so that a download cut off anywhere in this line, even right after `main`, is a syntax error.

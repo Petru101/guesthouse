@@ -39,6 +39,44 @@ t_gpu_machines_bring_their_tools() {
     check_said "edk2-ovmf 7zip genisoimage swtpm swtpm-tools openssl openssh'"
 }
 
+t_root_runs_once_and_exactly_what_was_shown() {
+    release 1.0
+    install_version 1.0
+    check_exit 0
+    [ "$(grep -c '^sudo' "$T/log")" -eq 1 ] || fail "sudo ran more than once"
+    shown=$(sed -n "s/^  sudo sh -c '\(.*\)'$/\1/p" "$T/said")
+    [ "$(grep '^sudo' "$T/log")" = "sudo sh -c $shown" ] || fail "what ran isn't what was shown"
+    check_log "dnf install -y gtk4"
+}
+
+t_no_root_when_everything_is_here() {
+    release 1.0
+    give_everything
+    install_version 1.0
+    check_exit 0
+    check_said "Nothing here needs root."
+    check_not_log "sudo"
+}
+
+t_a_failed_package_install_installs_nothing() {
+    release 1.0
+    export SUDO_FAILS=yes
+    snapshot >"$T/before"
+    install_version 1.0
+    check_exit 1
+    check_home_is "$T/before"
+}
+
+t_an_immutable_system_gets_user_files_and_a_list() {
+    release 1.0
+    OSTREE=yes
+    install_version 1.0
+    check_exit 0
+    check_said "sudo rpm-ostree install gtk4"
+    check_not_log "sudo "
+    check_there "$H/.local/lib/guesthouse/current/guesthouse"
+}
+
 t_an_unknown_distro_gets_a_list_and_no_commands() {
     release 1.0
     fake_os plan9

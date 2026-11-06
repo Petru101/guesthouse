@@ -72,6 +72,26 @@ t_a_wrong_download_stops_before_anything_changes() {
     check_home_is "$T/before"
 }
 
+t_saying_no_changes_nothing() {
+    release 1.0
+    fake_os fedora
+    snapshot >"$T/before"
+    answering 'no\n' "$SHELL_UNDER_TEST" "$(script_for 1.0)"
+    check_exit 1
+    check_not_log sudo
+    check_home_is "$T/before"
+}
+
+t_with_no_terminal_nothing_is_installed() {
+    release 1.0
+    give_everything
+    snapshot >"$T/before"
+    no_terminal "$SHELL_UNDER_TEST" "$(script_for 1.0)"
+    check_exit 1
+    check_said "I need a terminal"
+    check_home_is "$T/before"
+}
+
 t_a_dry_run_changes_nothing() {
     release 1.0
     snapshot >"$T/before"
@@ -80,6 +100,18 @@ t_a_dry_run_changes_nothing() {
     check_said "sudo sh -c 'dnf install -y gtk4"
     check_said "That was a dry run"
     check_not_log "sudo "
+    check_home_is "$T/before"
+}
+
+t_a_file_it_did_not_install_is_not_replaced() {
+    release 1.0
+    give_everything
+    mkdir -p "$H/.local/share/applications"
+    echo mine >"$H/.local/share/applications/net.gpupv.Guesthouse.desktop"
+    snapshot >"$T/before"
+    install_version 1.0
+    check_exit 1
+    check_said "this script didn't put it there"
     check_home_is "$T/before"
 }
 
