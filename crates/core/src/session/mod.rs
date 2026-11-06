@@ -4,6 +4,7 @@ mod adapter;
 mod allocation;
 mod context;
 mod copies;
+mod frame_ring;
 mod mapping;
 mod sync;
 #[cfg(test)]

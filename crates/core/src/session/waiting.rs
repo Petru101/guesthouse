@@ -367,8 +367,11 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         if !self.copies.is_empty() {
             self.poll_copies(now);
         }
+        if self.frames.has_work() {
+            self.service_frames(now);
+        }
         if self.pending.is_empty() {
-            return Waiting::of(self.pending.iter(), !self.copies.is_empty());
+            return self.how_soon();
         }
         // The two lists swap places, so polling does not allocate.
         let spare = std::mem::take(&mut self.pending_spare);
@@ -379,7 +382,12 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             }
         }
         self.pending_spare = items;
-        Waiting::of(self.pending.iter(), !self.copies.is_empty())
+        self.how_soon()
+    }
+
+    fn how_soon(&self) -> Waiting {
+        let waiting = Waiting::of(self.pending.iter(), !self.copies.is_empty());
+        if waiting == Waiting::Nothing && self.frames.wants_a_look() { Waiting::Background } else { waiting }
     }
 
     /// Finishes an item if it can. Otherwise hands it back.

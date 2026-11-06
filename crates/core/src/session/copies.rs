@@ -12,6 +12,7 @@
 
 use super::{Answer, Handled, HeldReply, ReplyTicket, Session, answer_status, services};
 use crate::config::CopyOrder;
+use crate::frames::SlotInFlight;
 use crate::pending::{GateStep, Pending, Target};
 use crate::timing::HeldFor;
 use guesthouse_backend::{Backend, GuestMemory, StagingCopy, StagingStart};
@@ -35,6 +36,10 @@ pub(crate) struct CopyJob {
     deadline: Instant,
     held_since: Instant,
     running: bool,
+    /// The copy into the frame ring that follows this one, once it's under way.
+    slot: Option<SlotInFlight>,
+    /// What the guest will hear, which comes from the staging copy alone.
+    status: Status,
 }
 
 /// A message that has to wait for the copies.
@@ -112,18 +117,26 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         );
         let now = Instant::now();
         let deadline = now + self.config.frame_wait;
+        let handles = [request.source, request.target];
         if self.config.copy_order == CopyOrder::Blocking {
-            let status = self.copy_now(&copy, &targets, deadline);
+            let status = self.copy_now(&copy, handles, &targets, deadline);
             self.timings.reply_released(HeldFor::Copy, now.elapsed());
             log::debug!("copy finished with status {:#x} in {:?}", status.0, now.elapsed());
             answer_status(status, out);
             return Ok(());
         }
-        let handles = [request.source, request.target];
         if self.copies.is_empty() && (self.targets_reached(&targets) || now >= deadline) {
             if let StagingStart::Finished(status) = self.begin_copy(&copy) {
                 self.end_copy(&copy, status);
-                answer_status(status, out);
+                let slot = self.after_staging(&copy, handles, status);
+                if slot.is_none() {
+                    answer_status(status, out);
+                    return Ok(());
+                }
+                self.add_job(request.context, handles, copy, targets, deadline, true);
+                let job = self.copies.back_mut().expect("added just above");
+                (job.slot, job.status) = (slot, status);
+                self.hold_reply();
                 return Ok(());
             }
             self.add_job(request.context, handles, copy, targets, deadline, true);
@@ -135,21 +148,46 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
     }
 
     /// Waits for the frame, however briefly, and does the whole copy on this thread.
-    fn copy_now(&mut self, copy: &StagingCopy, targets: &[Target], deadline: Instant) -> Status {
+    fn copy_now(
+        &mut self,
+        copy: &StagingCopy,
+        handles: [u32; 2],
+        targets: &[Target],
+        deadline: Instant,
+    ) -> Status {
         while !self.targets_reached(targets) && Instant::now() < deadline {
             thread::sleep(FRAME_WAIT_STEP);
         }
         let status = match self.begin_copy(copy) {
             StagingStart::Finished(status) => status,
-            StagingStart::Running => loop {
-                if let Some(status) = self.backend.poll_staging_copy(&mut services!(self), Instant::now()) {
-                    break status;
-                }
-                std::hint::spin_loop();
-            },
+            StagingStart::Running => self.wait_for_copy(),
         };
         self.end_copy(copy, status);
+        if let Some(slot) = self.after_staging(copy, handles, status) {
+            let slot_status = self.wait_for_copy();
+            self.ring_copy_ended(slot, slot_status);
+        }
         status
+    }
+
+    /// Spins until the copy under way ends. The backend gives up on a dead channel by itself.
+    pub(super) fn wait_for_copy(&mut self) -> Status {
+        loop {
+            if let Some(status) = self.backend.poll_staging_copy(&mut services!(self), Instant::now()) {
+                return status;
+            }
+            std::hint::spin_loop();
+        }
+    }
+
+    /// The copy into the frame ring comes only after a staging copy that went well.
+    fn after_staging(
+        &mut self,
+        copy: &StagingCopy,
+        handles: [u32; 2],
+        status: Status,
+    ) -> Option<SlotInFlight> {
+        if status == Status::SUCCESS { self.begin_ring_copy(copy, handles) } else { None }
     }
 
     fn add_job(
@@ -173,7 +211,19 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         }
         let ticket = self.ticket;
         let held_since = Instant::now();
-        self.copies.push_back(CopyJob { id, ticket, copy, handles, targets, deadline, held_since, running });
+        let (slot, status) = (None, Status::SUCCESS);
+        self.copies.push_back(CopyJob {
+            id,
+            ticket,
+            copy,
+            handles,
+            targets,
+            deadline,
+            held_since,
+            running,
+            slot,
+            status,
+        });
     }
 
     pub(crate) fn copy_is_active(&self, id: u64) -> bool {
@@ -214,7 +264,18 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
                 self.copies.push_front(job);
                 return;
             };
-            self.end_copy(&job.copy, status);
+            if let Some(slot) = job.slot.take() {
+                self.ring_copy_ended(slot, status);
+            } else {
+                self.end_copy(&job.copy, status);
+                job.status = status;
+                job.slot = self.after_staging(&job.copy, job.handles, status);
+                if job.slot.is_some() {
+                    self.copies.push_front(job);
+                    return;
+                }
+            }
+            let status = job.status;
             self.timings.reply_released(HeldFor::Copy, job.held_since.elapsed());
             log::debug!("copy finished with status {:#x}, held {:?}", status.0, job.held_since.elapsed());
             if let Some(ticket) = job.ticket {

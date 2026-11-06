@@ -5,7 +5,6 @@
 //! can't reach the guest. What a sink can't take now is offered again, and until then it stays here.
 
 mod picture;
-#[allow(dead_code)] // The next commit uses this.
 mod ring;
 mod slots;
 mod staging;
