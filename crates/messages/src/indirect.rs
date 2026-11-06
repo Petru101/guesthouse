@@ -290,6 +290,81 @@ impl Stamp {
     }
 }
 
+/// The bytes the driver would send, for tests that play it. Its real source is in C.
+pub mod as_the_driver_sends {
+    use super::*;
+    use crate::wire::set_u32;
+
+    /// The driver sends every message in a buffer of this size, so that any reply fits.
+    pub const BUFFER_SIZE: usize = FRAME_SIZE;
+
+    fn head(kind: u16, size: usize, name: RingName) -> Vec<u8> {
+        let mut data = vec![0; BUFFER_SIZE];
+        set_u64(&mut data, 0, REQUEST_MAGIC);
+        data[VERSION_AT..VERSION_AT + 2].copy_from_slice(&VERSION.to_le_bytes());
+        data[KIND_AT..KIND_AT + 2].copy_from_slice(&kind.to_le_bytes());
+        set_u32(&mut data, SIZE_AT, size as u32);
+        set_u32(&mut data, GENERATION_AT, name.generation);
+        set_u32(&mut data, MONITOR_AT, name.monitor);
+        data
+    }
+
+    pub fn register(ring: &Register) -> Vec<u8> {
+        let mut data = head(KIND_REGISTER, REGISTER_SIZE, ring.name);
+        set_u32(&mut data, SLOTS_AT, ring.slots);
+        set_u32(&mut data, WIDTH_AT, ring.width);
+        set_u32(&mut data, HEIGHT_AT, ring.height);
+        set_u32(&mut data, PITCH_AT, ring.pitch);
+        set_u64(&mut data, SLOT_SIZE_AT, ring.slot_size);
+        set_u32(&mut data, FOURCC_AT, ring.look.fourcc);
+        let look = ring.look;
+        data[CICP_AT..CICP_AT + 4].copy_from_slice(&[look.primaries, look.transfer, look.matrix, 1]);
+        data
+    }
+
+    pub fn frame(done: &FrameDone) -> Vec<u8> {
+        let mut data = head(KIND_FRAME, FRAME_SIZE, done.name);
+        set_u32(&mut data, SLOT_AT, done.slot.unwrap_or(NO_SLOT));
+        set_u64(&mut data, PRESENT_AT, done.present_time);
+        set_u32(&mut data, WINDOWS_FRAME_AT, done.windows_frame);
+        set_u32(&mut data, SDR_WHITE_AT, done.sdr_white_nits);
+        if let Some(mastering) = done.mastering {
+            set_u32(&mut data, FLAGS_AT, HAS_HDR);
+            let tail = [
+                mastering.max_nits,
+                mastering.min,
+                mastering.max_content_nits,
+                mastering.max_frame_average_nits,
+            ];
+            let words = mastering.chromaticity.iter().chain(&tail);
+            for (index, word) in words.enumerate() {
+                let at = HDR_AT + index * size_of::<u16>();
+                data[at..at + size_of::<u16>()].copy_from_slice(&word.to_le_bytes());
+            }
+        }
+        data
+    }
+
+    pub fn close(name: RingName) -> Vec<u8> {
+        head(KIND_CLOSE, HEADER_SIZE, name)
+    }
+
+    pub fn stamp(stamp: Stamp) -> Vec<u8> {
+        let mut bytes = vec![0; STAMP_SIZE];
+        set_u64(&mut bytes, 0, STAMP_MAGIC);
+        set_u32(&mut bytes, STAMP_GENERATION_AT, stamp.generation);
+        set_u32(&mut bytes, STAMP_SLOT_AT, stamp.slot);
+        bytes
+    }
+
+    /// Reads a reply as the driver does. `None` means there wasn't one.
+    pub fn reply(data: &[u8]) -> Option<(u32, Option<u32>)> {
+        (u64_at(data, 0).ok()? == REPLY_MAGIC).then_some(())?;
+        let next = u32_at(data, NEXT_SLOT_AT).ok()?;
+        Some((u32_at(data, STATUS_AT).ok()?, (next != NO_SLOT).then_some(next)))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
