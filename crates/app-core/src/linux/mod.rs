@@ -5,6 +5,7 @@
 pub mod driver_files;
 pub mod driver_image;
 pub mod driver_versions;
+pub mod forwarding;
 pub mod seed;
 mod tables;
 
