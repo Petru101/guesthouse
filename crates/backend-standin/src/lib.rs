@@ -58,6 +58,8 @@ pub struct StandIn {
     pub slot_copies: Vec<SlotCopy>,
     /// Slot copies end in this. A test sets it to see a copy fail.
     pub slot_copy_status: Status,
+    /// What each block of memory starts with, for a test to fill in.
+    pub memory_starts: HashMap<MemoryId, Vec<u8>>,
     /// Set to make every export fail.
     pub refuse_exports: bool,
     /// Addresses taken through [`HostServices`] by the first submission.
@@ -110,6 +112,7 @@ impl StandIn {
             copies: Vec::new(),
             slot_copies: Vec::new(),
             slot_copy_status: Status::SUCCESS,
+            memory_starts: HashMap::new(),
             refuse_exports: false,
             channel_address: None,
             slow_copies: false,
@@ -341,6 +344,21 @@ impl Backend for StandIn {
     fn start_slot_copy(&mut self, _host: &mut dyn HostServices, copy: &SlotCopy) -> StagingStart {
         self.slot_copies.push(*copy);
         if self.slow_copies { StagingStart::Running } else { StagingStart::Finished(self.slot_copy_status) }
+    }
+
+    fn read_memory_start(
+        &mut self,
+        _host: &mut dyn HostServices,
+        _own_space: SpaceId,
+        memory: MemoryId,
+        out: &mut [u8],
+    ) -> Result<(), BackendError> {
+        out.fill(0);
+        if let Some(start) = self.memory_starts.get(&memory) {
+            let length = start.len().min(out.len());
+            out[..length].copy_from_slice(&start[..length]);
+        }
+        Ok(())
     }
 
     /// Anything that is a file will do, as nothing here has pixels.
