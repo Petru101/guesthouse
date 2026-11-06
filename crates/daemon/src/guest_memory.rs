@@ -1,7 +1,7 @@
 //! The guest's memory, as files QEMU shares.
 
 pub use guesthouse_backend::WINDOW_BASE;
-use guesthouse_backend::{GuestMemory, PagesView, in_window};
+use guesthouse_backend::{GuestMemory, MemoryError, PagesView, in_window};
 use std::cell::OnceCell;
 use std::fs::{File, OpenOptions};
 use std::io;
@@ -15,6 +15,8 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 const RAM_BELOW_HOLE: u64 = 0x8000_0000;
 const HOLE_END: u64 = 1 << 32;
 const PAGE_SIZE: u64 = 4096;
+const WORD_SIZE: u64 = 8;
+const HALF_WORD_SIZE: u64 = 4;
 
 /// Where a guest physical address is in the RAM file. The machine splits RAM around a hole below
 /// 4 GiB, which the file does not have.
@@ -57,23 +59,38 @@ impl SharedMemory {
         Ok(Self { window: check(window)?.cast(), window_size, ram_path, ram: None })
     }
 
+    fn window_range(&self) -> Range<u64> {
+        WINDOW_BASE..WINDOW_BASE + self.window_size
+    }
+
+    /// How far `length` bytes at an address are into the mapping, if all of them are in it.
+    fn offset_of(&self, address: u64, length: u64) -> Result<usize, MemoryError> {
+        if in_window(&self.window_range(), address, length) {
+            Ok((address - WINDOW_BASE) as usize)
+        } else {
+            Err(MemoryError::Outside(address))
+        }
+    }
+
+    /// The same for a word, which also has to be aligned to its size.
+    fn word_offset(&self, address: u64, size: u64) -> Result<usize, MemoryError> {
+        let offset = self.offset_of(address, size)?;
+        if address.is_multiple_of(size) { Ok(offset) } else { Err(MemoryError::Outside(address)) }
+    }
+
     /// The word at a guest physical address. Guest and GPU change these while the host looks, so
     /// reads and writes go through an atomic and never through a plain reference.
-    fn word(&self, address: u64) -> &AtomicU64 {
-        let offset = address - WINDOW_BASE;
-        assert!(
-            offset + 8 <= self.window_size && offset.is_multiple_of(8),
-            "{address:#x} is not a word in the window"
-        );
-        // SAFETY: the assert keeps it inside the mapping and aligned, and the mapping outlives &self.
-        unsafe { AtomicU64::from_ptr(self.window.add(offset as usize).cast()) }
+    fn word(&self, address: u64) -> Result<&AtomicU64, MemoryError> {
+        let offset = self.word_offset(address, WORD_SIZE)?;
+        // SAFETY: `word_offset` keeps it inside the mapping and aligned, and the mapping outlives &self.
+        Ok(unsafe { AtomicU64::from_ptr(self.window.add(offset).cast()) })
     }
 
     fn ram(&mut self) -> io::Result<&File> {
-        if self.ram.is_none() {
-            self.ram = Some(open_read_write(&self.ram_path)?);
+        match &mut self.ram {
+            Some(file) => Ok(file),
+            empty => Ok(empty.insert(open_read_write(&self.ram_path)?)),
         }
-        Ok(self.ram.as_ref().expect("opened just above"))
     }
 }
 
@@ -85,47 +102,45 @@ impl Drop for SharedMemory {
 }
 
 impl GuestMemory for SharedMemory {
-    fn window(&self) -> Range<u64> {
-        WINDOW_BASE..WINDOW_BASE + self.window_size
+    fn window(&self) -> Result<Range<u64>, MemoryError> {
+        Ok(self.window_range())
     }
 
-    fn read_u64(&self, address: u64) -> u64 {
-        self.word(address).load(Ordering::Acquire)
+    fn read_u64(&self, address: u64) -> Result<u64, MemoryError> {
+        Ok(self.word(address)?.load(Ordering::Acquire))
     }
 
-    fn write_u64(&mut self, address: u64, value: u64) {
-        self.word(address).store(value, Ordering::Release);
+    fn write_u64(&mut self, address: u64, value: u64) -> Result<(), MemoryError> {
+        self.word(address)?.store(value, Ordering::Release);
+        Ok(())
     }
 
-    fn write_u32(&mut self, address: u64, value: u32) {
-        let offset = address - WINDOW_BASE;
-        assert!(
-            offset + 4 <= self.window_size && offset.is_multiple_of(4),
-            "{address:#x} is not a word in the window"
-        );
-        // SAFETY: the assert keeps it inside the mapping and aligned, and the mapping outlives self.
-        let word = unsafe { AtomicU32::from_ptr(self.window.add(offset as usize).cast()) };
+    fn write_u32(&mut self, address: u64, value: u32) -> Result<(), MemoryError> {
+        let offset = self.word_offset(address, HALF_WORD_SIZE)?;
+        // SAFETY: `word_offset` keeps it inside the mapping and aligned, and the mapping outlives self.
+        let word = unsafe { AtomicU32::from_ptr(self.window.add(offset).cast()) };
         word.store(value, Ordering::Release);
+        Ok(())
     }
 
     fn read_bytes(&self, address: u64, out: &mut [u8]) -> usize {
-        let offset = address.saturating_sub(WINDOW_BASE).min(self.window_size);
-        let length = out.len().min((self.window_size - offset) as usize);
+        let Ok(offset) = self.offset_of(address, 0) else { return 0 };
+        let length = out.len().min(self.window_size as usize - offset);
         // SAFETY: `length` stops at the end of the mapping, and `out` is not part of it.
-        unsafe { ptr::copy_nonoverlapping(self.window.add(offset as usize), out.as_mut_ptr(), length) };
+        unsafe { ptr::copy_nonoverlapping(self.window.add(offset), out.as_mut_ptr(), length) };
         length
     }
 
-    fn zero(&mut self, address: u64, length: u64) {
-        let offset = address - WINDOW_BASE;
-        assert!(offset + length <= self.window_size, "{address:#x} is not in the window");
-        // SAFETY: the assert keeps the range inside the mapping. Only freed memory gets cleared,
+    fn zero(&mut self, address: u64, length: u64) -> Result<(), MemoryError> {
+        let offset = self.offset_of(address, length)?;
+        // SAFETY: `offset_of` keeps the range inside the mapping. Only freed memory gets cleared,
         // which neither guest nor GPU is using.
-        unsafe { ptr::write_bytes(self.window.add(offset as usize), 0, length as usize) };
+        unsafe { ptr::write_bytes(self.window.add(offset), 0, length as usize) };
+        Ok(())
     }
 
-    fn host_address(&self, address: u64, length: u64) -> Option<u64> {
-        in_window(&self.window(), address, length).then(|| self.window as u64 + (address - WINDOW_BASE))
+    fn host_address(&self, address: u64, length: u64) -> Result<u64, MemoryError> {
+        Ok(self.window as u64 + self.offset_of(address, length)? as u64)
     }
 
     fn map_pages(&mut self, pages: &[u64]) -> io::Result<PagesView> {
@@ -172,54 +187,62 @@ impl LazySharedMemory {
         Self { window_path, ram_path, opened: OnceCell::new() }
     }
 
-    fn memory(&self) -> &SharedMemory {
-        self.opened.get_or_init(|| {
-            let opened = SharedMemory::open(&self.window_path, self.ram_path.clone());
-            opened.unwrap_or_else(|error| panic!("{}: {error}", self.window_path.display()))
-        })
+    /// The memory, opened now if this is the first use. A failed open is tried again next time, as
+    /// QEMU may only be late.
+    fn memory(&self) -> Result<&SharedMemory, MemoryError> {
+        if let Some(opened) = self.opened.get() {
+            return Ok(opened);
+        }
+        let opened = SharedMemory::open(&self.window_path, self.ram_path.clone()).map_err(|error| {
+            log::error!("{}: {error}", self.window_path.display());
+            MemoryError::Unavailable
+        })?;
+        Ok(self.opened.get_or_init(|| opened))
     }
 
-    fn memory_mut(&mut self) -> &mut SharedMemory {
-        self.memory();
-        self.opened.get_mut().expect("opened just above")
+    fn memory_mut(&mut self) -> Result<&mut SharedMemory, MemoryError> {
+        self.memory()?;
+        self.opened.get_mut().ok_or(MemoryError::Unavailable)
     }
 }
 
 impl GuestMemory for LazySharedMemory {
-    fn window(&self) -> Range<u64> {
-        self.memory().window()
+    fn window(&self) -> Result<Range<u64>, MemoryError> {
+        self.memory()?.window()
     }
 
-    fn read_u64(&self, address: u64) -> u64 {
-        self.memory().read_u64(address)
+    fn read_u64(&self, address: u64) -> Result<u64, MemoryError> {
+        self.memory()?.read_u64(address)
     }
 
-    fn write_u64(&mut self, address: u64, value: u64) {
-        self.memory_mut().write_u64(address, value);
+    fn write_u64(&mut self, address: u64, value: u64) -> Result<(), MemoryError> {
+        self.memory_mut()?.write_u64(address, value)
     }
 
-    fn write_u32(&mut self, address: u64, value: u32) {
-        self.memory_mut().write_u32(address, value);
+    fn write_u32(&mut self, address: u64, value: u32) -> Result<(), MemoryError> {
+        self.memory_mut()?.write_u32(address, value)
     }
 
     fn read_bytes(&self, address: u64, out: &mut [u8]) -> usize {
-        self.memory().read_bytes(address, out)
+        self.memory().map_or(0, |memory| memory.read_bytes(address, out))
     }
 
-    fn zero(&mut self, address: u64, length: u64) {
-        self.memory_mut().zero(address, length);
+    fn zero(&mut self, address: u64, length: u64) -> Result<(), MemoryError> {
+        self.memory_mut()?.zero(address, length)
     }
 
-    fn host_address(&self, address: u64, length: u64) -> Option<u64> {
-        self.memory().host_address(address, length)
+    fn host_address(&self, address: u64, length: u64) -> Result<u64, MemoryError> {
+        self.memory()?.host_address(address, length)
     }
 
     fn map_pages(&mut self, pages: &[u64]) -> io::Result<PagesView> {
-        self.memory_mut().map_pages(pages)
+        self.memory_mut().map_err(io::Error::other)?.map_pages(pages)
     }
 
     fn unmap_pages(&mut self, view: PagesView) {
-        self.memory_mut().unmap_pages(view);
+        if let Ok(memory) = self.memory_mut() {
+            memory.unmap_pages(view);
+        }
     }
 }
 
@@ -259,9 +282,9 @@ mod tests {
     fn the_window_reads_and_writes_the_file() {
         let window = temporary_file("window", &[0; 0x2000]);
         let mut memory = SharedMemory::open(&window, PathBuf::new()).unwrap();
-        assert_eq!(memory.window(), WINDOW_BASE..WINDOW_BASE + 0x2000);
-        memory.write_u64(WINDOW_BASE + 0x1000, 0x1122);
-        assert_eq!(memory.read_u64(WINDOW_BASE + 0x1000), 0x1122);
+        assert_eq!(memory.window(), Ok(WINDOW_BASE..WINDOW_BASE + 0x2000));
+        memory.write_u64(WINDOW_BASE + 0x1000, 0x1122).unwrap();
+        assert_eq!(memory.read_u64(WINDOW_BASE + 0x1000), Ok(0x1122));
         drop(memory);
         assert_eq!(fs::read(&window).unwrap()[0x1000..0x1002], [0x22, 0x11]);
         fs::remove_file(window).unwrap();
@@ -272,11 +295,11 @@ mod tests {
         let window = temporary_file("host-address", &[0; 0x2000]);
         let memory = SharedMemory::open(&window, PathBuf::new()).unwrap();
         let base = memory.window as u64;
-        assert_eq!(memory.host_address(WINDOW_BASE, 0x2000), Some(base));
-        assert_eq!(memory.host_address(WINDOW_BASE + 0x1000, 0x1000), Some(base + 0x1000));
-        assert_eq!(memory.host_address(WINDOW_BASE + 0x1000, 0x1001), None);
-        assert_eq!(memory.host_address(WINDOW_BASE - 0x1000, 0x1000), None);
-        assert_eq!(memory.host_address(u64::MAX, 2), None);
+        assert_eq!(memory.host_address(WINDOW_BASE, 0x2000), Ok(base));
+        assert_eq!(memory.host_address(WINDOW_BASE + 0x1000, 0x1000), Ok(base + 0x1000));
+        assert!(memory.host_address(WINDOW_BASE + 0x1000, 0x1001).is_err());
+        assert!(memory.host_address(WINDOW_BASE - 0x1000, 0x1000).is_err());
+        assert!(memory.host_address(u64::MAX, 2).is_err());
         fs::remove_file(window).unwrap();
     }
 
@@ -284,9 +307,46 @@ mod tests {
     fn zero_clears_only_what_it_says() {
         let window = temporary_file("zero", &[0xFF; 0x3000]);
         let mut memory = SharedMemory::open(&window, PathBuf::new()).unwrap();
-        memory.zero(WINDOW_BASE + 0x1000, 0x1000);
-        assert_eq!(memory.read_u64(WINDOW_BASE + 0x1000), 0);
-        assert_eq!(memory.read_u64(WINDOW_BASE + 0x2000), u64::MAX);
+        memory.zero(WINDOW_BASE + 0x1000, 0x1000).unwrap();
+        assert_eq!(memory.read_u64(WINDOW_BASE + 0x1000), Ok(0));
+        assert_eq!(memory.read_u64(WINDOW_BASE + 0x2000), Ok(u64::MAX));
+        fs::remove_file(window).unwrap();
+    }
+
+    #[test]
+    fn accesses_past_the_window_are_errors_and_nothing_else() {
+        let window = temporary_file("outside", &[0xFF; 0x1000]);
+        let mut memory = SharedMemory::open(&window, PathBuf::new()).unwrap();
+        for address in [0, WINDOW_BASE - 8, WINDOW_BASE + 0x1000, WINDOW_BASE + 4, u64::MAX - 7] {
+            assert_eq!(memory.read_u64(address), Err(MemoryError::Outside(address)));
+            assert_eq!(memory.write_u64(address, 0), Err(MemoryError::Outside(address)));
+        }
+        assert!(memory.write_u32(WINDOW_BASE + 0x1000, 0).is_err());
+        assert!(memory.write_u32(WINDOW_BASE + 2, 0).is_err());
+        assert!(memory.zero(WINDOW_BASE + 0x800, 0x801).is_err());
+        assert!(memory.zero(u64::MAX, 2).is_err());
+        assert_eq!(memory.read_u64(WINDOW_BASE), Ok(u64::MAX), "a refused write changes nothing");
+        fs::remove_file(window).unwrap();
+    }
+
+    #[test]
+    fn reads_outside_the_window_find_nothing() {
+        let window = temporary_file("short-read", &[7; 0x1000]);
+        let memory = SharedMemory::open(&window, PathBuf::new()).unwrap();
+        assert_eq!(memory.read_bytes(WINDOW_BASE - 8, &mut [0; 8]), 0);
+        assert_eq!(memory.read_bytes(WINDOW_BASE + 0x1000, &mut [0; 8]), 0);
+        assert_eq!(memory.read_bytes(WINDOW_BASE + 0xFFC, &mut [0; 8]), 4);
+        fs::remove_file(window).unwrap();
+    }
+
+    #[test]
+    fn a_window_that_is_not_there_yet_is_an_error_and_is_tried_again() {
+        let window = env::temp_dir().join(format!("guesthouse-test-{}-late", process::id()));
+        let memory = LazySharedMemory::new(window.clone(), PathBuf::new());
+        assert_eq!(memory.window(), Err(MemoryError::Unavailable));
+        assert_eq!(memory.read_u64(WINDOW_BASE), Err(MemoryError::Unavailable));
+        fs::write(&window, [0; 0x1000]).unwrap();
+        assert_eq!(memory.window(), Ok(WINDOW_BASE..WINDOW_BASE + 0x1000));
         fs::remove_file(window).unwrap();
     }
 

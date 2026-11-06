@@ -24,7 +24,9 @@ use crate::sync_table::SyncTable;
 use crate::tables::{Allocation, Mapping, Queue, ReservedRange};
 use crate::timing::Timings;
 use copies::{CopyJob, Parked};
-use guesthouse_backend::{Backend, BackendError, GuestMemory, HostServices, SharedSpan, SpaceId};
+use guesthouse_backend::{
+    Backend, BackendError, GuestMemory, HostServices, MemoryError, SharedSpan, SpaceId,
+};
 use guesthouse_messages::notice::Notice;
 use guesthouse_messages::wire::{Malformed, put_u32};
 use guesthouse_messages::{Command, MessageHeader, Status};
@@ -69,6 +71,12 @@ impl From<Malformed> for Failure {
     }
 }
 
+impl From<MemoryError> for Failure {
+    fn from(error: MemoryError) -> Self {
+        Self::Backend(error.into())
+    }
+}
+
 impl From<BackendError> for Failure {
     fn from(error: BackendError) -> Self {
         Self::Backend(error)
@@ -95,9 +103,6 @@ pub struct TableSizes {
     pub shared_objects: usize,
     pub deferred: usize,
 }
-
-pub(crate) const OUTSIDE_WINDOW: BackendError =
-    BackendError(std::borrow::Cow::Borrowed("not in the shared window"));
 
 /// Everything the host knows about one guest. See the crate documentation.
 pub struct Session<B, M> {
@@ -394,8 +399,25 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
     }
 
     pub(crate) fn fence_value(&self, fence: u64) -> u64 {
-        self.memory.read_u64(fence)
+        read_fence(&self.memory, fence)
     }
+
+    /// Sets a fence that's already in use. Those are all in the window, so this can only fail if
+    /// the window has gone, and then the guest has nothing left to wait with.
+    pub(crate) fn store_fence(&mut self, fence: u64, value: u64) {
+        if let Err(error) = self.memory.write_u64(fence, value) {
+            log::error!("setting a fence: {error}");
+        }
+    }
+}
+
+/// A fence's value. One that can't be read counts as not reached, as work that's thought to be
+/// finished has its memory taken away.
+fn read_fence<M: GuestMemory>(memory: &M, fence: u64) -> u64 {
+    memory.read_u64(fence).unwrap_or_else(|error| {
+        log::error!("reading a fence: {error}");
+        0
+    })
 }
 
 /// The handler bodies borrow these fields apart, so a backend call can use the rest of the session.
@@ -435,19 +457,19 @@ impl<M: GuestMemory> HostServices for Services<'_, M> {
         })
     }
 
-    fn write_u32(&mut self, address: u64, value: u32) {
-        self.memory.write_u32(address, value);
+    fn write_u32(&mut self, address: u64, value: u32) -> Result<(), MemoryError> {
+        self.memory.write_u32(address, value)
     }
 
-    fn write_u64(&mut self, address: u64, value: u64) {
-        self.memory.write_u64(address, value);
+    fn write_u64(&mut self, address: u64, value: u64) -> Result<(), MemoryError> {
+        self.memory.write_u64(address, value)
     }
 
     fn read_guest(&self, address: u64, out: &mut [u8]) -> usize {
         self.memory.read_bytes(address, out)
     }
 
-    fn fence_value(&self, fence: u64) -> u64 {
+    fn fence_value(&self, fence: u64) -> Result<u64, MemoryError> {
         self.memory.read_u64(fence)
     }
 }

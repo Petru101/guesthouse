@@ -1,6 +1,6 @@
 //! Handlers for sync objects and fences.
 
-use super::{Handled, OUTSIDE_WINDOW, Session, answer_status};
+use super::{Handled, Session, answer_status};
 use crate::deferred::DeferredAction;
 use crate::fences::{FENCE_PAGE, Fence, FenceBlock};
 use guesthouse_backend::{Backend, BackendError, GuestMemory};
@@ -19,7 +19,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             return Ok(block);
         }
         let start = self.placed_io_space()?.start();
-        let host_address = self.memory.host_address(start, crate::FENCE_AREA).ok_or(OUTSIDE_WINDOW)?;
+        let host_address = self.memory.host_address(start, crate::FENCE_AREA)?;
         let memory = self.backend.adopt_host_pages(host_address, crate::FENCE_AREA)?;
         let gpu_address = self.take_gpu_addresses(crate::FENCE_AREA, crate::ALLOCATION_ALIGN)?;
         let block = FenceBlock { memory, gpu_address };
@@ -35,7 +35,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
     /// A zeroed fence page, reusing freed ones.
     pub(crate) fn take_fence(&mut self) -> Result<Fence, BackendError> {
         if let Some(fence) = self.fences.reuse() {
-            self.memory.zero(fence.0, FENCE_PAGE);
+            self.memory.zero(fence.0, FENCE_PAGE)?;
             return Ok(fence);
         }
         let fence = self.fresh_fence_page()?;
@@ -48,7 +48,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         let sync = self.handles.take();
         let fence = match self.fences.reuse_paging() {
             Some(fence) => {
-                self.memory.zero(fence, FENCE_PAGE);
+                self.memory.zero(fence, FENCE_PAGE)?;
                 fence
             }
             None => self.fresh_fence_page()?,
@@ -79,7 +79,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         self.sync_objects.insert(handle, fence, gpu_address, event);
         if monitored {
             // Some swapchains start their fences above zero, and wait for that before any signal.
-            self.memory.write_u64(fence, request.initial.ok_or(Malformed)?);
+            self.memory.write_u64(fence, request.initial.ok_or(Malformed)?)?;
         }
         CreateSyncObject::answer(handle, gpu_address, fence, out);
         Ok(())
@@ -133,7 +133,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         if let Some(event) = object.event {
             self.notices.push(Notice::WakeEvent { event, release: 0 });
         } else if object.fence != 0 && value > self.fence_value(object.fence) {
-            self.memory.write_u64(object.fence, value);
+            self.store_fence(object.fence, value);
         }
     }
 

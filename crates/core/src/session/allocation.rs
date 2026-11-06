@@ -1,6 +1,6 @@
 //! Handlers for allocations and resources.
 
-use super::{Handled, OUTSIDE_WINDOW, Session, answer_status};
+use super::{Handled, Session, answer_status};
 use crate::deferred::{DeferredAction, FreedAllocation};
 use crate::gpu_addresses::GPU_RANGES;
 use crate::tables::Allocation;
@@ -240,17 +240,17 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             self.park(message);
             return Ok(());
         }
-        let (fresh, limit) = (self.placed_io_space()?.after_fences(), self.memory.window().end);
+        let (fresh, limit) = (self.placed_io_space()?.after_fences(), self.memory.window()?.end);
         let Some((address, used_before)) = self.guest_ranges.take(size, fresh, limit) else {
             lock_answer(Status::NO_MEMORY, 0, out);
             return Ok(());
         };
         if used_before {
             // Another allocation's data must not reach this one.
-            self.memory.zero(address, size);
+            self.memory.zero(address, size)?;
         }
         let pages_size = align_up(size, PAGE_SIZE);
-        let host_address = self.memory.host_address(address, pages_size).ok_or(OUTSIDE_WINDOW)?;
+        let host_address = self.memory.host_address(address, pages_size)?;
         let shared = self.backend.adopt_host_pages(host_address, pages_size)?;
         let has_mappings = !self.allocations[&handle].mappings.is_empty();
         let own = if has_mappings { Some(self.own_space()?) } else { None };

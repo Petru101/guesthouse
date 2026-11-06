@@ -52,7 +52,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             item.waits.retain(|&(handle, value)| {
                 self.queues
                     .get(&handle)
-                    .is_some_and(|queue| !queue.failed && self.memory.read_u64(queue.fence) < value)
+                    .is_some_and(|queue| !queue.failed && self.fence_value(queue.fence) < value)
             });
             if item.waits.is_empty() {
                 self.run_deferred_action(item.action);
@@ -320,7 +320,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
                 log::error!("too many queues have failed, so no more work goes to the GPU");
             }
         }
-        self.memory.write_u64(fence, value);
+        self.store_fence(fence, value);
     }
 
     /// Adds to a queue's backlog, and holds the reply if too much of it is unfinished.
@@ -344,8 +344,9 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
 
     /// What the GPU has yet to finish on a queue. A queue that has gone has nothing left.
     fn unfinished_work(&mut self, handle: u32) -> u64 {
+        let Some(fence) = self.queues.get(&handle).map(|queue| queue.fence) else { return 0 };
+        let finished = self.fence_value(fence);
         let Some(queue) = self.queues.get_mut(&handle) else { return 0 };
-        let finished = self.memory.read_u64(queue.fence);
         while let Some(&(value, work)) = queue.backlog.front()
             && value <= finished
         {

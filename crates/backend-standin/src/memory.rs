@@ -1,6 +1,6 @@
 //! A guest memory that stores only what was written to it.
 
-use guesthouse_backend::{GuestMemory, PagesView, WINDOW_BASE, in_window};
+use guesthouse_backend::{GuestMemory, MemoryError, PagesView, WINDOW_BASE, in_window};
 use std::collections::BTreeMap;
 use std::io;
 use std::ops::Range;
@@ -17,6 +17,8 @@ pub struct SparseMemory {
 
 const FIRST_VIEW: u64 = 0x7000_0000_0000;
 const PAGE_SIZE: u64 = 4096;
+const WORD: u64 = 8;
+const HALF_WORD: u64 = 4;
 
 impl SparseMemory {
     pub fn new(window_end: u64) -> Self {
@@ -24,43 +26,67 @@ impl SparseMemory {
     }
 }
 
-impl GuestMemory for SparseMemory {
-    fn window(&self) -> Range<u64> {
-        WINDOW_BASE..self.window_end
+impl SparseMemory {
+    /// Refuses what the real memory refuses, so that a mistake in the core shows up here too.
+    fn check(&self, address: u64, length: u64, align: u64) -> Result<(), MemoryError> {
+        let inside = in_window(&(WINDOW_BASE..self.window_end), address, length);
+        if inside && address.is_multiple_of(align) { Ok(()) } else { Err(MemoryError::Outside(address)) }
     }
 
-    fn read_u64(&self, address: u64) -> u64 {
+    fn word(&self, address: u64) -> u64 {
         self.words.get(&address).copied().unwrap_or(0)
     }
+}
 
-    fn write_u64(&mut self, address: u64, value: u64) {
-        self.words.insert(address, value);
+impl GuestMemory for SparseMemory {
+    fn window(&self) -> Result<Range<u64>, MemoryError> {
+        Ok(WINDOW_BASE..self.window_end)
     }
 
-    fn write_u32(&mut self, address: u64, value: u32) {
-        let word = address & !7;
-        let shift = (address & 4) * 8;
-        let old = self.read_u64(word) & !(0xFFFF_FFFF << shift);
-        self.write_u64(word, old | u64::from(value) << shift);
+    fn read_u64(&self, address: u64) -> Result<u64, MemoryError> {
+        self.check(address, WORD, WORD)?;
+        Ok(self.word(address))
+    }
+
+    fn write_u64(&mut self, address: u64, value: u64) -> Result<(), MemoryError> {
+        self.check(address, WORD, WORD)?;
+        self.words.insert(address, value);
+        Ok(())
+    }
+
+    fn write_u32(&mut self, address: u64, value: u32) -> Result<(), MemoryError> {
+        self.check(address, HALF_WORD, HALF_WORD)?;
+        let word = address & !(WORD - 1);
+        let shift = (address & HALF_WORD) * 8;
+        let old = self.word(word) & !(0xFFFF_FFFF << shift);
+        self.words.insert(word, old | u64::from(value) << shift);
+        Ok(())
     }
 
     fn read_bytes(&self, address: u64, out: &mut [u8]) -> usize {
-        for (index, byte) in out.iter_mut().enumerate() {
-            let at = address + index as u64;
-            *byte = self.read_u64(at & !7).to_le_bytes()[(at & 7) as usize];
+        if self.check(address, 0, 1).is_err() {
+            return 0;
         }
-        out.len()
+        let length = out.len().min((self.window_end - address) as usize);
+        for (index, byte) in out[..length].iter_mut().enumerate() {
+            let at = address + index as u64;
+            *byte = self.word(at & !(WORD - 1)).to_le_bytes()[(at % WORD) as usize];
+        }
+        length
     }
 
-    fn zero(&mut self, address: u64, length: u64) {
+    fn zero(&mut self, address: u64, length: u64) -> Result<(), MemoryError> {
+        self.check(address, length, 1)?;
         let doomed: Vec<u64> = self.words.range(address..address + length).map(|(&at, _)| at).collect();
         doomed.iter().for_each(|at| {
             self.words.remove(at);
         });
+        Ok(())
     }
 
-    fn host_address(&self, address: u64, length: u64) -> Option<u64> {
-        in_window(&self.window(), address, length).then_some(address)
+    fn host_address(&self, address: u64, length: u64) -> Result<u64, MemoryError> {
+        self.check(address, length, 1)?;
+        Ok(address)
     }
 
     fn map_pages(&mut self, pages: &[u64]) -> io::Result<PagesView> {
@@ -83,18 +109,29 @@ mod tests {
     #[test]
     fn zero_clears_only_its_range() {
         let mut memory = SparseMemory::new(WINDOW_BASE + 0x3000);
-        memory.write_u64(WINDOW_BASE + 0x1000, 5);
-        memory.write_u64(WINDOW_BASE + 0x2000, 6);
-        memory.zero(WINDOW_BASE + 0x1000, 0x1000);
-        assert_eq!(memory.read_u64(WINDOW_BASE + 0x1000), 0);
-        assert_eq!(memory.read_u64(WINDOW_BASE + 0x2000), 6);
+        memory.write_u64(WINDOW_BASE + 0x1000, 5).unwrap();
+        memory.write_u64(WINDOW_BASE + 0x2000, 6).unwrap();
+        memory.zero(WINDOW_BASE + 0x1000, 0x1000).unwrap();
+        assert_eq!(memory.read_u64(WINDOW_BASE + 0x1000), Ok(0));
+        assert_eq!(memory.read_u64(WINDOW_BASE + 0x2000), Ok(6));
     }
 
     #[test]
     fn host_addresses_stop_at_the_window() {
         let memory = SparseMemory::new(WINDOW_BASE + 0x1000);
-        assert_eq!(memory.host_address(WINDOW_BASE, 0x1000), Some(WINDOW_BASE));
-        assert_eq!(memory.host_address(WINDOW_BASE, 0x1001), None);
-        assert_eq!(memory.host_address(WINDOW_BASE - 1, 1), None);
+        assert_eq!(memory.host_address(WINDOW_BASE, 0x1000), Ok(WINDOW_BASE));
+        assert!(memory.host_address(WINDOW_BASE, 0x1001).is_err());
+        assert!(memory.host_address(WINDOW_BASE - 1, 1).is_err());
+    }
+
+    #[test]
+    fn accesses_outside_the_window_or_out_of_line_fail() {
+        let mut memory = SparseMemory::new(WINDOW_BASE + 0x1000);
+        assert_eq!(memory.read_u64(WINDOW_BASE - 8), Err(MemoryError::Outside(WINDOW_BASE - 8)));
+        assert!(memory.write_u64(WINDOW_BASE + 0xFFC, 0).is_err());
+        assert!(memory.write_u32(WINDOW_BASE + 2, 0).is_err());
+        assert!(memory.zero(WINDOW_BASE, 0x1001).is_err());
+        assert_eq!(memory.read_bytes(WINDOW_BASE - 8, &mut [0; 8]), 0);
+        assert_eq!(memory.read_bytes(WINDOW_BASE + 0xFFC, &mut [0; 8]), 4);
     }
 }

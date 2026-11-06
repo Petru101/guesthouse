@@ -17,7 +17,7 @@ pub use driver::{
 };
 pub use guesthouse_messages::Status;
 pub use guesthouse_messages::registry::RegistryName;
-pub use memory::{GuestMemory, PagesView, WINDOW_BASE, in_window};
+pub use memory::{GuestMemory, MemoryError, PagesView, WINDOW_BASE, in_window};
 pub use types::*;
 
 use std::os::fd::OwnedFd;
@@ -152,14 +152,14 @@ pub trait HostServices {
     fn shared_span(&self, address: u64) -> Option<SharedSpan>;
 
     /// Writes a 32-bit word by guest physical address, where the GPU may be reading.
-    fn write_u32(&mut self, address: u64, value: u32);
+    fn write_u32(&mut self, address: u64, value: u32) -> Result<(), MemoryError>;
 
     /// Writes a 64-bit word by guest physical address, where the GPU may be reading.
-    fn write_u64(&mut self, address: u64, value: u64);
+    fn write_u64(&mut self, address: u64, value: u64) -> Result<(), MemoryError>;
 
     /// Reads by guest physical address.
     fn read_guest(&self, address: u64, out: &mut [u8]) -> usize;
 
     /// A fence's value, by its guest physical address.
-    fn fence_value(&self, fence: u64) -> u64;
+    fn fence_value(&self, fence: u64) -> Result<u64, MemoryError>;
 }

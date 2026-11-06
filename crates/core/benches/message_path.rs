@@ -4,7 +4,7 @@
 //! worst case. Run it with `cargo bench -p guesthouse-core`. The number covers parsing, bookkeeping
 //! and building the reply. It does not cover the socket, QEMU or the guest.
 
-use guesthouse_backend::{Backend, GuestMemory, PagesView};
+use guesthouse_backend::{Backend, GuestMemory, MemoryError, PagesView};
 use guesthouse_backend_standin::StandIn;
 use guesthouse_core::{Config, MemoryLimits, ReplyTicket, Session};
 use guesthouse_messages::wire::{set_u32, set_u64, u32_at};
@@ -30,24 +30,28 @@ impl FlatMemory {
 }
 
 impl GuestMemory for FlatMemory {
-    fn window(&self) -> Range<u64> {
-        IO_SPACE..IO_SPACE + WINDOW
+    fn window(&self) -> Result<Range<u64>, MemoryError> {
+        Ok(IO_SPACE..IO_SPACE + WINDOW)
     }
-    fn read_u64(&self, address: u64) -> u64 {
-        self.0[Self::index(address)]
+    fn read_u64(&self, address: u64) -> Result<u64, MemoryError> {
+        self.0.get(Self::index(address)).copied().ok_or(MemoryError::Outside(address))
     }
-    fn write_u64(&mut self, address: u64, value: u64) {
-        self.0[Self::index(address)] = value;
+    fn write_u64(&mut self, address: u64, value: u64) -> Result<(), MemoryError> {
+        *self.0.get_mut(Self::index(address)).ok_or(MemoryError::Outside(address))? = value;
+        Ok(())
     }
-    fn write_u32(&mut self, _address: u64, _value: u32) {}
+    fn write_u32(&mut self, _address: u64, _value: u32) -> Result<(), MemoryError> {
+        Ok(())
+    }
     fn read_bytes(&self, _address: u64, _out: &mut [u8]) -> usize {
         0
     }
-    fn zero(&mut self, address: u64, length: u64) {
+    fn zero(&mut self, address: u64, length: u64) -> Result<(), MemoryError> {
         self.0[Self::index(address)..Self::index(address + length)].fill(0);
+        Ok(())
     }
-    fn host_address(&self, address: u64, _length: u64) -> Option<u64> {
-        Some(address)
+    fn host_address(&self, address: u64, _length: u64) -> Result<u64, MemoryError> {
+        Ok(address)
     }
     fn map_pages(&mut self, _pages: &[u64]) -> io::Result<PagesView> {
         Err(io::ErrorKind::Unsupported.into())

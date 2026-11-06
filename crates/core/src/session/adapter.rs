@@ -42,7 +42,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
 
     pub(super) fn set_io_space(&mut self, message: &[u8], out: &mut Vec<u8>) -> Handled {
         let request = SetIoSpace::parse(message)?;
-        let placed = IoSpace::place(request.start, &self.memory.window());
+        let placed = IoSpace::place(request.start, &self.memory.window()?);
         // Fence pages already live where the GPU was told, so moving them now would split the two.
         let moved = self.fences.block.is_some() && placed != self.io_space;
         let Some(placed) = placed.filter(|_| !moved) else {

@@ -176,6 +176,16 @@ fn around(records: &[Record<'_>]) -> Around {
     found
 }
 
+/// Moves a fence as the recording says it moved.
+fn write_fence(
+    router: &mut Router<RecordedAnswers, SparseMemory>,
+    address: u64,
+    value: u64,
+) -> Result<(), BadRecording> {
+    let memory = router.session_mut().memory_mut();
+    memory.write_u64(address, value).map_err(|error| BadRecording(error.to_string()))
+}
+
 /// Replays a whole recording. Differences go in the report and do not stop it, as a later count
 /// says how far one mistake spread.
 pub fn replay(recording: &Recording<'_>) -> Result<Report, BadRecording> {
@@ -195,7 +205,7 @@ pub fn replay(recording: &Recording<'_>) -> Result<Report, BadRecording> {
         }
         let shaped_by = around(&recording.records[index + 1..]);
         for &(address, value) in &shaped_by.fences_in_handler {
-            router.session_mut().memory_mut().write_u64(address, value);
+            write_fence(&mut router, address, value)?;
         }
         let message = message_of(frame).ok_or_else(|| BadRecording("a frame cannot be read".into()))?;
         let expected = replies.get(&index).copied();
@@ -231,7 +241,7 @@ pub fn replay(recording: &Recording<'_>) -> Result<Report, BadRecording> {
             taken.map_err(|error| BadRecording(error.to_string()))?;
         }
         for (address, value) in shaped_by.fences_after {
-            router.session_mut().memory_mut().write_u64(address, value);
+            write_fence(&mut router, address, value)?;
         }
         router.poll(now, &mut sink).map_err(|error| BadRecording(error.to_string()))?;
         report.messages += 1;

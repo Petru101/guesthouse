@@ -102,7 +102,7 @@ fn the_message_path_does_not_allocate() {
     let count = allocations_during(|round| {
         set_u64(&mut submission, 0x20, round + 1);
         let _ = session.handle_message(&submission, TICKET, &mut out);
-        session.memory_mut().write_u64(fence, round + 1);
+        session.memory_mut().write_u64(fence, round + 1).unwrap();
         let _ = session.poll(now);
     });
     assert_eq!(count, 0, "a submission on the GPU, and watching its fence");

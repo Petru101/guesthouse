@@ -165,7 +165,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             GpuTook::Nothing => {
                 if let Some(queue) = self.queues.get(&request.queue) {
                     // Nothing ran, so stand in for the GPU where the guest would notice.
-                    self.memory.write_u64(queue.fence, value);
+                    self.memory.write_u64(queue.fence, value)?;
                 }
             }
         }
@@ -193,7 +193,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
                 self.retry_later(message);
                 return Ok(());
             }
-            GpuTook::Nothing => self.memory.write_u64(fence, value),
+            GpuTook::Nothing => self.memory.write_u64(fence, value)?,
         }
         answer_status(Status::SUCCESS, out);
         Ok(())
