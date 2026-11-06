@@ -11,6 +11,7 @@
 //! | 16    | nonzero asks for the GPU's cache |
 
 mod memory;
+mod random_messages;
 
 use guesthouse_backend::{
     AdapterFacts, AllocationShape, Backend, BackendError, CardLabel, DriverFound, DriverSurvey, GpuRange,
@@ -18,6 +19,7 @@ use guesthouse_backend::{
     SpaceId, StagingCopy, StagingStart, Status, SurfaceShape, UnmapRequest, VendorQuery, Work, WorkStart,
 };
 pub use memory::SparseMemory;
+pub use random_messages::RandomMessages;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::File;
 use std::os::fd::OwnedFd;
@@ -36,6 +38,7 @@ pub const NODE_WITHOUT_CHANNEL: u32 = 7;
 const COLOUR_8_BIT: u32 = 7;
 const FORMAT_32_BIT: u32 = 21;
 const EXPORTED_FILE: &str = "/dev/null";
+const BYTES_PER_PIXEL: u32 = 4;
 
 /// See the crate documentation.
 #[derive(Debug)]
@@ -75,8 +78,8 @@ struct Space {
 
 impl Space {
     fn overlaps(&self, address: u64, length: u64) -> bool {
-        let before = self.mappings.range(..address + length).next_back();
-        before.is_some_and(|(&start, &size)| start + size > address)
+        let before = self.mappings.range(..address.saturating_add(length)).next_back();
+        before.is_some_and(|(&start, &size)| start.saturating_add(size) > address)
     }
 }
 
@@ -247,7 +250,7 @@ impl Backend for StandIn {
             width,
             height,
             format: FORMAT_32_BIT,
-            pitch: width * 4,
+            pitch: width.saturating_mul(BYTES_PER_PIXEL),
             tiling: None,
             refresh: (60, 1),
             samples: (1, 0),

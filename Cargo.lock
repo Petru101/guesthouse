@@ -30,6 +30,7 @@ name = "guesthouse-backend-standin"
 version = "0.1.0"
 dependencies = [
  "guesthouse-backend",
+ "guesthouse-messages",
 ]
 
 [[package]]
