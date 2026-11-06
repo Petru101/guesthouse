@@ -23,7 +23,7 @@ static void Sdr_is_bit_exact_through_the_whole_pipeline()
 		float3 light = DecodeSource(SOURCE_SRGB, float3(texel, texel, texel), NO_SDR_BOOST);
 		light = Through(rows, light);
 		const uint packed = PackXrgb8888(EncodeWire(WIRE_SDR, light, NO_SDR_BOOST));
-		CHECK(packed == (value << 16 | value << 8 | value));
+		CHECK(packed == (0xFF000000u | value << 16 | value << 8 | value));
 	}
 }
 
@@ -125,16 +125,16 @@ static void The_scalar_multiplies_the_matrix_and_its_offset()
 
 static void Channels_land_where_drm_says()
 {
-	CHECK(PackXrgb8888(float3(1, 0, 0)) == 0x00FF0000u);
-	CHECK(PackXrgb8888(float3(0, 0, 1)) == 0x000000FFu);
-	CHECK(PackXbgr2101010(float3(1, 0, 0)) == 0x000003FFu);
-	CHECK(PackXbgr2101010(float3(0, 1, 0)) == 0x000FFC00u);
-	CHECK(PackXbgr2101010(float3(0, 0, 1)) == 0x3FF00000u);
+	CHECK(PackXrgb8888(float3(1, 0, 0)) == 0xFFFF0000u);
+	CHECK(PackXrgb8888(float3(0, 0, 1)) == 0xFF0000FFu);
+	CHECK(PackXbgr2101010(float3(1, 0, 0)) == 0xC00003FFu);
+	CHECK(PackXbgr2101010(float3(0, 1, 0)) == 0xC00FFC00u);
+	CHECK(PackXbgr2101010(float3(0, 0, 1)) == 0xFFF00000u);
 }
 
 static void Out_of_range_never_wraps()
 {
-	CHECK(PackXrgb8888(float3(2.0f, -1.0f, 0)) == 0x00FF0000u);
+	CHECK(PackXrgb8888(float3(2.0f, -1.0f, 0)) == 0xFFFF0000u);
 	const float3 encoded = EncodeWire(WIRE_HDR, float3(-1.0f, 1000.0f, 0), NO_SDR_BOOST);
 	CHECK_NEAR(encoded.x, 0.0, 1e-6);
 	CHECK_NEAR(encoded.y, 1.0, 1e-5);

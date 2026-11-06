@@ -29,6 +29,11 @@ static const float SRGB_ENCODED_LIMIT = 0.0031308f;
 static const float UNORM8_MAX = 255.0f;
 static const float UNORM10_MAX = 1023.0f;
 
+// The padding bits of each wire format. They're meant to be ignored, but set, a reader that takes them for alpha still sees
+// an opaque pixel and not a hole.
+static const uint XRGB8888_PADDING = 0xFF000000u;
+static const uint XBGR2101010_PADDING = 0xC0000000u;
+
 float SrgbToLinear1(float encoded)
 {
 	if (encoded <= SRGB_LINEAR_LIMIT)
@@ -104,13 +109,13 @@ uint Unorm(float value, float top)
 // DRM's XRGB8888: B in the low byte.
 uint PackXrgb8888(float3 encoded)
 {
-	return (Unorm(encoded.x, UNORM8_MAX) << 16) | (Unorm(encoded.y, UNORM8_MAX) << 8) | Unorm(encoded.z, UNORM8_MAX);
+	return XRGB8888_PADDING | (Unorm(encoded.x, UNORM8_MAX) << 16) | (Unorm(encoded.y, UNORM8_MAX) << 8) | Unorm(encoded.z, UNORM8_MAX);
 }
 
 // DRM's XBGR2101010: R in the low bits.
 uint PackXbgr2101010(float3 encoded)
 {
-	return (Unorm(encoded.z, UNORM10_MAX) << 20) | (Unorm(encoded.y, UNORM10_MAX) << 10) | Unorm(encoded.x, UNORM10_MAX);
+	return XBGR2101010_PADDING | (Unorm(encoded.z, UNORM10_MAX) << 20) | (Unorm(encoded.y, UNORM10_MAX) << 10) | Unorm(encoded.x, UNORM10_MAX);
 }
 
 #endif
