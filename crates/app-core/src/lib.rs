@@ -29,6 +29,7 @@ pub mod tasks;
 #[doc(hidden)]
 pub mod testing;
 pub mod text;
+pub mod usb;
 pub mod vm_args;
 pub mod vm_host;
 
