@@ -1,6 +1,7 @@
 //! What has to be true of this PC for QEMU to start with the forwarded GPU. Each of these would stop
 //! QEMU or its sandbox dead, and that would cost the VM, so they're asked first and cost only the GPU.
 
+use super::gpu_off::{GUEST_NO_ALLOW_LIST, GUEST_NO_DEVICE, GUEST_NO_SANDBOX, GpuOff};
 use std::path::Path;
 use std::process::{Command, Stdio};
 
@@ -39,17 +40,22 @@ fn sandbox_runs() -> bool {
 }
 
 /// Says why QEMU can't start with the forwarded GPU, or `None` if it can.
-pub fn forwarding_problem(qemu: &Path, allow_list: &Path) -> Option<String> {
+pub fn forwarding_problem(qemu: &Path, allow_list: &Path) -> Option<GpuOff> {
     if !has_device(qemu) {
-        return Some("This QEMU has no nvfwd device. It needs a build with the device added.".to_owned());
+        let detail =
+            format!("{} has no nvfwd device. It needs a build with the device added.", qemu.display());
+        return Some(GpuOff::new(GUEST_NO_DEVICE, detail));
     }
     if !allow_list.exists() {
-        return Some(format!("{} is missing, so no call could reach the host.", allow_list.display()));
+        let detail = format!("{} is missing, so no call could reach the host.", allow_list.display());
+        return Some(GpuOff::new(GUEST_NO_ALLOW_LIST, detail));
     }
     (!sandbox_runs()).then(|| {
-        "bubblewrap won't run here, and QEMU doesn't get the GPU without its sandbox. Install bubblewrap, \
-         and check that this PC allows user namespaces."
-            .to_owned()
+        GpuOff::new(
+            GUEST_NO_SANDBOX,
+            "bubblewrap won't run here, and QEMU doesn't get the GPU without its sandbox. Install bubblewrap, \
+             and check that this PC allows user namespaces.",
+        )
     })
 }
 
@@ -71,13 +77,13 @@ mod tests {
     fn a_qemu_with_no_device_is_named() {
         let scratch = Scratch::new();
         let said = forwarding_problem(&fake_qemu(&scratch, ""), Path::new("/nothing")).unwrap();
-        assert!(said.contains("no nvfwd device"));
+        assert_eq!(said.for_guest, GUEST_NO_DEVICE);
     }
 
     #[test]
     fn a_qemu_that_is_not_there_counts_as_having_no_device() {
         let said = forwarding_problem(Path::new("/nothing/qemu"), Path::new("/nothing")).unwrap();
-        assert!(said.contains("no nvfwd device"));
+        assert_eq!(said.for_guest, GUEST_NO_DEVICE);
     }
 
     #[test]
@@ -85,6 +91,7 @@ mod tests {
         let scratch = Scratch::new();
         let said =
             forwarding_problem(&fake_qemu(&scratch, DEVICE_ANSWER), &scratch.path("allow.txt")).unwrap();
-        assert!(said.contains("allow.txt"));
+        assert!(said.detail.contains("allow.txt"));
+        assert!(!said.guest_text().contains('/'));
     }
 }

@@ -6,6 +6,9 @@ use super::driver_files;
 use super::driver_versions::{
     DriverHost, TESTED_VERSIONS, branch_refusal, installed_versions, refusal, untested_warning,
 };
+use super::gpu_off::{
+    GUEST_DRIVER_FILES, GUEST_NO_SOURCE, GUEST_TABLES_DIFFER, GUEST_UNKNOWN_DRIVER, GpuOff,
+};
 use super::tables::{TABLE_FILES, match_the_device, write_tables};
 use crate::failure::Result;
 use crate::iso::iso_maker;
@@ -38,8 +41,8 @@ const READ_ONLY: u32 = 0o444;
 pub enum Outcome {
     /// The image to attach, and a warning if this version is untested.
     Ready { image: PathBuf, warning: Option<String> },
-    /// Why the VM starts without a GPU, in words the guest can show too.
-    Refused(String),
+    /// Why the VM starts without a GPU.
+    Refused(GpuOff),
 }
 
 fn source_version(tree: &Path) -> Option<String> {
@@ -143,19 +146,21 @@ fn copy_file(source: &Path, target: &Path, place: &str) -> Result<()> {
 }
 
 /// Everything about the host that can refuse the image, before anything is built.
-fn check_before_building(host: &dyn DriverHost, tree: &Path) -> std::result::Result<String, String> {
+fn check_before_building(host: &dyn DriverHost, tree: &Path) -> std::result::Result<String, GpuOff> {
     let Some(loaded) = host.loaded_version() else {
-        return Err(refusal(None, &installed_versions(host)).unwrap_or_default());
+        let detail = refusal(None, &installed_versions(host)).unwrap_or_default();
+        return Err(GpuOff::new(GUEST_DRIVER_FILES, detail));
     };
     if let Some(reason) = branch_refusal(&loaded) {
-        return Err(reason);
+        return Err(GpuOff::new(GUEST_UNKNOWN_DRIVER, reason));
     }
     if source_version(tree).as_deref() != Some(&loaded) {
-        return Err(format!(
+        let detail = format!(
             "{} is not NVIDIA's source at version {loaded}, and the guest's modules need its headers. Get it \
              with: git clone --depth 1 --branch {loaded} https://github.com/NVIDIA/open-gpu-kernel-modules",
             tree.display()
-        ));
+        );
+        return Err(GpuOff::new(GUEST_NO_SOURCE, detail));
     }
     Ok(loaded)
 }
@@ -174,15 +179,16 @@ fn build(
     names: &[String],
     (loaded, id): (&str, &str),
     (staging, image): (&Path, &Path),
-) -> Result<Option<String>> {
+) -> Result<Option<GpuOff>> {
     let tables = staging.join("tables");
     fs::create_dir_all(&tables)?;
     write_tables(tree, &tables)?;
     if !match_the_device(&tables)? {
-        return Ok(Some(format!(
+        let detail = format!(
             "Driver {loaded} changes calls that the nvfwd device checks, so this QEMU can't forward them \
              safely. It needs a Guesthouse that knows this driver."
-        )));
+        );
+        return Ok(Some(GpuOff::new(GUEST_TABLES_DIFFER, detail)));
     }
     let content = staging.join("image");
     fs::create_dir_all(&content)?;
@@ -199,9 +205,8 @@ fn build(
         .arg(&partial)
         .arg(&content))?;
     if !still_matches(host, loaded) {
-        return Ok(Some(
-            "The host's driver changed while the image was being made. Start the VM again.".to_owned(),
-        ));
+        let detail = "The host's driver changed while the image was being made. Start the VM again.";
+        return Ok(Some(GpuOff::new(GUEST_DRIVER_FILES, detail)));
     }
     fs::set_permissions(&partial, fs::Permissions::from_mode(READ_ONLY))?;
     fs::rename(&partial, image)?;
@@ -223,13 +228,14 @@ pub fn prepare(host: &dyn DriverHost, sources: &Path, tree: &Path, folder: &Path
         return Ok(Outcome::Ready { image, warning });
     }
     if let Some(reason) = refusal(Some(&loaded), &installed_versions(host)) {
-        return Ok(Outcome::Refused(reason));
+        return Ok(Outcome::Refused(GpuOff::new(GUEST_DRIVER_FILES, reason)));
     }
     let pairs = driver_files::chosen(&host.driver_files());
     let places: Vec<String> = pairs.iter().map(|(_, place)| place.clone()).collect();
     let lacking = driver_files::missing(&places, &loaded);
     if !lacking.is_empty() {
-        return Ok(Outcome::Refused(format!("The driver image would lack:\n  {}", lacking.join("\n  "))));
+        let detail = format!("The driver image would lack:\n  {}", lacking.join("\n  "));
+        return Ok(Outcome::Refused(GpuOff::new(GUEST_DRIVER_FILES, detail)));
     }
     let staging = folder.join(format!("staging-{}", std::process::id()));
     fs::create_dir_all(&staging)?;
@@ -282,7 +288,7 @@ mod tests {
 
     fn reason(outcome: Outcome) -> String {
         match outcome {
-            Outcome::Refused(reason) => reason,
+            Outcome::Refused(off) => off.detail,
             Outcome::Ready { .. } => panic!("it should have been refused"),
         }
     }

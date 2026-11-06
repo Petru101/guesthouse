@@ -7,6 +7,7 @@ pub mod driver_host;
 pub mod driver_image;
 pub mod driver_versions;
 pub mod forwarding;
+pub mod gpu_off;
 pub mod seed;
 mod tables;
 

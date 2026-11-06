@@ -8,6 +8,8 @@ GLIB := $(shell pkg-config --cflags --libs glib-2.0)
 TESTS := test_runs test_callrate test_objects test_maps test_bounce test_rmargs test_clients test_accounting
 
 all: $(TESTS:%=$(BUILD)/%) $(BUILD)/test_sensors $(BUILD)/fake_sensord
+	@echo "== throttle comes first"
+	@./throttle_first.sh $(DEVICE)
 	@# The device's tables live as long as the VM and have no free, so a leak report means nothing here.
 	@for t in $(TESTS:%=$(BUILD)/%); do echo "== $$t"; ASAN_OPTIONS=detect_leaks=0 $$t || exit 1; done
 	@echo "== test_sensors"

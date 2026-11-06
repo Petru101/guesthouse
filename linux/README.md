@@ -25,7 +25,7 @@ You need a Fedora host with RPM Fusion's NVIDIA packages, an NVIDIA card with th
 3. Get NVIDIA's source at the loaded driver's version, into `src/open-gpu-kernel-modules` in the data store, which is `~/.local/share/guesthouse`, or say where it is with `NVIDIA_SOURCE`. The guest's modules build against its headers, which aren't in this repository.
 4. Set `GUESTHOUSE_PROGRAM` to this repository and `QEMU` to your build, and make an Ubuntu machine from Ubuntu's server ISO.
 
-The install takes about ten minutes with no hands, and the first boot builds everything. If anything about the driver is in doubt the GPU stays off and the VM still boots, and the guest says why. As root in the guest, `nvfwd-check` says which parts work.
+The install takes about ten minutes with no hands, and the first boot builds everything. If anything about the driver is in doubt the GPU stays off and the VM still boots. The guest gets one plain sentence and the app has the details, as those can hold your paths. As root in the guest, `nvfwd-check` says which parts work.
 
 ## On a driver I haven't tried
 
@@ -71,4 +71,4 @@ This is the first step and no more. QEMU still opens `/dev/nvidia*` itself, with
 
 `make -C linux/tests/device QEMU=/path/to/patched/qemu BUILD=/somewhere` runs the device's checks with no GPU and no VM, under ASan and UBSan. It needs `libasan`, `libubsan` and glib's headers.
 
-`tests/` has small programs for CUDA, Vulkan and OpenGL. The CUDA and Vulkan ones count wrong values, and `glbench` writes an image to compare with a run on the host.
+`tests/` has small programs for CUDA, Vulkan and OpenGL, and `sensorrate`, which shows that sensor calls wait for the call rate. The CUDA and Vulkan ones count wrong values, and `glbench` writes an image to compare with a run on the host.

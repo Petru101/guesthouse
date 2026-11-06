@@ -103,9 +103,10 @@ impl LoaderHost {
     }
 }
 
+/// Plain files, and links to them. Opening a pipe that had a library's name would hang the app.
 fn files_in(folder: &Path) -> Vec<PathBuf> {
     let entries = fs::read_dir(folder).into_iter().flatten().flatten();
-    entries.map(|entry| entry.path()).collect()
+    entries.map(|entry| entry.path()).filter(|path| path.is_file()).collect()
 }
 
 impl DriverHost for LoaderHost {
@@ -307,6 +308,21 @@ mod tests {
         let unique: BTreeSet<&String> = found.iter().collect();
         assert_eq!(found.len(), unique.len());
         assert_eq!(missing(&found, V), Vec::<String>::new());
+    }
+
+    #[test]
+    fn only_files_count_whatever_they_are_called() {
+        let scratch = Scratch::new();
+        let host = host_on(&scratch, &ARCH, V);
+        fs::create_dir(scratch.path("usr/lib/libnvidia-folder.so.1")).unwrap();
+        let pipe = scratch.path("usr/lib/libnvidia-pipe.so.1");
+        assert!(Command::new("mkfifo").arg(&pipe).status().unwrap().success());
+        symlink("libnvidia-gone.so.9", scratch.path("usr/lib/libnvidia-dangling.so.1")).unwrap();
+        let found = host.driver_files();
+        assert!(
+            !found.iter().any(|file| ["folder", "pipe", "dangling"].iter().any(|name| file.contains(name)))
+        );
+        assert!(found.iter().any(|file| file.contains("libcuda")));
     }
 
     #[test]
