@@ -2,10 +2,14 @@
 
 pub mod bridge;
 pub mod clock;
+pub mod context;
 pub mod failure;
+pub mod log;
+pub mod monitor;
 pub mod network;
 pub mod paths;
 pub mod random;
+pub mod settings;
 pub mod slots;
 #[doc(hidden)]
 pub mod testing;
