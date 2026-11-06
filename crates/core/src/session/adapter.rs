@@ -9,6 +9,7 @@ use guesthouse_messages::adapter::{
     segment_sizes,
 };
 use guesthouse_messages::address::{memory_answer, memory_group};
+use guesthouse_messages::indirect;
 use guesthouse_messages::queue::{DriverEscape, clock_answer};
 use guesthouse_messages::registry::RegistryQuery;
 use guesthouse_messages::wire::{align_up, pad_to, put_u32, put_u64, set_u32, u32_at};
@@ -64,8 +65,14 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
     pub(super) fn driver_escape(&mut self, message: &[u8], out: &mut Vec<u8>) -> Handled {
         let escape = DriverEscape::parse(message)?;
         out.extend_from_slice(escape.data);
-        self.backend.escape(out);
+        let ours = indirect::is_ours(escape.data);
+        if !ours {
+            self.backend.escape(out);
+        }
         pad_to(out, align_up(escape.size as u64, ESCAPE_ALIGN) as usize);
+        if ours {
+            self.indirect_message(MessageHeader::process_of(message)?, out)?;
+        }
         Ok(())
     }
 

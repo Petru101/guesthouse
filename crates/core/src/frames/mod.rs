@@ -4,15 +4,20 @@
 //! be. It's offered these from the main loop and never from a message's handler, so a slow viewer
 //! can't reach the guest. What a sink can't take now is offered again, and until then it stays here.
 
+mod indirect;
 mod picture;
 mod ring;
 mod slots;
 
+pub use indirect::FrameLight;
+pub(crate) use indirect::{GuestSlot, IndirectRing, Landing, Registering, ReplyWaiting};
 pub use picture::Picture;
 pub use ring::FrameCounts;
+pub use ring::ViewerFacts;
 pub(crate) use ring::{LiveRing, RING_SLOTS, ScreenFrames, SlotInFlight, SlotMemory};
 pub use slots::{NotTheViewers, Slots};
 
+use guesthouse_messages::indirect::Look;
 use std::os::fd::BorrowedFd;
 
 /// A set of buffers in video memory that frames take turns in. A new generation means the old
@@ -32,6 +37,9 @@ pub struct Frame {
     pub slot: u32,
     pub sequence: u64,
     pub picture: Picture,
+    pub look: Look,
+    /// What the guest said about this frame's brightness, if it said anything.
+    pub light: Option<FrameLight>,
 }
 
 /// What became of something offered to a sink.

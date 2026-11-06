@@ -7,21 +7,23 @@
 
 use crate::server::OWNER_ONLY;
 use guesthouse_backend::{Backend, GuestMemory};
-use guesthouse_core::{Delivery, Frame as ReadyFrame, FrameRing, FrameSink, Session};
+use guesthouse_core::{Delivery, Frame as ReadyFrame, FrameRing, FrameSink, Session, ViewerFacts};
 use guesthouse_frame_socket::{
-    Colour, Descriptor, Format, Frame, FrameListener, FrameSocket, Hello, Message, Packet, Ring, SOCKET_NAME,
+    Colour, Descriptor, Format, Frame, FrameListener, FrameSocket, Hello, Light, Mastering, Message, Packet,
+    Ring, SOCKET_NAME,
 };
+use guesthouse_messages::indirect::Look;
 use std::fs::{self, Permissions};
 use std::io::{self, ErrorKind};
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
-/// DRM's name for 8-bit pixels, blue first in memory, in rows from top to bottom. That's what an
-/// SDR Windows desktop is. HDR comes with the indirect display driver.
-const XRGB8888: u32 = u32::from_le_bytes(*b"XR24");
 const LINEAR: u64 = 0;
-const SHOWN_FORMAT: Format = Format { fourcc: XRGB8888, modifier: LINEAR };
+/// What every viewer has to take: what an SDR Windows desktop is.
+const SDR_FORMAT: Format = Format { fourcc: Look::SDR.fourcc, modifier: LINEAR };
+/// What an HDR picture from the indirect display driver is, for a viewer that offers it.
+const HDR_FORMAT: Format = Format { fourcc: Look::HDR.fourcc, modifier: LINEAR };
 /// How many messages one viewer gets dealt with in a turn, so that one sending as fast as it can
 /// leaves room for the guest. The rest are still there next time round.
 const MOST_MESSAGES_A_TURN: usize = 64;
@@ -42,7 +44,7 @@ pub struct ViewerPort {
 }
 
 fn can_show(hello: &Hello) -> bool {
-    hello.formats.contains(&SHOWN_FORMAT)
+    hello.formats.contains(&SDR_FORMAT)
 }
 
 impl ViewerPort {
@@ -118,10 +120,15 @@ impl ViewerPort {
                 log::info!("the viewer offers {} formats", hello.formats.len());
                 viewer.greeted = true;
                 session.viewer_arrived();
+                session.viewer_described(ViewerFacts {
+                    shows_hdr: hello.formats.contains(&HDR_FORMAT),
+                    refresh_millihertz: hello.refresh_millihertz,
+                    peak_nits: hello.peak_nits,
+                });
                 true
             }
             Message::Hello(_) if !viewer.greeted => {
-                log::warn!("the viewer can't show XRGB8888, which is all there is for now");
+                log::warn!("the viewer can't show XRGB8888, which every viewer must");
                 false
             }
             Message::Release(release) if viewer.greeted => {
@@ -161,14 +168,40 @@ impl FrameSink for ViewerPort {
     }
 
     fn frame_ready(&mut self, frame: &ReadyFrame) -> Delivery {
+        if let Some(light) = frame.light.filter(|_| frame.look == Look::HDR) {
+            let mastering = light.mastering.map(|from| Mastering {
+                chromaticity: from.chromaticity,
+                max_nits: from.max_nits,
+                min: from.min,
+                max_content_nits: from.max_content_nits,
+                max_frame_average_nits: from.max_frame_average_nits,
+            });
+            let light = Light {
+                generation: frame.generation,
+                slot: frame.slot,
+                sdr_white_nits: light.sdr_white_nits,
+                mastering,
+            };
+            // Sending this again with its frame, after a full socket, does no harm.
+            let delivery = self.send(&Message::Light(light), &[]);
+            if delivery != Delivery::Sent {
+                return delivery;
+            }
+        }
         let picture = frame.picture;
+        let look = frame.look;
         let descriptor = Descriptor {
             width: picture.width,
             height: picture.height,
             stride: picture.pitch,
             offset: 0,
-            format: SHOWN_FORMAT,
-            colour: Colour::SRGB,
+            format: Format { fourcc: look.fourcc, modifier: LINEAR },
+            colour: Colour {
+                primaries: look.primaries,
+                transfer: look.transfer,
+                matrix: look.matrix,
+                full_range: look.full_range,
+            },
         };
         let frame =
             Frame { generation: frame.generation, slot: frame.slot, sequence: frame.sequence, descriptor };

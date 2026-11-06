@@ -28,6 +28,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
     pub(super) fn destroy_process(&mut self, message: &[u8], out: &mut Vec<u8>) -> Handled {
         let process = MessageHeader::process_of(message)?;
         self.processes_32_bit.remove(&process);
+        self.process_going(process);
         if let Some(space) = self.spaces.remove(&process) {
             let action = DeferredAction::CloseSpace(space);
             self.deferred.push(crate::deferred::Deferred { waits: Vec::new(), action });
