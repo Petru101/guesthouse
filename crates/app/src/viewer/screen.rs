@@ -26,7 +26,7 @@ const POLL: Duration = Duration::from_millis(1);
 const FOLLOW_GUEST: Duration = Duration::from_secs(1);
 const SPINNER_SIZE: i32 = 48;
 const FIRST_RATIO: f32 = 16.0 / 9.0;
-const STYLE: &str = ".guest-screen { background: black; color: white; }
+const STYLE: &str = ".guest-screen { background: #000000; color: #ffffff; }
 .performance-overlay { background: rgba(0, 0, 0, 0.65); color: white; padding: 6px 10px; border-radius: 6px;
   font-size: smaller; font-feature-settings: \"tnum\"; }";
 
