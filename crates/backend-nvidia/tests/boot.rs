@@ -306,7 +306,7 @@ fn stale_bytes_after_a_ring_position_never_reach_a_channel() {
         let context = context(&mut session, node);
         let (queue, fence) = queue(&mut session, context);
         let reply = send(&mut session, &submission(queue, 1, &position_private(1, 1, commands)));
-        assert_eq!(reply, SUCCESS.to_le_bytes());
+        assert_eq!(reply, Status::UNSUCCESSFUL.0.to_le_bytes(), "the program has to hear of it");
         assert!(session.backend().device().rm.doorbells().is_empty());
         assert_eq!(channels_made(&session), 0);
         assert_eq!(session.memory().read_u64(fence), Ok(1), "nothing is left waiting");

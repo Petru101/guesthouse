@@ -159,6 +159,7 @@ fn signal_message(objects: &[u32], contexts: &[u32], values: &[u64]) -> Vec<u8> 
     request
 }
 
+mod failing;
 mod frame_ring;
 mod indirect;
 
@@ -819,7 +820,10 @@ mod mappings {
         session.memory_mut().write_u64(fence, 3).unwrap();
         session.poll(Instant::now());
         let rung = session.backend().doorbells.len();
-        submit(&mut session, queue, 8);
+        let mut request = message(Command::SubmitToHardwareQueue, 0x50);
+        set_u32(&mut request, 0x18, queue);
+        set_u64(&mut request, 0x20, 8);
+        assert_eq!(status_of(&send(&mut session, &request)), Status::UNSUCCESSFUL.0);
         assert_eq!(session.backend().doorbells.len(), rung);
         assert_eq!(session.memory().read_u64(queue_fence).unwrap(), 8);
     }
@@ -831,7 +835,7 @@ mod mappings {
         session.backend_mut().fail_next_map = true;
         session.memory_mut().write_u64(fence, 3).unwrap();
         session.poll(Instant::now());
-        assert_eq!(session.queue_failures, 0);
+        assert!(session.failed_queues.is_empty());
         assert!(session.work_allowed());
     }
 
@@ -1387,18 +1391,6 @@ mod queues {
         assert!(!session.poll(Instant::now() + crate::pending::QUEUE_TIMEOUT + Duration::from_secs(1)).any());
         assert_eq!(session.memory().read_u64(fence).unwrap(), 3);
         assert!(session.queues[&queue].failed);
-    }
-
-    #[test]
-    fn too_many_failed_queues_stop_all_work() {
-        let mut session = session();
-        session.queue_failures = crate::pending::MOST_QUEUE_FAILURES;
-        session.backend_mut().run_work = true;
-        let context = create_context(&mut session, 0);
-        let (queue, _, fence) = create_queue(&mut session, context);
-        submit(&mut session, queue, 1);
-        assert!(session.backend().doorbells.is_empty());
-        assert_eq!(session.memory().read_u64(fence).unwrap(), 1);
     }
 
     #[test]

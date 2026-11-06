@@ -322,10 +322,11 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
     /// addresses are there. Its commands are already on the GPU behind the update's fence, so holding
     /// the fence down only lasts until a queue times out and that raises it. Closing the channels
     /// first means nothing of this process can run, so its fences can go up, and the guest isn't left
-    /// waiting. The app draws nothing from here on, and other processes carry on. It doesn't count
-    /// towards the failures that stop all work, as a process can have more queues than that.
-    fn stop_space(&mut self, space: SpaceId) {
-        let in_space = self.queues.iter().filter(|(_, queue)| queue.space == space && !queue.failed);
+    /// waiting. The app draws nothing from here on, and other processes carry on. It hears of this at
+    /// its next submission, which fails. A failed update isn't a fault, so it doesn't count towards
+    /// stopping all work.
+    pub(crate) fn stop_space(&mut self, space: SpaceId) {
+        let in_space = self.queues.iter().filter(|(_, queue)| queue.space == space);
         let handles: Vec<u32> = in_space.map(|(&handle, _)| handle).collect();
         for handle in handles {
             self.backend.close_queue(handle);
