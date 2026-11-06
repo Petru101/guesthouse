@@ -1,6 +1,7 @@
 //! The guest's hardware cursor. Its picture comes as a sealed file, and its numbers can come from a
 //! guest, so they're checked before the file is read.
 
+use super::ring::file_size;
 use gtk::{gdk, glib};
 use guesthouse_frame_socket::CursorShape;
 use std::fs::File;
@@ -8,6 +9,8 @@ use std::os::fd::OwnedFd;
 use std::os::unix::fs::FileExt;
 
 const NO_POINTER: &str = "none";
+/// A 256 by 256 picture, as large as any cursor Windows has.
+const MOST_CURSOR_BYTES: u32 = 256 * 256 * 4;
 
 /// A cursor's picture, ready to show.
 #[derive(Clone)]
@@ -20,7 +23,8 @@ pub struct CursorPicture {
 impl CursorPicture {
     /// `None` if the file doesn't hold what the numbers say.
     pub fn read(shape: &CursorShape, file: OwnedFd) -> Option<Self> {
-        if !shape.fits() {
+        let holds = file_size(&file).is_some_and(|size| size >= u64::from(shape.size));
+        if !shape.fits() || shape.size > MOST_CURSOR_BYTES || !holds {
             return None;
         }
         let mut pixels = vec![0; shape.size as usize];
@@ -60,6 +64,12 @@ mod tests {
     fn numbers_that_dont_fit_are_refused_before_the_file_is_read() {
         let file = sealed_bytes("cursor", &[0; 16]).unwrap();
         assert!(CursorPicture::read(&shape(2, 8), file).is_none());
+    }
+
+    #[test]
+    fn a_huge_cursor_is_refused_before_anything_is_allocated() {
+        let file = sealed_bytes("cursor", &[0; 16]).unwrap();
+        assert!(CursorPicture::read(&shape(2, u32::MAX), file).is_none());
     }
 
     #[test]

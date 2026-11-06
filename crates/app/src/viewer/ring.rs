@@ -1,10 +1,27 @@
 //! The buffers a producer has shared, and the checks a frame must pass before they're touched.
 
 use guesthouse_frame_socket::{Descriptor, Frame, Ring};
+use rustix::fs::{SealFlags, SeekFrom, fcntl_get_seals, fstatfs, seek};
 use rustix::io::pread;
 use std::io;
-use std::os::fd::OwnedFd;
+use std::os::fd::{AsFd, OwnedFd};
 use std::sync::Arc;
+
+/// The filesystem a dmabuf's file is on. A dmabuf can't change size.
+const DMA_BUF_MAGIC: i64 = 0x444d_4142;
+
+/// How long a shared file is. A dmabuf's `fstat` says nothing, but seeking to its end works for both
+/// kinds, and the file's position isn't used: everything here reads at an offset.
+pub fn file_size(file: impl AsFd) -> Option<u64> {
+    seek(file, SeekFrom::End(0)).ok()
+}
+
+/// Whether a file will stay as long as it is now: a dmabuf, or a file in memory sealed against
+/// shrinking. A mapping past a file's end would bring the whole app down.
+fn cannot_shrink(file: &OwnedFd) -> bool {
+    let is_dmabuf = fstatfs(file).is_ok_and(|filesystem| filesystem.f_type == DMA_BUF_MAGIC);
+    is_dmabuf || fcntl_get_seals(file).is_ok_and(|seals| seals.contains(SealFlags::SHRINK))
+}
 
 /// One generation of buffers. Textures hold on to their slot's file, so an old ring's last picture
 /// can stay on screen after the ring has gone.
@@ -15,9 +32,11 @@ pub struct Buffers {
 }
 
 impl Buffers {
-    /// `None` unless there's a file for each slot.
+    /// `None` unless there's a file for each slot, as long as the ring says, and staying that long.
     pub fn new(ring: &Ring, fds: Vec<OwnedFd>) -> Option<Self> {
-        (fds.len() == ring.slots as usize).then(|| Self {
+        let holds =
+            |file: &OwnedFd| cannot_shrink(file) && file_size(file).is_some_and(|size| size >= ring.size);
+        (fds.len() == ring.slots as usize && fds.iter().all(holds)).then(|| Self {
             generation: ring.generation,
             size: ring.size,
             slots: fds.into_iter().map(Arc::new).collect(),
@@ -50,7 +69,7 @@ pub fn read_pixels(file: &OwnedFd, descriptor: &Descriptor) -> io::Result<Vec<u8
 mod tests {
     use super::*;
     use guesthouse_frame_socket::{Colour, Format};
-    use rustix::fs::{MemfdFlags, memfd_create};
+    use rustix::fs::{MemfdFlags, fcntl_add_seals, memfd_create};
     use rustix::io::pwrite;
 
     const SIZE: u64 = 4096;
@@ -64,9 +83,15 @@ mod tests {
         Frame { generation, slot, sequence: 1, descriptor: descriptor() }
     }
 
-    fn file() -> OwnedFd {
-        let file = memfd_create("slot", MemfdFlags::CLOEXEC).unwrap();
+    fn unsealed_file() -> OwnedFd {
+        let file = memfd_create("slot", MemfdFlags::CLOEXEC | MemfdFlags::ALLOW_SEALING).unwrap();
         pwrite(&file, &[7; SIZE as usize], 0).unwrap();
+        file
+    }
+
+    fn file() -> OwnedFd {
+        let file = unsealed_file();
+        fcntl_add_seals(&file, SealFlags::SHRINK).unwrap();
         file
     }
 
@@ -78,6 +103,18 @@ mod tests {
     fn a_ring_needs_a_file_for_each_slot() {
         let ring = Ring { generation: 1, slots: 2, size: SIZE };
         assert!(Buffers::new(&ring, vec![file()]).is_none());
+    }
+
+    #[test]
+    fn a_ring_larger_than_its_files_is_refused() {
+        let ring = Ring { generation: 1, slots: 1, size: 1 << 40 };
+        assert!(Buffers::new(&ring, vec![file()]).is_none());
+    }
+
+    #[test]
+    fn a_file_that_could_shrink_is_refused() {
+        let ring = Ring { generation: 1, slots: 1, size: SIZE };
+        assert!(Buffers::new(&ring, vec![unsealed_file()]).is_none());
     }
 
     #[test]
