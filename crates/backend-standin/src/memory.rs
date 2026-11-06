@@ -29,7 +29,10 @@ impl SparseMemory {
 impl SparseMemory {
     /// Refuses what the real memory refuses, so that a mistake in the core shows up here too.
     fn check(&self, address: u64, length: u64, align: u64) -> Result<(), MemoryError> {
-        let inside = in_window(&(WINDOW_BASE..self.window_end), address, length);
+        let in_view =
+            |view: &PagesView| (view.host_address..view.host_address + view.size).contains(&address);
+        let inside =
+            in_window(&(WINDOW_BASE..self.window_end), address, length) || self.views.iter().any(in_view);
         if inside && address.is_multiple_of(align) { Ok(()) } else { Err(MemoryError::Outside(address)) }
     }
 
@@ -67,7 +70,9 @@ impl GuestMemory for SparseMemory {
         if self.check(address, 0, 1).is_err() {
             return 0;
         }
-        let length = out.len().min((self.window_end - address) as usize);
+        // Views lie past the window, and only the window has an end to stop at.
+        let room = self.window_end.checked_sub(address).unwrap_or(out.len() as u64);
+        let length = out.len().min(room as usize);
         for (index, byte) in out[..length].iter_mut().enumerate() {
             let at = address + index as u64;
             *byte = self.word(at & !(WORD - 1)).to_le_bytes()[(at % WORD) as usize];
@@ -99,6 +104,18 @@ impl GuestMemory for SparseMemory {
     fn unmap_pages(&mut self, view: PagesView) {
         let index = self.views.iter().position(|&held| held == view).expect("a view unmapped twice");
         self.views.swap_remove(index);
+    }
+
+    /// A view's bytes are kept at its made-up address, which is past any window.
+    fn read_view(&self, view: PagesView, offset: u64, out: &mut [u8]) -> usize {
+        let length = view.size.saturating_sub(offset).min(out.len() as u64) as usize;
+        self.read_bytes(view.host_address + offset, &mut out[..length])
+    }
+
+    fn write_view_u32(&mut self, view: PagesView, offset: u64, value: u32) {
+        if offset + 4 <= view.size {
+            let _ = self.write_u32(view.host_address + offset, value);
+        }
     }
 }
 

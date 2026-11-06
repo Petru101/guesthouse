@@ -220,7 +220,12 @@ impl Backend for RecordedAnswers {
         }
     }
 
-    fn finish_queue_data(&mut self, private: &mut [u8], _serial: u32) -> Result<(), BackendError> {
+    fn finish_queue_data(
+        &mut self,
+        _queue: u32,
+        private: &mut [u8],
+        _serial: u32,
+    ) -> Result<(), BackendError> {
         self.note(Provenance::PartlyRecorded);
         let start = CreateHardwareQueue::PRIVATE;
         if let Some(recorded) = self.expected.get(start..start + private.len()) {

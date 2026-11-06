@@ -129,7 +129,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         self.context_queues.entry(request.context).or_default().push(queue);
         self.queue_progress.insert(progress, fence);
         self.queues_made = self.queues_made.wrapping_add(1);
-        self.backend.finish_queue_data(&mut out[CreateHardwareQueue::PRIVATE..], self.queues_made)?;
+        self.backend.finish_queue_data(queue, &mut out[CreateHardwareQueue::PRIVATE..], self.queues_made)?;
         CreateHardwareQueue::finish_answer(queue, progress, fence, fence_gpu_address, out);
         Ok(())
     }

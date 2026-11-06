@@ -76,4 +76,11 @@ pub trait GuestMemory {
     fn map_pages(&mut self, pages: &[u64]) -> io::Result<PagesView>;
 
     fn unmap_pages(&mut self, view: PagesView);
+
+    /// Copies bytes out of a view, as far as `out` goes or the view does. Returns how many.
+    fn read_view(&self, view: PagesView, offset: u64, out: &mut [u8]) -> usize;
+
+    /// A 32-bit field in a view, as a single store for the same reason as [`Self::write_u32`].
+    /// Does nothing past the end of the view.
+    fn write_view_u32(&mut self, view: PagesView, offset: u64, value: u32);
 }

@@ -270,7 +270,12 @@ impl Backend for StandIn {
         }
     }
 
-    fn finish_queue_data(&mut self, private: &mut [u8], serial: u32) -> Result<(), BackendError> {
+    fn finish_queue_data(
+        &mut self,
+        _queue: u32,
+        private: &mut [u8],
+        serial: u32,
+    ) -> Result<(), BackendError> {
         if let Some(first) = private.first_mut() {
             *first = serial as u8;
         }

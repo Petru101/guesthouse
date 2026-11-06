@@ -194,6 +194,15 @@ pub struct SharedSpan {
     pub mapping_length: u64,
 }
 
+/// Where a GPU address lies in a mapping of memory the guest can reach.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GuestSpan {
+    /// Bytes of the mapping before this address.
+    pub offset_in_mapping: u64,
+    /// The whole mapping's length.
+    pub mapping_length: u64,
+}
+
 /// What became of a copy to a staging surface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StagingStart {

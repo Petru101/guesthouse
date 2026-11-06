@@ -171,6 +171,23 @@ impl GuestMemory for SharedMemory {
         // SAFETY: the view came from `map_pages`, and the caller has stopped using it.
         unsafe { libc::munmap(view.host_address as *mut libc::c_void, view.size as usize) };
     }
+
+    fn read_view(&self, view: PagesView, offset: u64, out: &mut [u8]) -> usize {
+        let length = view.size.saturating_sub(offset).min(out.len() as u64) as usize;
+        let from = (view.host_address + offset) as *const u8;
+        // SAFETY: the view stays mapped until `unmap_pages`, and `length` keeps this inside it.
+        unsafe { ptr::copy_nonoverlapping(from, out.as_mut_ptr(), length) };
+        length
+    }
+
+    fn write_view_u32(&mut self, view: PagesView, offset: u64, value: u32) {
+        if offset.is_multiple_of(4) && offset + 4 <= view.size {
+            let at = (view.host_address + offset) as *mut u32;
+            // SAFETY: the check keeps it inside the view and aligned, as views start on a page. It
+            // is atomic because the GPU can be reading these pages.
+            unsafe { AtomicU32::from_ptr(at).store(value, Ordering::Release) };
+        }
+    }
 }
 
 /// QEMU makes the shared files after this daemon has started, so they open at the first use, which
@@ -241,6 +258,16 @@ impl GuestMemory for LazySharedMemory {
     fn unmap_pages(&mut self, view: PagesView) {
         if let Ok(memory) = self.memory_mut() {
             memory.unmap_pages(view);
+        }
+    }
+
+    fn read_view(&self, view: PagesView, offset: u64, out: &mut [u8]) -> usize {
+        self.memory().map_or(0, |memory| memory.read_view(view, offset, out))
+    }
+
+    fn write_view_u32(&mut self, view: PagesView, offset: u64, value: u32) {
+        if let Ok(memory) = self.memory_mut() {
+            memory.write_view_u32(view, offset, value);
         }
     }
 }
@@ -374,6 +401,25 @@ mod tests {
         // SAFETY: the view is mapped for three pages until the unmap below.
         let firsts: Vec<u8> = (0..3).map(|page| unsafe { *bytes.add(page * PAGE_SIZE as usize) }).collect();
         assert_eq!(firsts, [4, 2, 3]);
+        memory.unmap_pages(view);
+        fs::remove_file(window).unwrap();
+        fs::remove_file(ram).unwrap();
+    }
+
+    #[test]
+    fn a_view_reads_and_writes_across_scattered_pages_and_stops_at_its_end() {
+        let ram = vec![0; 2 * PAGE_SIZE as usize];
+        let window = temporary_file("view-window", &[0; 8]);
+        let ram = temporary_file("view-ram", &ram);
+        let mut memory = SharedMemory::open(&window, ram.clone()).unwrap();
+        let view = memory.map_pages(&[1, 0]).unwrap();
+        memory.write_view_u32(view, PAGE_SIZE, 0x1234_5678);
+        memory.write_view_u32(view, 2 * PAGE_SIZE, 1);
+        let mut out = [0; 4];
+        assert_eq!(memory.read_view(view, PAGE_SIZE, &mut out), 4);
+        assert_eq!(u32::from_le_bytes(out), 0x1234_5678);
+        assert_eq!(memory.read_view(view, 2 * PAGE_SIZE - 2, &mut out), 2);
+        assert_eq!(memory.read_view(view, 3 * PAGE_SIZE, &mut out), 0);
         memory.unmap_pages(view);
         fs::remove_file(window).unwrap();
         fs::remove_file(ram).unwrap();

@@ -57,6 +57,12 @@ impl GuestMemory for FlatMemory {
         Err(io::ErrorKind::Unsupported.into())
     }
     fn unmap_pages(&mut self, _view: PagesView) {}
+
+    fn read_view(&self, _view: PagesView, _offset: u64, _out: &mut [u8]) -> usize {
+        0
+    }
+
+    fn write_view_u32(&mut self, _view: PagesView, _offset: u64, _value: u32) {}
 }
 
 fn message(command: Command, size: usize) -> Vec<u8> {

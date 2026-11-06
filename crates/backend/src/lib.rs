@@ -83,7 +83,7 @@ pub trait Backend: Sized {
     fn finish_allocation_data(&mut self, private: &mut [u8], size: u64);
 
     /// Fills in the vendor's part of a new hardware queue. `serial` counts queues from one.
-    fn finish_queue_data(&mut self, private: &mut [u8], serial: u32) -> Result<(), BackendError>;
+    fn finish_queue_data(&mut self, queue: u32, private: &mut [u8], serial: u32) -> Result<(), BackendError>;
 
     /// Answers a driver escape in place. The buffer is the guest's data and goes back to it.
     /// GPU addresses the host must never choose, in every address space, because the vendor's
@@ -157,6 +157,16 @@ pub trait HostServices {
 
     /// Where a GPU address in this space is in shared pages.
     fn shared_span(&self, space: SpaceId, address: u64) -> Option<SharedSpan>;
+
+    /// Where a GPU address in this space is in any memory the guest can reach: shared pages, or
+    /// its own pages lent to an allocation.
+    fn guest_span(&self, space: SpaceId, address: u64) -> Option<GuestSpan>;
+
+    /// Reads such memory by GPU address, up to the end of the mapping. Returns how many bytes.
+    fn read_guest_span(&self, space: SpaceId, address: u64, out: &mut [u8]) -> Option<usize>;
+
+    /// Writes a 32-bit word to such memory, where the GPU may be reading. Says if it found any.
+    fn write_guest_span(&mut self, space: SpaceId, address: u64, value: u32) -> bool;
 
     /// Writes a 32-bit word by guest physical address, where the GPU may be reading.
     fn write_u32(&mut self, address: u64, value: u32) -> Result<(), MemoryError>;

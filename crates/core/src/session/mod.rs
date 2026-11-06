@@ -26,7 +26,7 @@ use crate::tables::{Allocation, Mapping, Queue, ReservedRange};
 use crate::timing::Timings;
 use copies::{CopyJob, Parked};
 use guesthouse_backend::{
-    Backend, BackendError, GuestMemory, HostServices, MemoryError, SharedSpan, SpaceId,
+    Backend, BackendError, GuestMemory, GuestSpan, HostServices, MemoryError, PagesView, SharedSpan, SpaceId,
 };
 use guesthouse_messages::notice::Notice;
 use guesthouse_messages::wire::{Malformed, put_u32};
@@ -440,6 +440,30 @@ impl<M: GuestMemory> Services<'_, M> {
     }
 }
 
+/// What backs an allocation the guest can reach.
+#[derive(Clone, Copy)]
+enum GuestBacking {
+    /// In the shared window, from this address.
+    Shared(u64),
+    /// The guest's own pages.
+    Pages(PagesView),
+}
+
+impl<M: GuestMemory> Services<'_, M> {
+    /// The guest memory behind a GPU address, with the mapping that holds it.
+    fn guest_mapping(&self, space: SpaceId, address: u64) -> Option<(GuestBacking, &Mapping)> {
+        self.allocations.values().find_map(|allocation| {
+            let backing = match (allocation.guest_address, allocation.view) {
+                (Some(base), _) => GuestBacking::Shared(base),
+                (None, Some(view)) => GuestBacking::Pages(view),
+                (None, None) => return None,
+            };
+            let mut mappings = allocation.mappings.iter();
+            Some((backing, mappings.find(|mapping| mapping.space == space && mapping.contains(address))?))
+        })
+    }
+}
+
 impl<M: GuestMemory> HostServices for Services<'_, M> {
     fn take_gpu_addresses(&mut self, size: u64, align: u64) -> Result<u64, BackendError> {
         self.gpu_addresses.take(size, align, AddressUse::Host)
@@ -458,6 +482,34 @@ impl<M: GuestMemory> HostServices for Services<'_, M> {
             offset_in_mapping,
             mapping_length: mapping.length,
         })
+    }
+
+    fn guest_span(&self, space: SpaceId, address: u64) -> Option<GuestSpan> {
+        let (_, mapping) = self.guest_mapping(space, address)?;
+        Some(GuestSpan { offset_in_mapping: address - mapping.address, mapping_length: mapping.length })
+    }
+
+    fn read_guest_span(&self, space: SpaceId, address: u64, out: &mut [u8]) -> Option<usize> {
+        let (backing, mapping) = self.guest_mapping(space, address)?;
+        let offset = address - mapping.address;
+        let length = (mapping.length - offset).min(out.len() as u64) as usize;
+        let at = mapping.first + offset;
+        Some(match backing {
+            GuestBacking::Shared(base) => self.memory.read_bytes(base + at, &mut out[..length]),
+            GuestBacking::Pages(view) => self.memory.read_view(view, at, &mut out[..length]),
+        })
+    }
+
+    fn write_guest_span(&mut self, space: SpaceId, address: u64, value: u32) -> bool {
+        let Some((backing, mapping)) = self.guest_mapping(space, address) else { return false };
+        let at = mapping.first + address - mapping.address;
+        match backing {
+            GuestBacking::Shared(base) => self.memory.write_u32(base + at, value).is_ok(),
+            GuestBacking::Pages(view) => {
+                self.memory.write_view_u32(view, at, value);
+                true
+            }
+        }
     }
 
     fn write_u32(&mut self, address: u64, value: u32) -> Result<(), MemoryError> {
