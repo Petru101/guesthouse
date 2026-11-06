@@ -3,6 +3,7 @@
 mod adapter;
 mod allocation;
 mod context;
+mod copies;
 mod mapping;
 mod sync;
 #[cfg(test)]
@@ -12,6 +13,7 @@ mod waiting;
 use crate::config::Config;
 use crate::deferred::Deferred;
 use crate::fences::FencePool;
+use crate::frames::{FrameSink, StagingFrames};
 use crate::gpu_addresses::{AddressUse, GpuAddresses};
 use crate::guest_ranges::GuestRanges;
 use crate::handles::HandleCounter;
@@ -19,11 +21,12 @@ use crate::pending::{Gate, Pending};
 use crate::sync_table::SyncTable;
 use crate::tables::{Allocation, Mapping, Queue, ReservedRange};
 use crate::timing::Timings;
+use copies::{CopyJob, Parked};
 use guesthouse_backend::{Backend, BackendError, GuestMemory, HostServices, SharedSpan, SpaceId};
 use guesthouse_messages::notice::Notice;
 use guesthouse_messages::wire::{Malformed, put_u32};
 use guesthouse_messages::{Command, MessageHeader, Status};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::Instant;
 
 /// Where a reply goes, which only the caller can read. The core just hands it back.
@@ -124,6 +127,12 @@ pub struct Session<B, M> {
     /// In the order the guest asked, which decides who gets a freed range next.
     pub(crate) reserved_addresses: Vec<ReservedRange>,
 
+    pub(crate) copies: VecDeque<CopyJob>,
+    pub(crate) next_copy: u64,
+    pub(crate) parked: VecDeque<Parked>,
+    pub(crate) staging_frames: StagingFrames,
+    pub(crate) frame_sink: Option<Box<dyn FrameSink>>,
+
     pub(crate) ticket: Option<ReplyTicket>,
     pub(crate) held: bool,
     pub(crate) replies: Vec<HeldReply>,
@@ -167,6 +176,11 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             mapped_addresses: HashMap::new(),
             mapped_so_far: 0,
             reserved_addresses: Vec::new(),
+            copies: VecDeque::new(),
+            next_copy: 0,
+            parked: VecDeque::new(),
+            staging_frames: StagingFrames::default(),
+            frame_sink: None,
             ticket: None,
             held: false,
             replies: Vec::new(),
@@ -197,6 +211,11 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
     /// Takes GPU addresses as a backend would, for a replay standing in for one.
     pub fn take_gpu_addresses(&mut self, size: u64, align: u64) -> Result<u64, BackendError> {
         self.gpu_addresses.take(size, align, AddressUse::Host)
+    }
+
+    /// Sets where finished frames go.
+    pub fn set_frame_sink(&mut self, sink: Box<dyn FrameSink>) {
+        self.frame_sink = Some(sink);
     }
 
     pub fn timings(&self) -> &Timings {

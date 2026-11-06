@@ -15,10 +15,11 @@ mod memory;
 use guesthouse_backend::{
     AdapterFacts, AllocationShape, Backend, BackendError, CardLabel, DriverFound, DriverSurvey, GpuRange,
     HostServices, MapRequest, MemoryId, PciCard, Refusal, RegistryName, RegistryValue, Setup, SpaceId,
-    StagingCopy, Status, SurfaceShape, UnmapRequest, VendorQuery, Work, WorkStart,
+    StagingCopy, StagingStart, Status, SurfaceShape, UnmapRequest, VendorQuery, Work, WorkStart,
 };
 pub use memory::SparseMemory;
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::time::Instant;
 
 const STAND_IN_VENDOR: u16 = 0xFFFE;
 const DEFAULT_SIZE: u64 = 4096;
@@ -50,6 +51,9 @@ pub struct StandIn {
     pub copies: Vec<StagingCopy>,
     /// Addresses taken through [`HostServices`] by the first submission.
     pub channel_address: Option<u64>,
+    /// Copies stay under way until a test sets `copy_done`.
+    pub slow_copies: bool,
+    pub copy_done: bool,
     pub work_per_submission: u32,
     pub unfinished_limit: Option<u64>,
 }
@@ -94,6 +98,8 @@ impl StandIn {
             preserved: Vec::new(),
             copies: Vec::new(),
             channel_address: None,
+            slow_copies: false,
+            copy_done: false,
             work_per_submission: 1,
             unfinished_limit: None,
         }
@@ -303,9 +309,13 @@ impl Backend for StandIn {
         self.closed_queues.push(queue);
     }
 
-    fn copy_to_staging(&mut self, _host: &mut dyn HostServices, copy: &StagingCopy) -> Status {
+    fn start_staging_copy(&mut self, _host: &mut dyn HostServices, copy: &StagingCopy) -> StagingStart {
         self.copies.push(*copy);
-        Status::SUCCESS
+        if self.slow_copies { StagingStart::Running } else { StagingStart::Finished(Status::SUCCESS) }
+    }
+
+    fn poll_staging_copy(&mut self, _host: &mut dyn HostServices, _now: Instant) -> Option<Status> {
+        std::mem::take(&mut self.copy_done).then_some(Status::SUCCESS)
     }
 
     fn node_has_channel(&mut self, node: u32) -> bool {

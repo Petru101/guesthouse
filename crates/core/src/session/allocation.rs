@@ -129,8 +129,16 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             *users -= 1;
             return Ok(());
         }
-        self.resource_users.remove(&resource);
         let request = request.with_handles()?;
+        let members = self.resources.get(&resource).map_or(&[][..], Vec::as_slice);
+        if !self.copies.is_empty()
+            && request.handles.iter().chain(members.iter().copied()).any(|handle| self.copy_uses(handle))
+        {
+            out.clear();
+            self.park(message);
+            return Ok(());
+        }
+        self.resource_users.remove(&resource);
         // Each process sends this twice: once for the resource and once for its allocations by name.
         // The second must not free what a live resource still holds for someone else.
         let held_elsewhere = |handle: &u32| {
@@ -174,6 +182,10 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
     /// shared with the guest, at the same GPU addresses.
     pub(super) fn lock_for_cpu(&mut self, message: &[u8], out: &mut Vec<u8>) -> Handled {
         let handle = locked_allocation(message)?;
+        if self.copy_uses(handle) {
+            self.park(message);
+            return Ok(());
+        }
         let Some(allocation) = self.allocations.get(&handle) else {
             lock_answer(Status::INVALID_PARAMETER, 0, out);
             return Ok(());
@@ -187,6 +199,12 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             return Ok(());
         }
         let size = allocation.size;
+        let preserve = self.work_started > 0 && !allocation.mappings.is_empty();
+        if preserve && !self.copies.is_empty() {
+            // The vendor's copies run in order, and this one needs them finished.
+            self.park(message);
+            return Ok(());
+        }
         let (fresh, limit) = (self.fresh_guest_memory(), self.memory.window_end());
         let Some((address, used_before)) = self.guest_ranges.take(size, fresh, limit) else {
             lock_answer(Status::NO_MEMORY, 0, out);
@@ -200,7 +218,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         let shared = self.backend.adopt_host_pages(host_address, align_up(size, PAGE_SIZE))?;
         let has_mappings = !self.allocations[&handle].mappings.is_empty();
         let own = if has_mappings { Some(self.own_space()?) } else { None };
-        if let (true, Some(own)) = (self.work_started > 0, own) {
+        if let (true, Some(own)) = (preserve, own) {
             let host = &mut super::services!(self);
             self.backend.preserve_contents(host, own, memory, shared, size)?;
         }

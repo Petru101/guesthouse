@@ -4,6 +4,7 @@
 //! daemons can never share a file. [`server::Server`] accepts QEMU's two channels, and one thread
 //! runs every message through [`router::Router`] to the session.
 
+pub mod display;
 pub mod environment;
 pub mod guest_memory;
 pub mod logger;

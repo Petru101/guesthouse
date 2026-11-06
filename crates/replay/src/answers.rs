@@ -2,8 +2,8 @@
 
 use guesthouse_backend::{
     AdapterFacts, AllocationShape, Backend, BackendError, DriverSurvey, GpuRange, HostServices, MapRequest,
-    MemoryId, PciCard, Refusal, RegistryName, RegistryValue, Setup, SpaceId, StagingCopy, Status,
-    SurfaceShape, UnmapRequest, VendorQuery, Work, WorkStart,
+    MemoryId, PciCard, Refusal, RegistryName, RegistryValue, Setup, SpaceId, StagingCopy, StagingStart,
+    Status, SurfaceShape, UnmapRequest, VendorQuery, Work, WorkStart,
 };
 use guesthouse_backend_standin::StandIn;
 use guesthouse_messages::adapter::AdapterQuery;
@@ -14,6 +14,7 @@ use guesthouse_messages::standard::StandardRecord;
 use guesthouse_messages::wire::{align_up, u32_at, u64_at};
 use guesthouse_messages::{Command, HEADER_SIZE, MessageHeader};
 use std::collections::VecDeque;
+use std::time::Instant;
 
 /// Adapter queries the core answers by itself, and so are really compared.
 const NEUTRAL_QUERIES: [u32; 8] = [
@@ -265,8 +266,13 @@ impl Backend for RecordedAnswers {
 
     fn close_queue(&mut self, _queue: u32) {}
 
-    fn copy_to_staging(&mut self, _host: &mut dyn HostServices, _copy: &StagingCopy) -> Status {
-        u32_at(&self.expected, 0).map_or(Status::UNSUCCESSFUL, Status)
+    fn start_staging_copy(&mut self, _host: &mut dyn HostServices, _copy: &StagingCopy) -> StagingStart {
+        self.note(Provenance::PartlyRecorded);
+        StagingStart::Finished(u32_at(&self.expected, 0).map_or(Status::UNSUCCESSFUL, Status))
+    }
+
+    fn poll_staging_copy(&mut self, _host: &mut dyn HostServices, _now: Instant) -> Option<Status> {
+        Some(Status::SUCCESS)
     }
 
     /// A refused context answers with a handle of zero, and a recording has no other way to say so.

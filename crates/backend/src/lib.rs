@@ -21,6 +21,7 @@ pub use memory::{GuestMemory, PagesView};
 pub use types::*;
 
 use std::os::fd::OwnedFd;
+use std::time::Instant;
 
 /// Everything a GPU vendor must provide.
 ///
@@ -123,8 +124,12 @@ pub trait Backend: Sized {
     /// A hardware queue has gone, so whatever backs it can go too.
     fn close_queue(&mut self, queue: u32);
 
-    /// Copies a finished frame into a staging surface.
-    fn copy_to_staging(&mut self, host: &mut dyn HostServices, copy: &StagingCopy) -> Status;
+    /// Starts copying a finished frame into a staging surface. This must not wait for the copy,
+    /// as the message thread serves every other guest thread meanwhile.
+    fn start_staging_copy(&mut self, host: &mut dyn HostServices, copy: &StagingCopy) -> StagingStart;
+
+    /// Looks at a copy that [`StagingStart::Running`] said was under way. `None` means not yet.
+    fn poll_staging_copy(&mut self, host: &mut dyn HostServices, now: Instant) -> Option<Status>;
 }
 
 /// What a backend may ask of the host while it works.

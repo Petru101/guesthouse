@@ -12,6 +12,7 @@
 mod config;
 mod deferred;
 mod fences;
+mod frames;
 mod gpu_addresses;
 mod guest_ranges;
 mod handles;
@@ -23,6 +24,7 @@ mod timing;
 
 pub use config::{Config, MemoryLimits, video_budget};
 pub use fences::{FENCE_AREA, FENCE_PAGE};
+pub use frames::{Frame, FrameRing, FrameSink};
 pub use gpu_addresses::{ALLOCATION_ALIGN, AddressUse, GPU_RANGES, GpuAddresses, LARGE_ALIGN};
 pub use guest_ranges::{GUEST_RANGE_GRAIN, GuestRanges};
 pub use handles::HandleCounter;

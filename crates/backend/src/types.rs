@@ -1,5 +1,6 @@
 //! The plain values that cross the line.
 
+use guesthouse_messages::Status;
 use std::borrow::Cow;
 use std::fmt;
 
@@ -193,6 +194,14 @@ pub struct SharedSpan {
     pub mapping_length: u64,
 }
 
+/// What became of a copy to a staging surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StagingStart {
+    Finished(Status),
+    /// Under way. There is one at a time, and [`crate::Backend::poll_staging_copy`] says when it ends.
+    Running,
+}
+
 /// A frame to copy to a staging surface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StagingCopy {
@@ -211,4 +220,6 @@ pub struct StagingCopy {
     pub target_guest_address: Option<u64>,
     /// This frame is the guest's screen, and a viewer may want it.
     pub is_screen: bool,
+    /// The daemon's own address space, where the two addresses above are.
+    pub own_space: SpaceId,
 }

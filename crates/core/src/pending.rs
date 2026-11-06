@@ -94,8 +94,8 @@ pub enum Waiting {
 }
 
 impl Waiting {
-    pub(crate) fn of<'a>(pending: impl Iterator<Item = &'a Pending>) -> Self {
-        let mut found = Self::Nothing;
+    pub(crate) fn of<'a>(pending: impl Iterator<Item = &'a Pending>, copies_waiting: bool) -> Self {
+        let mut found = if copies_waiting { Self::Urgent } else { Self::Nothing };
         for item in pending {
             if item.is_urgent() {
                 return Self::Urgent;
@@ -113,8 +113,19 @@ impl Waiting {
 /// What a queue held back, in order.
 #[derive(Debug)]
 pub enum GateStep {
-    Wait { signals: Vec<Signal>, deadline: Instant },
-    Ring { doorbell: u64, fence: u64, value: u64 },
+    Wait {
+        signals: Vec<Signal>,
+        deadline: Instant,
+    },
+    Ring {
+        doorbell: u64,
+        fence: u64,
+        value: u64,
+    },
+    /// A copy that reads this queue's last frame, which the next frame must not draw over.
+    Copy {
+        id: u64,
+    },
 }
 
 pub type Gate = VecDeque<GateStep>;

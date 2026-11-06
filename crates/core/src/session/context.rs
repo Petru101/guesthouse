@@ -1,14 +1,12 @@
 //! Handlers for processes, contexts, queues and work.
 
 use super::waiting::GpuTook;
-use super::{Handled, Session, answer_status, services};
+use super::{Handled, Session, answer_status};
 use crate::deferred::DeferredAction;
 use crate::gpu_addresses::{ALLOCATION_ALIGN, AddressUse};
 use crate::tables::Queue;
-use guesthouse_backend::{Backend, GuestMemory, SpaceId, StagingCopy, UnmapRequest, WorkSource};
-use guesthouse_messages::queue::{
-    CopyToStaging, CreateContext, CreateHardwareQueue, SubmitToContext, SubmitToQueue,
-};
+use guesthouse_backend::{Backend, GuestMemory, SpaceId, UnmapRequest, WorkSource};
+use guesthouse_messages::queue::{CreateContext, CreateHardwareQueue, SubmitToContext, SubmitToQueue};
 use guesthouse_messages::sync::first_handle;
 use guesthouse_messages::wire::{Malformed, put_u32, u8_at};
 use guesthouse_messages::{MessageHeader, Status};
@@ -209,42 +207,6 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             GpuTook::Nothing => self.memory.write_u64(fence, value),
         }
         answer_status(Status::SUCCESS, out);
-        Ok(())
-    }
-
-    /// A paravirtual GPU has no screen, so the guest's kernel reads frames from a staging surface. A
-    /// surface the host cannot describe cannot be copied.
-    pub(super) fn copy_to_staging(&mut self, message: &[u8], out: &mut Vec<u8>) -> Handled {
-        let request = CopyToStaging::parse(message)?;
-        let shapes = |handle| self.allocations.get(&handle).and_then(|allocation| allocation.surface);
-        let (Some(source), Some(target)) = (shapes(request.source), shapes(request.target)) else {
-            answer_status(Status::INVALID_PARAMETER, out);
-            return Ok(());
-        };
-        let target_guest_address = self.allocations[&request.target].guest_address;
-        // The kernel's display queue sends no private data, and an app's present always has some.
-        let is_screen = target_guest_address.is_some() && request.private_size == 0;
-        let targets = self.queue_targets(std::iter::once(request.context));
-        let source_address = self.surface_address(request.source)?;
-        let target_address = self.surface_address(request.target)?;
-        self.wait_for_frame(&targets);
-        let rectangle = request.source_rectangle;
-        let copy = StagingCopy {
-            source,
-            target,
-            source_address,
-            target_address,
-            left: rectangle.left,
-            top: rectangle.top,
-            right: rectangle.right,
-            bottom: rectangle.bottom,
-            target_left: request.target_left,
-            target_top: request.target_top,
-            target_guest_address,
-            is_screen,
-        };
-        let status = self.backend.copy_to_staging(&mut services!(self), &copy);
-        answer_status(status, out);
         Ok(())
     }
 }

@@ -16,10 +16,7 @@ use guesthouse_messages::notice::Notice;
 use guesthouse_messages::queue::PresentToken;
 use guesthouse_messages::sync::{SignalSharedFence, SignalSyncObject, WaitOnCpu, WaitOnGpu};
 use std::collections::VecDeque;
-use std::thread;
-use std::time::{Duration, Instant};
-
-const FRAME_WAIT_STEP: Duration = Duration::from_micros(100);
+use std::time::Instant;
 
 /// What became of a submission.
 pub(crate) enum GpuTook {
@@ -158,12 +155,14 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         }
     }
 
-    /// Blocks the message thread, so only briefly, until a frame's queues have finished.
-    pub(crate) fn wait_for_frame(&self, targets: &[Target]) {
-        let deadline = Instant::now() + self.config.frame_wait;
-        while !self.targets_reached(targets) && Instant::now() < deadline {
-            thread::sleep(FRAME_WAIT_STEP);
-        }
+    /// The queues behind a handle that have work on the GPU.
+    pub(crate) fn live_queues_of(&self, handle: u32) -> Vec<u32> {
+        let one = [handle];
+        let queues = self.context_queues.get(&handle).map_or(&one[..], Vec::as_slice);
+        let live = |queue: &&u32| {
+            self.queues.get(queue).is_some_and(|queue| queue.last_fence.is_some() && !queue.failed)
+        };
+        queues.iter().filter(live).copied().collect()
     }
 
     pub(super) fn signal_sync_object(&mut self, message: &[u8], out: &mut Vec<u8>) -> Handled {
@@ -260,6 +259,12 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
                     }
                 }
                 GateStep::Ring { doorbell, fence, value } => self.ring(queue, doorbell, fence, value),
+                GateStep::Copy { id } => {
+                    if self.copy_is_active(id) {
+                        self.gates.get_mut(&queue).expect("just read").push_front(GateStep::Copy { id });
+                        return false;
+                    }
+                }
             }
         }
         self.gates.remove(&queue);
@@ -341,6 +346,12 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
     /// Checks everything that is waiting, and says how soon to look again. `now` decides deadlines,
     /// and tests pass their own.
     pub fn poll(&mut self, now: Instant) -> Waiting {
+        if !self.copies.is_empty() {
+            self.poll_copies(now);
+        }
+        if self.pending.is_empty() {
+            return Waiting::of(self.pending.iter(), !self.copies.is_empty());
+        }
         // The two lists swap places, so polling does not allocate.
         let spare = std::mem::take(&mut self.pending_spare);
         let mut items = std::mem::replace(&mut self.pending, spare);
@@ -350,7 +361,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             }
         }
         self.pending_spare = items;
-        Waiting::of(self.pending.iter())
+        Waiting::of(self.pending.iter(), !self.copies.is_empty())
     }
 
     /// Finishes an item if it can. Otherwise hands it back.
