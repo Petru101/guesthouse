@@ -18,6 +18,15 @@ using namespace Microsoft::IndirectDisp;
 
 std::vector<unsigned char> Microsoft::IndirectDisp::IndirectDeviceContext::s_KnownMonitorEdid;
 
+namespace
+{
+constexpr unsigned int FirstMonitor = 0;
+// What CREATEMONITOR uses when it isn't told better. The daemon can replace these once it knows the host's monitor.
+constexpr float DefaultMonitorMaxNits = 1000.0f;
+constexpr float DefaultMonitorMinNits = 0.0001f;
+constexpr float DefaultMonitorMaxFall = 1000.0f;
+}
+
 IndirectDeviceContext::IndirectDeviceContext(_In_ WDFDEVICE WdfDevice) : m_WdfDevice(WdfDevice)
 {
 	m_Adapter = {};
@@ -215,4 +224,7 @@ void IndirectDeviceContext::FinishInit()
 {
 	Options.Adapter.apply(m_Adapter);
 	VDD_LOG_INFO("Applied Adapter configs.");
+
+	// Guesthouse: this driver is the guest's screen, so its monitor is there from the start and nobody has to ask for it.
+	CreateMonitor(FirstMonitor, nullptr, DefaultMonitorMaxNits, DefaultMonitorMinNits, DefaultMonitorMaxFall);
 }
