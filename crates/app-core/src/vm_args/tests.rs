@@ -1,0 +1,233 @@
+use super::*;
+use crate::machine::Kind;
+use crate::network::Protocol;
+use crate::slots;
+use crate::testing::{Scratch, scratch_context};
+
+fn plan(machine: &Machine, boot: Boot) -> (Scratch, VmPlan) {
+    let scratch = Scratch::new();
+    let context = scratch_context(&scratch);
+    let plan = VmPlan::new(&context, machine, boot, slots::first(), 0);
+    (scratch, plan)
+}
+
+fn windows() -> Machine {
+    Machine::new("win", "Win", "/m/disk.qcow2", "/m/vars.fd")
+}
+
+fn plain_machine() -> Machine {
+    Machine { kind: Kind::Plain, ..windows() }
+}
+
+fn plain_boot() -> Boot {
+    Boot::Plain { iso: String::new() }
+}
+
+fn value_after(arguments: &[String], flag: &str) -> String {
+    let at = arguments.iter().position(|word| word == flag).unwrap();
+    arguments[at + 1].clone()
+}
+
+fn has(arguments: &[String], word: &str) -> bool {
+    arguments.iter().any(|found| found == word)
+}
+
+/// The guest has seen this order, so a change here is a change for every machine.
+#[test]
+fn a_gpu_vms_arguments_stay_word_for_word_the_same() {
+    let (_scratch, plan) = plan(&windows(), Boot::Gpu);
+    let run_folder = PathBuf::from("/x/run");
+    let plan = VmPlan {
+        qemu_files: "/x/p/qemu/pc-bios".into(),
+        firmware: Firmware::default(),
+        ram_file: "/dev/shm/gpupv-ram".into(),
+        io_file: "/dev/shm/gpupv-iomem".into(),
+        run_folder,
+        ..plan
+    };
+    let expected: Vec<&str> = include_str!("gpu-arguments.txt").lines().collect();
+    assert_eq!(plan.qemu_arguments(), expected);
+}
+
+#[test]
+fn a_plain_vm_has_no_gpu_devices() {
+    let (_scratch, plan) = plan(&plain_machine(), plain_boot());
+    let arguments = plan.qemu_arguments();
+    assert!(!arguments.iter().any(|word| word.contains("gpupv-") || word.contains("vmbus")));
+    assert!(has(&arguments, "if=none,id=cd0,media=cdrom,readonly=on"), "an empty tray");
+    assert!(!has(&arguments, "usb-mouse,bus=xhci.0"));
+}
+
+/// Firmware, an install and a plain VM have no GPU frames, so QEMU's own display is all they have.
+#[test]
+fn every_kind_of_boot_has_the_display_the_viewer_reads() {
+    let iso = String::new();
+    let install = Boot::Install { iso: iso.clone(), answer: "/m/answer.iso".into() };
+    for (machine, boot) in [(plain_machine(), plain_boot()), (windows(), install), (windows(), Boot::Gpu)] {
+        let (_scratch, plan) = plan(&machine, boot);
+        let arguments = plan.qemu_arguments();
+        assert_eq!(value_after(&arguments, "-display"), "dbus,p2p=yes");
+        assert!(arguments.iter().any(|word| word.contains("/run/display.sock,server=on")));
+        assert!(!has(&arguments, "-vnc"));
+    }
+}
+
+#[test]
+fn a_gpu_vm_has_its_devices() {
+    let (_scratch, plan) = plan(&windows(), Boot::Gpu);
+    let arguments = plan.qemu_arguments();
+    assert!(arguments.iter().any(|word| word.starts_with("gpupv-render,")));
+    assert!(has(&arguments, "usb-mouse,bus=xhci.0"), "for games");
+    assert!(arguments.iter().any(|word| word.contains(&plan.ram_file.display().to_string())));
+}
+
+#[test]
+fn the_slot_sets_every_name() {
+    let scratch = Scratch::new();
+    let context = scratch_context(&scratch);
+    let plan = VmPlan::new(&context, &windows(), Boot::Gpu, slots::number(2), 0);
+    let arguments = plan.qemu_arguments();
+    assert!(value_after(&arguments, "-nic").contains("hostfwd=tcp:127.0.0.1:18767-:8765"));
+    assert!(arguments.iter().any(|word| word.contains("/run-2/qmp.sock,")));
+    assert!(arguments.iter().any(|word| word.contains("gpupv-iomem-2,")));
+}
+
+#[test]
+fn nothing_set_is_the_line_every_machine_had() {
+    let (_scratch, plan) = plan(&windows(), Boot::Gpu);
+    let arguments = plan.qemu_arguments();
+    assert_eq!(value_after(&arguments, "-nic"), "user,model=e1000e,hostfwd=tcp:127.0.0.1:18765-:8765");
+    assert!(!has(&arguments, "-netdev"), "NAT has one adapter");
+}
+
+#[test]
+fn no_internet_keeps_the_agent() {
+    let machine = Machine { network_mode: Mode::None, ..windows() };
+    let (_scratch, plan) = plan(&machine, Boot::Gpu);
+    let nic = value_after(&plan.qemu_arguments(), "-nic");
+    assert!(nic.starts_with("user,model=e1000e,restrict=on,hostfwd=tcp:127.0.0.1:18765-:8765"));
+}
+
+#[test]
+fn bridged_goes_through_the_helper_and_adds_the_private_link_last() {
+    let machine = Machine {
+        network_mode: Mode::Bridged,
+        mac: "52:54:00:aa:bb:cc".into(),
+        forwards: vec![Forward::new(Protocol::Udp, 5000, 50)],
+        ..windows()
+    };
+    let (_scratch, plan) = plan(&machine, Boot::Gpu);
+    let arguments = plan.qemu_arguments();
+    assert_eq!(
+        value_after(&arguments, "-nic"),
+        "bridge,model=e1000e,mac=52:54:00:aa:bb:cc,br=br0,helper=/usr/libexec/qemu-bridge-helper"
+    );
+    assert!(value_after(&arguments, "-netdev").ends_with("-:8765,hostfwd=udp:127.0.0.1:5000-:50"));
+    assert_eq!(arguments.last().unwrap(), "e1000e,netdev=link,mac=52:54:00:67:68:01,bus=pcie.0,addr=0x1e");
+}
+
+#[test]
+fn passt_has_its_own_addresses_and_the_private_link() {
+    let (_scratch, mut plan) = plan(&windows(), Boot::Gpu);
+    plan.network.passt = true;
+    plan.network.resolver = Some("192.168.1.1".into());
+    let arguments = plan.qemu_arguments();
+    let nic = value_after(&arguments, "-nic");
+    assert!(nic.starts_with("passt,model=e1000e,mtu=1500,address=10.0.3.15,"));
+    assert!(nic.ends_with("dns-forward=10.0.3.3,dns-host=192.168.1.1"));
+    assert!(has(&arguments, "-netdev"));
+}
+
+#[test]
+fn a_tpm_brings_its_firmware_and_hides_nested_virtualization() {
+    let machine = Machine { tpm: true, ..windows() };
+    let (_scratch, plan) = plan(&machine, Boot::Gpu);
+    let arguments = plan.qemu_arguments();
+    assert!(value_after(&arguments, "-cpu").ends_with(",-svm,-vmx"));
+    assert!(arguments.iter().any(|word| word.starts_with("if=pflash,format=qcow2,unit=0")));
+    assert!(has(&arguments, "tpm-crb,tpmdev=tpm0"));
+    let swtpm = plan.swtpm_arguments().unwrap().join(" ");
+    assert!(swtpm.contains("--tpm2") && swtpm.contains("/run/tpm.sock"));
+}
+
+#[test]
+fn with_no_tpm_there_is_none_of_that() {
+    let (_scratch, plan) = plan(&windows(), Boot::Gpu);
+    let arguments = plan.qemu_arguments();
+    assert!(arguments.iter().any(|word| word.starts_with("if=pflash,format=raw,unit=0")));
+    assert!(!value_after(&arguments, "-cpu").contains("-svm"));
+    assert_eq!(plan.swtpm_arguments(), None);
+}
+
+#[test]
+fn the_vga_memory_is_the_power_of_two_that_fits_the_screen() {
+    let (_scratch, plan) = plan(&windows(), Boot::Gpu);
+    assert_eq!(plan.vga_memory_mib(), 8);
+    let big = VmPlan { screen: "3840x2160".into(), ..plan };
+    assert_eq!(big.vga_memory_mib(), 32);
+}
+
+#[test]
+fn an_install_boots_its_disc_with_the_answers_beside_it() {
+    let boot = Boot::Install { iso: "/iso/a,b.iso".into(), answer: "/m/answer.iso".into() };
+    let (_scratch, plan) = plan(&Machine { installing: true, ..windows() }, boot);
+    let arguments = plan.qemu_arguments();
+    assert!(
+        has(&arguments, "if=none,id=cd0,media=cdrom,readonly=on,file=/iso/a,,b.iso"),
+        "commas are doubled"
+    );
+    assert!(has(&arguments, "if=none,id=cd1,media=cdrom,readonly=on,file=/m/answer.iso"));
+    assert!(!has(&arguments, "usb-mouse,bus=xhci.0"), "an install has no GPU yet");
+}
+
+#[test]
+fn a_comma_in_a_path_cannot_become_an_option() {
+    let machine = Machine { disk: "/m,x/disk.qcow2".into(), vars: "/m,x/vars.fd".into(), ..windows() };
+    let (_scratch, plan) = plan(&machine, Boot::Gpu);
+    let arguments = plan.qemu_arguments();
+    assert!(arguments.iter().any(|word| word.contains("file=/m,,x/disk.qcow2,format=qcow2")));
+    assert!(arguments.iter().any(|word| word.ends_with("file=/m,,x/vars.fd")));
+}
+
+#[test]
+fn a_share_starts_our_program_with_the_folder_in_its_environment() {
+    let machine = Machine { share: "/home/me/shared".into(), ..plain_machine() };
+    let (_scratch, plan) = plan(&machine, plain_boot());
+    let nic = value_after(&plan.qemu_arguments(), "-nic");
+    assert!(nic.contains(",guestfwd=tcp:10.0.2.4:80-cmd:") && nic.contains("guesthouse-share"));
+    assert_eq!(plan.qemu_environment(), [("SHARE".to_owned(), "/home/me/shared".to_owned())]);
+}
+
+#[test]
+fn no_share_means_nothing_in_the_environment() {
+    let (_scratch, plan) = plan(&plain_machine(), plain_boot());
+    assert!(plan.qemu_environment().is_empty());
+    assert_eq!(plan.share, None);
+}
+
+#[test]
+fn pinning_runs_qemu_through_taskset() {
+    let (_scratch, mut plan) = plan(&windows(), Boot::Gpu);
+    plan.pin = Some("0-7,16-23".into());
+    let command = plan.qemu_command();
+    assert_eq!(&command[..3], ["taskset", "-c", "0-7,16-23"]);
+    assert_eq!(command[3], plan.qemu.display().to_string());
+}
+
+#[test]
+fn sound_is_only_asked_for_when_it_can_work() {
+    let (_scratch, mut plan) = plan(&windows(), Boot::Gpu);
+    assert_eq!(value_after(&plan.qemu_arguments(), "-audiodev"), "none,id=silent");
+    assert!(has(&plan.qemu_arguments(), "hda-output,audiodev=silent"));
+    plan.sound = Some(Sound { sink: Some("speakers".into()) });
+    assert_eq!(value_after(&plan.qemu_arguments(), "-audiodev"), "pipewire,out.name=speakers,id=sound");
+    assert!(has(&plan.qemu_arguments(), "hda-output,audiodev=sound"));
+}
+
+#[test]
+fn a_vram_cap_is_given_in_the_daemons_words() {
+    let scratch = Scratch::new();
+    let context = scratch_context(&scratch);
+    assert_eq!(VmPlan::new(&context, &windows(), Boot::Gpu, slots::first(), 8).vram.as_deref(), Some("8G"));
+    assert_eq!(VmPlan::new(&context, &windows(), Boot::Gpu, slots::first(), 0).vram, None);
+}

@@ -1,0 +1,169 @@
+//! What a VM starts with, as data: every QEMU argument, and nothing here runs anything.
+//!
+//! The machine's settings and the state of the PC go in, and [`VmPlan::qemu_command`] gives the words
+//! to run. The order of devices is what the guest has already seen, so it must not change.
+
+mod arguments;
+mod nic;
+
+use crate::context::Context;
+use crate::machine::Machine;
+use crate::network::{Forward, Mode};
+use crate::paths::Firmware;
+use guesthouse_daemon::slot::Slot;
+use std::fs;
+use std::path::{Path, PathBuf};
+
+/// QEMU's monitor for the viewer, which takes the socket its D-Bus display listens on.
+pub const DISPLAY_SOCKET: &str = "display.sock";
+pub const SHARE_PROGRAM: &str = "guesthouse-share";
+/// The file QEMU's output goes to, which holds why it failed to start.
+pub const OUTPUT_FILE: &str = "vm-gpupv.out";
+/// Where a guest reaches a shared folder.
+pub const SHARE_ADDRESS: &str = "10.0.2.4";
+
+const RESOLVER_FILE: &str = "/etc/resolv.conf";
+
+/// How a VM is to boot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Boot {
+    /// A machine with no GPU: its disk, and its ISO first if it has one. The drive is there either
+    /// way, as a tray with nothing in it, so the ISO can be ejected while the VM runs.
+    Plain { iso: String },
+    /// Windows from its disc, with the answer disc beside it.
+    Install { iso: String, answer: PathBuf },
+    /// With the GPU, which needs the daemon up first.
+    Gpu,
+}
+
+/// What the first NIC is, and what the private link carries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NetworkPlan {
+    pub mode: Mode,
+    /// NAT through passt, rather than QEMU's own.
+    pub passt: bool,
+    pub bridge: String,
+    pub mac: String,
+    pub forwards: Vec<Forward>,
+    /// The host's DNS server, which passt passes on.
+    pub resolver: Option<String>,
+}
+
+/// Everything QEMU's arguments are built from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VmPlan {
+    pub boot: Boot,
+    pub slot: Slot,
+    pub qemu: PathBuf,
+    pub qemu_files: PathBuf,
+    pub firmware: Firmware,
+    pub run_folder: PathBuf,
+    pub agent_port: u16,
+    pub cores: u32,
+    pub ram: String,
+    pub screen: String,
+    pub disk: String,
+    pub vars: String,
+    /// The folder of the machine's virtual TPM.
+    pub tpm: Option<PathBuf>,
+    /// CPUs to run on, as taskset takes them.
+    pub pin: Option<String>,
+    pub share: Option<String>,
+    pub share_program: PathBuf,
+    /// The cap on video memory, as `8G`. The daemon reads it, and QEMU has no use for it.
+    pub vram: Option<String>,
+    /// A relative USB mouse beside the tablet, for games.
+    pub mouse: bool,
+    pub network: NetworkPlan,
+    pub ram_file: PathBuf,
+    pub io_file: PathBuf,
+    /// The tools disc from the first hand-built guest, if this store has one. Nothing makes it now.
+    pub tools_disc: Option<PathBuf>,
+    /// Sound goes to the host's default output, or the sink named, if PipeWire can be reached. QEMU
+    /// won't start if it can't, and a VM matters more.
+    pub sound: Option<Sound>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Sound {
+    pub sink: Option<String>,
+}
+
+impl VmPlan {
+    /// The plan for this machine in this slot. `vram_gib` is the cap to give the daemon, if any.
+    pub fn new(context: &Context, machine: &Machine, boot: Boot, slot: Slot, vram_gib: u32) -> Self {
+        let run_folder = context.paths.run_folder(slot);
+        let tools = context.paths.store.join("iso/tools.iso");
+        let passt = machine.network_mode == Mode::Nat && machine.passt && passt_installed();
+        Self {
+            boot,
+            slot,
+            qemu: context.paths.qemu.clone(),
+            qemu_files: context.paths.helper("qemu/pc-bios"),
+            firmware: context.paths.firmware.clone(),
+            agent_port: context.paths.agent_port(slot),
+            cores: machine.cores,
+            ram: format!("{}G", machine.ram_gib),
+            screen: machine.screen.clone(),
+            disk: machine.disk.clone(),
+            vars: machine.vars.clone(),
+            tpm: machine.tpm.then(|| machine.tpm_folder(context)),
+            pin: None,
+            share: Some(machine.share.clone()).filter(|share| !share.is_empty()),
+            share_program: context.paths.binary(SHARE_PROGRAM),
+            vram: (vram_gib > 0).then(|| format!("{vram_gib}G")),
+            mouse: machine.has_gpu(),
+            network: NetworkPlan {
+                mode: machine.network_mode,
+                passt,
+                bridge: machine.bridge.clone(),
+                mac: machine.mac.clone(),
+                forwards: machine.forwards.clone(),
+                resolver: if passt { host_resolver() } else { None },
+            },
+            ram_file: context.paths.shared_file("ram", slot),
+            io_file: context.paths.shared_file("iomem", slot),
+            tools_disc: tools.is_file().then_some(tools),
+            sound: None,
+            run_folder,
+        }
+    }
+
+    pub fn is_gpu(&self) -> bool {
+        self.boot == Boot::Gpu
+    }
+
+    fn in_run_folder(&self, name: &str) -> String {
+        self.run_folder.join(name).display().to_string()
+    }
+
+    fn screen_size(&self) -> (u64, u64) {
+        let (width, height) = self.screen.split_once('x').unwrap_or_default();
+        (width.parse().unwrap_or(0), height.parse().unwrap_or(0))
+    }
+}
+
+/// Whether a program is on `PATH`.
+pub fn on_path(program: &str) -> bool {
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    std::env::split_paths(&path).any(|folder| is_program(&folder.join(program)))
+}
+
+fn is_program(path: &Path) -> bool {
+    rustix::fs::access(path, rustix::fs::Access::EXEC_OK).is_ok() && path.is_file()
+}
+
+pub fn passt_installed() -> bool {
+    on_path("passt")
+}
+
+fn host_resolver() -> Option<String> {
+    let text = fs::read_to_string(RESOLVER_FILE).ok()?;
+    text.lines().find_map(|line| {
+        let address = line.strip_prefix("nameserver ")?.trim();
+        address.bytes().all(|byte| byte.is_ascii_digit() || byte == b'.').then(|| address.to_owned())
+    })
+}
+
+#[cfg(test)]
+mod tests;

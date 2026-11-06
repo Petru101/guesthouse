@@ -23,5 +23,6 @@ pub mod tasks;
 #[doc(hidden)]
 pub mod testing;
 pub mod text;
+pub mod vm_args;
 
 pub use failure::{Failure, Result};
