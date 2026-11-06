@@ -7,7 +7,8 @@ use std::path::Path;
 
 const NOTE_FILE: &str = "gpu-stopped";
 const STOPPED: &str = "This VM's GPU has stopped, as too many programs in Windows faulted in a short time. \
-                       Programs that use the GPU won't work until Windows restarts.";
+                       Programs that use the GPU won't work until Windows restarts, and on the display driver \
+                       the picture stays as it is. Shut Down or Force Off is the way out.";
 
 /// Says whether this guest's GPU work has stopped. The note goes when it starts again.
 pub fn write_note(run_folder: &Path, stopped: bool) -> io::Result<()> {

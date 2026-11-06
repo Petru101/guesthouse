@@ -193,7 +193,11 @@ A Windows machine ends up on our display driver, from `drivers/windows-display/`
 
 Three things can say what's on the screen, and the app believes the one that knows. Windows knows the rate. The daemon knows the size and whether it's HDR, as it has the frames, and leaves that in `display-ring` in the run folder (`daemon/src/display_note.rs`). `display.json` in the machine's folder keeps the rest: whether the driver is in, which build, and why not. The row goes by those and never by what was asked for. A rate changed by hand inside Windows only shows after the next change or boot.
 
-Nothing here can stop a machine. A driver that won't install, or that Windows says is up while no ring comes, is taken out with `guest/display-remove.ps1`, certificate and all. Windows goes back to the basic display by itself, and the reason stays in `display.json`. A start won't try that build again, but a new build or the button in the settings will.
+Nothing here can stop a machine. A driver that won't install is taken out with `guest/display-remove.ps1`, certificate and all. Windows goes back to the basic display by itself, and the reason stays in `display.json`. A start won't try that build again, but a new build or the button in the settings will.
+
+When Windows says it's on our display and no ring comes, what happens depends on what's going on. At boot, a build that has never sent a picture goes at once. One that has gets a second boot, as a slow boot shouldn't cost it, and two blank boots in a row take it out, as the screen would otherwise stay black for good. A change to a running machine never takes it out and only leaves a note on the row. Neither does a guest whose GPU work the daemon has stopped.
+
+Once ours is the only display, the basic display is off, so the viewer has nothing to fall back on. If the guest's GPU work stops, or the daemon dies, the picture stays as it was, with no live frames, and the way out is Shut Down or Force Off. The row's GPU note says so.
 
 The built driver isn't in git. It's in the program folder's `display-driver/` if the packaging was given one, with its licences, scripts and settings, and with `package.txt` to tell builds apart. A build with none says so on the row.
 
