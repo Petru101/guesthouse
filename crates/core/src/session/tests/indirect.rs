@@ -410,6 +410,22 @@ fn the_process_going_ends_the_ring() {
 }
 
 #[test]
+fn after_a_restart_the_drivers_new_process_can_have_a_ring() {
+    let (mut session, _) = stamped(1);
+    assert_eq!(register(&mut session, &ring(Look::SDR)).0, STATUS_OK);
+    session.guest_reset();
+    assert!(session.frames.indirect.is_none());
+    session.space_for(OTHER_PROCESS).unwrap();
+    let data = driver::register(&ring(Look::SDR));
+    let reply = session.handle_message(
+        &escape_from(OTHER_PROCESS, &data),
+        Some(ReplyTicket::default()),
+        &mut Vec::new(),
+    );
+    assert_eq!(reply, Answer::Held, "it's looked into, not refused");
+}
+
+#[test]
 fn an_export_that_fails_stops_trying_and_the_guest_carries_on() {
     let (mut session, first) = registered();
     session.backend.refuse_exports = true;

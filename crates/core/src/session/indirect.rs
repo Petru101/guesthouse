@@ -273,6 +273,14 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         }
     }
 
+    /// The guest has restarted. Its old processes never said goodbye, so without this the ring would
+    /// still belong to one of them, and the driver's new process would be refused it.
+    pub fn guest_reset(&mut self) {
+        self.frames.registering = None;
+        self.frames.cursor = Cursor::default();
+        self.end_indirect_ring("the guest restarted");
+    }
+
     pub(super) fn allocation_going(&mut self, handle: u32) {
         if self.frames.indirect.as_ref().is_some_and(|ring| ring.holds(handle)) {
             self.end_indirect_ring("the guest destroyed a slot");
