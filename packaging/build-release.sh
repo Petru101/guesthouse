@@ -2,7 +2,7 @@
 # Builds what a release publishes: the payload that install.sh downloads, and the source of everything
 # in it, QEMU included, which the GPL asks for. It needs no root, and publishes nothing.
 #
-# Usage: packaging/build-release.sh [--out FOLDER] [STAGE...]
+# Usage: packaging/build-release.sh [--out FOLDER] [--display-driver FOLDER] [STAGE...]
 #
 # The stages run in this order, and with none named all of them do:
 #   qemu      QEMU, its firmware blobs, and the libraries it needs from the build system
@@ -14,6 +14,11 @@
 # Everything built here only runs on this system's glibc or a newer one, so a release doesn't run this
 # directly: packaging/build-in-images.sh runs each stage in its own image. On its own it builds for
 # this PC, which is what install.sh --from-source wants. QEMU_UPSTREAM can name a local clone of QEMU.
+#
+# The display driver can't be built here, as it needs Windows and Microsoft's kit, so --display-driver
+# names the folder holding what drivers/windows-display/BUILDING.md builds: GuesthouseDisplay.dll and
+# GuesthouseDisplay.inf. GUESTHOUSE_DISPLAY_DRIVER does the same. Without it a build for this PC still
+# works, and its Windows machines stay on the basic display. The source stage refuses, as that's a release.
 set -eu
 
 QEMU_TAG=v11.1.3
@@ -25,6 +30,14 @@ QEMU_RELEASE_URL=https://download.qemu.org/qemu-${QEMU_TAG#v}.tar.xz
 QEMU_RELEASE_SHA256=5a8289c7940dc77d3873c81a6c29ba3afe1446fc9d36e77fa1658cdbecb84b22
 APP_ID=io.github.xnixy.Guesthouse
 ARCH=x86_64
+DISPLAY_DRIVER=${GUESTHOUSE_DISPLAY_DRIVER:-}
+DRIVER_SOURCE=drivers/windows-display
+# What the app wants in the program folder, in app-core's display.rs.
+DRIVER_FOLDER=display-driver
+DRIVER_BUILT='GuesthouseDisplay.dll GuesthouseDisplay.inf'
+DRIVER_SETUP='sign-and-install.ps1 install-take-over.ps1 take-over-display.ps1'
+# The driver has code from Microsoft's sample as well as zako-vdd's, so both licences go wherever it does.
+DRIVER_FILES='vdd_settings.xml LICENSE LICENSE-MS-PL'
 
 # These stay the host's. The C library can't be mixed, and PipeWire's client must match its server.
 HOST_LIBRARIES='^(linux-vdso|ld-linux|libc|libm|libdl|libpthread|librt|libresolv|libgcc_s|libpipewire-0\.3)[.-]'
@@ -245,9 +258,44 @@ copy_guest_files() {
     [ ! -d "$REPO/linux" ] || cp -R "$REPO/linux" "$OUT/stage/"
 }
 
+# A build that isn't really one would only show up in a guest, much later.
+check_display_driver() {
+    for name in $DRIVER_BUILT; do
+        [ -s "$DISPLAY_DRIVER/$name" ] || die "$DISPLAY_DRIVER has no $name. BUILDING.md says how to build it."
+    done
+    [ "$(head -c 2 "$DISPLAY_DRIVER/GuesthouseDisplay.dll")" = MZ ] ||
+        die "$DISPLAY_DRIVER/GuesthouseDisplay.dll isn't a Windows program."
+    ! grep -q '\$ARCH\$\|\$UMDFVERSION\$' "$DISPLAY_DRIVER/GuesthouseDisplay.inf" ||
+        die "$DISPLAY_DRIVER/GuesthouseDisplay.inf is the source's, not the build's."
+}
+
+# Leaves the built driver with what the app needs to install it, and an id that tells builds apart.
+copy_display_driver() {
+    target=$OUT/stage/$DRIVER_FOLDER
+    [ ! -d "$target" ] || rm -rf "${target:?}"
+    if [ -z "$DISPLAY_DRIVER" ]; then
+        say "there's no display driver in this build, so its Windows machines stay on the basic display"
+        return 0
+    fi
+    check_display_driver
+    mkdir -p "$target"
+    for name in $DRIVER_BUILT; do
+        cp "$DISPLAY_DRIVER/$name" "$target/"
+    done
+    for name in $DRIVER_SETUP; do
+        cp "$REPO/$DRIVER_SOURCE/setup/$name" "$target/"
+    done
+    for name in $DRIVER_FILES; do
+        cp "$REPO/$DRIVER_SOURCE/$name" "$target/"
+    done
+    (cd "$target" && cat GuesthouseDisplay.dll GuesthouseDisplay.inf | sha256sum | cut -d ' ' -f 1) >"$target/package.txt"
+    say "the display driver is $(cat "$target/package.txt")"
+}
+
 release_parts() {
     parts=app
     [ ! -d "$OUT/stage/guest" ] || parts="$parts windows"
+    [ ! -d "$OUT/stage/$DRIVER_FOLDER" ] || parts="$parts display"
     [ ! -d "$OUT/stage/linux" ] || parts="$parts linux"
     printf '%s' "$parts"
 }
@@ -260,6 +308,7 @@ pack_stage() {
 stage_payload() {
     version=$(release_version)
     copy_guest_files
+    copy_display_driver
     cp "$REPO/install.sh" "$REPO/uninstall.sh" "$REPO/LICENSE" "$REPO/THIRD-PARTY.md" "$OUT/stage/"
     {
         printf 'version=%s\n' "$version"
@@ -274,6 +323,8 @@ stage_payload() {
 # Everything the GPL asks for in one file: this repo with the patch and these scripts, QEMU's whole tree
 # with its subprojects, and the Rust crates, so that nothing depends on anywhere else staying as it is.
 stage_source() {
+    [ -f "$OUT/stage/$DRIVER_FOLDER/GuesthouseDisplay.dll" ] ||
+        die "a release can't go out without the display driver. Name the build with --display-driver."
     version=$(release_version)
     name=guesthouse-$version-source
     bundle=$OUT/source-bundle
@@ -309,6 +360,10 @@ run_stage() {
 main() {
     if [ "${1:-}" = --out ]; then
         OUT=$2
+        shift 2
+    fi
+    if [ "${1:-}" = --display-driver ]; then
+        DISPLAY_DRIVER=$2
         shift 2
     fi
     [ $# -gt 0 ] || set -- qemu app payload source

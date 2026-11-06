@@ -17,7 +17,15 @@ The driver is in `x64\Release\GuesthouseDisplay`. You want `GuesthouseDisplay.dl
 
 Warnings are not errors in this project, as newer compilers flag the forked code in places I haven't touched. My files build with none.
 
-## Installing
+## Getting it into the app
+
+The app does the installing below by itself, on each machine. It needs the DLL and INF in its program folder, and those are binaries, so they aren't in git.
+
+A release has to carry them: `packaging/build-in-images.sh --display-driver FOLDER`, with those two files in `FOLDER`, and it refuses to make a release without it. `RELEASING.md` has the steps. The scripts and settings from this folder, and both licences, go in with them.
+
+A build from source can't make the DLL on Linux, so it has no driver. That works, and the machine's row says so: Windows stays on its basic display, at about 64 Hz with no HDR. If you've built the driver, `GUESTHOUSE_DISPLAY_DRIVER=FOLDER` when you run `install.sh --from-source` or `packaging/build-release.sh` puts it in.
+
+## Installing by hand
 
 In the Windows guest, make a folder with `vdd_settings.xml` in it, and a `pkg` folder inside holding the DLL and INF. Then, in a command prompt as an administrator, from this folder. Windows won't run a script that isn't signed unless you say so, and this says so for this one run only:
 

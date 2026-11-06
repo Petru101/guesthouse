@@ -3,8 +3,9 @@
 # libraries take the glibc of their image, so they're built on the oldest system a release runs on. The
 # app calls little of glibc but wants a recent GTK to build with, so it's built on something newer.
 #
-# Usage: packaging/build-in-images.sh [--out FOLDER] [STAGE...]
+# Usage: packaging/build-in-images.sh [--out FOLDER] [--display-driver FOLDER] [STAGE...]
 # The stages are build-release.sh's. It needs podman or docker and no root, and publishes nothing.
+# A release needs the built display driver, and build-release.sh says what that is.
 set -eu
 
 # The oldest glibc a release promises to run on. Ubuntu 24.04 has this one.
@@ -12,6 +13,7 @@ GLIBC_CEILING=2.39
 
 REPO=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 OUT=$REPO/build/release
+DISPLAY_DRIVER=${GUESTHOUSE_DISPLAY_DRIVER:-}
 
 die() {
     printf 'build-in-images: %s\n' "$*" >&2
@@ -47,9 +49,16 @@ find_tree() {
 }
 
 in_image() {
+    driver_mount=
+    driver_flag=
+    if [ -n "$DISPLAY_DRIVER" ]; then
+        driver_mount="-v $DISPLAY_DRIVER:$DISPLAY_DRIVER:ro"
+        driver_flag="--display-driver $DISPLAY_DRIVER"
+    fi
+    # shellcheck disable=SC2086 # empty, or a flag and its value, and no folder here has a space
     "$ENGINE" run --rm --security-opt label=disable "$AS_USER" -e "HOME=$OUT/home" \
-        -e "CARGO_TARGET_DIR=$OUT/target" -v "$OUT:$OUT" -v "$TREE:$TREE" -w "$TREE" "$1" \
-        nice -n 19 sh packaging/build-release.sh --out "$OUT" "$2"
+        -e "CARGO_TARGET_DIR=$OUT/target" -v "$OUT:$OUT" -v "$TREE:$TREE" $driver_mount -w "$TREE" "$1" \
+        nice -n 19 sh packaging/build-release.sh --out "$OUT" $driver_flag "$2"
 }
 
 image_for() {
@@ -76,12 +85,25 @@ check_bundled_source() {
         die "SHA256SUMS has no bundled source, and a release can't go out without it."
 }
 
+# Found out now, and not at the end of a build that takes hours.
+refuse_a_release_with_no_driver() {
+    for stage in "$@"; do
+        [ "$stage" != source ] || [ -n "$DISPLAY_DRIVER" ] ||
+            die "a release can't go out without the display driver. Name the build with --display-driver."
+    done
+}
+
 main() {
     if [ "${1:-}" = --out ]; then
         OUT=$2
         shift 2
     fi
+    if [ "${1:-}" = --display-driver ]; then
+        DISPLAY_DRIVER=$(CDPATH='' cd -- "$2" && pwd)
+        shift 2
+    fi
     [ $# -gt 0 ] || set -- qemu bundled app payload source
+    refuse_a_release_with_no_driver "$@"
     find_engine
     QEMU_IMAGE=$(make_image qemu Containerfile.qemu)
     APP_IMAGE=$(make_image app Containerfile)
