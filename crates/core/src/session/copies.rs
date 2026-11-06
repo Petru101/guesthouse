@@ -13,6 +13,7 @@
 //! A screen's frame then has a copy into the frame ring too, in `frame_ring.rs`. It reads the same
 //! image, so in either order the guest's reply waits for it, and all of the above covers it.
 
+use super::copy_bounds::{Rows, copy_fits, refusal_level};
 use super::{Answer, Handled, HeldReply, ReplyTicket, Session, answer_status, services};
 use crate::config::CopyOrder;
 use crate::frames::SlotInFlight;
@@ -53,24 +54,6 @@ pub(crate) struct Parked {
     since: Instant,
 }
 
-/// Whether a rectangle is the right way up, and inside both surfaces where their sizes are known.
-fn rectangle_fits(copy: &StagingCopy) -> bool {
-    let inside = |end: i64, limit: u32| limit == 0 || end <= i64::from(limit);
-    let (left, top) = (i64::from(copy.left), i64::from(copy.top));
-    let (right, bottom) = (i64::from(copy.right), i64::from(copy.bottom));
-    let (target_left, target_top) = (i64::from(copy.target_left), i64::from(copy.target_top));
-    left >= 0
-        && top >= 0
-        && target_left >= 0
-        && target_top >= 0
-        && right >= left
-        && bottom >= top
-        && inside(right, copy.source.width)
-        && inside(bottom, copy.source.height)
-        && inside(target_left + right - left, copy.target.width)
-        && inside(target_top + bottom - top, copy.target.height)
-}
-
 impl<B: Backend, M: GuestMemory> Session<B, M> {
     pub(super) fn copy_to_staging(&mut self, message: &[u8], out: &mut Vec<u8>) -> Handled {
         let request = CopyToStaging::parse(message)?;
@@ -79,6 +62,27 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             answer_status(Status::INVALID_PARAMETER, out);
             return Ok(());
         };
+        let rectangle = request.source_rectangle;
+        let sizes = (self.allocations[&request.source].size, self.allocations[&request.target].size);
+        let read = Rows::read_by(&rectangle);
+        let written = Rows::written_by(&rectangle, request.target_left, request.target_top);
+        let fits = read.zip(written).is_some_and(|(read, written)| {
+            copy_fits(&self.backend, &read, (&source, sizes.0), &written, (&target, sizes.1))
+        });
+        if !fits {
+            // The GPU would take a size like this as a very long copy, which nothing can interrupt.
+            self.copies_refused += 1;
+            log::log!(
+                refusal_level(self.copies_refused),
+                "refused a copy of {rectangle:?} to ({}, {}) from {source:?} in {:#x} bytes to {target:?} in {:#x} bytes",
+                request.target_left,
+                request.target_top,
+                sizes.0,
+                sizes.1
+            );
+            answer_status(Status::UNSUCCESSFUL, out);
+            return Ok(());
+        }
         let target_guest_address = self.allocations[&request.target].guest_address;
         // The kernel's display queue sends no private data, and an app's present always has some.
         let is_screen = target_guest_address.is_some() && request.private_size == 0;
@@ -86,7 +90,6 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         let targets = self.queue_targets(context.clone());
         let source_address = self.surface_address(request.source)?;
         let target_address = self.surface_address(request.target)?;
-        let rectangle = request.source_rectangle;
         let copy = StagingCopy {
             source,
             target,
@@ -102,21 +105,22 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             is_screen,
             own_space: self.own_space()?,
         };
-        if !rectangle_fits(&copy) {
-            // The GPU would take a size like this as a very long copy, which nothing can interrupt.
-            log::warn!("refused a copy of {rectangle:?} from {source:?} to {target:?}");
-            answer_status(Status::UNSUCCESSFUL, out);
-            return Ok(());
-        }
         log::debug!(
-            "copy {:#x} to {:#x}, {rectangle:?}, to ({}, {}), pitch {} tiling {:?} to pitch {}, screen {is_screen}",
+            "copy {:#x} to {:#x}, {rectangle:?}, to ({}, {}), {}x{} pitch {} tiling {:?} in {:#x} bytes to {}x{} pitch {} tiling {:?} in {:#x} bytes, screen {is_screen}",
             request.source,
             request.target,
             copy.target_left,
             copy.target_top,
+            source.width,
+            source.height,
             source.pitch,
             source.tiling,
-            target.pitch
+            sizes.0,
+            target.width,
+            target.height,
+            target.pitch,
+            target.tiling,
+            sizes.1
         );
         let now = Instant::now();
         let deadline = now + self.config.frame_wait;

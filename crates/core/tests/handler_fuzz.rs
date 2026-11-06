@@ -129,6 +129,133 @@ fn surface_copy(session: &mut Session<StandIn, SparseMemory>) -> Vec<u8> {
     copy
 }
 
+/// Stand-in private data with its memory's size stated apart from its shape.
+fn shape(memory: u64, width: u32, height: u32, pitch: u32, tiling: u32) -> Vec<u8> {
+    let mut data = vec![0; 28];
+    set_u64(&mut data, 0, memory);
+    set_u32(&mut data, 8, width);
+    set_u32(&mut data, 12, height);
+    set_u32(&mut data, 20, pitch);
+    set_u32(&mut data, 24, tiling);
+    data
+}
+
+/// Surfaces at each edge of what a copy may do: (memory, width, height, pitch, tiling).
+const SHAPES: [(u64, u32, u32, u32, u32); 13] = [
+    (0x1_0000, 0, 64, 256, 0),
+    (0x1_0000, 64, 0, 256, 0),
+    (0x1_0000, 0, 0, 256, 0),
+    (0x1_0000, 64, 64, 4, 0),
+    (0x1000, 4096, 4096, 16384, 0),
+    (0x1000, u32::MAX, u32::MAX, u32::MAX, 0),
+    (0x1_0000, 0x4000_0000, 2, 0x4000_0000, 0),
+    (0x1_0000, 64, 64, 256, 1),
+    (0x1000, 4096, 4096, 16384, 5),
+    (0x3C00, 64, 60, 256, 4),
+    (0x10_0000, 64, 64, 256, 7),
+    (0x10_0000, 64, 64, 256, u32::MAX),
+    (0x10_0000, u32::MAX, u32::MAX, u32::MAX, 6),
+];
+
+/// Rectangles at the same edges, as left, top, right and bottom.
+const RECTANGLES: [[i32; 4]; 8] = [
+    [0, 0, 64, 64],
+    [0, 0, 64, 60],
+    [0, 0, 0, 0],
+    [0, 0, 0x4000_0000, 1],
+    [0, 0, 1, i32::MAX],
+    [i32::MAX - 1, i32::MAX - 1, i32::MAX, i32::MAX],
+    [0x1_0000, 0x1_0000, 0x1_0001, 0x1_0001],
+    [64, 64, 0, 0],
+];
+
+/// A copy for each shape and rectangle, in turn as the source and as the target, and
+/// with a corner that lands past the end.
+fn shape_copies(session: &mut Session<StandIn, SparseMemory>, good_copy: &[u8]) -> Vec<Vec<u8>> {
+    let good = u32_at(good_copy, 0x20).unwrap_or(0);
+    let mut out = Vec::new();
+    let mut copies = Vec::new();
+    for (memory, width, height, pitch, tiling) in SHAPES {
+        let private = shape(memory, width, height, pitch, tiling);
+        let _ = session.handle_message(&allocation(0, &private), TICKET, &mut out);
+        let surface = u32_at(&out, 0x10).unwrap_or(0);
+        for rectangle in RECTANGLES {
+            for (source, target) in [(surface, good), (good, surface)] {
+                let mut copy = good_copy.to_vec();
+                set_u32(&mut copy, 0x20, source);
+                set_u32(&mut copy, 0x24, target);
+                for (index, value) in rectangle.into_iter().enumerate() {
+                    set_u32(&mut copy, 0x28 + index * 4, value as u32);
+                }
+                copies.push(copy.clone());
+                set_u32(&mut copy, 0x38, i32::MAX as u32);
+                set_u32(&mut copy, 0x3C, 0x1_0000);
+                copies.push(copy);
+            }
+        }
+    }
+    copies
+}
+
+/// The end of a tiled surface, walked to from `clc7b5.h` and not from the code under test: the block
+/// holding its last byte, and the end of that block. GOBs are 64 bytes by 8 rows, a block is one GOB
+/// wide and `1 << block` high, and blocks run along a row of blocks first. `None` for a block height
+/// past `NVC7B5_SET_SRC_BLOCK_SIZE_HEIGHT_THIRTYTWO_GOBS`.
+fn end_of_tiled_surface(pitch: u32, height: u32, block: u32) -> Option<u128> {
+    if block > 5 {
+        return None;
+    }
+    if pitch == 0 || height == 0 {
+        return Some(0);
+    }
+    let block_rows = 8u128 << block;
+    let blocks_across = (u128::from(pitch) - 1) / 64 + 1;
+    let last_block_row = (u128::from(height) - 1) / block_rows;
+    let last_block = last_block_row * blocks_across + blocks_across - 1;
+    Some((last_block + 1) * 64 * block_rows)
+}
+
+/// Holds each tiled copy since `from` to the header's sum and fields. Returns how many it saw.
+fn check_tiled_copies(session: &Session<StandIn, SparseMemory>, from: usize) -> usize {
+    let tiled = session.backend().copies[from..].iter().filter(|copy| copy.source.tiling.is_some());
+    let mut seen = 0;
+    for copy in tiled {
+        let block = copy.source.tiling.expect("filtered on it");
+        let end = end_of_tiled_surface(copy.source.pitch, copy.source.height, block);
+        let mapped = session.backend().mapped_length(copy.own_space, copy.source_address);
+        let (Some(end), Some(mapped)) = (end, mapped) else { panic!("not a surface: {copy:?}") };
+        assert!(end <= u128::from(mapped), "past its memory: {copy:?}");
+        // NVC7B5_SET_SRC_ORIGIN has 16 bits for each.
+        assert!(i64::from(copy.left) * 4 < 1 << 16 && copy.top < 1 << 16, "past its field: {copy:?}");
+        seen += 1;
+    }
+    seen
+}
+
+#[test]
+fn the_tiled_sum_here_is_the_headers() {
+    assert_eq!(end_of_tiled_surface(16384, 2160, 4), Some(0x220_0000), "seen on a real 4096 by 2160");
+    assert_eq!(end_of_tiled_surface(7680, 1080, 4), Some(7680 * 1152));
+    assert_eq!(end_of_tiled_surface(65, 9, 0), Some(4 * 512));
+    assert_eq!(end_of_tiled_surface(64, 8, 6), None);
+}
+
+#[test]
+fn no_shape_of_surface_gets_a_copy_past_its_memory() {
+    for flavour in [0, 16] {
+        let mut session = fresh_session(flavour);
+        let copy = surface_copy(&mut session);
+        let mut out = Vec::new();
+        for request in shape_copies(&mut session, &copy) {
+            let _ = session.handle_message(&request, TICKET, &mut out);
+            let _ = session.poll(Instant::now());
+        }
+        assert_eq!(session.backend().copies_past_their_memory, Vec::<String>::new());
+        assert!(!session.backend().copies.is_empty(), "some of these are fine");
+        assert!(check_tiled_copies(&session, 0) > 0, "some of the fine ones are tiled");
+    }
+}
+
 #[test]
 fn no_handler_panics_on_a_random_message() {
     let mut messages =
@@ -140,8 +267,10 @@ fn no_handler_panics_on_a_random_message() {
         if round % ROUNDS_PER_SESSION == 0 {
             session = fresh_session(messages.number());
             let copy = surface_copy(&mut session);
-            messages.set_templates(templates().into_iter().chain([copy]).collect());
+            let shaped = shape_copies(&mut session, &copy);
+            messages.set_templates(templates().into_iter().chain([copy]).chain(shaped).collect());
         }
+        let copies_so_far = session.backend().copies.len();
         let message = messages.message();
         let ticket = if messages.number() & 1 == 0 { TICKET } else { None };
         // The daemon must return for every message, and a panic here fails the test.
@@ -151,5 +280,7 @@ fn no_handler_panics_on_a_random_message() {
         let now = Instant::now();
         let _ = session.poll(if messages.number().is_multiple_of(64) { now + FAR_FUTURE } else { now });
         session.backend_mut().copy_done = messages.number().is_multiple_of(4);
+        assert_eq!(session.backend().copies_past_their_memory, Vec::<String>::new());
+        check_tiled_copies(&session, copies_so_far);
     }
 }

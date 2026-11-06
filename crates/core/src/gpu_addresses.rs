@@ -24,7 +24,7 @@ pub const LARGE_ALIGN: u64 = 2 << 20;
 /// What a range of addresses is for. A range only ever goes back to the same use.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AddressUse {
-    /// The host's own, for channels and copies. These are never freed.
+    /// The host's own, for channels and copies. Once in use, these are never freed.
     Host,
     /// A slot of the frame ring, which comes and goes with viewers and screen modes.
     FrameRing,

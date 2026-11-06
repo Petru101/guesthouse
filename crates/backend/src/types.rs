@@ -108,6 +108,9 @@ pub struct UnmapRequest {
     pub length: u64,
 }
 
+/// The bytes of a pixel in a copy to the screen or into the frame ring.
+pub const COPY_PIXEL_BYTES: u32 = 4;
+
 /// The shape of a surface, for the guest and for copies to the screen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SurfaceShape {

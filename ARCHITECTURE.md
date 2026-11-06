@@ -73,8 +73,11 @@ A handler answers everything, and nothing a message says may stop the daemon. So
 - the IO space must hold the whole fence area, on a page, inside the shared window, and can't move once fences exist
 - video memory stops at the end of the GPU address ranges, and memory waiting for its page list stops at the guest's RAM
 - a list stops at a channel's ring
+- a copy stops at its memory
 
 Past these the port is stricter than the prototype, which took such messages and did something else with them. For anything a guest really sends, the two still give the same replies.
+
+A surface's width, height, pitch and tiling are only what its description says, and they aren't tied to the size of its memory. All the daemon's copies run in its own address space, which no process shares, so `session/copy_bounds.rs` measures each one in bytes against the allocation's real size, on both sides, and a copy that doesn't fit is refused with `UNSUCCESSFUL`. A tiled source has to fit whole, and `Backend::tiled_bytes` says how big that is, as the layout is the vendor's.
 
 ## Slots
 

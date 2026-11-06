@@ -316,18 +316,62 @@ fn an_image_of_the_screens_size_is_read_directly_and_anything_else_by_the_stagin
     assert!(!staged.clone().any(|address| address == direct.source_address));
 }
 
+/// A copy of the first row only, which is all that a short surface lets through.
+fn present_one_row(session: &mut TestSession, (image, staging): (u32, u32)) {
+    let mut request = copy(image, staging);
+    set_u32(&mut request, 0x34, 1);
+    assert_eq!(status_of(&send(session, &request)), SUCCESS);
+}
+
+fn short_surface() -> Vec<u8> {
+    let mut data = sized_surface(WIDTH, HEIGHT);
+    data[..8].copy_from_slice(&0x1000u64.to_le_bytes());
+    data
+}
+
 #[test]
 fn a_surface_smaller_than_its_numbers_is_never_read_past_its_end() {
     let mut session = session();
-    let mut lying = sized_surface(WIDTH, HEIGHT);
-    lying[..8].copy_from_slice(&0x1000u64.to_le_bytes());
-    let (_, image) = allocate(&mut session, lying.clone());
-    let (_, staging) = allocate(&mut session, lying);
+    let (_, image) = allocate(&mut session, short_surface());
+    let (_, staging) = allocate(&mut session, short_surface());
     lock(&mut session, staging);
-    present(&mut session, (image, staging));
+    present_one_row(&mut session, (image, staging));
     session.viewer_arrived();
     let _ = session.poll(later());
-    present(&mut session, (image, staging));
+    present_one_row(&mut session, (image, staging));
+    assert!(session.backend().slot_copies.is_empty());
+}
+
+#[test]
+fn a_short_image_leaves_the_ring_to_read_the_staging_surface() {
+    let mut session = session();
+    let (_, image) = allocate(&mut session, short_surface());
+    let (_, staging) = allocate(&mut session, sized_surface(WIDTH, HEIGHT));
+    lock(&mut session, staging);
+    present_one_row(&mut session, (image, staging));
+    session.viewer_arrived();
+    let _ = session.poll(later());
+    present_one_row(&mut session, (image, staging));
+    let copies = &session.backend().slot_copies;
+    assert!(!copies.is_empty());
+    let target_address = session.backend().copies[0].target_address;
+    assert!(copies.iter().all(|copy| copy.source_address == target_address));
+}
+
+#[test]
+fn a_tiled_image_short_of_its_last_block_reaches_neither_the_screen_nor_the_ring() {
+    let mut session = session();
+    // 470 rows fit the memory, and the last block of 128 rows ends at 512.
+    let height = 470;
+    let mut tiled = sized_surface(WIDTH, height);
+    tiled[..8].copy_from_slice(&(2560 * 500u64).to_le_bytes());
+    tiled.resize(28, 0);
+    set_u32(&mut tiled, 24, 5);
+    let (_, image) = allocate(&mut session, tiled);
+    let (_, staging) = allocate(&mut session, sized_surface(WIDTH, height));
+    lock(&mut session, staging);
+    let refused = status_of(&send(&mut session, &copy(image, staging)));
+    assert_eq!(refused, Status::UNSUCCESSFUL.0, "the staging copy needs the whole surface to fit too");
     assert!(session.backend().slot_copies.is_empty());
 }
 

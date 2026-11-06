@@ -26,6 +26,7 @@ pub mod rm;
 pub mod sensors;
 pub mod staging;
 pub mod startup;
+mod tiling;
 
 use answers::adapter::{AdapterAnswers, Inputs};
 use answers::nodes::{ENGINE_VIDEO_ENCODE, Node, node_list};
@@ -36,7 +37,7 @@ use encode_sessions::EncodeSessions;
 use guesthouse_backend::{
     AdapterFacts, AllocationShape, Backend, BackendError, DriverSurvey, GpuRange, HostServices, MapRequest,
     MemoryId, PciCard, Refusal, RegistryName, RegistryValue, Setup, SlotCopy, SpaceId, StagingCopy,
-    StagingStart, Status, UnmapRequest, VendorQuery, VideoMemoryUse, Work, WorkStart,
+    StagingStart, Status, SurfaceShape, UnmapRequest, VendorQuery, VideoMemoryUse, Work, WorkStart,
 };
 use inf::{INF_NAME, Inf};
 use profile::{
@@ -474,5 +475,12 @@ impl<R: Rm + OpenRm> Backend for NvidiaBackend<R> {
 
     fn start_slot_copy(&mut self, host: &mut dyn HostServices, copy: &SlotCopy) -> StagingStart {
         self.start_frame_copy(host, copy)
+    }
+
+    fn tiled_bytes(&self, surface: &SurfaceShape, x: u64, y: u64) -> Option<u64> {
+        if !tiling::origin_fits(x, y) {
+            return None;
+        }
+        tiling::surface_bytes(surface.pitch, surface.height, surface.tiling?)
     }
 }

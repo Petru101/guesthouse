@@ -16,6 +16,7 @@ use guesthouse_backend_nvidia::rm::fake_card::{FAKE_CLASSES, FAKE_GPU_ID, FAKE_N
 use guesthouse_backend_nvidia::sensors::{Snapshot, SnapshotReader};
 use guesthouse_backend_standin::{RandomMessages, SparseMemory};
 use guesthouse_core::{Answer, Config, CopyOrder, MemoryLimits, ReplyTicket, Session};
+use guesthouse_messages::allocation::CreateAllocationAnswer;
 use guesthouse_messages::wire::{set_u32, set_u64, u32_at, u64_at};
 use guesthouse_messages::{Command, HEADER_SIZE, Status};
 use std::env;
@@ -545,6 +546,123 @@ fn a_ring_with_no_gap_gets_its_invalidate_from_the_copy_channel() {
     send(&mut session, &submission(queue, 2, &ring_private(1, 3, ring)));
     assert_eq!(session.memory().read_u64(ring_memory + 8), Ok(0), "the guest's own entry isn't touched");
     assert_eq!(session.backend().device().rm.doorbells().len(), before + 2, "the invalidate, then the queue");
+}
+
+/// Makes a tiled surface of `pitch` by `height`, filling `size` bytes, and a linear target for it.
+/// Returns the surface and the target.
+fn tiled_and_target(session: &mut Guest, pitch: u32, height: u32, block: u32, size: u32) -> (u32, u32) {
+    let (source, target, _) = tiled_target_and_size(session, pitch, height, block, size);
+    (source, target)
+}
+
+/// As [`tiled_and_target`], and the size the tiled surface really got.
+fn tiled_target_and_size(
+    session: &mut Guest,
+    pitch: u32,
+    height: u32,
+    block: u32,
+    size: u32,
+) -> (u32, u32, u64) {
+    let layout = &GUEST_617.allocation;
+    let mut source = blank_request();
+    set_u32(&mut source, layout.size, size);
+    set_u32(&mut source, layout.width, pitch / 4);
+    set_u32(&mut source, layout.height, height);
+    set_u32(&mut source, layout.pitch, pitch);
+    set_u32(&mut source, layout.tiling, block);
+    set_u32(&mut source, layout.columns, pitch.div_ceil(64));
+    let mut target = blank_request();
+    set_u32(&mut target, layout.size, pitch * height);
+    set_u32(&mut target, layout.width, pitch / 4);
+    set_u32(&mut target, layout.height, height);
+    set_u32(&mut target, layout.pitch, pitch);
+    let mut create = message(Command::CreateAllocation, 0x40);
+    set_u32(&mut create, 0x28, 2);
+    for private in [&source, &target] {
+        create.extend_from_slice(&[0; 4]);
+        create.extend_from_slice(&(private.len() as u32).to_le_bytes());
+        create.extend_from_slice(&[0; 4]);
+    }
+    create.extend_from_slice(&source);
+    create.extend_from_slice(&target);
+    let reply = send(session, &create);
+    let given = CreateAllocationAnswer::size_of_entry(&reply, 0).unwrap();
+    (u32_at(&reply, 0x10).unwrap(), u32_at(&reply, 0x58).unwrap(), given)
+}
+
+fn copy_of(source: u32, target: u32, width: u32, height: u32) -> Vec<u8> {
+    let mut copy = message(Command::CopyToStaging, 0x50);
+    set_u32(&mut copy, 0x20, source);
+    set_u32(&mut copy, 0x24, target);
+    set_u32(&mut copy, 0x30, width);
+    set_u32(&mut copy, 0x34, height);
+    copy
+}
+
+#[test]
+fn a_tiled_screen_that_fills_its_blocks_starts_a_copy() {
+    let mut session = guest();
+    // 1080 rows take nine blocks of 128.
+    let (source, target) = tiled_and_target(&mut session, 7680, 1080, 4, 7680 * 1152);
+    session.set_copy_order(guesthouse_core::CopyOrder::Held);
+    let mut out = Vec::new();
+    let copy = copy_of(source, target, 1920, 1080);
+    assert_eq!(session.handle_message(&copy, TICKET, &mut out), Answer::Held);
+    let words = session.backend().last_copy_words();
+    assert_eq!(words[16..19], [4 << 4 | 1 << 12, 7680, 1080], "block, pitch and height, as stated");
+}
+
+/// The end of a tiled surface, walked to from `clc7b5.h` and not from the code under test: the block
+/// holding its last byte, and the end of that block. GOBs are 64 bytes by 8 rows, a block is one GOB
+/// wide and `1 << block` high, and blocks run along a row of blocks first.
+fn end_of_tiled_surface(pitch: u64, height: u64, block: u32) -> u64 {
+    let block_rows = 8 << block;
+    let blocks_across = (pitch - 1) / 64 + 1;
+    let last_block = (height - 1) / block_rows * blocks_across + blocks_across - 1;
+    (last_block + 1) * 64 * block_rows
+}
+
+#[test]
+fn a_tiled_copy_goes_ahead_only_if_the_headers_sum_fits_its_memory() {
+    const SHORT_BY: u32 = 0x1_0000;
+    for pitch in [64, 100, 5440, 7680, 15360, 16384] {
+        for height in [1, 8, 9, 400, 768, 1080, 2160] {
+            for block in 0..=5 {
+                let end = end_of_tiled_surface(u64::from(pitch), u64::from(height), block) as u32;
+                for stated in [end, end.saturating_sub(SHORT_BY).max(0x1000)] {
+                    let mut session = guest();
+                    let (source, target, given) =
+                        tiled_target_and_size(&mut session, pitch, height, block, stated);
+                    session.set_copy_order(CopyOrder::Held);
+                    let mut out = Vec::new();
+                    let copy = copy_of(source, target, pitch / 4, height);
+                    let answer = session.handle_message(&copy, TICKET, &mut out);
+                    let wanted = if u64::from(end) <= given { Answer::Held } else { Answer::Now };
+                    assert_eq!(answer, wanted, "{pitch} by {height}, block {block}, in {given:#x} bytes");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn a_tiled_screen_short_of_its_last_block_is_refused() {
+    let mut session = guest();
+    let (source, target) = tiled_and_target(&mut session, 7680, 1080, 4, 7680 * 1080);
+    assert_eq!(
+        send(&mut session, &copy_of(source, target, 1920, 1080)),
+        Status::UNSUCCESSFUL.0.to_le_bytes()
+    );
+}
+
+#[test]
+fn a_block_height_past_the_engines_is_refused() {
+    let mut session = guest();
+    let (source, target) = tiled_and_target(&mut session, 7680, 1080, 6, 7680 * 2048);
+    assert_eq!(
+        send(&mut session, &copy_of(source, target, 1920, 1080)),
+        Status::UNSUCCESSFUL.0.to_le_bytes()
+    );
 }
 
 /// Starts a copy to a staging surface that nothing will finish.

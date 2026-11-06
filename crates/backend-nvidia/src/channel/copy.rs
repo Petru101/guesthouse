@@ -8,6 +8,7 @@ use super::{COPY_SUBCHANNEL, Channel, l2_invalidate_words};
 use crate::pushbuffer::{increasing, ring_entry};
 use crate::rm::Rm;
 use crate::rm::device::Device;
+use crate::tiling::{BLOCK_LIMIT, origin_fits};
 use std::time::{Duration, Instant};
 
 /// Ring entries, at the start of the area.
@@ -36,6 +37,7 @@ const LAUNCH_PITCH_ONE_LINE: u32 = 0x18E;
 /// Flushed, with nothing to transfer, ending in a one-word semaphore.
 pub(crate) const LAUNCH_SEMAPHORE_ONLY: u32 = 0xC;
 const BLOCK_HEIGHT_SHIFT: u32 = 4;
+const ORIGIN_Y_SHIFT: u32 = 16;
 /// Blocks are one GOB wide and deep, and GOBs have eight rows.
 const BLOCK_GOB_HEIGHT_8: u32 = 1 << 12;
 
@@ -109,8 +111,12 @@ impl CopyChannel {
         words
     }
 
-    /// The batch for a rectangle out of a tiled surface, which the engine detiles by itself.
-    pub fn tiled(&mut self, tiled: &Tiled) -> Vec<u32> {
+    /// The batch for a rectangle out of a tiled surface, which the engine detiles by itself. `None`
+    /// if a number wouldn't fit its field, as it would change the one beside it.
+    pub fn tiled(&mut self, tiled: &Tiled) -> Option<Vec<u32>> {
+        if tiled.block >= BLOCK_LIMIT || !origin_fits(u64::from(tiled.x), u64::from(tiled.y)) {
+            return None;
+        }
         let mut words = self.head(&tiled.rows);
         words.extend([
             increasing(COPY_SUBCHANNEL, METHOD_SET_SOURCE_BLOCK_SIZE, 6),
@@ -119,11 +125,11 @@ impl CopyChannel {
             tiled.surface_height,
             1,
             0,
-            tiled.x | tiled.y << 16,
+            tiled.x | tiled.y << ORIGIN_Y_SHIFT,
             increasing(COPY_SUBCHANNEL, METHOD_LAUNCH, 1),
             LAUNCH_BLOCK_TO_PITCH_LINES,
         ]);
-        words
+        Some(words)
     }
 
     /// The batch for plain bytes between GPU addresses.
@@ -265,10 +271,22 @@ mod tests {
     fn a_tiled_copy_describes_the_source_block() {
         let (_, mut copier) = copier();
         let tiled = Tiled { rows: rows(), x: 4, y: 2, surface_width: 1024, surface_height: 768, block: 3 };
-        let words = copier.tiled(&tiled);
+        let words = copier.tiled(&tiled).unwrap();
         assert_eq!(words[16], 3 << 4 | 1 << 12);
         assert_eq!(words[21], 4 | 2 << 16);
         assert_eq!(*words.last().unwrap(), LAUNCH_BLOCK_TO_PITCH_LINES);
+    }
+
+    #[test]
+    fn a_number_past_its_field_makes_no_batch() {
+        let (_, mut copier) = copier();
+        let tiled = Tiled { rows: rows(), x: 4, y: 2, surface_width: 1024, surface_height: 768, block: 3 };
+        for bad in
+            [Tiled { block: 6, ..tiled }, Tiled { x: 0x1_0000, ..tiled }, Tiled { y: 0x1_0000, ..tiled }]
+        {
+            assert_eq!(copier.tiled(&bad), None, "{bad:?}");
+        }
+        assert_eq!(copier.sequence, 0, "nothing was started");
     }
 
     #[test]

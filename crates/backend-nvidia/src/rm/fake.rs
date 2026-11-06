@@ -37,6 +37,8 @@ pub struct FakeRm {
     pub round_memory_to: u64,
     pub refuse_class: Option<u32>,
     pub refuse_exports: bool,
+    /// A GPU address no mapping may start at.
+    pub refuse_map_at: Option<u64>,
     /// What each export handed out, so a test can look at what a viewer would see.
     pub exports: HashMap<Handle, File>,
     /// What video memory starts with, for a copy out to host pages to find.
@@ -67,6 +69,7 @@ impl FakeRm {
             round_memory_to: 1,
             refuse_class: None,
             refuse_exports: false,
+            refuse_map_at: None,
             exports: HashMap::new(),
             memory_starts: HashMap::new(),
             copies_looked_at: 0,
@@ -228,7 +231,7 @@ impl Rm for FakeRm {
     }
 
     fn map_dma(&mut self, map: &DmaMap) -> Result<(), RmError> {
-        if self.overlaps(map.range, map.address, map.length) {
+        if self.overlaps(map.range, map.address, map.length) || self.refuse_map_at == Some(map.address) {
             return Err(RmError::refused(format!("map at {:#x}", map.address), STATUS_NOT_SUPPORTED));
         }
         self.mappings.insert((map.range, map.address), map.length);

@@ -1,9 +1,10 @@
 //! A backend that answers vendor questions from the recording.
 
 use guesthouse_backend::{
-    AdapterFacts, AllocationShape, Backend, BackendError, DriverSurvey, GpuRange, HostServices, MapRequest,
-    MemoryId, PciCard, Refusal, RegistryName, RegistryValue, Setup, SpaceId, StagingCopy, StagingStart,
-    Status, SurfaceShape, UnmapRequest, VendorQuery, VideoMemoryUse, Work, WorkStart,
+    AdapterFacts, AllocationShape, Backend, BackendError, COPY_PIXEL_BYTES, DriverSurvey, GpuRange,
+    HostServices, MapRequest, MemoryId, PciCard, Refusal, RegistryName, RegistryValue, Setup, SpaceId,
+    StagingCopy, StagingStart, Status, SurfaceShape, UnmapRequest, VendorQuery, VideoMemoryUse, Work,
+    WorkStart,
 };
 use guesthouse_backend_standin::StandIn;
 use guesthouse_messages::adapter::AdapterQuery;
@@ -198,7 +199,8 @@ impl Backend for RecordedAnswers {
                 width,
                 height,
                 format,
-                pitch: 0,
+                // The answer has no pitch in it, and rows with no padding are the least a surface has.
+                pitch: width.saturating_mul(COPY_PIXEL_BYTES),
                 tiling: None,
                 refresh: (refresh, refresh_base),
                 samples: (samples, quality),

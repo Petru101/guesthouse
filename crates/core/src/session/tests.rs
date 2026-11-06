@@ -59,8 +59,9 @@ fn private(size: u64) -> Vec<u8> {
     data
 }
 
+/// As much memory as the surface needs.
 fn surface_private(width: u32, height: u32) -> Vec<u8> {
-    let mut data = private(0x10000);
+    let mut data = private((u64::from(width) * u64::from(height) * 4).max(0x10000));
     set_u32(&mut data, 8, width);
     set_u32(&mut data, 12, height);
     data
@@ -159,6 +160,7 @@ fn signal_message(objects: &[u32], contexts: &[u32], values: &[u64]) -> Vec<u8> 
     request
 }
 
+mod copy_bounds;
 mod failing;
 mod frame_ring;
 mod indirect;
@@ -1554,6 +1556,25 @@ mod queues {
         assert_ne!(copies[0].source_address, copies[0].target_address);
         assert_eq!(session.allocations[&source].mappings.len(), 1);
         assert!(!copies[0].is_screen, "the target is not in the shared window");
+    }
+
+    #[test]
+    fn a_copy_never_shares_an_address_space_with_a_process() {
+        let mut session = session();
+        let (_, source) = allocate(&mut session, surface_private(640, 480));
+        let (_, target) = allocate(&mut session, surface_private(640, 480));
+        let mut request = message(Command::MapGpuAddresses, 0x50);
+        set_u32(&mut request, 8, 0);
+        set_u64(&mut request, 0x20, 0x2000_0000);
+        set_u32(&mut request, 0x38, source);
+        set_u64(&mut request, 0x40, 1);
+        set_u64(&mut request, 0x48, 1);
+        assert_eq!(u32_at(&send(&mut session, &request), 16).unwrap(), SUCCESS);
+        assert_eq!(status_of(&send(&mut session, &copy_message(0, source, target, 0))), SUCCESS);
+        let address = session.backend().copies[0].source_address;
+        let allocation = &session.allocations[&source];
+        let mapping = allocation.mappings.iter().find(|mapping| mapping.address == address).unwrap();
+        assert_eq!((mapping.first, mapping.length), (0, allocation.size), "the whole surface");
     }
 
     #[test]

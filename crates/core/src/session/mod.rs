@@ -4,6 +4,7 @@ mod adapter;
 mod allocation;
 mod context;
 mod copies;
+mod copy_bounds;
 mod frame_ring;
 mod indirect;
 mod mapping;
@@ -123,6 +124,8 @@ pub struct Session<B, M> {
 
     pub(crate) processes_32_bit: HashSet<u32>,
     pub(crate) spaces: HashMap<u32, SpaceId>,
+    /// The daemon's own address space, apart from `spaces` so that no message can name it.
+    own_space: Option<SpaceId>,
     pub(crate) closed_spaces: HashSet<SpaceId>,
 
     pub(crate) allocations: HashMap<u32, Allocation>,
@@ -151,6 +154,8 @@ pub struct Session<B, M> {
     pub(crate) queues_made: u32,
     /// Statistics have been refused once, which is worth saying once.
     pub(crate) statistics_refused: bool,
+    /// Copies refused so far, as only the first few are worth a warning.
+    pub(crate) copies_refused: u64,
     pub(crate) work_started: u64,
     /// How many queues of each address space have stopped answering since it last came off the GPU.
     pub(crate) failed_queues: HashMap<SpaceId, u32>,
@@ -193,6 +198,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             io_space: None,
             processes_32_bit: HashSet::new(),
             spaces: HashMap::new(),
+            own_space: None,
             closed_spaces: HashSet::new(),
             allocations: HashMap::new(),
             resources: HashMap::new(),
@@ -211,6 +217,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             gates: HashMap::new(),
             queues_made: 0,
             statistics_refused: false,
+            copies_refused: 0,
             work_started: 0,
             failed_queues: HashMap::new(),
             faults: FaultRate::new(),
@@ -405,6 +412,13 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         if let Some(&space) = self.spaces.get(&process) {
             return Ok(space);
         }
+        let space = self.new_space()?;
+        self.spaces.insert(process, space);
+        Ok(space)
+    }
+
+    /// An address space with the fences in it, as every space has.
+    fn new_space(&mut self) -> Result<SpaceId, BackendError> {
         let space = self.backend.create_address_space(&crate::GPU_RANGES)?;
         let block = self.fence_block()?;
         self.backend.map(&guesthouse_backend::MapRequest {
@@ -416,13 +430,18 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             small_pages: true,
             gpu_cached: false,
         })?;
-        self.spaces.insert(process, space);
         Ok(space)
     }
 
-    /// The daemon's own address space, for its copies. Process numbers start above zero.
+    /// The daemon's own address space, for its copies. Whatever is mapped here got here by
+    /// `surface_address`, so a surface in this space is always there whole.
     pub(crate) fn own_space(&mut self) -> Result<SpaceId, BackendError> {
-        self.space_for(0)
+        if let Some(space) = self.own_space {
+            return Ok(space);
+        }
+        let space = self.new_space()?;
+        self.own_space = Some(space);
+        Ok(space)
     }
 
     pub(crate) fn fence_value(&self, fence: u64) -> u64 {

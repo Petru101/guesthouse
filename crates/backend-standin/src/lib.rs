@@ -59,6 +59,8 @@ pub struct StandIn {
     pub preserved: Vec<(MemoryId, MemoryId, u64)>,
     pub copies: Vec<StagingCopy>,
     pub slot_copies: Vec<SlotCopy>,
+    /// Copies that would have gone past what's mapped at their addresses, as an engine would run them.
+    pub copies_past_their_memory: Vec<String>,
     /// Slot copies end in this. A test sets it to see a copy fail.
     pub slot_copy_status: Status,
     /// What each block of memory starts with, for a test to fill in.
@@ -88,6 +90,15 @@ impl Space {
     }
 }
 
+/// What a copy touches on one side, in bytes across and rows down.
+#[derive(Debug, Clone, Copy)]
+struct Touched {
+    left: i128,
+    top: i128,
+    width: i128,
+    count: i128,
+}
+
 impl StandIn {
     pub fn new() -> Self {
         let card = PciCard { vendor: STAND_IN_VENDOR, device: 1, revision: 1 };
@@ -115,6 +126,7 @@ impl StandIn {
             preserved: Vec::new(),
             copies: Vec::new(),
             slot_copies: Vec::new(),
+            copies_past_their_memory: Vec::new(),
             slot_copy_status: Status::SUCCESS,
             memory_starts: HashMap::new(),
             refuse_exports: false,
@@ -139,6 +151,51 @@ impl StandIn {
         self.spaces.values().map(|space| space.mappings.len()).sum()
     }
 
+    /// Whether rows of a surface at an address stay inside the mapping there.
+    fn rows_are_mapped(&self, space: SpaceId, address: u64, surface: &SurfaceShape, rows: &Touched) -> bool {
+        let Some(&mapped) = self.spaces.get(&space).and_then(|space| space.mappings.get(&address)) else {
+            return false;
+        };
+        let pitch = i128::from(surface.pitch);
+        let end = (rows.top + rows.count.max(1) - 1) * pitch + rows.left + rows.width;
+        rows.left + rows.width <= pitch && end <= i128::from(mapped)
+    }
+
+    /// What's mapped at an address, for a test to compare a copy with.
+    pub fn mapped_length(&self, space: SpaceId, address: u64) -> Option<u64> {
+        self.spaces.get(&space)?.mappings.get(&address).copied()
+    }
+
+    /// A tiled surface's sums are left to the test, so that they aren't checked against themselves.
+    fn source_is_mapped(&self, space: SpaceId, address: u64, surface: &SurfaceShape, rows: &Touched) -> bool {
+        surface.tiling.is_some() || self.rows_are_mapped(space, address, surface, rows)
+    }
+
+    fn note_staging_copy(&mut self, copy: &StagingCopy) {
+        let width = (i128::from(copy.right) - i128::from(copy.left)) * i128::from(BYTES_PER_PIXEL);
+        let count = i128::from(copy.bottom) - i128::from(copy.top);
+        let pixel = i128::from(BYTES_PER_PIXEL);
+        let read = Touched { left: i128::from(copy.left) * pixel, top: i128::from(copy.top), width, count };
+        let written =
+            Touched { left: i128::from(copy.target_left) * pixel, top: i128::from(copy.target_top), ..read };
+        if !self.source_is_mapped(copy.own_space, copy.source_address, &copy.source, &read)
+            || !self.rows_are_mapped(copy.own_space, copy.target_address, &copy.target, &written)
+        {
+            self.copies_past_their_memory.push(format!("{copy:?}"));
+        }
+    }
+
+    fn note_slot_copy(&mut self, copy: &SlotCopy) {
+        let width = i128::from(copy.width) * i128::from(BYTES_PER_PIXEL);
+        let read = Touched { left: 0, top: 0, width, count: i128::from(copy.height) };
+        let slot = SurfaceShape { pitch: copy.slot_pitch, tiling: None, ..copy.source };
+        if !self.source_is_mapped(copy.own_space, copy.source_address, &copy.source, &read)
+            || !self.rows_are_mapped(copy.own_space, copy.slot_address, &slot, &read)
+        {
+            self.copies_past_their_memory.push(format!("{copy:?}"));
+        }
+    }
+
     fn new_memory(&mut self) -> MemoryId {
         let memory = MemoryId(self.next_id);
         self.next_id += 1;
@@ -152,6 +209,17 @@ impl Default for StandIn {
         Self::new()
     }
 }
+
+/// Where private data can state a pitch. Zero means rows with no padding.
+const PITCH_FIELD: usize = 20;
+/// Where private data can ask for tiling, as one more than the log2 of the block height. Zero means
+/// rows in order.
+const TILING_FIELD: usize = 24;
+/// The narrowest and shortest block of a pretend tiled surface, and the tallest log2 there is.
+const TILE_WIDTH: u64 = 64;
+const TILE_ROWS: u64 = 8;
+const MOST_TILING: u32 = 5;
+const TILED_CORNER_LIMIT: u64 = 1 << 16;
 
 fn field(private: &[u8], at: usize) -> u32 {
     private.get(at..at + 4).map_or(0, |bytes| u32::from_le_bytes(bytes.try_into().expect("four bytes")))
@@ -257,12 +325,16 @@ impl Backend for StandIn {
             .map_or(DEFAULT_SIZE, |bytes| u64::from_le_bytes(*bytes))
             .max(DEFAULT_SIZE);
         let (width, height) = (field(private, 8), field(private, 12));
-        let surface = (width != 0).then_some(SurfaceShape {
+        let pitch = match field(private, PITCH_FIELD) {
+            0 => width.saturating_mul(BYTES_PER_PIXEL),
+            pitch => pitch,
+        };
+        let surface = (pitch != 0).then_some(SurfaceShape {
             width,
             height,
             format: FORMAT_32_BIT,
-            pitch: width.saturating_mul(BYTES_PER_PIXEL),
-            tiling: None,
+            pitch,
+            tiling: field(private, TILING_FIELD).checked_sub(1),
             refresh: (60, 1),
             samples: (1, 0),
             colour: COLOUR_8_BIT,
@@ -340,6 +412,7 @@ impl Backend for StandIn {
     }
 
     fn start_staging_copy(&mut self, _host: &mut dyn HostServices, copy: &StagingCopy) -> StagingStart {
+        self.note_staging_copy(copy);
         self.copies.push(*copy);
         if self.slow_copies { StagingStart::Running } else { StagingStart::Finished(Status::SUCCESS) }
     }
@@ -349,8 +422,21 @@ impl Backend for StandIn {
     }
 
     fn start_slot_copy(&mut self, _host: &mut dyn HostServices, copy: &SlotCopy) -> StagingStart {
+        self.note_slot_copy(copy);
         self.slot_copies.push(*copy);
         if self.slow_copies { StagingStart::Running } else { StagingStart::Finished(self.slot_copy_status) }
+    }
+
+    /// As a copy engine lays one out: whole blocks of 64 bytes by `8 << block` rows, and a corner
+    /// that has to fit 16 bits each way.
+    fn tiled_bytes(&self, surface: &SurfaceShape, x: u64, y: u64) -> Option<u64> {
+        let block = surface.tiling.filter(|&block| block <= MOST_TILING)?;
+        if x >= TILED_CORNER_LIMIT || y >= TILED_CORNER_LIMIT {
+            return None;
+        }
+        let rows = u64::from(surface.height).next_multiple_of(TILE_ROWS << block);
+        let width = u64::from(surface.pitch).next_multiple_of(TILE_WIDTH);
+        rows.checked_mul(width)
     }
 
     fn read_memory_start(
