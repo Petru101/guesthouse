@@ -109,7 +109,9 @@ The host's own clock in the clock answer is masked, since it can never repeat. M
 
 Nothing is relative to a project folder. Machines are in the data store, which `~/.config/guesthouse/store` can move, sockets are in the XDG runtime folder, the log is in the state folder, and what ships with the app is in a program folder found from where it runs. Each machine has its own token for the guest's agent. Files for the guest aren't in this repo: they ship with the app.
 
-The viewer only knows `FrameSource`, which has two kinds. `SocketFrames` takes a guest's frames from the frame socket, with a new texture for each frame, and gives a slot back when GTK lets go of its texture. `DbusFrames` listens to QEMU's D-Bus display, which is all that firmware, an install and a plain VM have, and a GPU guest has it too until its first frame and again after a reset.
+Ubuntu guests take a route of their own, in `linux/` and `actions/ubuntu.rs`. Ubuntu's installer runs with no hands from a seed disc, and the host's driver reaches the guest on a read-only image, made from the files of the driver that's loaded. An unknown driver branch turns the GPU off and the VM still boots, and another point release warns. That GPU is a preview so far, and the app says so.
+
+The viewer only knows `FrameSource`, which has three kinds. `SocketFrames` takes a guest's frames from the frame socket, with a new texture for each frame, and gives a slot back when GTK lets go of its texture. `ForwardedFrames` takes an Ubuntu guest's frames from its QEMU device. `DbusFrames` listens to QEMU's D-Bus display, which is all that firmware, an install and a plain VM have, and a guest on a GPU has it too until its first frame and again after a reset.
 
 ## Not here yet
 
