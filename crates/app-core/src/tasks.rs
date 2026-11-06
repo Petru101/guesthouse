@@ -165,7 +165,7 @@ pub fn status(context: &Context, machine: &Machine) -> Status {
     }
     if machine.has_gpu() {
         let shown = read_state(context, machine);
-        found.display_problem = shown.problem().to_owned();
+        found.display_problem = shown.problem(found.state == State::Running).to_owned();
         if found.state == State::Running {
             let slot = found.slot.map(slots::number);
             found.screen = screen_text(&shown, ring_in(context, slot));

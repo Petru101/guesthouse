@@ -94,9 +94,10 @@ pub struct DisplayState {
 }
 
 impl DisplayState {
-    /// What the user should hear, if anything.
-    pub fn problem(&self) -> &str {
-        if self.reason.is_empty() { &self.note } else { &self.reason }
+    /// What the user should hear, if anything. A note is about the screen as it is, so it's only
+    /// for a machine that's up.
+    pub fn problem(&self, up: bool) -> &str {
+        if self.reason.is_empty() && up { &self.note } else { &self.reason }
     }
 }
 
@@ -112,6 +113,13 @@ pub fn read_state(context: &Context, machine: &Machine) -> DisplayState {
 
 pub fn write_state(context: &Context, machine: &Machine, state: &DisplayState) -> Result<()> {
     write_json(&state_file(context, machine), state)
+}
+
+/// The settings have changed, so what was said about the old ones no longer holds.
+pub fn forget_note(context: &Context, machine: &Machine) -> Result<()> {
+    let mut state = read_state(context, machine);
+    state.note.clear();
+    write_state(context, machine, &state)
 }
 
 /// The screen in words, for a machine that's up. The daemon knows the size and the look for certain,
@@ -243,7 +251,10 @@ mod tests {
     #[test]
     fn a_reason_comes_before_a_note() {
         let state = DisplayState { reason: "why".into(), note: "also".into(), ..DisplayState::default() };
-        assert_eq!(state.problem(), "why");
+        assert_eq!(state.problem(true), "why");
+        let state = DisplayState { note: "also".into(), ..DisplayState::default() };
+        assert_eq!(state.problem(true), "also");
+        assert_eq!(state.problem(false), "");
     }
 
     #[test]

@@ -372,3 +372,14 @@ fn a_state_that_cant_be_saved_doesnt_stop_the_machine_and_is_said() {
     boot_display(&mut task).unwrap();
     assert!(task.error.contains("display"), "{}", task.error);
 }
+
+#[test]
+fn a_note_about_the_settings_goes_when_the_vm_is_off() {
+    let (rig, _guest) = Rig::new().with(|context| Guest::new(context, "working", INSTALLED, true));
+    let state = DisplayState { note: "no mode".into(), ..DisplayState::default() };
+    write_state(&rig.context, &rig.machine, &state).unwrap();
+    assert_eq!(crate::tasks::status(&rig.context, &rig.machine).display_problem, "");
+    let state = DisplayState { reason: "why".into(), ..DisplayState::default() };
+    write_state(&rig.context, &rig.machine, &state).unwrap();
+    assert_eq!(crate::tasks::status(&rig.context, &rig.machine).display_problem, "why");
+}

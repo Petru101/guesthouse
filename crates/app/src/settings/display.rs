@@ -5,7 +5,9 @@ use super::Shared;
 use crate::rows::{choice_row, row_button};
 use crate::viewer::OVERLAY_KEYS;
 use adw::prelude::*;
-use guesthouse_app_core::display::{DisplayState, Driver, DriverPackage, read_state, screen_shows_hdr};
+use guesthouse_app_core::display::{
+    DisplayState, Driver, DriverPackage, forget_note, read_state, screen_shows_hdr,
+};
 use guesthouse_app_core::machine::{
     Kind, MAX_REFRESH_HZ, MIN_REFRESH_HZ, REFRESH_RATES, SCREENS, read_refresh,
 };
@@ -191,6 +193,10 @@ impl Display {
     /// Saves a change, and takes it to Windows if Windows can take it now.
     fn changed(&self) {
         self.0.shared.save();
+        let shared = &self.0.shared;
+        if let Err(failure) = forget_note(&shared.window.context(), &shared.machine.borrow()) {
+            shared.window.problem(&failure.0);
+        }
         let status = self.0.status.borrow().clone();
         if status.state == State::Running && !status.busy && self.on_driver_now() {
             self.launch("apply_display");
