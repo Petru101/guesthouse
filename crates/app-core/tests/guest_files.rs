@@ -38,6 +38,13 @@ fn the_answer_file_holds_no_password() {
 }
 
 #[test]
+fn the_only_key_is_the_published_one_that_activates_nothing() {
+    let answers = fs::read_to_string(guest_file("autounattend.xml")).unwrap();
+    assert_eq!(answers.matches("<ProductKey>").count(), 1);
+    assert!(answers.contains("<Key>W269N-WFGWX-YVC9B-4J6C9-T83GX</Key>"));
+}
+
+#[test]
 fn only_the_host_reaches_the_agent() {
     let setup = fs::read_to_string(guest_file("setup.ps1")).unwrap();
     assert!(setup.contains("-RemoteAddress 10.0.2.2"));
