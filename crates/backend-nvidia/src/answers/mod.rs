@@ -2,5 +2,6 @@
 //! own driver.
 
 mod guid;
+pub mod nodes;
 pub mod queries;
 pub mod registry;
