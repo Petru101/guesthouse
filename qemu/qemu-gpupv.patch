@@ -1744,3 +1744,275 @@ index e30ccea..1fba80e 100644
 -- 
 2.56.0
 
+From 5646f34067c8ad76b3f39b7ff28608c28a70e758 Mon Sep 17 00:00:00 2001
+From: xnixy <x@ruxn.com>
+Date: Thu, 5 Nov 2026 22:59:41 -0800
+Subject: [PATCH 10/21] hw/misc/nvfwd: where things are in the driver's calls
+
+Offsets from NVIDIA's public headers, and tables of which controls hold pointers
+and files. The tables keep NVIDIA's MIT notice.
+---
+ hw/misc/nvfwd/fd_controls.h     |  27 ++++++++
+ hw/misc/nvfwd/nv_tables.h       |  62 ++++++++++++++++++
+ hw/misc/nvfwd/nv_tables_extra.h |  27 ++++++++
+ hw/misc/nvfwd/rm_layout.h       | 111 ++++++++++++++++++++++++++++++++
+ 4 files changed, 227 insertions(+)
+ create mode 100644 hw/misc/nvfwd/fd_controls.h
+ create mode 100644 hw/misc/nvfwd/nv_tables.h
+ create mode 100644 hw/misc/nvfwd/nv_tables_extra.h
+ create mode 100644 hw/misc/nvfwd/rm_layout.h
+
+diff --git a/hw/misc/nvfwd/fd_controls.h b/hw/misc/nvfwd/fd_controls.h
+new file mode 100644
+index 0000000..3b4408e
+--- /dev/null
++++ b/hw/misc/nvfwd/fd_controls.h
+@@ -0,0 +1,27 @@
++/* SPDX-License-Identifier: MIT */
++/*
++ * Made from NVIDIA's open GPU kernel modules, whose notice follows.
++ *
++ * Copyright (c) 2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
++ *
++ * Permission is hereby granted, free of charge, to any person obtaining a copy of this software and
++ * associated documentation files (the "Software"), to deal in the Software without restriction,
++ * including without limitation the rights to use, copy, modify, merge, publish, distribute,
++ * sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is
++ * furnished to do so, subject to the following conditions:
++ *
++ * The above copyright notice and this permission notice shall be included in all copies or
++ * substantial portions of the Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT
++ * NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
++ * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES
++ * OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
++ * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
++ */
++{ 0x3d05, 16 }, /* NV0000_CTRL_CMD_OS_UNIX_EXPORT_OBJECT_TO_FD */
++{ 0x3d06, 0 }, /* NV0000_CTRL_CMD_OS_UNIX_IMPORT_OBJECT_FROM_FD */
++{ 0x3d08, 0 }, /* NV0000_CTRL_CMD_OS_UNIX_GET_EXPORT_OBJECT_INFO */
++{ 0x3d0a, 72 }, /* NV0000_CTRL_CMD_OS_UNIX_CREATE_EXPORT_OBJECT_FD */
++{ 0x3d0b, 0 }, /* NV0000_CTRL_CMD_OS_UNIX_EXPORT_OBJECTS_TO_FD */
++{ 0x3d0c, 0 }, /* NV0000_CTRL_CMD_OS_UNIX_IMPORT_OBJECTS_FROM_FD */
+diff --git a/hw/misc/nvfwd/nv_tables.h b/hw/misc/nvfwd/nv_tables.h
+new file mode 100644
+index 0000000..4a075dc
+--- /dev/null
++++ b/hw/misc/nvfwd/nv_tables.h
+@@ -0,0 +1,62 @@
++/* SPDX-License-Identifier: MIT */
++/*
++ * Made from NVIDIA's open GPU kernel modules, whose notice follows.
++ *
++ * Copyright (c) 2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
++ *
++ * Permission is hereby granted, free of charge, to any person obtaining a copy of this software and
++ * associated documentation files (the "Software"), to deal in the Software without restriction,
++ * including without limitation the rights to use, copy, modify, merge, publish, distribute,
++ * sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is
++ * furnished to do so, subject to the following conditions:
++ *
++ * The above copyright notice and this permission notice shall be included in all copies or
++ * substantial portions of the Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT
++ * NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
++ * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES
++ * OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
++ * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
++ */
++/* cmd, pointer offset, count offset, count size, element size */
++{ 0x2080016e, 8, 0, 4, 32 }, /* NV2080_CTRL_GPU_GET_NVENC_SW_SESSION_INFO.sessionInfoTbl */
++{ 0x20800123, 8, 0, 4, 4 }, /* NV2080_CTRL_CMD_GPU_GET_ENGINES.engineList */
++{ 0x20802a01, 8, 4, 4, 1 }, /* NV2080_CTRL_CMD_CE_GET_CAPS.capsTbl */
++{ 0x0080170d, 8, 0, 4, 4 }, /* NV0080_CTRL_CMD_FIFO_GET_CHANNELLIST.pChannelHandleList */
++{ 0x0080170d, 16, 0, 4, 4 }, /* NV0080_CTRL_CMD_FIFO_GET_CHANNELLIST.pChannelList */
++{ 0x00000130, 8, 16, 2, 1 }, /* NV0000_CTRL_CMD_SYSTEM_EXECUTE_ACPI_METHOD.inData */
++{ 0x00000130, 24, 32, 2, 1 }, /* NV0000_CTRL_CMD_SYSTEM_EXECUTE_ACPI_METHOD.outData */
++{ 0x00730120, 8, 16, 2, 1 }, /* NV0073_CTRL_CMD_SYSTEM_EXECUTE_ACPI_METHOD.inData */
++{ 0x00730120, 24, 32, 2, 1 }, /* NV0073_CTRL_CMD_SYSTEM_EXECUTE_ACPI_METHOD.outData */
++{ 0x00801401, 8, 0, 4, 1 }, /* NV0080_CTRL_CMD_HOST_GET_CAPS.capsTbl */
++{ 0x20800802, 8, 0, 4, 8 }, /* NV2080_CTRL_CMD_BIOS_GET_INFO.biosInfoList */
++{ 0x20800803, 1048, 1056, 4, 1 }, /* NV2080_CTRL_CMD_BIOS_GET_NBSI.retBuf */
++{ 0x20800806, 16, 24, 4, 1 }, /* NV2080_CTRL_CMD_BIOS_GET_NBSI_OBJ.retBuf */
++{ 0x00801104, 8, 0, 4, 8 }, /* NV0080_CTRL_CMD_GR_GET_INFO.grInfoList */
++{ 0x00801701, 8, 0, 4, 1 }, /* NV0080_CTRL_CMD_FIFO_GET_CAPS.capsTbl */
++{ 0xa0bc0101, 24, 16, 4, 16 }, /* NVA0BC_CTRL_CMD_NVENC_SW_SESSION_UPDATE_INFO.timestampBuffer */
++{ 0x83de0315, 16, 4, 4, 1 }, /* NV83DE_CTRL_CMD_DEBUG_READ_MEMORY.buffer */
++{ 0x83de0316, 16, 4, 4, 1 }, /* NV83DE_CTRL_CMD_DEBUG_WRITE_MEMORY.buffer */
++{ 0x83de0326, 0, 8, 4, 1 }, /* NV83DE_CTRL_CMD_DEBUG_READ_BATCH_MEMORY.pData */
++{ 0x83de0327, 0, 8, 4, 1 }, /* NV83DE_CTRL_CMD_DEBUG_WRITE_BATCH_MEMORY.pData */
++{ 0x402c0102, 24, 16, 4, 1 }, /* NV402C_CTRL_CMD_I2C_INDEXED.pMessage */
++{ 0x20800122, 24, 20, 4, 32 }, /* NV2080_CTRL_CMD_GPU_EXEC_REG_OPS.regOps */
++{ 0x20802402, 0, 12, 4, 1 }, /* NV2080_CTRL_CMD_NVD_GET_DUMP.pBuffer */
++{ 0x00000602, 0, 12, 4, 1 }, /* NV0000_CTRL_CMD_NVD_GET_DUMP.pBuffer */
++{ 0x00410110, 8, 0, 4, 8 }, /* NV0041_CTRL_CMD_GET_SURFACE_INFO.surfaceInfoList */
++{ 0xa0830103, 0, 8, 4, 1 }, /* NVA083_CTRL_CMD_VIRTUAL_DISPLAY_GET_DEFAULT_EDID.pEdidBuffer */
++{ 0x00801301, 8, 0, 4, 1 }, /* NV0080_CTRL_CMD_FB_GET_CAPS.capsTbl */
++{ 0x00800201, 8, 0, 4, 4 }, /* NV0080_CTRL_CMD_GPU_GET_CLASSLIST.classList */
++{ 0x20800124, 8, 4, 4, 4 }, /* NV2080_CTRL_CMD_GPU_GET_ENGINE_CLASSLIST.classList */
++{ 0x00801102, 8, 0, 4, 1 }, /* NV0080_CTRL_CMD_GR_GET_CAPS.capsTbl */
++{ 0x20800610, 16, 28, 4, 1 }, /* NV2080_CTRL_CMD_I2C_ACCESS.data */
++{ 0x20801201, 8, 0, 4, 8 }, /* NV2080_CTRL_CMD_GR_GET_INFO.grInfoList */
++{ 0xb06f010d, 8, 4, 4, 1 }, /* NVB06F_CTRL_CMD_MIGRATE_ENGINE_CTX_DATA.pEngineCtxBuff */
++{ 0xb06f010c, 8, 4, 4, 1 }, /* NVB06F_CTRL_CMD_GET_ENGINE_CTX_DATA.pEngineCtxBuff */
++{ 0x20802204, 16, 24, 4, 1 }, /* NV2080_CTRL_CMD_RC_READ_VIRTUAL_MEM.bufferPtr */
++{ 0x208001e8, 24, 4, 4, 4 }, /* NV2080_CTRL_CMD_GPU_RPC_GSP_TEST.data */
++{ 0x208001f2, 8, 4, 4, 1 }, /* NV2080_CTRL_CMD_GSP_CRYPTO_CONTROL.inputMessage */
++{ 0x208001f2, 24, 16, 4, 1 }, /* NV2080_CTRL_CMD_GSP_CRYPTO_CONTROL.outputMessage */
++{ 0x208001f2, 64, 56, 4, 1 }, /* NV2080_CTRL_CMD_GSP_CRYPTO_CONTROL.key */
++{ 0x208001f2, 40, 32, 4, 1 }, /* NV2080_CTRL_CMD_GSP_CRYPTO_CONTROL.modulus */
+diff --git a/hw/misc/nvfwd/nv_tables_extra.h b/hw/misc/nvfwd/nv_tables_extra.h
+new file mode 100644
+index 0000000..c703dfb
+--- /dev/null
++++ b/hw/misc/nvfwd/nv_tables_extra.h
+@@ -0,0 +1,27 @@
++/* SPDX-License-Identifier: MIT */
++/*
++ * Made from NVIDIA's open GPU kernel modules, whose notice follows.
++ *
++ * Copyright (c) 2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
++ *
++ * Permission is hereby granted, free of charge, to any person obtaining a copy of this software and
++ * associated documentation files (the "Software"), to deal in the Software without restriction,
++ * including without limitation the rights to use, copy, modify, merge, publish, distribute,
++ * sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is
++ * furnished to do so, subject to the following conditions:
++ *
++ * The above copyright notice and this permission notice shall be included in all copies or
++ * substantial portions of the Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT
++ * NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
++ * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES
++ * OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
++ * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
++ */
++{ 0x20801301, 8, 0, 4, 8 }, /* NV2080_CTRL_CMD_FB_GET_INFO.fbInfoList (deprecated, hand added) */
++{ 0x20801802, 8, 0, 4, 8 }, /* NV2080_CTRL_CMD_BUS_GET_INFO.busInfoList (deprecated, hand added) */
++{ 0x20800101, 8, 0, 4, 8 }, /* NV2080_CTRL_CMD_GPU_GET_INFO.gpuInfoList (deprecated, hand added) */
++{ 0x00000101, 8, 0, 4, 1 }, /* NV0000_CTRL_CMD_SYSTEM_GET_BUILD_VERSION.pDriverVersionBuffer (deprecated, hand added) */
++{ 0x00000101, 16, 0, 4, 1 }, /* NV0000_CTRL_CMD_SYSTEM_GET_BUILD_VERSION.pVersionBuffer (deprecated, hand added) */
++{ 0x00000101, 24, 0, 4, 1 }, /* NV0000_CTRL_CMD_SYSTEM_GET_BUILD_VERSION.pTitleBuffer (deprecated, hand added) */
+diff --git a/hw/misc/nvfwd/rm_layout.h b/hw/misc/nvfwd/rm_layout.h
+new file mode 100644
+index 0000000..447c443
+--- /dev/null
++++ b/hw/misc/nvfwd/rm_layout.h
+@@ -0,0 +1,111 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++/* Where things sit in the host driver's argument structures, from NVIDIA's public headers. */
++#ifndef NVFWD_RM_LAYOUT_H
++#define NVFWD_RM_LAYOUT_H
++
++#define RM_ALLOC_SHORT_BYTES 32u
++#define RM_ALLOC_LONG_BYTES 48u
++#define RM_ALLOC_ROOT 0
++#define RM_ALLOC_PARENT 4
++#define RM_ALLOC_OBJECT 8
++#define RM_ALLOC_CLASS 12
++#define RM_ALLOC_PARAMS 16
++#define RM_ALLOC_RIGHTS 24
++#define RM_ALLOC_SHORT_PARAMS_SIZE 24
++#define RM_ALLOC_LONG_PARAMS_SIZE 32
++#define RM_ALLOC_SHORT_STATUS 28
++#define RM_ALLOC_LONG_STATUS 40
++#define RM_CONTROL_BYTES 32u
++#define RM_CONTROL_CLIENT 0
++#define RM_CONTROL_OBJECT 4
++#define RM_CONTROL_CMD 8
++#define RM_CONTROL_PARAMS 16
++#define RM_CONTROL_PARAMS_SIZE 24
++#define RM_CONTROL_STATUS 28
++#define RM_MEMORY_BYTES 56u
++#define RM_MEMORY_ROOT 0
++#define RM_MEMORY_PARENT 4
++#define RM_MEMORY_OBJECT 8
++#define RM_MEMORY_CLASS 12
++#define RM_MEMORY_POINTER 24
++#define RM_MEMORY_LIMIT 32
++#define RM_MEMORY_STATUS 40
++#define RM_MEMORY_FD 48
++#define RM_MAP_BYTES 56u
++#define RM_MAP_STATUS 40
++#define RM_MAP_FLAGS 44
++#define RM_MAP_FD 48
++#define RM_IDLE_COUNT 12
++#define RM_IDLE_CLIENTS 16
++#define RM_IDLE_DEVICES 24
++#define RM_IDLE_CHANNELS 32
++#define RM_OS_EVENT_FD 8
++#define RM_EVENT_KIND 8
++#define RM_EVENT_DATA 16
++#define RM_XFER_BYTES 16u
++#define RM_XFER_CMD 0
++#define RM_XFER_SIZE 4
++#define RM_XFER_POINTER 8
++
++#define ESC_RM_ALLOC_MEMORY 0x27
++#define ESC_RM_FREE 0x29
++#define ESC_RM_CONTROL 0x2a
++#define ESC_RM_ALLOC 0x2b
++#define ESC_RM_DUP_OBJECT 0x34
++#define ESC_RM_SHARE 0x35
++#define ESC_RM_IDLE_CHANNELS 0x41
++#define ESC_RM_VID_HEAP_CONTROL 0x4a
++#define ESC_RM_MAP_MEMORY 0x4e
++#define ESC_RM_UNMAP_MEMORY 0x4f
++#define ESC_RM_ALLOC_CONTEXT_DMA2 0x54
++#define ESC_REGISTER_FD 201
++#define ESC_ALLOC_OS_EVENT 206
++#define ESC_FREE_OS_EVENT 207
++#define ESC_XFER 211
++#define ESC_SYS_PARAMS 214
++
++#define CLASS_MEMORY_SYSTEM 0x3e
++#define CLASS_MEMORY_LOCAL 0x40
++#define CLASS_OS_DESCRIPTOR 0x71
++#define CLASS_OS_EVENT 0x79
++#define CLASS_EVENT 0x5
++
++#define RM_VID_HEAP_BYTES 184u
++#define RM_VID_HEAP_ROOT 0
++#define RM_VID_HEAP_PARENT 4
++#define RM_VID_HEAP_FUNCTION 8
++#define RM_VID_HEAP_STATUS 20
++#define RM_VID_HEAP_MEMORY 44
++#define RM_VID_HEAP_FLAGS 52
++#define RM_VID_HEAP_ATTR 56
++#define RM_VID_HEAP_SIZE 88
++#define RM_FREE_BYTES 16u
++#define RM_FREE_ROOT 0
++#define RM_FREE_OBJECT 8
++#define RM_FREE_STATUS 12
++#define RM_DUP_BYTES 28u
++#define RM_DUP_CLIENT 0
++#define RM_DUP_PARENT 4
++#define RM_DUP_OBJECT 8
++#define RM_DUP_SOURCE_CLIENT 12
++#define RM_DUP_STATUS 24
++#define RM_DMA_BYTES 56u
++#define RM_DMA_ROOT 0
++#define RM_DMA_PARENT 0 /* it has no other: the first field is the client, and also its parent */
++#define RM_DMA_OBJECT 8
++#define RM_DMA_STATUS 48
++#define RM_MEMORY_PARAMS_SIZE 64 /* in NV_MEMORY_ALLOCATION_PARAMS */
++
++#define VID_HEAP_ALLOC_SIZE 2
++#define ALLOC_FLAGS_VIRTUAL 0x00080000
++#define ATTR_LOCATION_SHIFT 25
++#define ATTR_LOCATION_MASK 3
++#define ATTR_LOCATION_VIDMEM 0
++
++#define STATUS_OK 0
++#define STATUS_INSUFFICIENT_RESOURCES 0x1a
++#define STATUS_INVALID_ARGUMENT 0x1f
++#define STATUS_NO_MEMORY 0x51
++#define STATUS_NOT_SUPPORTED 0x56
++
++#endif
+-- 
+2.56.0
+
