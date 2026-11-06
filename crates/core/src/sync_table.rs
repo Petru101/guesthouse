@@ -38,7 +38,8 @@ impl SyncTable {
     /// unknown.
     pub fn open(&mut self, existing: u32, handle: u32) -> Option<SyncObject> {
         let index = *self.by_handle.get(&existing)?;
-        self.objects[index].references += 1;
+        let object = &mut self.objects[index];
+        object.references = object.references.saturating_add(1);
         self.by_handle.insert(handle, index);
         Some(self.objects[index])
     }
@@ -47,7 +48,7 @@ impl SyncTable {
     pub fn close(&mut self, handle: u32) -> Option<SyncObject> {
         let index = self.by_handle.remove(&handle)?;
         let object = &mut self.objects[index];
-        object.references -= 1;
+        object.references = object.references.saturating_sub(1);
         (object.references == 0).then_some(*object)
     }
 }
@@ -65,6 +66,15 @@ mod tests {
         assert_eq!(table.get(2).map(|object| object.gpu_address), Some(0x2000));
         assert_eq!(table.close(2).map(|object| object.fence), Some(0x1000));
         assert_eq!(table.get(2), None);
+    }
+
+    #[test]
+    fn the_count_of_handles_stops_at_its_limit() {
+        let mut table = SyncTable::new();
+        table.insert(1, 0x1000, 0x2000, None);
+        table.objects[0].references = u32::MAX;
+        assert!(table.open(1, 2).is_some());
+        assert_eq!(table.objects[0].references, u32::MAX);
     }
 
     #[test]

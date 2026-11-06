@@ -16,7 +16,9 @@ impl HandleCounter {
 
     pub fn take(&mut self) -> u32 {
         let handle = self.next;
-        self.next += STEP;
+        // Tens of millions of objects later this comes to the end of the numbers. Starting again
+        // costs nothing, as whatever still has an old number has outlived that many others.
+        self.next = self.next.checked_add(STEP).unwrap_or(FIRST_HANDLE);
         handle
     }
 }
@@ -36,5 +38,12 @@ mod tests {
         let mut handles = HandleCounter::new();
         assert_eq!(handles.take(), FIRST_HANDLE);
         assert_eq!(handles.take(), FIRST_HANDLE + STEP);
+    }
+
+    #[test]
+    fn handles_start_again_after_the_last() {
+        let mut handles = HandleCounter { next: u32::MAX - STEP + 1 };
+        assert_eq!(handles.take(), u32::MAX - STEP + 1);
+        assert_eq!(handles.take(), FIRST_HANDLE);
     }
 }

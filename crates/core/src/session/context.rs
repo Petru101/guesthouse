@@ -128,7 +128,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         self.queues.insert(queue, Queue::new(fence, fence_gpu_address, space, request.context));
         self.context_queues.entry(request.context).or_default().push(queue);
         self.queue_progress.insert(progress, fence);
-        self.queues_made += 1;
+        self.queues_made = self.queues_made.wrapping_add(1);
         self.backend.finish_queue_data(&mut out[CreateHardwareQueue::PRIVATE..], self.queues_made)?;
         CreateHardwareQueue::finish_answer(queue, progress, fence, fence_gpu_address, out);
         Ok(())
@@ -186,7 +186,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         }
         let queue = self.context_queues[&request.context][0];
         let record = self.queues.get(&queue).ok_or(Malformed)?;
-        let (fence, value) = (record.fence, record.last_fence.unwrap_or(0) + 1);
+        let (fence, value) = (record.fence, record.last_fence.unwrap_or(0).saturating_add(1));
         match self.start_on_gpu(queue, WorkSource::Context, request.private, value) {
             GpuTook::Work(_) => {}
             GpuTook::NoRoom => {

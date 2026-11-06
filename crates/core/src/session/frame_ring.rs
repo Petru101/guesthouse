@@ -141,7 +141,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
                 }
             }
         }
-        self.frames.generation += 1;
+        self.frames.generation = self.frames.generation.wrapping_add(1);
         let generation = self.frames.generation;
         let slots = Slots::new(RING_SLOTS);
         Ok(LiveRing { generation, picture, slot_size: size, space, memory, slots, unsent: Some(buffers) })
