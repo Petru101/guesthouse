@@ -1,7 +1,7 @@
 From 65ab7380804588f7c67aa737cb2ce303e143f3c8 Mon Sep 17 00:00:00 2001
 From: xnixy <x@ruxn.com>
 Date: Tue, 3 Nov 2026 18:56:28 -0800
-Subject: [PATCH 1/4] hw/hyperv: add GPU-PV transport for Windows guests
+Subject: [PATCH 1/5] hw/hyperv: add GPU-PV transport for Windows guests
 
 Add the three things a Hyper-V GPU-PV partition sees: the global and per-vGPU
 DXGK VMBus channels, and the 1414:008E virtual render PCI function whose config
@@ -541,7 +541,7 @@ index 2cf7307..d0a6722 100644
 From 3011d38e424521b58e7585d26eb989536ff8a7e7 Mon Sep 17 00:00:00 2001
 From: xnixy <x@ruxn.com>
 Date: Wed, 4 Nov 2026 10:50:40 -0800
-Subject: [PATCH 2/4] hw/hyperv: map shared memory for GPU-PV fences
+Subject: [PATCH 2/5] hw/hyperv: map shared memory for GPU-PV fences
 
 Let gpupv-global map a memory backend over the VMBus MMIO window, so the guest can map
 fence storage that the backend can also reach.
@@ -602,7 +602,7 @@ index 9a8aed5..f5531b8 100644
 From d79190ce8dbfcb9fb59ef2ef8e3814fd97d6b27b Mon Sep 17 00:00:00 2001
 From: xnixy <x@ruxn.com>
 Date: Thu, 5 Nov 2026 02:30:11 -0800
-Subject: [PATCH 3/4] hw/usb: poll the high-speed usb-mouse every millisecond
+Subject: [PATCH 3/5] hw/usb: poll the high-speed usb-mouse every millisecond
 
 At 8 ms a guest's game sees mouse movement arrive in steps. The tablet already polls at 1 ms.
 ---
@@ -629,7 +629,7 @@ index ae19d60..9576925 100644
 From 592e306d07c9d975970e5459f32abe14c6f3e278 Mon Sep 17 00:00:00 2001
 From: xnixy <x@ruxn.com>
 Date: Thu, 5 Nov 2026 08:37:32 -0800
-Subject: [PATCH 4/4] hw/hyperv: let the GPU-PV backend hand over memory by
+Subject: [PATCH 4/5] hw/hyperv: let the GPU-PV backend hand over memory by
  file descriptor
 
 A backend can send GPUPV_EVT_ARENA with a base, a size and a file. QEMU maps
@@ -766,6 +766,68 @@ index f5531b8..f0b0f3a 100644
      g_byte_array_free(s->rx, true);
      qemu_chr_fe_deinit(&s->chr, false);
  }
+-- 
+2.56.0
+
+
+From 9ef2d718c6b114df5df85ab09553f58dfa44374c Mon Sep 17 00:00:00 2001
+From: xnixy <x@ruxn.com>
+Date: Thu, 5 Nov 2026 12:13:11 -0800
+Subject: [PATCH 5/5] hw/hyperv: keep reading a GPU-PV channel until a pass
+ finds nothing
+
+A guest signals only when it finds the ring empty, so a packet written after
+recv_start read write_index, and before recv_done moved read_index, brings no
+signal. Asynchronous messages, which get no reply, hit this within seconds.
+---
+ hw/hyperv/gpupv.c | 31 ++++++++++++++++++++++---------
+ 1 file changed, 22 insertions(+), 9 deletions(-)
+
+diff --git a/hw/hyperv/gpupv.c b/hw/hyperv/gpupv.c
+index f0b0f3a..6a3bfbd 100644
+--- a/hw/hyperv/gpupv.c
++++ b/hw/hyperv/gpupv.c
+@@ -169,18 +169,31 @@ static void gpupv_chan_notify(VMBusChannel *chan)
+ {
+     GpupvChannel *s = GPUPV_CHANNEL(vmbus_channel_device(chan));
+     VMBusChanReq *req;
++    bool got_packet;
+ 
+     gpupv_flush(s);
+ 
+-    if (vmbus_channel_recv_start(chan)) {
+-        return;
+-    }
+-    while ((req = vmbus_channel_recv_peek(chan, sizeof(*req)))) {
+-        gpupv_forward(s, req);
+-        vmbus_free_req(req);
+-        vmbus_channel_recv_pop(chan);
+-    }
+-    vmbus_channel_recv_done(chan);
++    /*
++     * The guest signals only when it finds the ring empty. A packet it writes
++     * after recv_start has read write_index, but before recv_done has moved
++     * read_index, finds it not empty, so no signal comes for it, and nothing
++     * else would make us look. So read until a whole pass finds nothing.
++     * Traffic where each packet waits for its reply rarely hits this. Packets
++     * that nobody replies to, such as asynchronous messages, hit it in seconds.
++     */
++    do {
++        got_packet = false;
++        if (vmbus_channel_recv_start(chan)) {
++            return;
++        }
++        while ((req = vmbus_channel_recv_peek(chan, sizeof(*req)))) {
++            gpupv_forward(s, req);
++            vmbus_free_req(req);
++            vmbus_channel_recv_pop(chan);
++            got_packet = true;
++        }
++        vmbus_channel_recv_done(chan);
++    } while (got_packet);
+ }
+ 
+ static void gpupv_drop_arena(GpupvChannel *s)
 -- 
 2.56.0
 
