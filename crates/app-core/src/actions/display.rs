@@ -24,7 +24,9 @@ const FOLDER_SECONDS: u64 = 10;
 const INSTALL_SECONDS: u64 = 110;
 const TAKE_OVER_SECONDS: u64 = 20;
 const CHECK_SECONDS: u64 = 15;
-/// From a mode change or a logon to the driver's ring being up.
+/// From a mode change or a logon to a frame on the driver's ring. The driver opens a ring with a frame in
+/// hand, and that frame landed within 3 ms of it in every run, on a still desktop and with no viewer, so
+/// this is all for Windows being slow to act.
 const RING_WAIT: Duration = Duration::from_secs(40);
 const RING_POLL: Duration = Duration::from_secs(1);
 /// How many boots in a row with no picture a driver that has worked gets. One slow boot can't cost it
