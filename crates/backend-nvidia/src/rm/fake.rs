@@ -1,7 +1,12 @@
 //! A pretend RM, for tests. It keeps a log of every call and answers controls from a table. It never
 //! opens a device.
 
+use super::classes::ENGINE_COPY_0;
+use super::fake_engine::{ChannelArea, FakeEngine, Mapped};
 use super::{DmaMap, Handle, Rm, RmError, STATUS_NOT_SUPPORTED, STATUS_OK};
+use crate::channel::{
+    CHANNEL_PARAM_CONTROL_MEMORY, CHANNEL_PARAM_ENGINE, CHANNEL_PARAM_RING, CHANNEL_PARAM_RING_ENTRIES,
+};
 use std::collections::{BTreeMap, HashMap};
 use std::fs::File;
 use std::io;
@@ -34,9 +39,12 @@ pub struct FakeRm {
     pub refuse_exports: bool,
     /// What each export handed out, so a test can look at what a viewer would see.
     pub exports: HashMap<Handle, File>,
+    pub engine: FakeEngine,
     answers: HashMap<u32, Answer>,
     /// Each range's mappings, address to length, to refuse a map over a map.
     mappings: BTreeMap<(Handle, u64), u64>,
+    mapped: Mapped,
+    host_pages: HashMap<Handle, u64>,
     next_token: u32,
 }
 
@@ -54,8 +62,11 @@ impl FakeRm {
             refuse_class: None,
             refuse_exports: false,
             exports: HashMap::new(),
+            engine: FakeEngine::default(),
             answers: HashMap::new(),
             mappings: BTreeMap::new(),
+            mapped: Mapped::new(),
+            host_pages: HashMap::new(),
             next_token: 0x100,
         }
     }
@@ -80,6 +91,36 @@ impl FakeRm {
             _ => None,
         });
         rung.collect()
+    }
+
+    /// Runs what every copy channel has been given, as a card that was stuck and has come back.
+    pub fn run_engine(&mut self) {
+        self.engine.running = true;
+        for token in self.engine.channels.keys().copied().collect::<Vec<_>>() {
+            self.engine.run(token, &self.mapped, &self.exports);
+        }
+    }
+
+    /// Tells the engine about a new copy channel, whose ring is in its own host area.
+    fn note_channel(&mut self, channel: Handle, token: u32) {
+        let found = self.calls.iter().find_map(|call| match call {
+            Call::Alloc { handle, params, .. } if *handle == channel => Some(params.as_slice()),
+            _ => None,
+        });
+        let Some(params) = found else { return };
+        let word = |at: usize| u32::from_le_bytes(params[at..at + 4].try_into().expect("four bytes"));
+        let ring = u64::from_le_bytes(params[CHANNEL_PARAM_RING..][..8].try_into().expect("eight bytes"));
+        let memory = word(CHANNEL_PARAM_CONTROL_MEMORY);
+        let ring_entries = word(CHANNEL_PARAM_RING_ENTRIES);
+        let is_ours = |(_, (mapped, _)): &(&u64, &(Handle, u64))| *mapped == memory;
+        let gpu_address = self.mapped.iter().find(is_ours).map(|(address, _)| *address);
+        if word(CHANNEL_PARAM_ENGINE) == ENGINE_COPY_0
+            && gpu_address == Some(ring)
+            && let Some(&host_address) = self.host_pages.get(&memory)
+        {
+            let area = ChannelArea { host_address, gpu_address: ring, ring_entries };
+            self.engine.channels.insert(token, area);
+        }
     }
 
     /// A file in memory stands in for a dmabuf.
@@ -131,6 +172,7 @@ impl Rm for FakeRm {
         if command == super::classes::CONTROL_GET_WORK_SUBMIT_TOKEN {
             self.next_token += 1;
             params[..4].copy_from_slice(&self.next_token.to_le_bytes());
+            self.note_channel(object, self.next_token);
             return Ok(STATUS_OK);
         }
         if command == super::classes::CONTROL_SCHEDULE_CHANNEL_GROUP {
@@ -148,9 +190,10 @@ impl Rm for FakeRm {
         &mut self,
         _device: Handle,
         handle: Handle,
-        _address: u64,
+        address: u64,
         size: u64,
     ) -> Result<(), RmError> {
+        self.host_pages.insert(handle, address);
         self.calls.push(Call::HostPages { handle, size });
         Ok(())
     }
@@ -160,6 +203,7 @@ impl Rm for FakeRm {
             return Err(RmError::refused(format!("map at {:#x}", map.address), STATUS_NOT_SUPPORTED));
         }
         self.mappings.insert((map.range, map.address), map.length);
+        self.mapped.insert(map.address, (map.memory, map.length));
         self.calls.push(Call::MapDma(*map));
         Ok(())
     }
@@ -173,6 +217,7 @@ impl Rm for FakeRm {
         length: u64,
     ) -> Result<(), RmError> {
         self.mappings.remove(&(range, address));
+        self.mapped.remove(&address);
         self.calls.push(Call::UnmapDma { range, memory, address, length });
         Ok(())
     }
@@ -196,5 +241,8 @@ impl Rm for FakeRm {
 
     fn ring_doorbell(&mut self, token: u32) {
         self.calls.push(Call::Doorbell { token });
+        if self.engine.running {
+            self.engine.run(token, &self.mapped, &self.exports);
+        }
     }
 }
