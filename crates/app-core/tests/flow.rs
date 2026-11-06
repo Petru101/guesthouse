@@ -59,7 +59,9 @@ fn agent_answer(script: &str) -> &'static str {
     if script.contains("Stop-Computer") {
         process::exit(0);
     }
-    if script.contains("Get-Process") {
+    if script.contains("Win32_VideoController") {
+        "gpu working 1\r\n"
+    } else if script.contains("Get-Process") {
         "3\r\n"
     } else if script.contains("Get-Content") {
         "screen 1920x1080\r\n"

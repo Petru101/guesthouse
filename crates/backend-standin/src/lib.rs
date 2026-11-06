@@ -49,6 +49,8 @@ pub struct StandIn {
     spaces: HashMap<SpaceId, Space>,
     /// Set to make the next video memory allocation fail.
     pub fail_next_allocation: bool,
+    /// Set to make the next mapping fail.
+    pub fail_next_map: bool,
     /// Whether submissions go to the pretend GPU. If not, they finish at once.
     pub run_work: bool,
     pub doorbells: Vec<(u32, u64)>,
@@ -105,6 +107,7 @@ impl StandIn {
             live_memory: HashSet::new(),
             spaces: HashMap::new(),
             fail_next_allocation: false,
+            fail_next_map: false,
             run_work: false,
             doorbells: Vec::new(),
             closed_queues: Vec::new(),
@@ -221,6 +224,9 @@ impl Backend for StandIn {
 
     fn map(&mut self, request: &MapRequest) -> Result<(), BackendError> {
         assert!(self.live_memory.contains(&request.memory), "mapping memory that does not exist");
+        if std::mem::take(&mut self.fail_next_map) {
+            return Err(BackendError::new("told to fail"));
+        }
         let Some(space) = self.spaces.get_mut(&request.space) else {
             return Err(BackendError::new("this address space is closed"));
         };
@@ -315,7 +321,7 @@ impl Backend for StandIn {
     }
 
     fn start_work(&mut self, host: &mut dyn HostServices, work: &Work<'_>) -> WorkStart {
-        if !self.run_work || !work.may_run {
+        if !self.run_work || !work.may_run || work.queue_failed {
             return WorkStart::Finished;
         }
         if self.channel_address.is_none() {

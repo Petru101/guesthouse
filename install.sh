@@ -26,6 +26,8 @@ APP_ID=net.gpupv.Guesthouse
 ARCH=x86_64
 MANIFEST_FORMAT=1
 QEMU_PROGRAM=qemu/build/qemu-system-x86_64
+# The first GTK the app with HDR loads on.
+HDR_GTK=4.16
 FIRMWARE_DESCRIPTORS=/usr/share/qemu/firmware
 # Room for the download, the unpacked files and the version being replaced.
 ROOM_NEEDED_MIB=1024
@@ -377,11 +379,9 @@ build_from_source() {
     if command -v cargo >/dev/null 2>&1 && command -v ninja >/dev/null 2>&1; then
         sh "$bundle/packaging/build-release.sh" --out "$STAGING/built" qemu app payload
     else
-        engine=$(command -v podman || command -v docker) ||
+        command -v podman >/dev/null 2>&1 || command -v docker >/dev/null 2>&1 ||
             die "building needs cargo and ninja, or podman or docker, and this PC has none of those."
-        "$engine" build -t guesthouse-release -f "$bundle/packaging/Containerfile" "$bundle/packaging"
-        "$engine" run --rm --security-opt label=disable -v "$STAGING:$STAGING" -w "$bundle" \
-            guesthouse-release sh packaging/build-release.sh --out "$STAGING/built" qemu app payload
+        sh "$bundle/packaging/build-in-images.sh" --out "$STAGING/built" qemu app payload
     fi
     mv "$STAGING/built/guesthouse-$RELEASE_VERSION-$ARCH.tar.xz" "$STAGING/"
 }
@@ -600,6 +600,18 @@ check_toolkit_library() {
         die "the $3 on this system is too old for this release: it has no ${lacking}. It needs a newer distro release, and this script won't replace it."
 }
 
+# A release has an app with HDR and one without, as the first won't load on an older GTK. This is
+# after packages, when GTK is here to ask about. With no answer, the one that runs anywhere is safest.
+choose_app() {
+    [ -f "$TREE/guesthouse-no-hdr" ] || return 0
+    gtk=$(GUESTHOUSE_PROGRAM=$TREE "$TREE/guesthouse-check" 2>/dev/null | awk -F "$TAB" '$1 == "gtk" { print $2 }')
+    if [ -n "$gtk" ] && ! newer_than "$HDR_GTK" "$gtk"; then
+        rm -f "$TREE/guesthouse-no-hdr"
+    else
+        mv -f "$TREE/guesthouse-no-hdr" "$TREE/guesthouse"
+    fi
+}
+
 check_toolkit() {
     [ -f "$TREE/needs-symbols" ] || return 0
     check_toolkit_library libgtk-4.so.1 '^(gtk|gdk|gsk)_' GTK
@@ -702,6 +714,7 @@ run_root_work() {
 
 # What's still missing can't be fixed here, and on a system with no packages to install it's up to you.
 check_after_root() {
+    choose_app
     check_toolkit
     [ "$IMMUTABLE" = no ] || return 0
     find_missing

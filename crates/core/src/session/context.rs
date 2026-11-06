@@ -44,6 +44,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         // Oldest first, as each gives back a fence and the order decides who gets which one next.
         owned.sort_unstable();
         owned.into_iter().for_each(|queue| self.close_queue(queue));
+        self.failed_queues.remove(&space);
         // Oldest first again, as each gives back addresses.
         let mut mapped: Vec<(u64, u32)> = self
             .allocations
@@ -163,11 +164,13 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
                 self.retry_later(message);
                 return Ok(());
             }
-            GpuTook::Nothing => {
+            took @ (GpuTook::Nothing | GpuTook::Dropped) => {
                 if let Some(queue) = self.queues.get(&request.queue) {
                     // Nothing ran, so stand in for the GPU where the guest would notice.
                     self.memory.write_u64(queue.fence, value)?;
                 }
+                answer_status(took.status(), out);
+                return Ok(());
             }
         }
         answer_status(Status::SUCCESS, out);
@@ -194,7 +197,11 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
                 self.retry_later(message);
                 return Ok(());
             }
-            GpuTook::Nothing => self.memory.write_u64(fence, value)?,
+            took @ (GpuTook::Nothing | GpuTook::Dropped) => {
+                self.memory.write_u64(fence, value)?;
+                answer_status(took.status(), out);
+                return Ok(());
+            }
         }
         answer_status(Status::SUCCESS, out);
         Ok(())

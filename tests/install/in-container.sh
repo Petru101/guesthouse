@@ -29,7 +29,9 @@ STAND_IN_LOG=$T/log
 FAKE_RELEASES=$T/releases
 FAKE_LIBRARIES=$T/libraries
 FAKE_FIRMWARE=/usr/share/qemu/firmware
-export PATH HOME STAND_IN_LOG FAKE_RELEASES FAKE_LIBRARIES FAKE_FIRMWARE
+# A GTK new enough for the app with HDR, which is the one this checks for.
+FAKE_GTK=4.20
+export PATH HOME STAND_IN_LOG FAKE_RELEASES FAKE_LIBRARIES FAKE_FIRMWARE FAKE_GTK
 : >"$T/log"
 
 sh "$here/make-release.sh" "$repo" "$T/releases" 1.0

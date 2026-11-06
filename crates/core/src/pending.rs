@@ -15,9 +15,10 @@ pub const GATE_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long a submission's reply may be held for ring room. It is bounded, because what the GPU is
 /// waiting for may be in a later submission from the same guest thread.
 pub const RING_ROOM_TIMEOUT: Duration = Duration::from_millis(100);
-/// One app's queue dying should cost only that app, but one that keeps faulting must not keep
-/// hitting the GPU.
-pub const MOST_QUEUE_FAILURES: u32 = 8;
+/// How many of a process's queues may stop answering before the whole process comes off the GPU. A
+/// card that stalled for someone else can cost one queue, so one isn't enough to give up on a process.
+/// A fault usually takes all of a process's queues with it, which gets here at once.
+pub const MOST_FAILED_QUEUES: u32 = 2;
 
 /// (fence address, value).
 pub type Target = (u64, u64);

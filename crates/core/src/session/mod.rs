@@ -15,6 +15,7 @@ mod waiting;
 
 use crate::config::Config;
 use crate::deferred::Deferred;
+use crate::fault_rate::FaultRate;
 use crate::fences::FencePool;
 use crate::frames::ScreenFrames;
 use crate::gpu_addresses::{AddressUse, GpuAddresses};
@@ -144,7 +145,9 @@ pub struct Session<B, M> {
     /// Statistics have been refused once, which is worth saying once.
     pub(crate) statistics_refused: bool,
     pub(crate) work_started: u64,
-    pub(crate) queue_failures: u32,
+    /// How many queues of each address space have stopped answering since it last came off the GPU.
+    pub(crate) failed_queues: HashMap<SpaceId, u32>,
+    pub(crate) faults: FaultRate,
 
     /// Where a mapping the host placed sits: address to size and alignment.
     pub(crate) mapped_addresses: HashMap<u64, (u64, u64)>,
@@ -198,7 +201,8 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             queues_made: 0,
             statistics_refused: false,
             work_started: 0,
-            queue_failures: 0,
+            failed_queues: HashMap::new(),
+            faults: FaultRate::new(),
             mapped_addresses: HashMap::new(),
             mapped_so_far: 0,
             reserved_addresses: Vec::new(),

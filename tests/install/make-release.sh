@@ -14,7 +14,7 @@ name=guesthouse-$version-x86_64
 tree=$releases/tree-$version/$name
 
 mkdir -p "$tree/qemu/build" "$tree/qemu/pc-bios" "$tree/share" "$releases/v$version"
-for program in guesthouse guesthouse-daemon guesthouse-task guesthouse-share; do
+for program in guesthouse guesthouse-no-hdr guesthouse-daemon guesthouse-task guesthouse-share; do
     printf '#!/bin/sh\necho "%s %s"\n' "$program" "$version" >"$tree/$program"
 done
 printf '#!/bin/sh\necho "qemu %s"\n' "$version" >"$tree/qemu/build/qemu-system-x86_64"
@@ -22,6 +22,7 @@ echo bios >"$tree/qemu/pc-bios/bios.bin"
 cat >"$tree/guesthouse-check" <<'CHECK'
 #!/bin/sh
 printf 'check\tok\tVirtualization\t/dev/kvm can be opened.\t\n'
+[ -z "${FAKE_GTK:-}" ] || printf 'gtk\t%s\n' "$FAKE_GTK"
 if [ -n "${FAKE_GPU_REFUSED:-}" ]; then
     printf 'check\tfailed\tHost driver branch\t%s\tGPU machines stay off until the branches match.\n' "$FAKE_GPU_REFUSED"
     printf 'gpu\tno\n'

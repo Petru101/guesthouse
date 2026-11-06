@@ -39,6 +39,45 @@ t_a_home_with_a_space_works() {
     check_home_is "$T/before"
 }
 
+installed_app() {
+    sh "$H/.local/lib/guesthouse/1.0/guesthouse"
+}
+
+t_a_new_gtk_keeps_the_app_with_hdr() {
+    export FAKE_GTK=4.20
+    release 1.0 windows
+    give_everything
+    install_version 1.0
+    check_exit 0
+    [ "$(installed_app)" = "guesthouse 1.0" ] || fail "it isn't the app with HDR"
+    check_gone "$H/.local/lib/guesthouse/1.0/guesthouse-no-hdr"
+}
+
+t_gtk_4_16_is_new_enough_for_hdr() {
+    export FAKE_GTK=4.16
+    release 1.0 windows
+    give_everything
+    install_version 1.0
+    [ "$(installed_app)" = "guesthouse 1.0" ] || fail "it isn't the app with HDR"
+}
+
+t_an_older_gtk_gets_the_app_without_hdr() {
+    export FAKE_GTK=4.14
+    release 1.0 windows
+    give_everything
+    install_version 1.0
+    check_exit 0
+    [ "$(installed_app)" = "guesthouse-no-hdr 1.0" ] || fail "it isn't the app without HDR"
+}
+
+t_gtk_it_cannot_read_gets_the_app_that_runs_anywhere() {
+    export FAKE_GTK=
+    release 1.0 windows
+    give_everything
+    install_version 1.0
+    [ "$(installed_app)" = "guesthouse-no-hdr 1.0" ] || fail "it isn't the app without HDR"
+}
+
 t_a_card_that_cannot_run_still_installs_plain_vms() {
     release 1.0 "windows linux"
     give_everything

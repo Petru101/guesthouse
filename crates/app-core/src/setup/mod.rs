@@ -9,6 +9,7 @@ pub mod checks;
 pub mod driver;
 pub mod guest_files;
 pub mod inf;
+pub mod toolkit;
 
 use crate::context::Context;
 use crate::settings::{driver_folder, read_setup};
