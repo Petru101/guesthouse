@@ -24,14 +24,16 @@ From the driver's record:
 - for each engine node: its type, scheduling, how much can be in flight, and its copy engine
 - the class list
 
-That record also holds things that identify your card and PC, like the card's UUID and ECID. The program reads the fields above by name and looks at nothing else in it. The record itself never leaves memory, and there are no hex dumps. If the record's size isn't one the program has a layout for, or the card's own ID isn't where the layout says, it reads nothing from the record and the report says so.
+That record also holds things that identify your card and PC, like the card's UUID and ECID. The program reads the fields above by name and looks at nothing else in it. The record itself never leaves memory, and there are no hex dumps. If the record's size isn't one the program has a layout for, or the card's own ID isn't where the layout says, no field is read from a layout position, and the report says so.
 
 It knows two layouts, 617 and 621. The 621 one hasn't met a real record yet, and the report says that. On 621 the fields that moved (name, memory, nodes, classes) are only kept if every one of them looks right, and otherwise the report says they can't be read.
+
+If no layout fits, it searches the record in memory for things it can tell by their shape: the card's own PCI ID, the architecture, the graphics table, the Windows version block, the node list, the class list and the GPU's name. The report says where each was found and where 617 has it, and each value that came from a search is marked. A field is only read if the card's ID and that field are each in exactly one place. If something's in several places, the report gives the count and reads none of them. The shader set has no shape of its own, so it's marked as a guess, and it's only guessed if its neighbours moved together. The search looks at the bytes, but only offsets and the named fields come out of it.
 
 The file never has your PC's name, your user name, serial numbers or paths in it.
 
 ## Building
 
-`./build.sh` makes `card-report.exe` with mingw, in a container if you don't have mingw. `./test.sh` runs the tests on Linux. One of them changes every byte of a made-up record in turn, to prove only the named fields can reach the report.
+`./build.sh` makes `card-report.exe` with mingw, in a container if you don't have mingw. `./test.sh` runs the tests on Linux. One of them changes every byte of a made-up record in turn, for each layout and for a search, to prove only the named fields can reach the report.
 
 A new driver layout is a new row in `layouts` in `record.c`.

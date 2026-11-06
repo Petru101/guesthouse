@@ -13,12 +13,21 @@
 #define WDDM_MAJOR_DIVISOR 1000
 #define WDDM_MINOR_DIVISOR 100
 
+#define FROM_LAYOUT ""
+#define FROM_SEARCH ", from searching"
+#define FROM_GUESS ", a guess: it's as far from the Windows version block as on 617"
+
 static const char *const engine_types[] = {
     "other", "3D", "video decode", "video encode", "video processing",
     "scene assembly", "copy", "overlay", "crypto",
 };
 
 #define ENGINE_TYPE_COUNT (sizeof(engine_types) / sizeof(engine_types[0]))
+
+static const char *const landmark_names[LANDMARK_COUNT] = {
+    "Block marker", "PCI ID", "Architecture", "Graphics table", "Windows version block",
+    "Node list", "Class list", "GPU name",
+};
 
 static const char *why_unread(const RecordFacts *record)
 {
@@ -52,10 +61,11 @@ static void line_moved_unread(FILE *out, const char *label, const RecordFacts *r
     }
 }
 
-static void line_number(FILE *out, const char *label, uint32_t value, const RecordFacts *record)
+static void line_number(FILE *out, const char *label, uint32_t value, const char *source,
+                        const RecordFacts *record)
 {
     if (value) {
-        fprintf(out, "%s: 0x%X\n", label, (unsigned)value);
+        fprintf(out, "%s: 0x%X%s\n", label, (unsigned)value, source);
     } else {
         line_unread(out, label, record);
     }
@@ -118,6 +128,7 @@ static void write_record_size(FILE *out, const RecordFacts *record)
     if (record->state == RECORD_READ) {
         fprintf(out, "Driver record layout: %s%s\n", record->layout,
                 record->layout_unproven ? ", not yet checked against a real record" : "");
+        fprintf(out, "Values below: from this layout, unless a line says otherwise\n");
     } else {
         line_unread(out, "Driver record layout", record);
     }
@@ -145,10 +156,16 @@ static void write_record_nodes(FILE *out, const RecordFacts *record)
         line_moved_unread(out, "Engine nodes from the record", record);
         return;
     }
-    fprintf(out, "Engine nodes from the record: %zu\n", record->node_count);
+    fprintf(out, "Engine nodes from the record: %zu%s\n", record->node_count,
+            record->nodes_searched ? FROM_SEARCH : FROM_LAYOUT);
     for (size_t i = 0; i < record->node_count; i++) {
         const RecordNode *node = &record->nodes[i];
 
+        if (record->nodes_searched) {
+            fprintf(out, "  %2zu: type 0x%02X, scheduled %u, in flight %u\n", i, (unsigned)node->node_type,
+                    (unsigned)node->scheduled, (unsigned)node->in_flight);
+            continue;
+        }
         fprintf(out, "  %2zu: type 0x%02X, scheduled %u, in flight %u, copy flags 0x%X, copy engines %u, "
                      "copy engine 0x%X\n",
                 i, (unsigned)node->node_type, (unsigned)node->scheduled, (unsigned)node->in_flight,
@@ -162,7 +179,8 @@ static void write_classes(FILE *out, const RecordFacts *record)
         line_moved_unread(out, "Classes", record);
         return;
     }
-    fprintf(out, "Classes: %zu\n", record->class_count);
+    fprintf(out, "Classes: %zu%s\n", record->class_count,
+            record->classes_searched ? FROM_SEARCH : FROM_LAYOUT);
     for (size_t i = 0; i < record->class_count; i++) {
         bool ends_line = (i + 1) % CLASSES_PER_LINE == 0 || i + 1 == record->class_count;
 
@@ -171,27 +189,51 @@ static void write_classes(FILE *out, const RecordFacts *record)
     }
 }
 
+static void write_search(FILE *out, const RecordFacts *record)
+{
+    if (!record->searched) {
+        return;
+    }
+    fprintf(out, "Search of the record, for fields no layout could vouch for:\n");
+    for (int kind = 0; kind < LANDMARK_COUNT; kind++) {
+        const Landmark *mark = &record->landmarks[kind];
+
+        if (mark->count == 1) {
+            fprintf(out, "  %s: found at 0x%X, 617 has it at 0x%X\n", landmark_names[kind],
+                    (unsigned)mark->found_at, (unsigned)mark->known_at);
+        } else if (mark->count) {
+            fprintf(out, "  %s: found in %zu places, so none were read\n", landmark_names[kind], mark->count);
+        } else {
+            fprintf(out, "  %s: not found\n", landmark_names[kind]);
+        }
+    }
+}
+
 static void write_card(FILE *out, const Card *card)
 {
     const RecordFacts *record = &card->record;
+    const char *architecture = record->architecture_searched ? FROM_SEARCH : FROM_LAYOUT;
 
     write_adapter(out, &card->adapter, record);
     write_record_size(out, record);
-    line_number(out, "Architecture", record->architecture, record);
-    if (record->state == RECORD_READ) {
-        fprintf(out, "Implementation: 0x%X\n", (unsigned)record->implementation);
+    line_number(out, "Architecture", record->architecture, architecture, record);
+    if (record->state == RECORD_READ || record->architecture_searched) {
+        fprintf(out, "Implementation: 0x%X%s\n", (unsigned)record->implementation, architecture);
     } else {
         line_unread(out, "Implementation", record);
     }
-    line_number(out, "Chip revision", record->chip_revision, record);
-    line_number(out, "SM version", record->sm_version, record);
-    line_number(out, "Shader set", record->shader_set, record);
+    line_number(out, "Chip revision", record->chip_revision, architecture, record);
+    line_number(out, "SM version", record->sm_version, record->sm_version_searched ? FROM_SEARCH : FROM_LAYOUT,
+                record);
+    line_number(out, "Shader set", record->shader_set, record->shader_set_guessed ? FROM_GUESS : FROM_LAYOUT,
+                record);
     line_memory(out, "Video memory", record->memory_total, record);
     line_memory(out, "Video memory heap", record->memory_heap, record);
     line_memory(out, "Video memory usable", record->memory_usable, record);
     write_windows_nodes(out, &card->adapter);
     write_record_nodes(out, record);
     write_classes(out, record);
+    write_search(out, record);
 }
 
 void report_write(FILE *out, const Report *report)

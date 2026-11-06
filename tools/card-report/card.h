@@ -54,6 +54,26 @@ typedef enum {
     RECORD_READ,
 } RecordState;
 
+/* What a search of the record looks for. */
+typedef enum {
+    LANDMARK_MARKER,
+    LANDMARK_PCI_ID,
+    LANDMARK_ARCHITECTURE,
+    LANDMARK_GRAPHICS_TABLE,
+    LANDMARK_WINDOWS_VERSION,
+    LANDMARK_NODES,
+    LANDMARK_CLASSES,
+    LANDMARK_NAME,
+    LANDMARK_COUNT,
+} LandmarkKind;
+
+/* Where a search found one thing. Offsets only: nothing from the record itself. */
+typedef struct {
+    size_t count;
+    uint32_t found_at;
+    uint32_t known_at;
+} Landmark;
+
 /* The named fields of the driver's record. Zero means the record had nothing there. */
 typedef struct {
     RecordState state;
@@ -78,7 +98,22 @@ typedef struct {
     bool classes_readable;
     size_t class_count;
     uint32_t classes[MOST_CLASSES];
+    bool searched;
+    Landmark landmarks[LANDMARK_COUNT];
+    bool architecture_searched;
+    bool sm_version_searched;
+    bool shader_set_guessed;
+    bool nodes_searched;
+    bool classes_searched;
 } RecordFacts;
+
+/* What Windows already said about the card, to tell the record's fields by. */
+typedef struct {
+    uint16_t device_id;
+    uint8_t revision;
+    size_t windows_nodes;
+    const char *name;
+} RecordClues;
 
 typedef struct {
     AdapterFacts adapter;
@@ -97,10 +132,8 @@ typedef struct {
 /* The record sizes this program has a layout for, largest first, or zero past the last one. */
 uint32_t record_known_size(size_t index);
 
-/* Reads the named fields out of `size` bytes of record, and never looks at any others.
- * `windows_nodes` is how many engine nodes Windows listed, or zero if it wouldn't say. */
-void record_read(const uint8_t *data, size_t size, uint16_t device_id, size_t windows_nodes,
-                 RecordFacts *facts);
+/* Reads the named fields out of `size` bytes of record, and writes down no other byte of it. */
+void record_read(const uint8_t *data, size_t size, const RecordClues *clues, RecordFacts *facts);
 
 /* Copies text, keeping plain printable characters and cutting it to fit. */
 void plain_text(char *to, size_t room, const uint16_t *from, size_t length);

@@ -2,78 +2,9 @@
  * The driver's record. It also holds things that identify the card and the machine, so this file
  * lists only the fields the report needs, and a record it can't vouch for isn't read at all.
  */
-#include "card.h"
+#include "layout.h"
 
 #include <string.h>
-
-#define HEADER_MAGIC "ADVN"
-#define BLOCK_MAGIC "MKVN"
-#define MAGIC_SIZE 4
-#define FORMAT_VERSION_FIELD 0x04
-#define FORMAT_REVISION_FIELD 0x06
-#define SIZE_FIELD 0x08
-#define BLOCK_MAGIC_FIELD 0x0C
-#define HEADER_SIZE 0x10
-
-/* Bytes in one (index, value) entry of the record's tables, and where the value sits in it. */
-#define TABLE_ENTRY_SIZE 8
-#define TABLE_VALUE_FIELD 4
-#define GRAPHICS_SM_VERSION 0x0C
-
-#define NODE_ENTRY_SIZE 40
-#define NODE_ALWAYS_ONE_FIELD 0x04
-#define NODE_SCHEDULED_FIELD 0x08
-#define NODE_IN_FLIGHT_FIELD 0x14
-#define NODE_RECORD_SIZE 0x110
-#define NODE_COPY_COUNT_FIELD 0x08
-#define NODE_COPY_ENGINE_FIELD 0x0C
-
-#define ARCHITECTURE_IMPLEMENTATION_FIELD 4
-#define ARCHITECTURE_REVISION_FIELD 8
-#define MEMORY_ENTRY_SIZE 8
-#define MEMORY_USABLE 0
-#define MEMORY_HEAP 1
-#define MEMORY_TOTAL 3
-
-#define PCI_VENDOR_MASK 0xFFFF
-#define PCI_DEVICE_SHIFT 16
-#define NAME_CHARS 32
-#define NAME_START "NVIDIA "
-#define HIGHEST_CLASS 0xFFFF
-#define CHANNEL_CLASS_LOW_BYTE 0x6F
-
-/* The Windows version block in the record: its own size, then the major version. */
-#define WINDOWS_INFO_SIZE 284
-#define WINDOWS_MAJOR_FIELD 4
-#define WINDOWS_MAJOR 10
-
-/* The most these can be, for a number to be believed. */
-#define HIGHEST_ARCHITECTURE 0xFFF
-#define HIGHEST_BYTE 0xFF
-#define HIGHEST_SM_VERSION 0xFFFF
-#define HIGHEST_SHADER_SET 0xFFFF
-#define MOST_COPY_ENGINES 32
-#define MOST_VIDEO_MEMORY (1ULL << 40)
-
-/* The fields this program reads, for one driver branch. 617 matches RecordLayout in
- * crates/backend-nvidia/src/profile/guest.rs. An unproven row hasn't met a real record yet, so the
- * fields that moved on that branch are only read if they all pass moved_fields_hold. */
-typedef struct {
-    const char *name;
-    bool unproven;
-    uint32_t size;
-    uint32_t pci_id;
-    uint32_t architecture;
-    uint32_t graphics_table;
-    uint32_t windows_version;
-    uint32_t shader_set;
-    uint32_t node_records;
-    uint32_t node_entries;
-    uint32_t node_count;
-    uint32_t memory;
-    uint32_t classes;
-    uint32_t name_field;
-} Layout;
 
 /* Largest first, as a driver may hand a short buffer the start of a longer record. */
 static const Layout layouts[] = {
@@ -112,20 +43,7 @@ static const Layout layouts[] = {
 
 #define LAYOUT_COUNT (sizeof(layouts) / sizeof(layouts[0]))
 
-static uint16_t read16(const uint8_t *data, size_t at)
-{
-    return (uint16_t)(data[at] | data[at + 1] << 8);
-}
-
-static uint32_t read32(const uint8_t *data, size_t at)
-{
-    return read16(data, at) | (uint32_t)read16(data, at + 2) << 16;
-}
-
-static uint64_t read64(const uint8_t *data, size_t at)
-{
-    return read32(data, at) | (uint64_t)read32(data, at + 4) << 32;
-}
+const Layout *const reference_layout = &layouts[LAYOUT_COUNT - 1];
 
 uint32_t record_known_size(size_t index)
 {
@@ -176,15 +94,15 @@ static void read_nodes(const uint8_t *data, const Layout *layout, RecordFacts *f
     }
 }
 
-static void read_classes(const uint8_t *data, const Layout *layout, RecordFacts *facts)
+void read_class_list(const uint8_t *data, size_t at, RecordFacts *facts)
 {
-    uint32_t count = read32(data, layout->classes);
+    uint32_t count = read32(data, at);
 
     if (count == 0 || count > MOST_CLASSES) {
         return;
     }
     for (size_t i = 0; i < count; i++) {
-        facts->classes[i] = read32(data, layout->classes + 4 + i * 4);
+        facts->classes[i] = read32(data, at + 4 + i * 4);
         if (facts->classes[i] > HIGHEST_CLASS) {
             return;
         }
@@ -210,12 +128,20 @@ static void read_moved_fields(const uint8_t *data, const Layout *layout, RecordF
     read_name(data, layout, facts);
     read_memory(data, layout, facts);
     read_nodes(data, layout, facts);
-    read_classes(data, layout, facts);
+    read_class_list(data, layout->classes, facts);
 }
 
 static bool name_holds(const RecordFacts *facts)
 {
     return !strncmp(facts->name, NAME_START, strlen(NAME_START)) && !strchr(facts->name, '?');
+}
+
+bool node_entry_holds(const uint8_t *data, size_t entry)
+{
+    uint32_t in_flight = read32(data, entry + NODE_IN_FLIGHT_FIELD);
+
+    return read32(data, entry + NODE_ALWAYS_ONE_FIELD) == 1 && read32(data, entry) <= HIGHEST_BYTE &&
+           read32(data, entry + NODE_SCHEDULED_FIELD) <= 1 && in_flight && in_flight <= HIGHEST_BYTE;
 }
 
 static bool nodes_hold(const uint8_t *data, const Layout *layout, const RecordFacts *facts,
@@ -229,9 +155,8 @@ static bool nodes_hold(const uint8_t *data, const Layout *layout, const RecordFa
         const RecordNode *node = &facts->nodes[i];
         size_t entry = layout->node_entries + i * NODE_ENTRY_SIZE;
 
-        if (read32(data, entry + NODE_ALWAYS_ONE_FIELD) != 1 || node->node_type > HIGHEST_BYTE ||
-            node->scheduled > 1 || !node->in_flight || node->in_flight > HIGHEST_BYTE ||
-            node->copy_engine_count > MOST_COPY_ENGINES || node->copy_engine > HIGHEST_BYTE) {
+        if (!node_entry_holds(data, entry) || node->copy_engine_count > MOST_COPY_ENGINES ||
+            node->copy_engine > HIGHEST_BYTE) {
             return false;
         }
     }
@@ -321,8 +246,7 @@ static bool layout_holds(const uint8_t *data, const Layout *layout, uint16_t dev
            read32(data, layout->shader_set) <= HIGHEST_SHADER_SET;
 }
 
-void record_read(const uint8_t *data, size_t size, uint16_t device_id, size_t windows_nodes,
-                 RecordFacts *facts)
+void record_read(const uint8_t *data, size_t size, const RecordClues *clues, RecordFacts *facts)
 {
     const Layout *layout;
 
@@ -338,10 +262,13 @@ void record_read(const uint8_t *data, size_t size, uint16_t device_id, size_t wi
     layout = layout_of_size(facts->size);
     if (!layout) {
         facts->state = RECORD_OTHER_LAYOUT;
-    } else if (size < layout->size || !layout_holds(data, layout, device_id)) {
+    } else if (size < layout->size || !layout_holds(data, layout, clues->device_id)) {
         facts->state = RECORD_FAILED_CHECK;
     } else {
         facts->state = RECORD_READ;
-        read_fields(data, layout, windows_nodes, facts);
+        read_fields(data, layout, clues->windows_nodes, facts);
+    }
+    if (facts->state != RECORD_READ || facts->moved_fields_unread) {
+        record_search(data, facts->size && facts->size < size ? facts->size : size, clues, facts);
     }
 }

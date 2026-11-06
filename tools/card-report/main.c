@@ -128,6 +128,7 @@ static void read_adapter(UINT adapter, const DeviceIds *ids, AdapterFacts *facts
 static void read_record(UINT adapter, const AdapterFacts *card, RecordFacts *facts)
 {
     uint8_t *record = calloc(1, RECORD_LARGEST_ASK);
+    RecordClues clues = { card->device_id, card->revision, card->node_count, card->name };
     uint32_t size;
 
     facts->state = RECORD_REFUSED;
@@ -136,13 +137,13 @@ static void read_record(UINT adapter, const AdapterFacts *card, RecordFacts *fac
     }
     for (size_t i = 0; (size = record_known_size(i)) != 0; i++) {
         if (ask(adapter, QUERY_RECORD, record, size)) {
-            record_read(record, size, card->device_id, card->node_count, facts);
+            record_read(record, size, &clues, facts);
             free(record);
             return;
         }
     }
     if (ask(adapter, QUERY_RECORD, record, RECORD_LARGEST_ASK)) {
-        record_read(record, RECORD_LARGEST_ASK, card->device_id, card->node_count, facts);
+        record_read(record, RECORD_LARGEST_ASK, &clues, facts);
     }
     free(record);
 }
