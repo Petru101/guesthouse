@@ -88,6 +88,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         let align = if size >= LARGE_PAGES_FROM { LARGE_ALIGN } else { ALLOCATION_ALIGN };
         let whole = align_up(size, ALLOCATION_ALIGN);
         let base = self.gpu_addresses.take(whole, align, AddressUse::Mapped)?;
+        log::debug!("map {handle:#x} at {base:#x}, chosen here, for {size:#x}");
         let gpu_cached = allocation.gpu_cached;
         let map = MapRequest {
             space,

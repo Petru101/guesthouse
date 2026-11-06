@@ -48,10 +48,22 @@ fn round_up(value: u64, grain: u64) -> u64 {
 }
 
 /// The size field, or what a compute allocation really wants. Those have their page size in the size
-/// field, and say the same bigger number in the two others, which means all of the block.
+/// field, and say the same bigger number in the two others, which means all of the block. Video
+/// buffers leave it empty, and say they are one row of so many bytes.
 fn stated_size(layout: &AllocationLayout, data: &[u8]) -> u32 {
     let (size, whole) = (word(data, layout.size), word(data, layout.whole_size));
-    if size != 0 && whole > size && whole == word(data, layout.asked_size) { whole } else { size }
+    let (width, total) = (word(data, layout.width), word(data, layout.total_size));
+    if size != 0 && whole > size && whole == word(data, layout.asked_size) {
+        whole
+    } else if size == 0
+        && word(data, layout.height) == 1
+        && total == width
+        && width == word(data, layout.pitch)
+    {
+        total
+    } else {
+        size
+    }
 }
 
 /// The size of an allocation in video memory.
@@ -224,6 +236,16 @@ mod tests {
         set_word(&mut bytes, LAYOUT.asked_size, 0x100_0000);
         assert_eq!(allocation_size(LAYOUT, &bytes), 0x100_0000);
         assert_eq!(exact_size(LAYOUT, &bytes), 0x100_0000);
+    }
+
+    #[test]
+    fn a_buffer_of_one_row_is_as_long_as_the_row() {
+        let mut bytes = data(0);
+        set_word(&mut bytes, LAYOUT.width, 0x27_D800);
+        set_word(&mut bytes, LAYOUT.height, 1);
+        set_word(&mut bytes, LAYOUT.pitch, 0x27_D800);
+        set_word(&mut bytes, LAYOUT.total_size, 0x27_D800);
+        assert_eq!(allocation_size(LAYOUT, &bytes), 0x28_0000);
     }
 
     #[test]
