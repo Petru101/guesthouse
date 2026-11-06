@@ -21,6 +21,7 @@ use crate::monitor::Command as Qmp;
 use crate::network_settings::other_machines;
 use crate::processes::qemu_pid;
 use crate::settings::max_vram_gib;
+use crate::snapshots::{delete_snapshot, go_back, take_snapshot};
 use crate::start_checks::{start_problems, video_cap};
 use crate::tasks::{TaskRecord, write_task};
 use crate::text::shell_quote;
@@ -256,6 +257,9 @@ fn run_action(task: &mut Task, arguments: &[String]) -> Result<()> {
         "clean_up" => clean_up(task),
         "after_reboot" => after_reboot(task),
         "install" => install(task),
+        "take_snapshot" => take_snapshot(task, text),
+        "go_back" => go_back(task, text),
+        "delete_snapshot" => delete_snapshot(task, text),
         other => Err(Failure(format!("There is no action called {}.", shell_quote(other)))),
     }
 }

@@ -30,6 +30,7 @@ pub mod random;
 pub mod settings;
 pub mod share;
 pub mod slots;
+pub mod snapshots;
 pub mod start_checks;
 pub mod tasks;
 #[doc(hidden)]

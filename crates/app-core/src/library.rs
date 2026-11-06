@@ -7,6 +7,7 @@ use crate::machine::{Kind, Machine, load_all, sorted_names};
 use crate::monitor::{Command, failed};
 use crate::network;
 use crate::settings::{driver_folder, with_suffix};
+use crate::snapshots::{list_snapshots, snapshots_folder};
 use crate::tasks::{State, slot_of, status};
 use serde_json::json;
 use std::fs::{self, File};
@@ -182,6 +183,10 @@ pub fn remove_entry(context: &Context, machine: &Machine) -> Result<()> {
     if machine.owns_files(context) {
         return Err(Failure::new("This machine's disk is in its folder. Delete the machine instead."));
     }
+    if !list_snapshots(context, machine).is_empty() {
+        return Err(Failure::new("Delete its snapshots first. They are inside the disk, which stays."));
+    }
+    let _ = fs::remove_dir_all(snapshots_folder(context, machine));
     let thumbnail = machine.thumbnail(context);
     for path in [with_suffix(&thumbnail, ".new"), thumbnail] {
         if path.exists() {
