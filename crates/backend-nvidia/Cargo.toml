@@ -24,5 +24,13 @@ guesthouse-backend-nvidia = { path = ".", features = ["fake-rm"] }
 guesthouse-backend-standin.workspace = true
 guesthouse-core.workspace = true
 
+[[example]]
+name = "fake_adapter"
+required-features = ["fake-rm"]
+
+[[example]]
+name = "fake_channels"
+required-features = ["fake-rm"]
+
 [lints]
 workspace = true
