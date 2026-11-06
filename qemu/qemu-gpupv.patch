@@ -1327,3 +1327,231 @@ index 0000000..0f168e3
 -- 
 2.56.0
 
+From 74e9c2449633e4fc1f44a60aac70828ab2c5a19d Mon Sep 17 00:00:00 2001
+From: xnixy <x@ruxn.com>
+Date: Thu, 5 Nov 2026 22:59:41 -0800
+Subject: [PATCH 08/21] hw/misc/nvfwd: lists of live mappings and of guest
+ pages
+
+An unmap has to name a mapping the device handed out. A run list says which
+guest pages make up a pinned buffer, and is checked before anything is mapped.
+---
+ hw/misc/nvfwd/maps.c      | 71 +++++++++++++++++++++++++++++++++++++++
+ hw/misc/nvfwd/maps.h      | 31 +++++++++++++++++
+ hw/misc/nvfwd/meson.build |  2 ++
+ hw/misc/nvfwd/runs.c      | 41 ++++++++++++++++++++++
+ hw/misc/nvfwd/runs.h      | 26 ++++++++++++++
+ 5 files changed, 171 insertions(+)
+ create mode 100644 hw/misc/nvfwd/maps.c
+ create mode 100644 hw/misc/nvfwd/maps.h
+ create mode 100644 hw/misc/nvfwd/runs.c
+ create mode 100644 hw/misc/nvfwd/runs.h
+
+diff --git a/hw/misc/nvfwd/maps.c b/hw/misc/nvfwd/maps.c
+new file mode 100644
+index 0000000..ba07e6e
+--- /dev/null
++++ b/hw/misc/nvfwd/maps.c
+@@ -0,0 +1,71 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++/* See maps.h. */
++#include "maps.h"
++
++#include <glib.h>
++
++struct Maps {
++    GMutex lock;
++    GHashTable *entries;
++    uint32_t max_maps;
++    uint64_t max_uvm_bytes, uvm_bytes;
++};
++
++Maps *maps_new(uint32_t max_maps, uint64_t max_uvm_bytes)
++{
++    Maps *m = g_new0(Maps, 1);
++
++    g_mutex_init(&m->lock);
++    m->entries = g_hash_table_new_full(g_int64_hash, g_int64_equal, NULL, g_free);
++    m->max_maps = max_maps;
++    m->max_uvm_bytes = max_uvm_bytes;
++    return m;
++}
++
++bool maps_add(Maps *m, const WindowMap *entry)
++{
++    WindowMap *copy = g_memdup2(entry, sizeof(*entry));
++    bool ok;
++
++    g_mutex_lock(&m->lock);
++    ok = g_hash_table_size(m->entries) < m->max_maps &&
++         (!entry->uvm || (entry->len <= m->max_uvm_bytes &&
++                          m->uvm_bytes <= m->max_uvm_bytes - entry->len));
++    if (ok) {
++        g_hash_table_insert(m->entries, &copy->window_offset, copy);
++        m->uvm_bytes += entry->uvm ? entry->len : 0;
++    }
++    g_mutex_unlock(&m->lock);
++    if (!ok) {
++        g_free(copy);
++    }
++    return ok;
++}
++
++bool maps_take(Maps *m, const WindowMap *want, WindowMap *out)
++{
++    WindowMap *found;
++    bool ok;
++
++    g_mutex_lock(&m->lock);
++    found = g_hash_table_lookup(m->entries, &want->window_offset);
++    ok = found && found->len == want->len && found->uvm == want->uvm &&
++         found->address == want->address;
++    if (ok) {
++        *out = *found;
++        m->uvm_bytes -= found->uvm ? found->len : 0;
++        g_hash_table_remove(m->entries, &want->window_offset);
++    }
++    g_mutex_unlock(&m->lock);
++    return ok;
++}
++
++uint32_t maps_count(Maps *m)
++{
++    uint32_t count;
++
++    g_mutex_lock(&m->lock);
++    count = g_hash_table_size(m->entries);
++    g_mutex_unlock(&m->lock);
++    return count;
++}
+diff --git a/hw/misc/nvfwd/maps.h b/hw/misc/nvfwd/maps.h
+new file mode 100644
+index 0000000..de47f34
+--- /dev/null
++++ b/hw/misc/nvfwd/maps.h
+@@ -0,0 +1,31 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++/*
++ * The live mappings a guest has been given. An unmap names one of these exactly, or nothing happens:
++ * offsets and addresses in a request are only the guest's word.
++ */
++#ifndef NVFWD_MAPS_H
++#define NVFWD_MAPS_H
++
++#include <stdbool.h>
++#include <stdint.h>
++
++typedef struct WindowMap {
++    uint64_t window_offset, len;
++    uint64_t address; /* UVM only: where it sits in this process */
++    void *region;     /* UVM only: the memory slot over the window */
++    bool uvm;
++} WindowMap;
++
++typedef struct Maps Maps;
++
++Maps *maps_new(uint32_t max_maps, uint64_t max_uvm_bytes);
++
++/* False if it would pass a limit. Offsets are unique: the window hands each out once. */
++bool maps_add(Maps *m, const WindowMap *entry);
++
++/* Fills `out` and forgets the mapping, if `want` matches a live one in everything but `region`. */
++bool maps_take(Maps *m, const WindowMap *want, WindowMap *out);
++
++uint32_t maps_count(Maps *m);
++
++#endif
+diff --git a/hw/misc/nvfwd/meson.build b/hw/misc/nvfwd/meson.build
+index c3cbcae..e30ccea 100644
+--- a/hw/misc/nvfwd/meson.build
++++ b/hw/misc/nvfwd/meson.build
+@@ -2,5 +2,7 @@
+ nvfwd_ss = files(
+   'callrate.c',
+   'objects.c',
++  'maps.c',
++  'runs.c',
+ )
+ system_ss.add(when: 'CONFIG_PCI', if_true: nvfwd_ss)
+diff --git a/hw/misc/nvfwd/runs.c b/hw/misc/nvfwd/runs.c
+new file mode 100644
+index 0000000..46b325a
+--- /dev/null
++++ b/hw/misc/nvfwd/runs.c
+@@ -0,0 +1,41 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++/* See runs.h. */
++#include "runs.h"
++
++#include <stddef.h>
++
++static bool page_aligned(uint64_t value)
++{
++    return !(value & (RUNS_PAGE_BYTES - 1));
++}
++
++bool runs_check(const struct nvfwd_runs *runs, uint64_t room, uint64_t limit, uint64_t needed,
++                uint64_t *total)
++{
++    uint64_t sum = 0;
++    uint32_t count, i;
++
++    if (room < sizeof(*runs)) {
++        return false;
++    }
++    count = runs->count;
++    if (!count || count > RUNS_MAX_COUNT ||
++        (uint64_t)count * sizeof(runs->run[0]) > room - sizeof(*runs)) {
++        return false;
++    }
++    for (i = 0; i < count; i++) {
++        uint64_t gpa = runs->run[i].gpa, len = runs->run[i].len, last;
++
++        /* The sum is held to `limit` at each step, so it can never wrap. */
++        if (!len || !page_aligned(gpa) || !page_aligned(len) || len > limit - sum ||
++            __builtin_add_overflow(gpa, len - 1, &last)) {
++            return false;
++        }
++        sum += len;
++    }
++    if (!needed || runs->first_offset >= sum || needed > sum - runs->first_offset) {
++        return false;
++    }
++    *total = sum;
++    return true;
++}
+diff --git a/hw/misc/nvfwd/runs.h b/hw/misc/nvfwd/runs.h
+new file mode 100644
+index 0000000..4c85607
+--- /dev/null
++++ b/hw/misc/nvfwd/runs.h
+@@ -0,0 +1,26 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++/*
++ * Run lists: the guest pages behind one pinned buffer, which the device maps side by side so the
++ * host driver sees a single range. A list comes from the guest, so nothing in it is believed
++ * until runs_check() has passed it.
++ */
++#ifndef NVFWD_RUNS_H
++#define NVFWD_RUNS_H
++
++#include <stdbool.h>
++#include <stdint.h>
++#include "nvfwd_proto.h"
++
++/* One mapping each, so this bounds the time a single call can spend here. */
++#define RUNS_MAX_COUNT (1u << 17)
++#define RUNS_PAGE_BYTES 4096u
++
++/*
++ * True if the list at `runs`, in `room` bytes of the call, is whole pages of guest memory adding up
++ * to no more than `limit`, and the `needed` bytes the host driver will touch, from first_offset on,
++ * lie inside it. Sets *total to the bytes to map.
++ */
++bool runs_check(const struct nvfwd_runs *runs, uint64_t room, uint64_t limit, uint64_t needed,
++                uint64_t *total);
++
++#endif
+-- 
+2.56.0
+
