@@ -304,6 +304,11 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         self.held = true;
     }
 
+    /// The guest has restarted, which only a vendor's backend may care about.
+    pub fn guest_restarted(&mut self) {
+        self.backend.guest_restarted();
+    }
+
     fn dispatch(&mut self, command: Option<Command>, message: &[u8], out: &mut Vec<u8>) -> Handled {
         use Command as C;
         match command {

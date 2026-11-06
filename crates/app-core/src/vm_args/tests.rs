@@ -50,6 +50,15 @@ fn a_gpu_vms_arguments_stay_word_for_word_the_same() {
 }
 
 #[test]
+fn a_gpu_vm_gets_the_time_sync_channel_after_its_bus() {
+    let (_scratch, plan) = plan(&windows(), Boot::Gpu);
+    let arguments = plan.qemu_arguments();
+    let at = |word: &str| arguments.iter().position(|argument| argument.starts_with(word));
+    assert!(at("vmbus-bridge") < at("hv-timesync"));
+    assert!(at("hv-timesync").is_some());
+}
+
+#[test]
 fn a_plain_vm_has_no_gpu_devices() {
     let (_scratch, plan) = plan(&plain_machine(), plain_boot());
     let arguments = plan.qemu_arguments();

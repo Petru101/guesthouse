@@ -2,7 +2,7 @@
 //! the list. The guest's handles mean nothing here: a control's number names its class, and so the
 //! object it belongs on.
 
-use super::{get, put};
+use super::{get, put, time_pairs};
 use crate::rm::classes::{
     BUS_ENTRIES_THAT_CLEAR, CONTROL_GET_CLASS_ENGINE, CONTROL_GET_PROBED_IDS, ENGINE_GRAPHICS,
 };
@@ -127,6 +127,10 @@ pub(super) fn run<R: Rm>(
     }
     if command == CONTROL_GET_ATTACHED_IDS {
         attached_ids(device.gpu_id()?, params);
+        put(data, CONTROL_STATUS, 0);
+        return Ok(());
+    }
+    if command == time_pairs::CONTROL && time_pairs::answer(&device.rm, &mut device.guest_clock, params) {
         put(data, CONTROL_STATUS, 0);
         return Ok(());
     }
@@ -298,6 +302,30 @@ mod tests {
         let mut device = device();
         run(&mut device, &[], &mut data).unwrap();
         assert!(reached_the_rm(&device, CONTROL_BUS_INFO));
+    }
+
+    #[test]
+    fn time_pairs_are_answered_here_once_the_timer_can_be_read() {
+        let mut device = device();
+        device.rm.gpu_timer = Some(5_000);
+        let size = device.guest_control_size(time_pairs::CONTROL).unwrap();
+        let mut data = control(time_pairs::CONTROL, size);
+        data[CONTROL_PARAMS] = 1;
+        data[CONTROL_PARAMS + 1] = 1;
+        run(&mut device, &[], &mut data).unwrap();
+        assert!(!reached_the_rm(&device, time_pairs::CONTROL));
+        assert_eq!(get(&data, CONTROL_STATUS), Some(0));
+    }
+
+    #[test]
+    fn time_pairs_go_to_the_rm_while_the_timer_cannot_be_read() {
+        let mut device = device();
+        let size = device.guest_control_size(time_pairs::CONTROL).unwrap();
+        let mut data = control(time_pairs::CONTROL, size);
+        data[CONTROL_PARAMS] = 1;
+        data[CONTROL_PARAMS + 1] = 1;
+        run(&mut device, &[], &mut data).unwrap();
+        assert!(reached_the_rm(&device, time_pairs::CONTROL));
     }
 
     #[test]

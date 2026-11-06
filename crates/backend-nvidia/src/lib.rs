@@ -11,7 +11,9 @@ pub mod channel;
 pub mod escape;
 #[cfg(any(test, feature = "fake-rm"))]
 pub mod fake_guest;
+mod guest_clock;
 pub mod inf;
+mod list_repair;
 mod peek;
 pub mod private_data;
 pub mod profile;
@@ -31,7 +33,7 @@ use answers::registry::AdapterRegistry;
 use guesthouse_backend::{
     AdapterFacts, AllocationShape, Backend, BackendError, DriverSurvey, GpuRange, HostServices, MapRequest,
     MemoryId, PciCard, Refusal, RegistryName, RegistryValue, Setup, SlotCopy, SpaceId, StagingCopy,
-    StagingStart, Status, UnmapRequest, VendorQuery, Work, WorkStart,
+    StagingStart, Status, UnmapRequest, VendorQuery, VideoMemoryUse, Work, WorkStart,
 };
 use inf::{INF_NAME, Inf};
 use profile::{
@@ -346,8 +348,12 @@ impl<R: Rm + OpenRm> Backend for NvidiaBackend<R> {
         &[escape::RUNTIME_GPU_RANGE]
     }
 
-    fn escape(&mut self, data: &mut [u8]) {
-        if let Err(error) = escape::answer(&mut self.device, &self.channel_classes, data) {
+    fn guest_restarted(&mut self) {
+        self.device.guest_clock.restart();
+    }
+
+    fn escape(&mut self, data: &mut [u8], memory: &dyn Fn() -> VideoMemoryUse) {
+        if let Err(error) = escape::answer(&mut self.device, &self.channel_classes, memory, data) {
             log::warn!("an escape failed: {error}");
         }
     }

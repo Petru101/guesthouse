@@ -5,6 +5,7 @@ use super::classes::{
     VIRTUAL_ADDRESS_SPACE,
 };
 use super::{DmaMap, Handle, Rm, RmError};
+use crate::guest_clock::GuestClock;
 use crate::profile::HostBranch;
 use std::os::fd::OwnedFd;
 
@@ -76,6 +77,7 @@ pub struct Device<R> {
     pub subdevice: Handle,
     /// One doorbell page serves every channel.
     pub doorbell_mapped: bool,
+    pub(crate) guest_clock: GuestClock,
     next_handle: Handle,
     sizes: &'static HostBranch,
 }
@@ -98,6 +100,7 @@ impl<R: Rm> Device<R> {
             device: DEVICE_HANDLE,
             subdevice: SUBDEVICE_HANDLE,
             doorbell_mapped: false,
+            guest_clock: GuestClock::default(),
             next_handle: FIRST_OBJECT,
             sizes,
         })

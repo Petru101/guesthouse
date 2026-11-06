@@ -1,6 +1,7 @@
 //! Getting a queue's submissions onto the GPU.
 
 use crate::channel::{AREA_SIZE, Channel, ChannelPlace, Engine, LIST_AREA, ListChannel, ListFull};
+use crate::list_repair;
 use crate::pushbuffer::{ENTRY_SIZE, Header, RingEntry};
 use crate::ring_position::has_ring_position_flag;
 use crate::rm::Rm;
@@ -18,8 +19,6 @@ const SMALLEST_PRIVATE_DATA: usize = 0x84;
 
 /// How much of a guest's ring is read when standing in for the GPU.
 const RING_BYTES: usize = 0x10000;
-/// The most entries a list is taken to hold. Past this, `unwrap_list` treats it as having wrapped.
-const LIST_RING_ENTRIES: usize = 0x800;
 
 /// The guest writes this method to end a copy, which a channel here is refused. The launch method
 /// does the same in the same two words.
@@ -67,11 +66,13 @@ pub(crate) struct LiveQueue {
     channel_tried: bool,
     /// Where the last submission ended.
     position: Option<u32>,
+    /// The GPU address just past the commands of the last list.
+    list_end: Option<u64>,
 }
 
 impl LiveQueue {
     fn new(space: SpaceId) -> Self {
-        Self { space, channel: QueueChannel::Unusable, channel_tried: false, position: None }
+        Self { space, channel: QueueChannel::Unusable, channel_tried: false, position: None, list_end: None }
     }
 }
 
@@ -103,19 +104,6 @@ fn read_words(host: &dyn HostServices, space: SpaceId, address: u64, count: u32)
 fn ring_entries_of(mapping_length: u64) -> Option<u32> {
     let entries = mapping_length / ENTRY_SIZE as u64;
     u32::try_from(1u64 << (u64::BITS - 1 - entries.max(1).leading_zeros())).ok()
-}
-
-/// A list longer than its ring has lost its oldest entries, and what follows is not a list at all.
-/// Running that is a fault, so this keeps what is left, in order.
-fn unwrap_list(listing: Vec<u8>, entries: u32) -> Vec<u8> {
-    let Some(lost) = (entries as usize).checked_sub(LIST_RING_ENTRIES).filter(|&lost| lost > 0) else {
-        return listing;
-    };
-    log::warn!("a list of {entries} entries overran its ring");
-    let (lost_bytes, ring_bytes) = (lost * ENTRY_SIZE, LIST_RING_ENTRIES * ENTRY_SIZE);
-    let newest = listing.get(..lost_bytes).unwrap_or(&[]);
-    let oldest = listing.get(lost_bytes..ring_bytes.min(listing.len())).unwrap_or(&[]);
-    [oldest, newest].concat()
 }
 
 /// Turns a copy queue's semaphore releases into launches, in the guest's own commands. Says whether
@@ -387,7 +375,11 @@ impl<R: Rm> NvidiaBackend<R> {
 
     /// The list of a submission, where the driver left it. No channel could ever take a list longer
     /// than its ring, so the entry count is judged before any room is made for them.
-    fn listing(host: &dyn HostServices, work: &Work<'_>) -> Result<Vec<u8>, WorkStart> {
+    fn listing(
+        host: &dyn HostServices,
+        work: &Work<'_>,
+        previous_end: Option<u64>,
+    ) -> Result<Vec<u8>, WorkStart> {
         let private = work.private;
         let offset = word(private, LIST_OFFSET) as usize;
         let (entries, address) = match work.source {
@@ -409,7 +401,10 @@ impl<R: Rm> NvidiaBackend<R> {
             listing.truncate(read);
             listing
         };
-        Ok(if work.source == WorkSource::HardwareQueue { unwrap_list(listing, entries) } else { listing })
+        if work.source != WorkSource::HardwareQueue {
+            return Ok(listing);
+        }
+        list_repair::repaired(listing, entries, previous_end).ok_or(WorkStart::QueueFailed)
     }
 
     /// Stands in for the GPU when a hardware queue's work did not run.
@@ -462,11 +457,19 @@ impl<R: Rm> NvidiaBackend<R> {
         if has_ring_position_flag(private) {
             return self.start_from_ring_position(host, work);
         }
-        let listing = Self::listing(host, work)?;
+        let previous_end = self.queues.get(&work.queue).and_then(|queue| queue.list_end);
+        let listing = Self::listing(host, work, previous_end)?;
         if work.node != 0 {
             patch_copy_semaphores(host, work.space, &listing);
         }
-        self.start_on_list(host, work, &listing)
+        let started = self.start_on_list(host, work, &listing);
+        // Work that has to try again keeps its place, as it'll bring the same list back.
+        if started.is_ok()
+            && let Some(queue) = self.queues.get_mut(&work.queue)
+        {
+            queue.list_end = list_repair::end_of(&listing);
+        }
+        started
     }
 
     pub(crate) fn ring(&mut self, handle: u32, position: u64) {
@@ -598,7 +601,9 @@ mod tests {
     fn a_list_as_long_as_the_ring_is_read() {
         let host = ListHost::default();
         let private = private_data(ListChannel::RING_ENTRIES);
-        assert!(NvidiaBackend::<crate::rm::fake::FakeRm>::listing(&host, &work(&private)).is_ok());
+        // With no list before it there's nothing to mend it from, but all of it was read first.
+        let listing = NvidiaBackend::<crate::rm::fake::FakeRm>::listing(&host, &work(&private), None);
+        assert_eq!(listing, Err(WorkStart::QueueFailed));
         assert_eq!(host.asked.get(), ListChannel::RING_ENTRIES as usize * ENTRY_SIZE);
     }
 
@@ -606,7 +611,7 @@ mod tests {
     fn a_longer_list_stops_the_queue_before_any_room_is_made_for_it() {
         let host = ListHost::default();
         let private = private_data(ListChannel::RING_ENTRIES + 1);
-        let listing = NvidiaBackend::<crate::rm::fake::FakeRm>::listing(&host, &work(&private));
+        let listing = NvidiaBackend::<crate::rm::fake::FakeRm>::listing(&host, &work(&private), None);
         assert_eq!(listing, Err(WorkStart::QueueFailed));
         assert_eq!(host.asked.get(), 0);
     }
@@ -632,21 +637,5 @@ mod tests {
     fn a_ring_a_channel_could_not_count_is_not_used() {
         assert_eq!(ring_entries_of(1 << 34), Some(1 << 31));
         assert_eq!(ring_entries_of(1 << 35), None);
-    }
-
-    #[test]
-    fn a_list_within_the_ring_is_left_alone() {
-        assert_eq!(unwrap_list(vec![1, 2, 3], 3), [1, 2, 3]);
-    }
-
-    #[test]
-    fn an_overrun_list_comes_out_oldest_first() {
-        let mut listing = vec![0xAA; ENTRY_SIZE];
-        listing.extend(vec![0xBB; (LIST_RING_ENTRIES - 1) * ENTRY_SIZE]);
-        listing.extend(vec![0xCC; ENTRY_SIZE]);
-        let fixed = unwrap_list(listing, LIST_RING_ENTRIES as u32 + 1);
-        assert_eq!(fixed.len(), LIST_RING_ENTRIES * ENTRY_SIZE);
-        assert_eq!(fixed[0], 0xBB);
-        assert_eq!(fixed[fixed.len() - 1], 0xAA);
     }
 }

@@ -40,7 +40,7 @@ mod tests {
     #[test]
     fn the_answer_names_this_card_as_a_group_of_one() {
         let mut data = escape(FUNCTION_LIST_GPU_GROUPS, WHOLE_ANSWER);
-        answer_escape(&mut device(), &[], &mut data).unwrap();
+        answer_escape(&mut device(), &[], &super::super::tests::NO_MEMORY, &mut data).unwrap();
         assert_eq!(get(&data, RESULT), Some(1));
         assert_eq!(get(&data, GROUP_COUNT), Some(1));
         assert_eq!(get(&data, GROUP_GPU_COUNT), Some(1));
@@ -52,7 +52,7 @@ mod tests {
     fn old_bytes_in_the_guests_buffer_do_not_survive() {
         let mut data = vec![0xAA; WHOLE_ANSWER];
         data[..0x14].copy_from_slice(&escape(FUNCTION_LIST_GPU_GROUPS, 0x14));
-        answer_escape(&mut device(), &[], &mut data).unwrap();
+        answer_escape(&mut device(), &[], &super::super::tests::NO_MEMORY, &mut data).unwrap();
         assert_eq!(get(&data, GROUP_KEY), Some(DEVICE_INSTANCE));
         assert_eq!(get(&data, GROUP_FLAGS), Some(0));
         assert_eq!(get(&data, GROUP_GPU_DETAILS), Some(0));
@@ -61,7 +61,7 @@ mod tests {
     #[test]
     fn a_short_buffer_gets_what_fits() {
         let mut data = escape(FUNCTION_LIST_GPU_GROUPS, GROUP_COUNT + 4);
-        answer_escape(&mut device(), &[], &mut data).unwrap();
+        answer_escape(&mut device(), &[], &super::super::tests::NO_MEMORY, &mut data).unwrap();
         assert_eq!(get(&data, GROUP_COUNT), Some(1));
     }
 }

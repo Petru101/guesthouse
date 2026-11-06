@@ -2,7 +2,7 @@
 
 use super::{Handled, Session, answer_status};
 use crate::io_space::IoSpace;
-use guesthouse_backend::{Backend, BackendError, GuestMemory, RegistryName, VendorQuery};
+use guesthouse_backend::{Backend, BackendError, GuestMemory, RegistryName, VendorQuery, VideoMemoryUse};
 use guesthouse_messages::adapter::{
     ASYNC_MESSAGES, AdapterQuery, CapsQuery, DRIVER_MODEL_NUMBER, IdentityAnswer, SetIoSpace,
     adapter_identity, description_answer, driver_caps, node_description, node_of, physical_adapter_ids,
@@ -67,7 +67,10 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         out.extend_from_slice(escape.data);
         let ours = indirect::is_ours(escape.data);
         if !ours {
-            self.backend.escape(out);
+            let total = self.config.limits.video_cap.unwrap_or(self.backend.facts().video_memory);
+            let allocations = &self.allocations;
+            let memory = || VideoMemoryUse { total, used: allocations.values().map(|one| one.size).sum() };
+            self.backend.escape(out, &memory);
         }
         pad_to(out, align_up(escape.size as u64, ESCAPE_ALIGN) as usize);
         if ours {

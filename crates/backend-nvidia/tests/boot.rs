@@ -626,6 +626,25 @@ fn escapes_reach_the_vendor_side() {
 }
 
 #[test]
+fn the_memory_escape_reports_the_card_less_what_the_guest_has_taken() {
+    const FUNCTION_VIDEO_MEMORY: u32 = 0x0100_0012;
+    const SIZE: usize = 0x54;
+    const FUNCTION: usize = 0x10;
+    const DEDICATED: usize = 0x30;
+    const AVAILABLE: usize = 0x38;
+    let mut session = guest();
+    let mut escape = message(Command::DriverEscape, HEADER_SIZE + 24);
+    set_u32(&mut escape, HEADER_SIZE + 16, SIZE as u32);
+    let data = escape.len();
+    escape.resize(data + SIZE, 0);
+    set_u32(&mut escape, data + FUNCTION, FUNCTION_VIDEO_MEMORY);
+    let reply = send(&mut session, &escape);
+    let dedicated = u32_at(&reply, DEDICATED).unwrap();
+    assert_ne!(dedicated, 0);
+    assert_eq!(u32_at(&reply, AVAILABLE), Ok(dedicated));
+}
+
+#[test]
 fn a_card_that_is_not_the_first_is_refused_in_plain_words() {
     let Err(refusal) = start_on_fake_card(FakeRm::new(), 0x9999) else { panic!("it should refuse") };
     assert!(refusal.0.contains("Only the first NVIDIA GPU"), "{}", refusal.0);

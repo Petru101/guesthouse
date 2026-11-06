@@ -50,6 +50,12 @@ const MAP_FLAG_GPU_CACHED: u32 = 1 << 17;
 const DOORBELL_MAP_SIZE: usize = 0x10000;
 /// Where the doorbell register is in the page.
 const DOORBELL_REGISTER: usize = 0x90;
+/// The GPU's timer, in the same page: the usermode class's `TIME_0` and `TIME_1` in the public headers.
+const TIMER_LOW_REGISTER: usize = 0x80;
+const TIMER_HIGH_REGISTER: usize = 0x84;
+/// The low word rolls over about every four seconds, so a second try can only fail if something
+/// has gone wrong.
+const TIMER_READ_TRIES: usize = 3;
 
 fn request_number(escape: u64, size: usize) -> u64 {
     IOCTL_READ_WRITE | (size as u64) << IOCTL_SIZE_SHIFT | IOCTL_MAGIC << 8 | escape
@@ -363,6 +369,19 @@ impl Rm for LinuxRm {
         assert!(!self.doorbell.is_null(), "the doorbell page is not mapped yet");
         // SAFETY: the page is mapped for the life of the process, and the register is inside it.
         unsafe { ptr::write_volatile(self.doorbell.add(DOORBELL_REGISTER).cast::<u32>(), token) };
+    }
+
+    fn read_gpu_timer(&self) -> Option<u64> {
+        if self.doorbell.is_null() {
+            return None;
+        }
+        // SAFETY: the page is mapped for the life of the process, and both registers are inside it.
+        let read = |at: usize| unsafe { ptr::read_volatile(self.doorbell.add(at).cast::<u32>()) };
+        (0..TIMER_READ_TRIES).find_map(|_| {
+            let high = read(TIMER_HIGH_REGISTER);
+            let low = read(TIMER_LOW_REGISTER);
+            (read(TIMER_HIGH_REGISTER) == high).then_some(u64::from(high) << 32 | u64::from(low))
+        })
     }
 }
 
