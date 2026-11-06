@@ -66,7 +66,7 @@ Direct3D 12, Direct3D 11, Vulkan and OpenGL all run on the real card, along with
 
 Once work reaches the card it runs at full speed. Getting it there is what costs extra.
 
-**How fast is a real program?** Superposition at 1080p Extreme in Direct3D 11 scores about **20,000** to **21,000** with no viewer open, though I've seen runs as low as 18,400. In OpenGL it's about 11,800. The lowest 5090 I could find on Unigine's leaderboard is around 31,000, so call it two thirds of what the card can do. Something is still eating the rest, and I don't know what yet.
+**How fast is a real program?** Superposition at 1080p Extreme in Direct3D 11 scores about **20,000** to **21,000** with no viewer open, but not every time. I've seen 18,400, and five runs back to back in one boot fell from 21,354 to 15,332, and I don't know why yet. In OpenGL it's about 11,800. The lowest 5090 I could find on Unigine's leaderboard is around 31,000, so call it two thirds of what the card can do. Something is still eating the rest, and I don't know what yet.
 
 ![Superposition's result in the VM: 20,912 at 1080p Extreme](docs/images/superposition-result.jpg)
 
@@ -118,7 +118,7 @@ Windows guest                              Linux host
 
 There are three pieces:
 
-- **A QEMU patch.** The Windows part is about 900 lines, and gives the guest the devices and the VMBus channels it expects to find on Hyper-V. The Linux device in the same patch is about 4,900 lines more.
+- **A QEMU patch.** The Windows part is about 900 lines, and gives the guest the devices and the VMBus channels it expects to find on Hyper-V. The Linux device in the same patch is about 4,800 lines more.
 - **A daemon**, which answers everything Windows asks, sets up real GPU channels through the Linux driver, and rings their doorbells when the guest has work.
 - **A desktop app**, Guesthouse, so that none of this needs a terminal. It takes a Windows ISO, installs Windows unattended and brings up the GPU.
 
@@ -130,7 +130,7 @@ A VM is only worth having if what's in it stays in it, so here's where that stan
 
 What's in place for Windows guests:
 
-- **Programs in a VM can't see each other on the GPU.** Each process gets its own GPU page tables, like on real Windows. My test has one process hold a secret and another try to read and overwrite it by its GPU address. On the Rust backend it read none of the 16,384 words, in both tries, and its writes left the secret whole. The same read got all 16,384 words of a process's own secret, and of one it was properly given through a shared handle, and the same write overwrote a process's own buffer, so the test does reach memory when it's allowed to. The one thing they still share is a block of fences, which only holds counters.
+- **Programs in a VM can't see each other on the GPU.** Each process gets its own GPU page tables, like on real Windows. My test has one process hold a secret and another try to read and overwrite it by its GPU address. On the Rust backend it read none of the 16,384 words, in every try, and its writes left the secret whole. The same read got all 16,384 words of a process's own secret, and of one it was properly given through a shared handle, and the same write overwrote a process's own buffer, so the test does reach memory when it's allowed to. The one thing they still share is a block of fences, which only holds counters.
 - **Windows never talks to the host's driver.** It talks to my daemon, and the daemon makes the calls. Sizes and ranges in every message get checked, and the parsers and handlers are fuzz tested.
 - **You can cap a VM's video memory.** With a limit set, a program that goes over it loses its device. Without one, the VM is told to leave a share of the card for the host, but that's a budget and not a wall. A second GPU VM won't start until the first one has a cap.
 - **The daemon's sockets are for its owner alone.** The guest agent's port is on loopback with a token per machine, so other users on the PC can reach the port but not the agent.
@@ -140,6 +140,7 @@ What a guest can still do:
 
 - **Get in the way.** A program can't read or change its neighbours, but trying faults the GPU, and in the one try I timed, that froze other work on the card for about four seconds, the host's included. If too many programs fault in a minute, that VM's GPU stops until Windows restarts, and the app says so.
 - **See some of your hardware.** Windows sees your card's real UUID and ECID, your CPU and how much RAM you have.
+- **Reach your user account, if there's a bug.** The daemon runs as you with the card open, so a bug in it or in NVIDIA's driver is a bug in your user account. Only run a Windows guest you'd trust with that.
 
 What's still coming:
 
@@ -185,7 +186,7 @@ The full list, with what's already done, is in the [roadmap](https://github.com/
 
 ## Trying the code
 
-You need Rust 1.88 or newer, and no GPU or VM.
+You need Rust 1.88 or newer, or 1.92 for the app, and no GPU or VM.
 
 ```sh
 cargo test                       # everything but the app
@@ -224,7 +225,7 @@ I run this on Fedora. The oldest systems it's meant for are Ubuntu 24.04 and Deb
 
 ## Bring your own
 
-This repo has no NVIDIA or Microsoft files in it. You supply your own Windows ISO and NVIDIA's driver. This is a personal project, and it has nothing to do with NVIDIA or Microsoft.
+This repo has no NVIDIA or Microsoft binaries or ISOs in it. You supply your own Windows ISO and NVIDIA's driver. A few tables and some sample code come from what they've published as open source, and [THIRD-PARTY.md](THIRD-PARTY.md) lists those. This is a personal project, and it has nothing to do with NVIDIA or Microsoft.
 
 ## Thanks
 
@@ -243,6 +244,6 @@ None of this would exist without other people's work:
 
 Copyright (C) 2026 xnixy
 
-GPL-2.0-or-later, the QEMU patch included. See [LICENSE](LICENSE). A few things in here come from elsewhere, and [THIRD-PARTY.md](THIRD-PARTY.md) lists them.
+GPL-2.0-or-later, the QEMU patch included, apart from the few things [THIRD-PARTY.md](THIRD-PARTY.md) lists. See [LICENSE](LICENSE).
 
 NVIDIA, GeForce and Windows are trademarks of their owners.

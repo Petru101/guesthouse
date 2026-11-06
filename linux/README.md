@@ -25,13 +25,13 @@ You need an NVIDIA card with the open kernel modules loaded, and the driver vers
 3. Get NVIDIA's source at the loaded driver's version, into `src/open-gpu-kernel-modules` in the data store, which is `~/.local/share/guesthouse`, or say where it is with `NVIDIA_SOURCE`. The guest's modules build against its headers, which aren't in this repository.
 4. Set `GUESTHOUSE_PROGRAM` to this repository and `QEMU` to your build, and make an Ubuntu machine from Ubuntu's server ISO.
 
-The install takes about ten minutes with no hands, and the first boot builds everything. If anything about the driver is in doubt the GPU stays off and the VM still boots. The guest gets one plain sentence and the app has the details, as those can hold your paths. As root in the guest, `nvfwd-check` says which parts work.
+The install needs no hands, and the first boot builds everything. If anything about the driver is in doubt the GPU stays off and the VM still boots. The guest gets one plain sentence and the app has the details, as those can hold your paths. As root in the guest, `nvfwd-check` says which parts work.
 
 ## Video
 
 NVENC and NVDEC work in a guest. With ffmpeg, H.264, HEVC and AV1 all encode on the card and decode on the card, and the decoded frames match a software decode exactly.
 
-NVENC needs one control with no public name, and it won't open a session without the driver's own answer. So that one call goes to the host, and the device only forwards it at its one size. `allow.txt` has a note on each entry video added.
+NVENC needs one more control, and it won't open a session without the driver's own answer. So that one call goes to the host, and the device only forwards it at its one size. `allow.txt` has a note on each entry video added.
 
 NVIDIA's limit on encode sessions still holds, because that answer is the driver's. This card stops at 12 on the host, and a guest stops at 12 too. They share the 12: with 8 starting on each side, 12 ran between them. `nvidia-smi` on the host doesn't count a guest's sessions, though.
 

@@ -6,7 +6,7 @@ It's a fork of [zako-vdd](https://github.com/qiin2333/zako-vdd), by qiin2333 and
 
 This folder is under the MIT licence, in [LICENSE](LICENSE), and it stays that way, unlike the rest of this repo. Building it uses Microsoft's kit, and I don't want a question over those terms and the GPL. The driver started from Microsoft's [indirect display sample](https://github.com/microsoft/Windows-driver-samples/tree/main/video/IndirectDisplay), so what's left of that stays under the Microsoft Public License, in [LICENSE-MS-PL](LICENSE-MS-PL).
 
-To build and install it, see [BUILDING.md](BUILDING.md).
+To build and install it, see [BUILDING.md](BUILDING.md). Only install it in a Guesthouse guest: it's made to be the only display, and on a real PC it would take over from your real monitors.
 
 ## What I added
 
