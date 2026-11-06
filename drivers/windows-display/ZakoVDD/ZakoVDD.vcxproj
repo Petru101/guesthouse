@@ -30,6 +30,11 @@
     <ClCompile Include="Core\DriverState.cpp" />
     <ClCompile Include="Edid\Edid.cpp" />
     <ClCompile Include="Logging\Logger.cpp" />
+    <ClCompile Include="Guesthouse\ColourTransform.cpp" />
+    <ClCompile Include="Guesthouse\FramePass.cpp" />
+    <ClCompile Include="Guesthouse\HostExporter.cpp" />
+    <ClCompile Include="Guesthouse\HostLink.cpp" />
+    <ClCompile Include="Guesthouse\KernelEscapeChannel.cpp" />
     <ClCompile Include="Rendering\Direct3DDevice.cpp" />
     <ClCompile Include="Rendering\CursorExporter.cpp" />
     <ClCompile Include="Rendering\SharedFrameExporter.cpp" />
@@ -58,12 +63,32 @@
     <ClInclude Include="Edid\Edid.h" />
     <ClInclude Include="Edid\EdidLuminance.h" />
     <ClInclude Include="Logging\Logger.h" />
+    <ClInclude Include="Guesthouse\ColourTransform.h" />
+    <ClInclude Include="Guesthouse\CursorImage.h" />
+    <ClInclude Include="Guesthouse\EscapeChannel.h" />
+    <ClInclude Include="Guesthouse\FramePass.h" />
+    <ClInclude Include="Guesthouse\HdrMetadataTracker.h" />
+    <ClInclude Include="Guesthouse\HostExporter.h" />
+    <ClInclude Include="Guesthouse\HostLink.h" />
+    <ClInclude Include="Guesthouse\KernelEscapeChannel.h" />
+    <ClInclude Include="Guesthouse\MonitorColour.h" />
+    <ClInclude Include="Guesthouse\WireFormat.h" />
     <ClInclude Include="Rendering\Direct3DDevice.h" />
     <ClInclude Include="Rendering\CursorExporter.h" />
     <ClInclude Include="Rendering\SharedFrameExporter.h" />
     <ClInclude Include="Rendering\SwapChainProcessor.h" />
     <ClInclude Include="Util\RefreshRate.h" />
     <ClInclude Include="Util\StringConversion.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <FxCompile Include="Guesthouse\Shaders\FramePass.hlsl">
+      <ShaderType>Compute</ShaderType>
+      <ShaderModel>5.0</ShaderModel>
+      <EntryPointName>main</EntryPointName>
+      <VariableName>g_FramePassShader</VariableName>
+      <HeaderFileOutput>$(ProjectDir)Guesthouse\Shaders\FramePass.generated.h</HeaderFileOutput>
+      <ObjectFileOutput />
+    </FxCompile>
   </ItemGroup>
   <ItemGroup>
     <Inf Include="ZakoVDD.inf">
