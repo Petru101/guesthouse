@@ -8,6 +8,10 @@ publish.workspace = true
 license.workspace = true
 
 [[bin]]
+name = "guesthouse-task"
+path = "src/bin/task.rs"
+
+[[bin]]
 name = "guesthouse-share"
 path = "src/bin/share.rs"
 

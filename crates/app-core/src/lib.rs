@@ -5,11 +5,13 @@
 //! things are when it opens again. [`context::Context`] holds what the code needs from the PC, and
 //! tests swap those parts for stand-ins. How a VM starts is behind [`vm_host::VmHost`].
 
+pub mod actions;
 pub mod agent;
 pub mod bridge;
 pub mod clock;
 pub mod context;
 pub mod daemon;
+pub mod disk_image;
 pub mod failure;
 pub mod gpu_sample;
 pub mod host;

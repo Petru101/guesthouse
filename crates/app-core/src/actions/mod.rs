@@ -1,0 +1,293 @@
+//! What a task does. One of these runs in the `guesthouse-task` process, in the slot of its VM, while
+//! the app watches the small file it leaves.
+
+mod desktop;
+
+pub use desktop::{apply_refresh, apply_share, boots, rebooted};
+use desktop::{note_boot, set_up_desktop, wait_for_desktop};
+
+use crate::context::Context;
+use crate::disk_image::disk_size_gib;
+use crate::failure::{Failure, Result};
+use crate::host::{cpu_list, host_ram_limit, vcache_cpus};
+use crate::library::MAX_DISK_GIB;
+use crate::log::clock_text;
+use crate::machine::{Machine, load};
+use crate::monitor::Command as Qmp;
+use crate::network_settings::other_machines;
+use crate::processes::qemu_pid;
+use crate::settings::max_vram_gib;
+use crate::start_checks::{start_problems, video_cap};
+use crate::tasks::{TaskRecord, write_task};
+use crate::text::shell_quote;
+use crate::vm_args::{Boot, VmPlan};
+use crate::vm_host::{Helper, Stopped, VmHost};
+use rustix::fs::{FlockOperation, flock};
+use rustix::process::{Pid, Signal, kill_process, kill_process_group};
+use std::fs::File;
+use std::io::Write;
+use std::path::PathBuf;
+use std::process::Command;
+use std::time::Duration;
+
+const MEMORY_WAIT: Duration = Duration::from_secs(20);
+const LOCK_FILE: &str = "guesthouse.lock";
+const STOP_WAIT_SECONDS: u64 = 100;
+const SIGTERM_WAIT_SECONDS: u64 = 20;
+const SIGKILL_WAIT_SECONDS: u64 = 10;
+const FORCE_POLL: Duration = Duration::from_millis(200);
+pub(crate) const KEY_POLL: Duration = Duration::from_millis(500);
+
+/// The running side of a task: reports steps, and holds what the actions need.
+pub struct Task<'a> {
+    pub context: &'a Context,
+    pub host: &'a dyn VmHost,
+    pub action: String,
+    pub machine: Machine,
+    pub error: String,
+}
+
+impl<'a> Task<'a> {
+    pub fn new(context: &'a Context, host: &'a dyn VmHost, action: &str, machine: Machine) -> Self {
+        Self { context, host, action: action.to_owned(), machine, error: String::new() }
+    }
+
+    fn record(&self, pid: u32, step: &str) -> TaskRecord {
+        TaskRecord {
+            action: self.action.clone(),
+            machine: self.machine.id.clone(),
+            pid,
+            step: step.to_owned(),
+            error: self.error.clone(),
+        }
+    }
+
+    pub fn step(&self, text: &str) {
+        println!("{} {} {text}", clock_text(), self.action);
+        // A step that can't be written costs the user a line of progress, and the task goes on.
+        let _ = write_task(self.context, None, &self.record(std::process::id(), text));
+    }
+
+    fn finish(&self) {
+        let _ = write_task(self.context, None, &self.record(0, ""));
+    }
+
+    fn pid(&self) -> Option<u32> {
+        qemu_pid(self.context, None)
+    }
+
+    fn run_file(&self, name: &str) -> PathBuf {
+        self.context.run_folder(None).join(name)
+    }
+
+    fn ask_guest(&self, script: &str, seconds: u64) -> String {
+        self.context.ask_guest(&self.machine, script, seconds, None)
+    }
+
+    fn sleep(&self, time: Duration) {
+        self.context.clock.sleep(time);
+    }
+
+    fn now(&self) -> Duration {
+        self.context.clock.now()
+    }
+}
+
+/// The plan for this machine, in this task's slot, as things stand on the PC now.
+pub fn plan_for(context: &Context, machine: &Machine, boot: Boot) -> VmPlan {
+    let others = other_machines(context);
+    let cap = video_cap(machine, &others, max_vram_gib(context));
+    let mut plan = VmPlan::new(context, machine, boot, context.slot, cap);
+    if machine.vcache_pin {
+        plan.pin = Some(cpu_list(&vcache_cpus(&context.cpus)));
+    }
+    plan
+}
+
+/// A VM's memory comes back a few seconds after it stops, once the daemon has really gone.
+fn wait_for_memory(task: &Task) {
+    let end = task.now() + MEMORY_WAIT;
+    while host_ram_limit(task.context).is_ok_and(|limit| u64::from(task.machine.ram_gib) > limit)
+        && task.now() < end
+    {
+        task.sleep(KEY_POLL);
+    }
+}
+
+pub fn start(task: &mut Task) -> Result<()> {
+    let machine = task.machine.clone();
+    if machine.has_gpu() {
+        wait_for_memory(task);
+    }
+    if let Some(problem) = start_problems(task.context, &machine)?.into_iter().next() {
+        return Err(Failure(problem));
+    }
+    if !machine.has_gpu() {
+        task.step("Starting the VM");
+        let plan = plan_for(task.context, &machine, Boot::Plain { iso: machine.iso.clone() });
+        return task.host.start(&plan, &machine);
+    }
+    let booted = boot(task);
+    if booted.is_err() && task.pid().is_none() {
+        // The daemon and shared memory are still there.
+        task.host.release()?;
+    }
+    booted
+}
+
+fn boot(task: &mut Task) -> Result<()> {
+    task.step("Starting the VM");
+    let plan = plan_for(task.context, &task.machine, Boot::Gpu);
+    task.host.start(&plan, &task.machine)?;
+    task.step("Waiting for the desktop");
+    if !wait_for_desktop(task) {
+        return Err(Failure::new("Windows started, but its desktop never came up."));
+    }
+    set_up_desktop(task)
+}
+
+fn after_reboot(task: &mut Task) -> Result<()> {
+    // Before the wait, so this doesn't start again while it runs.
+    note_boot(task)?;
+    task.step("Waiting for the desktop");
+    if !wait_for_desktop(task) {
+        return Err(Failure::new("Windows restarted, but its desktop never came back."));
+    }
+    set_up_desktop(task)
+}
+
+fn stop(task: &mut Task) -> Result<()> {
+    let gpu = task.machine.has_gpu();
+    task.step(if gpu { "Shutting down Windows" } else { "Shutting down" });
+    if task.host.stop(&task.machine, STOP_WAIT_SECONDS)? == Stopped::TurnedOff {
+        let who = if gpu { "Windows" } else { "The guest" };
+        task.error = format!("{who} did not shut down in time, so the VM was turned off.");
+    }
+    Ok(())
+}
+
+fn signal(pid: u32, sent: Signal) {
+    if let Some(pid) = Pid::from_raw(pid as i32) {
+        let _ = kill_process(pid, sent);
+    }
+}
+
+/// Takes over from another task, if given one. For the guest this is a power cut.
+fn force(task: &mut Task, other: Option<&str>) -> Result<()> {
+    if let Some(pid) = other.and_then(|text| text.parse().ok()).and_then(Pid::from_raw) {
+        let _ = kill_process_group(pid, Signal::TERM);
+    }
+    task.step("Turning off the VM");
+    // SIGTERM lets QEMU write out its disk cache, and then nothing is left to stop.
+    for (sent, seconds) in [(Signal::TERM, SIGTERM_WAIT_SECONDS), (Signal::KILL, SIGKILL_WAIT_SECONDS)] {
+        let Some(pid) = task.pid() else { break };
+        signal(pid, sent);
+        let end = task.now() + Duration::from_secs(seconds);
+        while task.pid().is_some() && task.now() < end {
+            task.sleep(FORCE_POLL);
+        }
+    }
+    if task.pid().is_some() {
+        return Err(Failure::new("QEMU will not stop, even when killed."));
+    }
+    if task.machine.has_gpu() { task.host.release() } else { Ok(()) }
+}
+
+fn refresh(task: &mut Task) -> Result<()> {
+    if task.pid().is_some() { apply_refresh(task) } else { Ok(()) }
+}
+
+fn clean_up(task: &mut Task) -> Result<()> {
+    task.step("Cleaning up after the VM");
+    task.host.release()
+}
+
+/// For a guest left paused: the debug stub stops it when something connects, and a dropped
+/// connection doesn't start it again. Detaching first also clears any breakpoint left behind.
+fn resume(task: &mut Task) -> Result<()> {
+    task.step("Resuming the VM");
+    task.host.helper(Helper::DetachDebugger)?;
+    task.context.ask_monitor(None, &Qmp::bare("cont"));
+    task.error = if task.context.run_state(None).as_deref() == Some("running") {
+        "The VM had been left paused. It is running again."
+    } else {
+        "The VM is paused and would not resume."
+    }
+    .to_owned();
+    Ok(())
+}
+
+pub fn grow(task: &mut Task, gib: u32) -> Result<()> {
+    if task.pid().is_some() {
+        return Err(Failure::new("The disk can only grow while the VM is off."));
+    }
+    let size = disk_size_gib(&task.machine.disk)?;
+    if f64::from(gib) <= size {
+        return Err(Failure(format!("The disk is already {size} GiB, and it can only grow.")));
+    }
+    if gib > MAX_DISK_GIB {
+        return Err(Failure(format!("The largest disk here is {MAX_DISK_GIB} GiB.")));
+    }
+    task.step(&format!("Growing the disk to {gib} GiB"));
+    let result = Command::new("qemu-img")
+        .args(["resize", "-f", "qcow2", &task.machine.disk, &format!("{gib}G")])
+        .output()?;
+    if !result.status.success() {
+        let said = String::from_utf8_lossy(&result.stderr);
+        return Err(Failure(format!("The disk did not grow: {}", said.trim())));
+    }
+    Ok(())
+}
+
+fn run_action(task: &mut Task, arguments: &[String]) -> Result<()> {
+    let first = arguments.first().map(String::as_str);
+    let text = first.unwrap_or_default();
+    match task.action.as_str() {
+        "start" => start(task),
+        "stop" => stop(task),
+        "force" => force(task, first),
+        "refresh" => refresh(task),
+        "grow" => grow(task, text.parse().map_err(|_| Failure::new("That is not a size."))?),
+        "resume" => resume(task),
+        "clean_up" => clean_up(task),
+        "after_reboot" => after_reboot(task),
+        other => Err(Failure(format!("There is no action called {}.", shell_quote(other)))),
+    }
+}
+
+fn take_lock(context: &Context) -> Result<File> {
+    let lock = File::create(context.run_folder(None).join(LOCK_FILE))?;
+    flock(&lock, FlockOperation::NonBlockingLockExclusive)
+        .map_err(|_| Failure::new("Something else is still in progress."))?;
+    Ok(lock)
+}
+
+/// The task program's whole life: runs the action, and leaves what happened for the app to read.
+pub fn run_task(context: &Context, host: &dyn VmHost, action: &str, machine_id: &str, arguments: &[String]) {
+    let machine = match load(context, machine_id) {
+        Ok(machine) => machine,
+        Err(error) => {
+            let record = TaskRecord {
+                action: action.to_owned(),
+                machine: machine_id.to_owned(),
+                pid: 0,
+                step: String::new(),
+                error: error.0.clone(),
+            };
+            let _ = write_task(context, None, &record);
+            eprintln!("{error}");
+            return;
+        }
+    };
+    let mut task = Task::new(context, host, action, machine);
+    let lock = if action == "force" { Ok(None) } else { take_lock(context).map(Some) };
+    let result = lock.and_then(|_lock| run_action(&mut task, arguments));
+    if let Err(error) = result {
+        task.error = error.0;
+    }
+    task.finish();
+    let _ = writeln!(std::io::stdout(), "{} {action} finished", clock_text());
+}
+
+#[cfg(test)]
+mod tests;
