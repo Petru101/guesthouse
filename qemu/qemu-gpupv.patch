@@ -3848,3 +3848,529 @@ index 0000000..85c12ed
 -- 
 2.56.0
 
+From d7b3fbc2cff3cc0224da9677d55e7ad1930e343a Mon Sep 17 00:00:00 2001
+From: xnixy <x@ruxn.com>
+Date: Thu, 5 Nov 2026 22:59:41 -0800
+Subject: [PATCH 16/21] hw/misc/nvfwd: answer a guest's sensor objects here
+
+Nothing a guest does with one reaches the host.
+---
+ hw/misc/nvfwd/meson.build |   1 +
+ hw/misc/nvfwd/sensors.c   | 446 ++++++++++++++++++++++++++++++++++++++
+ hw/misc/nvfwd/sensors.h   |  39 ++++
+ 3 files changed, 486 insertions(+)
+ create mode 100644 hw/misc/nvfwd/sensors.c
+ create mode 100644 hw/misc/nvfwd/sensors.h
+
+diff --git a/hw/misc/nvfwd/meson.build b/hw/misc/nvfwd/meson.build
+index 60613fd..9e07076 100644
+--- a/hw/misc/nvfwd/meson.build
++++ b/hw/misc/nvfwd/meson.build
+@@ -8,6 +8,7 @@ nvfwd_ss = files(
+   'rmargs.c',
+   'clients.c',
+   'accounting.c',
++  'sensors.c',
+ )
+ system_ss.add(when: 'CONFIG_PCI', if_true: nvfwd_ss)
+ 
+diff --git a/hw/misc/nvfwd/sensors.c b/hw/misc/nvfwd/sensors.c
+new file mode 100644
+index 0000000..941b352
+--- /dev/null
++++ b/hw/misc/nvfwd/sensors.c
+@@ -0,0 +1,446 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++/* See sensors.h. */
++#include "qemu/osdep.h"
++#include "qemu/thread.h"
++#include "sensors.h"
++#include "rusd.h"
++
++#include <spawn.h>
++#include <sys/socket.h>
++
++#define ESC_RM_FREE 0x29
++#define ESC_RM_CONTROL 0x2a
++#define ESC_RM_ALLOC 0x2b
++#define ESC_RM_MAP_MEMORY 0x4e
++#define ESC_RM_UNMAP_MEMORY 0x4f
++
++#define CLASS_SHARED_DATA 0xde
++#define CTRL_GET_ADDR_SPACE_TYPE 0xd01
++#define CTRL_REQUEST_DATA_POLL 0xde0001
++#define ADDR_SPACE_SYSMEM 1
++
++#define STATUS_OK 0
++#define STATUS_OBJECT_NOT_FOUND 0x57
++#define STATUS_NOT_SUPPORTED 0x56
++
++/* Where things sit in the driver's argument structures. */
++#define ALLOC_ARGS_BYTES 48
++#define ALLOC_CLIENT 0
++#define ALLOC_OBJECT 8
++#define ALLOC_CLASS 12
++#define ALLOC_PARAMS 16
++#define ALLOC_PARAMS_SIZE 32
++#define ALLOC_STATUS 40
++#define FREE_ARGS_BYTES 16
++#define FREE_CLIENT 0
++#define FREE_OBJECT 8
++#define FREE_STATUS 12
++#define CONTROL_ARGS_BYTES 32
++#define CONTROL_CLIENT 0
++#define CONTROL_OBJECT 4
++#define CONTROL_CMD 8
++#define CONTROL_PARAMS 16
++#define CONTROL_PARAMS_SIZE 24
++#define CONTROL_STATUS 28
++#define MAP_ARGS_BYTES 56
++#define MAP_CLIENT 0
++#define MAP_MEMORY 8
++#define MAP_LENGTH 24
++#define MAP_LINEAR 32
++#define MAP_STATUS 40
++#define UNMAP_ARGS_BYTES 32
++#define UNMAP_CLIENT 0
++#define UNMAP_MEMORY 8
++#define UNMAP_STATUS 24
++
++/* The driver hands back a token for the mapping. Nothing in the guest reads it as an address. */
++#define MAP_TOKEN 0x1000
++
++#define MAX_OBJECTS 64
++#define MAX_MAPPING_FILES 4096
++#define MAX_REFUSALS_LOGGED 64
++
++typedef struct {
++    uint32_t client, object, file;
++    uint64_t mask;
++    bool used;
++} SensorObject;
++
++struct Sensors {
++    FILE *log;
++    const char *daemon_path;
++    QemuMutex lock;
++    int daemon, page_fd;
++    bool unavailable;
++    uint64_t polling;
++    SensorObject objects[MAX_OBJECTS];
++    bool mapping_next[MAX_MAPPING_FILES];
++    uint32_t refusals_logged;
++};
++
++static uint32_t read32(const uint8_t *at)
++{
++    uint32_t v;
++    memcpy(&v, at, sizeof(v));
++    return v;
++}
++
++static uint64_t read64(const uint8_t *at)
++{
++    uint64_t v;
++    memcpy(&v, at, sizeof(v));
++    return v;
++}
++
++static void write32(uint8_t *at, uint32_t v)
++{
++    memcpy(at, &v, sizeof(v));
++}
++
++static void write64(uint8_t *at, uint64_t v)
++{
++    memcpy(at, &v, sizeof(v));
++}
++
++/* Parameters come as a pointer, which has to lie in this call's buffer. */
++static uint8_t *params_in_call(const SensorCall *call, uint64_t pointer, uint32_t size)
++{
++    uint64_t start = (uint64_t)(uintptr_t)call->data;
++
++    if (pointer < start || pointer - start > call->data_size ||
++        size > call->data_size - (pointer - start)) {
++        return NULL;
++    }
++    return (uint8_t *)(uintptr_t)pointer;
++}
++
++static bool spawn_daemon(Sensors *s, int socket_end, int page_fd)
++{
++    char *const argv[] = { (char *)s->daemon_path, NULL };
++    posix_spawn_file_actions_t actions;
++    pid_t pid;
++    int rc;
++
++    posix_spawn_file_actions_init(&actions);
++    posix_spawn_file_actions_adddup2(&actions, socket_end, SENSORD_SOCKET_FD);
++    posix_spawn_file_actions_adddup2(&actions, page_fd, SENSORD_PAGE_FD);
++    rc = posix_spawn(&pid, s->daemon_path, &actions, NULL, argv, environ);
++    posix_spawn_file_actions_destroy(&actions);
++    return !rc;
++}
++
++/* The daemon comes up with the first guest that asks, and stays until the VM ends. */
++static bool start_page(Sensors *s)
++{
++    uint32_t client = 0;
++    int ends[2];
++
++    if (s->daemon >= 0 || s->unavailable) {
++        return s->daemon >= 0;
++    }
++    s->unavailable = true;
++    s->page_fd = memfd_create("nvfwd-sensors", MFD_CLOEXEC);
++    if (!s->daemon_path || s->page_fd < 0 || ftruncate(s->page_fd, RUSD_MAP_BYTES) ||
++        socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, ends)) {
++        return false;
++    }
++    if (!spawn_daemon(s, ends[1], s->page_fd)) {
++        close(ends[0]);
++        close(ends[1]);
++        return false;
++    }
++    close(ends[1]);
++    if (read(ends[0], &client, sizeof(client)) != sizeof(client) || !client) {
++        close(ends[0]);
++        return false;
++    }
++    fprintf(s->log, "sensors: daemon has host client %#x\n", client);
++    fflush(s->log);
++    s->daemon = ends[0];
++    s->unavailable = false;
++    return true;
++}
++
++static bool request_polling(Sensors *s, uint64_t mask)
++{
++    int32_t status = -1;
++
++    return write(s->daemon, &mask, sizeof(mask)) == sizeof(mask) &&
++           read(s->daemon, &status, sizeof(status)) == sizeof(status) && !status;
++}
++
++/* The host polls what any guest object still wants, and nothing when none does. */
++static void update_polling(Sensors *s)
++{
++    uint64_t wanted = 0;
++    int i;
++
++    for (i = 0; i < MAX_OBJECTS; i++) {
++        if (s->objects[i].used) {
++            wanted |= s->objects[i].mask;
++        }
++    }
++    if (wanted != s->polling && s->daemon >= 0 && request_polling(s, wanted)) {
++        s->polling = wanted;
++    }
++}
++
++static SensorObject *find_object(Sensors *s, uint32_t client, uint32_t object)
++{
++    int i;
++
++    for (i = 0; i < MAX_OBJECTS; i++) {
++        SensorObject *o = &s->objects[i];
++        if (o->used && o->client == client && o->object == object) {
++            return o;
++        }
++    }
++    return NULL;
++}
++
++static SensorObject *free_object_slot(Sensors *s)
++{
++    int i;
++
++    for (i = 0; i < MAX_OBJECTS; i++) {
++        if (!s->objects[i].used) {
++            return &s->objects[i];
++        }
++    }
++    return NULL;
++}
++
++static bool mask_allowed(Sensors *s, uint64_t mask)
++{
++    if (mask & ~(uint64_t)RUSD_GUEST_POLL_MASK) {
++        if (s->refusals_logged < MAX_REFUSALS_LOGGED) { /* a guest must not be able to fill a disk */
++            s->refusals_logged++;
++            fprintf(s->log, "REFUSED sensor poll mask %#" PRIx64 "\n", mask);
++            fflush(s->log);
++        }
++        return false;
++    }
++    return true;
++}
++
++static uint32_t alloc_object(Sensors *s, const SensorCall *call)
++{
++    uint32_t params_size = read32(call->arg + ALLOC_PARAMS_SIZE);
++    uint64_t mask = 0;
++    SensorObject *o;
++
++    if (params_size) {
++        const uint8_t *params = params_in_call(call, read64(call->arg + ALLOC_PARAMS), sizeof(mask));
++        if (params_size != sizeof(mask) || !params) {
++            return STATUS_NOT_SUPPORTED;
++        }
++        mask = read64(params);
++    }
++    if (!mask_allowed(s, mask) || !start_page(s)) {
++        return STATUS_NOT_SUPPORTED;
++    }
++    o = free_object_slot(s);
++    if (!o) {
++        return STATUS_NOT_SUPPORTED;
++    }
++    *o = (SensorObject) {
++        .client = read32(call->arg + ALLOC_CLIENT), .object = read32(call->arg + ALLOC_OBJECT),
++        .file = call->file, .mask = mask, .used = true,
++    };
++    update_polling(s);
++    return STATUS_OK;
++}
++
++static bool answer_alloc(Sensors *s, const SensorCall *call)
++{
++    if (read32(call->arg + ALLOC_CLASS) != CLASS_SHARED_DATA) {
++        return false;
++    }
++    /* Only the long form of the call carries parameters, and a mask must never go unread. */
++    write32(call->arg + ALLOC_STATUS, call->size == ALLOC_ARGS_BYTES ? alloc_object(s, call)
++                                                                     : STATUS_NOT_SUPPORTED);
++    return true;
++}
++
++static uint32_t request_poll(Sensors *s, const SensorCall *call)
++{
++    SensorObject *o = find_object(s, read32(call->arg + CONTROL_CLIENT),
++                                  read32(call->arg + CONTROL_OBJECT));
++    uint64_t mask;
++    const uint8_t *params = params_in_call(call, read64(call->arg + CONTROL_PARAMS), sizeof(mask));
++
++    if (!o) {
++        return STATUS_OBJECT_NOT_FOUND;
++    }
++    if (read32(call->arg + CONTROL_PARAMS_SIZE) != sizeof(mask) || !params) {
++        return STATUS_NOT_SUPPORTED;
++    }
++    mask = read64(params);
++    if (!mask_allowed(s, mask)) {
++        return STATUS_NOT_SUPPORTED;
++    }
++    o->mask = mask;
++    update_polling(s);
++    return STATUS_OK;
++}
++
++static bool answer_control(Sensors *s, const SensorCall *call)
++{
++    enum { LOOKUP_OBJECT = 0, LOOKUP_TYPE = 8, LOOKUP_BYTES = 12 };
++    uint32_t cmd = read32(call->arg + CONTROL_CMD);
++    uint8_t *params;
++
++    if (call->size < CONTROL_ARGS_BYTES) {
++        return false;
++    }
++    if (cmd == CTRL_REQUEST_DATA_POLL) {
++        write32(call->arg + CONTROL_STATUS, request_poll(s, call));
++        return true;
++    }
++    if (cmd != CTRL_GET_ADDR_SPACE_TYPE) {
++        return false;
++    }
++    params = params_in_call(call, read64(call->arg + CONTROL_PARAMS), LOOKUP_BYTES);
++    if (!params || !find_object(s, read32(call->arg + CONTROL_CLIENT), read32(params + LOOKUP_OBJECT))) {
++        return false;
++    }
++    write32(params + LOOKUP_TYPE, ADDR_SPACE_SYSMEM);
++    write32(call->arg + CONTROL_STATUS, STATUS_OK);
++    return true;
++}
++
++static bool answer_map(Sensors *s, const SensorCall *call)
++{
++    if (call->size < MAP_ARGS_BYTES ||
++        !find_object(s, read32(call->arg + MAP_CLIENT), read32(call->arg + MAP_MEMORY))) {
++        return false;
++    }
++    if (read64(call->arg + MAP_LENGTH) != RUSD_PAGE_BYTES || call->map_file >= MAX_MAPPING_FILES) {
++        write32(call->arg + MAP_STATUS, STATUS_NOT_SUPPORTED);
++        return true;
++    }
++    s->mapping_next[call->map_file] = true;
++    write64(call->arg + MAP_LINEAR, MAP_TOKEN);
++    write32(call->arg + MAP_STATUS, STATUS_OK);
++    return true;
++}
++
++static bool answer_unmap(Sensors *s, const SensorCall *call)
++{
++    if (call->size < UNMAP_ARGS_BYTES ||
++        !find_object(s, read32(call->arg + UNMAP_CLIENT), read32(call->arg + UNMAP_MEMORY))) {
++        return false;
++    }
++    write32(call->arg + UNMAP_STATUS, STATUS_OK);
++    return true;
++}
++
++static void forget_client(Sensors *s, uint32_t client)
++{
++    int i;
++
++    for (i = 0; i < MAX_OBJECTS; i++) {
++        if (s->objects[i].used && s->objects[i].client == client) {
++            s->objects[i].used = false;
++        }
++    }
++    update_polling(s);
++}
++
++static bool answer_free(Sensors *s, const SensorCall *call)
++{
++    uint32_t client, object;
++    SensorObject *o;
++
++    if (call->size < FREE_ARGS_BYTES) {
++        return false;
++    }
++    client = read32(call->arg + FREE_CLIENT);
++    object = read32(call->arg + FREE_OBJECT);
++    if (client == object) { /* the whole client goes, on the host too */
++        forget_client(s, client);
++        return false;
++    }
++    o = find_object(s, client, object);
++    if (!o) {
++        return false;
++    }
++    o->used = false;
++    update_polling(s);
++    write32(call->arg + FREE_STATUS, STATUS_OK);
++    return true;
++}
++
++Sensors *sensors_new(FILE *log, const char *daemon_path)
++{
++    Sensors *s = g_new0(Sensors, 1);
++
++    s->log = log;
++    s->daemon_path = daemon_path;
++    s->daemon = -1;
++    s->page_fd = -1;
++    qemu_mutex_init(&s->lock);
++    return s;
++}
++
++bool sensors_answer(Sensors *s, const SensorCall *call)
++{
++    bool answered = false;
++
++    qemu_mutex_lock(&s->lock);
++    switch (call->nr) {
++    case ESC_RM_ALLOC:
++        answered = answer_alloc(s, call);
++        break;
++    case ESC_RM_CONTROL:
++        answered = answer_control(s, call);
++        break;
++    case ESC_RM_MAP_MEMORY:
++        answered = answer_map(s, call);
++        break;
++    case ESC_RM_UNMAP_MEMORY:
++        answered = answer_unmap(s, call);
++        break;
++    case ESC_RM_FREE:
++        answered = answer_free(s, call);
++        break;
++    }
++    qemu_mutex_unlock(&s->lock);
++    return answered;
++}
++
++bool sensors_take_mapping(Sensors *s, uint32_t file)
++{
++    bool next;
++
++    if (file >= MAX_MAPPING_FILES) {
++        return false;
++    }
++    qemu_mutex_lock(&s->lock);
++    next = s->mapping_next[file];
++    s->mapping_next[file] = false;
++    qemu_mutex_unlock(&s->lock);
++    return next;
++}
++
++int sensors_page_fd(Sensors *s)
++{
++    return s->page_fd;
++}
++
++void sensors_file_closed(Sensors *s, uint32_t file)
++{
++    int i;
++
++    qemu_mutex_lock(&s->lock);
++    for (i = 0; i < MAX_OBJECTS; i++) {
++        if (s->objects[i].used && s->objects[i].file == file) {
++            s->objects[i].used = false;
++        }
++    }
++    if (file < MAX_MAPPING_FILES) {
++        s->mapping_next[file] = false;
++    }
++    update_polling(s);
++    qemu_mutex_unlock(&s->lock);
++}
+diff --git a/hw/misc/nvfwd/sensors.h b/hw/misc/nvfwd/sensors.h
+new file mode 100644
+index 0000000..cb26bd5
+--- /dev/null
++++ b/hw/misc/nvfwd/sensors.h
+@@ -0,0 +1,39 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++/*
++ * Guest objects of the card's sensor page class. They live only here: nothing a guest does with
++ * one reaches the host. The host's own page is held by nvfwd-sensord, in another process, and this
++ * side sees only the filtered copy. See rusd.h for what the page is.
++ */
++#ifndef NVFWD_SENSORS_H
++#define NVFWD_SENSORS_H
++
++#include <stdbool.h>
++#include <stdint.h>
++#include <stdio.h>
++
++typedef struct Sensors Sensors;
++
++/* A call as the device sees it, after its pointers have been fixed up. */
++typedef struct SensorCall {
++    uint32_t nr;       /* RM escape number */
++    uint8_t *arg;      /* its arguments */
++    uint32_t size;     /* bytes at arg */
++    uint32_t file;     /* the guest file it came in on */
++    uint32_t map_file; /* for a mapping, the guest file it is aimed at */
++    uint8_t *data;     /* the buffer that all of the call's parameters must lie in */
++    uint32_t data_size;
++} SensorCall;
++
++/* daemon_path is the nvfwd-sensord program. Without one, guests get no sensor page. */
++Sensors *sensors_new(FILE *log, const char *daemon_path);
++
++/* True when the call was answered here, with its status written, and must not be forwarded. */
++bool sensors_answer(Sensors *s, const SensorCall *call);
++
++/* True, once, when the next mapping of this guest file is the sensor page. */
++bool sensors_take_mapping(Sensors *s, uint32_t file);
++
++int sensors_page_fd(Sensors *s);
++void sensors_file_closed(Sensors *s, uint32_t file);
++
++#endif
+-- 
+2.56.0
+
