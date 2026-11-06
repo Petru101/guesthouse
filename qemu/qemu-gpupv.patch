@@ -5947,3 +5947,284 @@ index 0000000..cbc008e
 -- 
 2.56.0
 
+From a893053fc84fb825d82dd76b40c86c51555ec971 Mon Sep 17 00:00:00 2001
+From: xnixy <x@ruxn.com>
+Date: Thu, 5 Nov 2026 22:59:41 -0800
+Subject: [PATCH 21/21] hw/misc/nvfwd: the device
+
+A kick register, the call slots and the window. A call runs on the vCPU thread
+that made it, without the BQL. The limits are settings on the device, and it
+will not run as root.
+---
+ hw/misc/nvfwd/meson.build |   1 +
+ hw/misc/nvfwd/nvfwd.c     | 245 ++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 246 insertions(+)
+ create mode 100644 hw/misc/nvfwd/nvfwd.c
+
+diff --git a/hw/misc/nvfwd/meson.build b/hw/misc/nvfwd/meson.build
+index fb0d1f7..8f1e692 100644
+--- a/hw/misc/nvfwd/meson.build
++++ b/hw/misc/nvfwd/meson.build
+@@ -14,6 +14,7 @@ nvfwd_ss = files(
+   'forward.c',
+   'window.c',
+   'show.c',
++  'nvfwd.c',
+ )
+ system_ss.add(when: 'CONFIG_PCI', if_true: nvfwd_ss)
+ 
+diff --git a/hw/misc/nvfwd/nvfwd.c b/hw/misc/nvfwd/nvfwd.c
+new file mode 100644
+index 0000000..80376a3
+--- /dev/null
++++ b/hw/misc/nvfwd/nvfwd.c
+@@ -0,0 +1,245 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++/*
++ * nvfwd, the device itself: its BARs and the kick that runs a call. See nvfwd.h, and
++ * linux/README.md in the Guesthouse repository for the whole route.
++ */
++#include "qemu/osdep.h"
++#include "qemu/units.h"
++#include "qapi/error.h"
++#include "hw/core/qdev-properties.h"
++#include <sys/mman.h>
++#include <poll.h>
++#include "nvfwd.h"
++
++/* Defaults for the settings of the same name. linux/README.md says how they were chosen. */
++#define DEFAULT_MAX_CALL_RATE 20000
++#define DEFAULT_MAX_CALL_BURST 200000
++#define DEFAULT_MAX_OBJECTS 65536
++#define DEFAULT_MAX_MAPS 7168 /* under MAX_RANGES, so the window's free list cannot overflow */
++#define DEFAULT_MAX_VRAM (8 * GiB)
++#define DEFAULT_MAX_SYSMEM (8 * GiB)
++#define DEFAULT_MAX_UVM (32 * GiB)
++
++static void handle(NvfwdState *s, uint32_t slot)
++{
++    uint8_t *base = s->slot_mem + (uint64_t)slot * NVFWD_SLOT_SIZE;
++    Bounce *b = &s->bounce[slot];
++    struct nvfwd_req *r = &b->req;
++    bool held;
++
++    if (!bounce_enter(b)) {
++        return; /* only a guest kicking a slot it is already waiting on gets here */
++    }
++    bounce_take_request(b, base);
++    held = r->op != NVFWD_OP_OPEN && fd_hold(s, r->fdid);
++    switch (r->op) {
++    case NVFWD_OP_OPEN:
++        do_open(s, r);
++        break;
++    case NVFWD_OP_CLOSE:
++        if (held) {
++            fd_close(s, r->fdid);
++            objects_file_closed(s->objects, r->fdid);
++            if (s->sensors) {
++                sensors_file_closed(s->sensors, r->fdid);
++            }
++        }
++        r->ret = 0;
++        break;
++    case NVFWD_OP_IOCTL:
++        if (s->no_gpu) {
++            r->ret = -ENOTTY;
++        } else if (!bounce_take_call(b, base)) {
++            r->ret = -EINVAL;
++        } else {
++            do_ioctl(s, b);
++        }
++        if (held) {
++            fd_release(s, r->fdid);
++        }
++        bounce_give_call(b, base);
++        bounce_leave(b);
++        return;
++    case NVFWD_OP_MMAP:
++        do_mmap(s, r);
++        break;
++    case NVFWD_OP_MUNMAP:
++        do_munmap(s, r);
++        break;
++    case NVFWD_OP_SHOW_BUFFER:
++        do_show_buffer(s, r);
++        break;
++    case NVFWD_OP_SHOW_SURFACE:
++        do_show_surface(s, r);
++        break;
++    case NVFWD_OP_SHOW_NEXT:
++        do_show_next(s, r);
++        break;
++    case NVFWD_OP_SHOW_READING:
++        do_show_reading(s, r);
++        break;
++    case NVFWD_OP_SHOW_RATE:
++        do_show_rate(s, r);
++        break;
++    case NVFWD_OP_SHOW_FRAME:
++        do_show_frame(s, r);
++        break;
++    case NVFWD_OP_POLL: {
++        struct pollfd p = { .fd = host_fd(s, r->fdid), .events = r->a0 };
++        int rc = poll(&p, 1, 0);
++        r->ret = rc > 0 ? p.revents : 0;
++        break;
++    }
++    default:
++        r->ret = -ENOSYS;
++    }
++    if (held) {
++        fd_release(s, r->fdid);
++    }
++    bounce_give_result(b, base);
++    bounce_leave(b);
++}
++
++static uint64_t mmio_read(void *opaque, hwaddr addr, unsigned size)
++{
++    NvfwdState *s = opaque;
++    switch (addr) {
++    case 0:
++        return NVFWD_MAGIC;
++    case 8:
++        return s->win_size;
++    }
++    return 0;
++}
++
++static void mmio_write(void *opaque, hwaddr addr, uint64_t val, unsigned size)
++{
++    if (addr == 0 && val < NVFWD_SLOTS) {
++        handle(opaque, val);
++    }
++}
++
++static const MemoryRegionOps mmio_ops = {
++    .read = mmio_read,
++    .write = mmio_write,
++    .endianness = DEVICE_LITTLE_ENDIAN,
++    .impl = { .min_access_size = 4, .max_access_size = 8 },
++};
++
++static void nvfwd_realize(PCIDevice *pdev, Error **errp)
++{
++    NvfwdState *s = NVFWD(pdev);
++    uint64_t slot_bytes = (uint64_t)NVFWD_SLOT_SIZE * NVFWD_SLOTS;
++    int i;
++
++    if (!s->allow_path || !s->log_path) {
++        error_setg(errp, "nvfwd needs allow= and log=");
++        return;
++    }
++    /* The driver gives root more than a user, and its limits on a guest are part of the design. */
++    if (geteuid() == 0 && !s->no_gpu) {
++        error_setg(errp, "nvfwd does not run as root");
++        return;
++    }
++    s->log = fopen(s->log_path, "a");
++    if (!s->log) {
++        error_setg_errno(errp, errno, "nvfwd log");
++        return;
++    }
++    qemu_mutex_init(&s->lock);
++    for (i = 0; i < MAX_FDS; i++) {
++        s->fds[i] = s->fd_closing[i] = -1;
++    }
++    for (i = 0; i < NVFWD_SLOTS; i++) {
++        if (!bounce_init(&s->bounce[i])) {
++            error_setg_errno(errp, errno, "nvfwd private buffers");
++            return;
++        }
++    }
++    s->seen = set_new(SEEN_CAPACITY);
++    s->objects = objects_new(&(ObjectLimits) {
++        .max_objects = s->max_objects,
++        .max_bytes = { [MEMORY_VIDEO] = s->max_vram, [MEMORY_SYSTEM] = s->max_sysmem },
++    }, unmap_runs, s);
++    s->maps = maps_new(s->max_maps, s->max_uvm);
++    callrate_init(&s->rate, s->max_call_rate, s->max_call_burst);
++    if (!s->no_gpu) {
++        s->sensors = sensors_new(s->log, s->sensord_path);
++    }
++    s->win_size = 64 * GiB;
++    window_init(s);
++    allow_reload(s);
++
++    s->slot_mem = mmap(NULL, slot_bytes, PROT_READ | PROT_WRITE,
++                       MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
++    s->win = mmap(NULL, s->win_size, PROT_READ | PROT_WRITE,
++                  MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
++    if (s->slot_mem == MAP_FAILED || s->win == MAP_FAILED) {
++        error_setg_errno(errp, errno, "nvfwd mmap");
++        return;
++    }
++    madvise(s->win, s->win_size, MADV_DONTDUMP);
++
++    s->render = s->listener = s->viewer = -1;
++    s->show_newest = -1;
++    qemu_mutex_init(&s->show_lock);
++    if (s->show_path) {
++        show_init(s, errp);
++        if (*errp) {
++            return;
++        }
++    }
++
++    memory_region_init_io(&s->mmio, OBJECT(s), &mmio_ops, s, "nvfwd-mmio", 4096);
++    memory_region_enable_lockless_io(&s->mmio);
++    memory_region_init_ram_ptr(&s->slots, OBJECT(s), "nvfwd-slots", slot_bytes, s->slot_mem);
++    memory_region_init_ram_ptr(&s->window, OBJECT(s), "nvfwd-window", s->win_size, s->win);
++    pci_register_bar(pdev, 0, PCI_BASE_ADDRESS_SPACE_MEMORY, &s->mmio);
++    pci_register_bar(pdev, 2, PCI_BASE_ADDRESS_SPACE_MEMORY | PCI_BASE_ADDRESS_MEM_TYPE_64 |
++                     PCI_BASE_ADDRESS_MEM_PREFETCH, &s->slots);
++    pci_register_bar(pdev, 4, PCI_BASE_ADDRESS_SPACE_MEMORY | PCI_BASE_ADDRESS_MEM_TYPE_64 |
++                     PCI_BASE_ADDRESS_MEM_PREFETCH, &s->window);
++}
++
++static const Property nvfwd_props[] = {
++    DEFINE_PROP_STRING("allow", NvfwdState, allow_path),
++    DEFINE_PROP_STRING("sensord", NvfwdState, sensord_path),
++    DEFINE_PROP_STRING("log", NvfwdState, log_path),
++    DEFINE_PROP_STRING("show", NvfwdState, show_path),
++    DEFINE_PROP_BOOL("trace", NvfwdState, trace, false),
++    DEFINE_PROP_BOOL("nogpu", NvfwdState, no_gpu, false),
++    DEFINE_PROP_UINT32("max-call-rate", NvfwdState, max_call_rate, DEFAULT_MAX_CALL_RATE),
++    DEFINE_PROP_UINT32("max-call-burst", NvfwdState, max_call_burst, DEFAULT_MAX_CALL_BURST),
++    DEFINE_PROP_UINT32("max-objects", NvfwdState, max_objects, DEFAULT_MAX_OBJECTS),
++    DEFINE_PROP_UINT32("max-maps", NvfwdState, max_maps, DEFAULT_MAX_MAPS),
++    DEFINE_PROP_SIZE("max-vram", NvfwdState, max_vram, DEFAULT_MAX_VRAM),
++    DEFINE_PROP_SIZE("max-sysmem", NvfwdState, max_sysmem, DEFAULT_MAX_SYSMEM),
++    DEFINE_PROP_SIZE("max-uvm", NvfwdState, max_uvm, DEFAULT_MAX_UVM),
++};
++
++static void nvfwd_class_init(ObjectClass *class, const void *data)
++{
++    DeviceClass *dc = DEVICE_CLASS(class);
++    PCIDeviceClass *k = PCI_DEVICE_CLASS(class);
++
++    k->realize = nvfwd_realize;
++    k->vendor_id = PCI_VENDOR_ID_QEMU;
++    k->device_id = 0x11ea;
++    k->class_id = PCI_CLASS_OTHERS;
++    device_class_set_props(dc, nvfwd_props);
++    set_bit(DEVICE_CATEGORY_MISC, dc->categories);
++}
++
++static const TypeInfo nvfwd_type = {
++    .name = TYPE_NVFWD,
++    .parent = TYPE_PCI_DEVICE,
++    .instance_size = sizeof(NvfwdState),
++    .class_init = nvfwd_class_init,
++    .interfaces = (const InterfaceInfo[]) { { INTERFACE_CONVENTIONAL_PCI_DEVICE }, { } },
++};
++
++static void nvfwd_register(void)
++{
++    type_register_static(&nvfwd_type);
++}
++type_init(nvfwd_register)
+\ No newline at end of file
+-- 
+2.56.0
+
