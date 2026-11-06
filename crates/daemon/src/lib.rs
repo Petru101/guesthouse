@@ -10,6 +10,8 @@ pub mod guest_memory;
 pub mod logger;
 pub mod router;
 pub mod server;
+#[cfg(feature = "nvidia")]
+pub mod setup;
 pub mod slot;
 pub mod startup;
 pub mod viewer;

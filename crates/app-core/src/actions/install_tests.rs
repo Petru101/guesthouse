@@ -97,10 +97,31 @@ fn the_answer_file_gets_the_hosts_zone() {
     let context = scratch_context(&scratch);
     scratch.write("program/guest/autounattend.xml", "<a><TimeZone>UTC</TimeZone></a>");
     assert_eq!(
-        answer_file(&context, "Asia/Tokyo").unwrap(),
+        answer_file(&context, "Asia/Tokyo", "secret").unwrap(),
         "<a><TimeZone>Tokyo Standard Time</TimeZone></a>"
     );
-    assert_eq!(answer_file(&context, "Mars/Olympus_Mons").unwrap(), "<a><TimeZone>UTC</TimeZone></a>");
+    assert_eq!(
+        answer_file(&context, "Mars/Olympus_Mons", "secret").unwrap(),
+        "<a><TimeZone>UTC</TimeZone></a>"
+    );
+}
+
+#[test]
+fn the_answer_file_gets_the_machines_password() {
+    let scratch = Scratch::new();
+    let context = scratch_context(&scratch);
+    scratch.write("program/guest/autounattend.xml", "<Value>@PASSWORD@</Value><Value>@PASSWORD@</Value>");
+    assert_eq!(
+        answer_file(&context, "Asia/Tokyo", "secret").unwrap(),
+        "<Value>secret</Value><Value>secret</Value>"
+    );
+}
+
+#[test]
+fn an_answer_file_with_no_password_is_refused() {
+    let unfilled = "<Value>@PASSWORD@</Value>".to_owned();
+    assert!(password_is_filled(unfilled).unwrap_err().0.contains("no password"));
+    assert_eq!(password_is_filled("<Value>secret</Value>".to_owned()).unwrap(), "<Value>secret</Value>");
 }
 
 fn with_install_files(scratch: &Scratch, context: &Context) {

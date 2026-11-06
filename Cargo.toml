@@ -5,6 +5,7 @@ members = ["crates/*"]
 default-members = [
     "crates/app-core",
     "crates/backend",
+    "crates/backend-nvidia",
     "crates/backend-standin",
     "crates/core",
     "crates/daemon",
@@ -26,6 +27,7 @@ guesthouse-transport = { path = "crates/transport" }
 guesthouse-messages = { path = "crates/messages" }
 guesthouse-backend = { path = "crates/backend" }
 guesthouse-backend-standin = { path = "crates/backend-standin" }
+guesthouse-backend-nvidia = { path = "crates/backend-nvidia" }
 guesthouse-core = { path = "crates/core" }
 guesthouse-daemon = { path = "crates/daemon" }
 guesthouse-app-core = { path = "crates/app-core" }

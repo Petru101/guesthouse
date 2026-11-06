@@ -87,12 +87,16 @@ mod tests {
     use super::*;
     use crate::testing::{Scratch, scratch_context};
     use std::fs;
+    use std::os::unix::fs::PermissionsExt;
 
     #[test]
     fn only_the_patched_qemu_lists_our_device() {
         let scratch = Scratch::new();
-        let plain = scratch.program("plain", "#!/bin/sh\necho 'name \"virtio-net-pci\"'\n");
-        let patched = scratch.program("patched", "#!/bin/sh\necho 'name \"gpupv-render\"'\n");
+        let plain = scratch.write("plain", "#!/bin/sh\necho 'name \"virtio-net-pci\"'\n");
+        let patched = scratch.write("patched", "#!/bin/sh\necho 'name \"gpupv-render\"'\n");
+        for file in [&plain, &patched] {
+            fs::set_permissions(file, fs::Permissions::from_mode(0o700)).unwrap();
+        }
         assert!(!qemu_lists_our_device(&plain));
         assert!(qemu_lists_our_device(&patched));
         assert!(!qemu_lists_our_device(&scratch.path("no-such-qemu")));

@@ -5,6 +5,7 @@ mod allocation;
 mod context;
 mod copies;
 mod frame_ring;
+mod indirect;
 mod mapping;
 mod reserving;
 mod sync;

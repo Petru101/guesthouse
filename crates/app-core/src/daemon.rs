@@ -28,10 +28,10 @@ impl DaemonStart {
     pub fn new(context: &Context, slot: Slot, ram: &str, vram: Option<&str>) -> Self {
         let mut environment = BTreeMap::from([
             (SLOT_VARIABLE.to_owned(), slot.number().to_string()),
-            ("RAM".to_owned(), ram.to_owned()),
+            ("GUESTHOUSE_RAM".to_owned(), ram.to_owned()),
         ]);
         if let Some(vram) = vram {
-            environment.insert("VRAM".into(), vram.to_owned());
+            environment.insert("GUESTHOUSE_VRAM".into(), vram.to_owned());
         }
         Self {
             program: context.paths.binary(DAEMON_PROGRAM),
@@ -88,7 +88,10 @@ mod tests {
         let context = scratch_context(&scratch);
         let start = DaemonStart::new(&context, slots::number(2), "16G", Some("8G"));
         assert_eq!(start.environment["GUESTHOUSE_SLOT"], "2");
-        assert_eq!((start.environment["RAM"].as_str(), start.environment["VRAM"].as_str()), ("16G", "8G"));
+        assert_eq!(
+            (start.environment["GUESTHOUSE_RAM"].as_str(), start.environment["GUESTHOUSE_VRAM"].as_str()),
+            ("16G", "8G")
+        );
         assert_eq!(start.base, context.paths.runtime);
         assert_eq!(context.paths.run_folder(slots::number(2)), start.base.join("run-2"));
     }
@@ -98,6 +101,6 @@ mod tests {
         let scratch = Scratch::new();
         let context = scratch_context(&scratch);
         let start = DaemonStart::new(&context, slots::first(), "16G", None);
-        assert!(!start.environment.contains_key("VRAM"));
+        assert!(!start.environment.contains_key("GUESTHOUSE_VRAM"));
     }
 }

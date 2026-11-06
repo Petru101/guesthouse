@@ -1,0 +1,8 @@
+#!/bin/sh
+# Stands in for sudo: it writes down what it was asked and runs nothing as root. The package managers
+# here are stand-ins too.
+printf 'sudo' >>"$STAND_IN_LOG"
+printf ' %s' "$@" >>"$STAND_IN_LOG"
+printf '\n' >>"$STAND_IN_LOG"
+[ -z "${SUDO_FAILS:-}" ] || exit 1
+exec "$@"
