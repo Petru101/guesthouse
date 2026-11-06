@@ -2,7 +2,7 @@
  * The messages between the display driver in the guest and the daemon on the host.
  *
  * They travel as the private data of D3DKMTEscape, so the daemon's reply lands in the same buffer. Everything is little endian
- * with no padding the compiler chose. notes/idd-escape-protocol.md has the same layout as a table for the daemon's side.
+ * with no padding the compiler chose. The daemon's side is crates/messages/src/indirect.rs.
  *
  * Who owns what: the daemon alone decides which slot is free. The driver only ever writes the slot the last reply named.
  */

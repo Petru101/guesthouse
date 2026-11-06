@@ -4,6 +4,7 @@ Everything in this repo is under GPL-2.0-or-later, apart from what's listed here
 
 - `crates/app-core/data/windows-zones.txt` comes from Unicode's CLDR, under the [Unicode License v3](https://www.unicode.org/license.txt).
 - The card names in `crates/app-core/src/setup/cards.rs` come from the PCI ID repository's `pci.ids`, under the 3-clause BSD licence.
+- `drivers/windows-display/` is a fork of [zako-vdd](https://github.com/qiin2333/zako-vdd), and the whole folder, my part included, is under the MIT licence in its own `LICENSE` file.
 - The tables and class numbers in the NVIDIA backend come from NVIDIA's open GPU kernel modules, under the MIT licence. Its notice is below.
 
 ## NVIDIA's open GPU kernel modules

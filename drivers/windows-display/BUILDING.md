@@ -48,7 +48,7 @@ This has only ever been done in a VM, and that's what it's for. I wouldn't run i
 
 ## Secure Boot
 
-You can leave it on. I installed this with Secure Boot on, and it loaded and showed the right picture on that boot and the next, with no test signing and no warnings in Windows' Code Integrity log. The driver runs in user mode, which is why this works. There's no kernel driver of ours for Secure Boot to refuse.
+You can leave it on. I installed this with Secure Boot on, and it loaded and showed the right picture on that boot and the next, with no test signing and no warnings in Windows' Code Integrity log. The driver runs in user mode, so there's no kernel driver of ours for Secure Boot to refuse.
 
 What I haven't tried:
 
