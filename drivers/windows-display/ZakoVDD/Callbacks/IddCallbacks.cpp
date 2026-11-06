@@ -7,6 +7,7 @@
 #include "..\Util\StringConversion.h"
 
 #include <algorithm>
+#include <cstring>
 #include <sstream>
 #include <string>
 #include <tuple>
@@ -351,6 +352,16 @@ _Use_decl_annotations_
 		// currently in HDR mode; CommitModes2 and per-frame surface color space
 		// are authoritative for that state.
 		pContext->pContext->UpdateMonitorHdrLuminanceMetadata(MonitorObject, maxNits, minNits, maxFALL);
+
+		// Frames can say "use the default", so the real values have to be kept. The luminance above is zako's own.
+		if (pInArgs && pInArgs->Type == IDDCX_HDRMETADATA_TYPE_HDR10 && pInArgs->Data.pHdr10 &&
+		    pInArgs->Size >= sizeof(IDDCX_HDR10_METADATA))
+		{
+			gh_hdr_metadata metadata;
+			static_assert(sizeof(metadata) == sizeof(IDDCX_HDR10_METADATA), "Both are IddCx's twelve USHORTs, in order");
+			std::memcpy(&metadata, pInArgs->Data.pHdr10, sizeof(metadata));
+			pContext->pContext->ColourOf(MonitorObject)->SetDefaultHdrMetadata(metadata);
+		}
 	}
 
 	VDD_LOG_DEBUG("Default HDR metadata set successfully.");
@@ -539,8 +550,42 @@ _Use_decl_annotations_
 		IDDCX_MONITOR MonitorObject,
 		const IDARG_IN_SET_GAMMARAMP *pInArgs)
 {
-	UNREFERENCED_PARAMETER(MonitorObject);
-	UNREFERENCED_PARAMETER(pInArgs);
+	auto *pContext = WdfObjectGet_IndirectDeviceContextWrapper(MonitorObject);
+	if (!pContext || !pContext->pContext || !pInArgs)
+	{
+		return STATUS_SUCCESS;
+	}
 
+	// Reporting FP16 means taking this type whatever gamma support the adapter claims, and it can come in SDR too.
+	Guesthouse::GammaTransform transform;
+	if (pInArgs->Type == IDDCX_GAMMARAMP_TYPE_3x4_COLORSPACE_TRANSFORM)
+	{
+		if (!pInArgs->pGammaRampData || pInArgs->GammaRampSizeInBytes < sizeof(IDDCX_GAMMARAMP_3X4_COLORSPACE_TRANSFORM))
+		{
+			return STATUS_INVALID_PARAMETER;
+		}
+		const auto *data = static_cast<const IDDCX_GAMMARAMP_3X4_COLORSPACE_TRANSFORM *>(pInArgs->pGammaRampData);
+		transform.matrixEnabled = data->MatrixEnabled != FALSE;
+		std::memcpy(transform.matrix, data->ColorMatrix3x4, sizeof(transform.matrix));
+		transform.scalar = data->ScalarMultiplier;
+		transform.lutEnabled = data->LutEnabled != FALSE;
+		if (transform.lutEnabled)
+		{
+			transform.lut.resize(Guesthouse::GammaLutEntries);
+			for (UINT entry = 0; entry < Guesthouse::GammaLutEntries; ++entry)
+			{
+				const IDDCX_RGB &rgb = data->LookupTable1D[entry];
+				transform.lut[entry] = {rgb.Red, rgb.Green, rgb.Blue, 0.0f};
+			}
+		}
+	}
+	else if (pInArgs->Type != IDDCX_GAMMARAMP_TYPE_DEFAULT)
+	{
+		// The adapter reports no gamma support, so the 256-entry kind shouldn't come.
+		VDD_LOG_WARNING_STREAM("[Guesthouse] Ignoring a gamma ramp of type " << static_cast<int>(pInArgs->Type));
+		return STATUS_SUCCESS;
+	}
+
+	pContext->pContext->ColourOf(MonitorObject)->SetTransform(std::move(transform));
 	return STATUS_SUCCESS;
 }
