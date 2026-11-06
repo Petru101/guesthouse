@@ -26,6 +26,7 @@ They're in `crates/`, listed here from the bottom up. Each depends only on crate
 | `messages` | What the guest's messages look like, and how to write the answers. No state, no decisions. |
 | `backend` | The `Backend` trait: what a GPU vendor must provide. Also the decision on whether to start. |
 | `backend-standin` | A pretend GPU, for tests only. |
+| `backend-nvidia` | The NVIDIA backend: the host's resource manager, channels, and what the guest's driver expects to hear. |
 | `core` | `Session`: the tables for one guest, and the answer to each message. Vendor-neutral. |
 | `frame-socket` | The four messages that bring frames to a viewer, on their own so a producer can use them as they are. |
 | `daemon` | Slots, shared memory, sockets, the viewer's socket, and the main loop. |
@@ -78,11 +79,13 @@ If you find yourself wanting to name a vendor in `core`, something belongs in a 
 
 AMD and Intel backends should be possible through this same trait. None exist yet, and there are no empty stubs for them. Only NVIDIA is planned so far, as one backend crate.
 
+`backend-nvidia` goes through `rm::Rm` for everything it asks of the host's driver. `rm/linux.rs` is the real one and `rm/fake.rs` plays its part in tests, so the whole crate can be tested with no card.
+
 ## Frames
 
 `FrameSink` in `core/src/frames/` is the boundary between what makes the guest's frames and what shows them. A sink hears of rings of buffers and the frames in them, and doesn't know how a frame came to be. Copies to the staging surface are the only producer so far, and the only sink is `ViewerPort` in `daemon/src/viewer.rs`, which serves `frames.sock` in the run folder.
 
-The staging surface lies in guest pages, so a viewer can't use it where it is. The daemon keeps its own ring of slots in video memory, exported with `Backend::export_memory`, and each screen frame gets a second copy, into the next free slot. The guest's image is read directly if it's the screen's size, and otherwise the staging surface is, because each slot needs the whole picture.
+The staging surface lies in guest pages, so a viewer can't use it where it is. The daemon keeps its own ring of slots in video memory, exported with `Backend::export_memory`, and each screen frame gets a second copy, into the next free slot. The guest's image is read directly if it's the screen's size, and otherwise the staging surface is, because each slot needs the whole picture. On NVIDIA an export goes through an RM file and a GEM object on the render node, in `rm/dmabuf.rs`.
 
 The rules:
 
@@ -103,7 +106,7 @@ Different cards and drivers differ in different ways, and those ways shouldn't g
 - **Generation.** A small profile of what an architecture changes: class numbers, channel types, shader version rules. Blackwell would come first, and Ada or Ampere should only need another profile.
 - **Driver branch.** A second profile, beside generations, of what a driver branch changes in its data layouts: control and allocation structure sizes on the host, and the layout of the guest's record.
 
-Generations and branches stay separate, so they never multiply into a matrix of every generation with every branch. `Backend::open` is where a backend picks one of each. Nothing in the trait is per-generation or per-branch, so all of this stays inside the backend.
+Generations and branches stay separate, so they never multiply into a matrix of every generation with every branch. `Backend::open` is where a backend picks one of each. Nothing in the trait is per-generation or per-branch, so all of this stays inside the backend. In `backend-nvidia` they're in `profile/`: `host.rs` for the host's branch, `guest.rs` for the guest's, and `generation.rs`.
 
 Cards are never listed in code as behaviour. Name, video memory, engines and copy engine details are read from the live card, and end up in `AdapterFacts`. The only per-card list a backend may keep is a label, `CardLabel::Tested` or `Experimental`, and that label changes nothing the daemon does.
 
@@ -145,6 +148,10 @@ The host's own clock in the clock answer is masked, since it can never repeat. M
 
 The host hands out addresses from `GPU_RANGES`, less anything a backend keeps clear with `Backend::kept_gpu_ranges`. A guest's reservation either takes the next hand-out or, if it names an address or a window the next one doesn't fit, is placed. Placed ranges are per process, so the same address can mean different memory in two processes, and every lookup by GPU address names its space. Hand-outs step over placed ranges in all processes.
 
+## Host sensors
+
+`backend-nvidia/src/sensors` reads the card through the vendor's management library, loaded at run time. One daemon per host does this, on its own thread, and writes a snapshot to a small shared file. The message path only reads that snapshot. With no library, or no fresh snapshot, the performance queries give their fixed answers.
+
 ## The app
 
 `app-core` needs no display, so nearly all of the app can be tested alone. Each machine is one JSON file. Anything slow runs as a task: `guesthouse-task` is a process of its own that outlives the app and leaves its steps in a small file, so the app can close at any moment and read where things are when it opens again.
@@ -159,8 +166,4 @@ The viewer only knows `FrameSource`, which has three kinds. `SocketFrames` takes
 
 ## Not here yet
 
-Left out for now, because they're still changing in the prototype:
-
-- the NVIDIA backend, and with it real submissions
-
-Also not ported: the arena (video memory the guest's CPU can reach), the experiment switches in the prototype's run folder, and turning 10-bit frames into 8-bit ones for an app's staging surface.
+Not ported yet: the arena (video memory the guest's CPU can reach), the experiment switches in the prototype's run folder, and turning 10-bit frames into 8-bit ones for an app's staging surface.

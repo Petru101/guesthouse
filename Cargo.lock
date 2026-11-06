@@ -605,6 +605,7 @@ name = "guesthouse-daemon"
 version = "0.1.0"
 dependencies = [
  "guesthouse-backend",
+ "guesthouse-backend-nvidia",
  "guesthouse-backend-standin",
  "guesthouse-core",
  "guesthouse-frame-socket",
@@ -612,6 +613,7 @@ dependencies = [
  "guesthouse-transport",
  "libc",
  "log",
+ "serde_json",
 ]
 
 [[package]]

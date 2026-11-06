@@ -1,6 +1,7 @@
 //! `guesthouse-daemon [PROJECT_FOLDER]`: serves one VM, named by `GUESTHOUSE_SLOT`.
 //!
-//! No GPU backend exists yet, so a normal build can only say so. The `stand-in` feature answers
+//! The real backend is behind the `nvidia` feature, and a build with no backend can only say so. The
+//! `stand-in` feature answers
 //! messages with nothing behind them, to try the sockets by hand.
 
 use guesthouse_daemon::logger;
@@ -29,12 +30,56 @@ fn main() -> ExitCode {
     }
 }
 
-#[cfg(not(feature = "stand-in"))]
+#[cfg(not(any(feature = "stand-in", feature = "nvidia")))]
 fn serve(_slot: Slot, _project: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
-    Err("This build has no GPU backend yet, so it cannot run a guest.".into())
+    Err("This build has no GPU backend in it, so it cannot run a guest.".into())
 }
 
-#[cfg(feature = "stand-in")]
+/// Starts the real backend and serves. This opens the host's GPU.
+#[cfg(feature = "nvidia")]
+fn serve(slot: Slot, project: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+    use guesthouse_backend::Backend;
+    use guesthouse_backend_nvidia::NvidiaBackend;
+    use guesthouse_backend_nvidia::rm::linux::LinuxRm;
+    use guesthouse_core::{Config, MemoryLimits, Session};
+    use guesthouse_daemon::environment::{guest_ram, video_cap};
+    use guesthouse_daemon::guest_memory::LazySharedMemory;
+    use guesthouse_daemon::router::Router;
+    use guesthouse_daemon::server::Server;
+    use guesthouse_daemon::setup::read_setup;
+    use guesthouse_daemon::startup::start_backend;
+
+    let setup = read_setup()?;
+    let mut backend: NvidiaBackend<LinuxRm> = start_backend(&setup)?;
+    if let Some(micros) = timeslice(env::var("GUESTHOUSE_TIMESLICE_US").ok().as_deref()) {
+        backend.set_graphics_timeslice(micros);
+    }
+    let (ram, cap) = (env::var("GUESTHOUSE_RAM").ok(), env::var("GUESTHOUSE_VRAM").ok());
+    let limits = MemoryLimits::new(backend.facts(), video_cap(cap.as_deref()), guest_ram(ram.as_deref()));
+    let run_folder = slot.run_folder(&project);
+    let config = Config::new(limits);
+    let memory = LazySharedMemory::new(slot.shared_file("iomem"), slot.shared_file("ram"));
+    let mut session = Session::new(backend, memory, config);
+    session.timings_mut().set_enabled(env::var_os("GUESTHOUSE_TIMING").is_some());
+    if env::var_os("GUESTHOUSE_HELD_COPIES").is_some() {
+        session.set_copy_order(guesthouse_core::CopyOrder::Held);
+    }
+    Server::bind(&run_folder, Router::new(session))?.run()?;
+    Ok(())
+}
+
+/// A timeslice in microseconds, if the setting is there and makes sense.
+#[cfg(feature = "nvidia")]
+fn timeslice(text: Option<&str>) -> Option<u64> {
+    let text = text?;
+    let micros = text.parse().ok();
+    if micros.is_none() {
+        log::warn!("GUESTHOUSE_TIMESLICE_US is {text}, which isn't a number of microseconds");
+    }
+    micros
+}
+
+#[cfg(all(feature = "stand-in", not(feature = "nvidia")))]
 fn serve(slot: Slot, project: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     use guesthouse_backend::Backend;
     use guesthouse_backend_standin::{SparseMemory, StandIn};
