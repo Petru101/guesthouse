@@ -57,8 +57,8 @@
 		-->
 	</colour>
 	<cursor>
-		<HardwareCursor>false</HardwareCursor>
-		<!--Guesthouse: off until the viewer draws the cursor, which is what makes a hardware cursor worth having. It goes to the viewer by the frame socket. With this off DWM draws it into the frame, at the right SDR white level.-->
+		<HardwareCursor>true</HardwareCursor>
+		<!--Guesthouse: the viewer draws it, from the frame socket, so it moves with no frame at all. With no viewer asking for it, the frame pass draws it into the frame.-->
 		<!--Whether to display a hardware cursor in the buffer (If disabled streaming apps will use client cursor)-->
 		<CursorMaxY>128</CursorMaxY>
 		<!--The maximum height support for all cursor types. Older intel cpus may be limited to 64x64 -->
