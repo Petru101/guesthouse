@@ -5,8 +5,8 @@ use adw::prelude::*;
 use guesthouse_app_core::linux::seed::password_file;
 use guesthouse_app_core::machine::Kind;
 
-const NOTE: &str = "This is a preview. It hasn't been proven on a real run yet. If it can't start, or with it off, \
-                    Ubuntu boots with a plain screen and says why.";
+const NOTE: &str = "This is a preview, and it has only run on my PC. If it can't start, or with it off, Ubuntu boots \
+                    with a plain screen and says why.";
 
 pub struct GpuPreview;
 
