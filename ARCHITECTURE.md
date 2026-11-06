@@ -36,7 +36,19 @@ To follow one message, start at `Server::read_channel` in `daemon`, go through `
 
 Everything happens on one thread. That's why the message path has no locks, and why both channels share a single order of events. Things that have to wait for a fence go in a list, and the main loop calls `Session::poll` while that list has anything in it.
 
-The cost is that a slow backend call holds up both channels. Backend calls on the message path must not block.
+The cost is that a slow backend call holds up both channels, so backend calls on the message path must not block. The one exception is moving an allocation's contents on its first lock, which spins on the copy engine for a moment, and which nothing else can get ahead of.
+
+### Holding a reply
+
+The thread must never wait, because one guest thread waiting is no reason to stop the others. So a handler that can't answer yet returns `Answer::Held`, and keeps the `ReplyTicket` it was given. The reply goes out later through `Session::take_replies`, and the guest thread that sent the message stays blocked on it, which is the whole point: it can't get ahead. Every other message goes on being served.
+
+Three things use this. A submission to a queue that's too far behind holds its reply until the ring has room. A copy to the staging surface becomes a job that waits for its frame, runs, and then replies. And a message that frees or moves a surface in use by such a job is parked, whole, and run again from the start when the jobs are done. A thread instead of a list would have needed locks on every table, and a wait on the message thread stalls every other guest thread behind it.
+
+### Waiting for fences
+
+Nothing tells the host when a fence moves, so it has to look. `Session::poll` says how urgently: `Urgent` if the guest is blocked on something, `Background` if only the GPU's health is being watched, and `Nothing` otherwise. The main loop spins for a short while when urgent, then sleeps in very short steps. Those limits are named at the top of `daemon/src/server.rs`, and they're guesses until a real run measures them.
+
+`GUESTHOUSE_TIMING=1` turns on timing points at each stage of a submission, and the daemon logs them every ten seconds: from arrival to the backend, in the backend, to the doorbell, to the reply, and from the doorbell until a fence is seen to move.
 
 The tests hold this path to a standard: `core/tests/no_allocation.rs` fails if a steady flow of submissions and signals touches the allocator, and `cargo bench -p guesthouse-core` gives the time per message. Those numbers cover parsing, bookkeeping and building the reply, and not the socket, QEMU or the guest. `daemon/examples/round_trip.rs` times a round trip through the socket against any running daemon.
 
@@ -51,6 +63,10 @@ A vendor backend implements `Backend` and depends on the `backend` crate. It nev
 If you find yourself wanting to name a vendor in `core`, something belongs in a backend instead.
 
 AMD and Intel backends should be possible through this same trait. None exist yet, and there are no empty stubs for them. Only NVIDIA is planned so far, as one backend crate.
+
+## Frames
+
+`FrameSink` in `core/src/frames.rs` is the boundary between what makes the guest's frames and what shows them. A sink hears of rings of buffers and the frames in them, and doesn't know how a frame came to be. Copies to the staging surface are the only producer so far, and the only sink is a small file for today's viewer. `Backend::export_memory` is there for a frame path that stays in video memory, and nothing uses it yet. This part is expected to change.
 
 ## Three layers inside a backend
 
@@ -103,7 +119,7 @@ The host's own clock in the clock answer is masked, since it can never repeat. M
 Left out for now, because they're still changing in the prototype:
 
 - the NVIDIA backend, and with it real submissions
-- the frame path to the viewer
+- the frame path to the viewer, beyond the small file
 - the app
 
-Also not ported: the arena (video memory the guest's CPU can reach), the experiment switches in the prototype's run folder, and copies to the screen running off the message thread.
+Also not ported: the arena (video memory the guest's CPU can reach), the experiment switches in the prototype's run folder, and turning 10-bit frames into 8-bit ones for an app's staging surface.
