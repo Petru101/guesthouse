@@ -140,16 +140,21 @@ impl MachineRow {
     fn subtitle(&self, status: &Status, blocked: bool, second: bool) -> String {
         let machine = self.machine.borrow();
         let state = status.state.name();
-        let mut lines = vec![if status.step.is_empty() {
+        let mut lines = vec![if !status.step.is_empty() {
+            format!("{state}: {}", status.step)
+        } else if status.screen.is_empty() {
             format!("{state}. {}", machine.summary())
         } else {
-            format!("{state}: {}", status.step)
+            format!("{state}. {}", machine.summary_showing(&status.screen))
         }];
         if machine.installing && status.state == State::Off {
             lines[0] = "The install did not finish. Start Over runs it again from the beginning.".to_owned();
         }
         if !status.error.is_empty() {
             lines.push(status.error.clone());
+        }
+        if !status.display_problem.is_empty() {
+            lines.push(status.display_problem.clone());
         }
         if blocked {
             lines.push(no_slot_text(&self.window.context()));
