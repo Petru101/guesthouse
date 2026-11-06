@@ -40,6 +40,7 @@ pub mod tasks;
 #[doc(hidden)]
 pub mod testing;
 pub mod text;
+pub mod update_check;
 pub mod usb;
 pub mod vm_args;
 pub mod vm_host;

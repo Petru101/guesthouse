@@ -25,6 +25,7 @@ use guesthouse_app_core::machine::{Machine, load_all};
 use guesthouse_app_core::settings::{Fields, read_prefs, write_prefs};
 use guesthouse_app_core::setup::setup_done;
 use guesthouse_app_core::tasks::launch;
+use guesthouse_app_core::update_check::newer_release;
 use guesthouse_daemon::slot::Slot;
 use library_page::LibraryPage;
 use refresh::RefreshState;
@@ -294,6 +295,23 @@ impl Window {
     }
 
     /// Setup is all about the GPU, so with no GPU support there's nothing it could finish.
+    /// Asked once as the app opens. This is the only thing it does on the network by itself.
+    pub fn say_if_there_is_an_update(&self) {
+        let context = self.0.context.clone();
+        let asking = context.clone();
+        let this = self.clone();
+        in_background(
+            &context,
+            move || Ok(newer_release(&asking)),
+            move |found| {
+                if let Ok(Some(version)) = found {
+                    let text = format!("Guesthouse {version} is out. Run install.sh --update to get it.");
+                    this.toast(&text, adw::ToastPriority::Normal);
+                }
+            },
+        );
+    }
+
     pub fn show_setup(&self) {
         if gpu_ready(&self.0.context) {
             wizard::show(self);
