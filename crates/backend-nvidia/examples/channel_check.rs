@@ -1,0 +1,63 @@
+//! `channel_check VERSION`: makes one graphics and one copy channel on the real card, has each release
+//! a semaphore into host memory, and frees them. Nothing from any guest is involved.
+
+use guesthouse_backend_nvidia::channel::{AREA_SIZE, Channel, ChannelPlace, Engine};
+use guesthouse_backend_nvidia::profile::{BLACKWELL, HOST_615};
+use guesthouse_backend_nvidia::pushbuffer::{increasing, ring_entry};
+use guesthouse_backend_nvidia::rm::device::{AddressSpace, Device};
+use guesthouse_backend_nvidia::rm::linux::LinuxRm;
+use std::env;
+use std::time::{Duration, Instant};
+
+const RANGE: (u64, u64) = (0x400_0000, 0x1_0000_0000);
+const RING_ENTRIES: u32 = 1024;
+const PUSH: usize = 0x12000;
+const RESULT: usize = 0x14000;
+const SEMAPHORE_ADDRESS_LOW: u32 = 0x5C;
+const SEMAPHORE_RELEASE_32: u32 = 1;
+const VALUE: u32 = 0xCAFE_1234;
+const WAIT: Duration = Duration::from_secs(3);
+
+fn run(device: &mut Device<LinuxRm>, space: &AddressSpace, area_address: u64, engine: Engine) -> bool {
+    let place = ChannelPlace {
+        ring_address: area_address,
+        ring_entries: RING_ENTRIES,
+        area_address,
+        area_size: AREA_SIZE,
+    };
+    let channel = Channel::new(device, &BLACKWELL, &HOST_615, space, place, engine).unwrap();
+    println!("{engine:?}: token {:#x}", channel.token());
+    let target = area_address + RESULT as u64;
+    let words = [
+        increasing(0, SEMAPHORE_ADDRESS_LOW, 5),
+        target as u32,
+        (target >> 32) as u32,
+        VALUE,
+        0,
+        SEMAPHORE_RELEASE_32,
+    ];
+    let area = channel.area();
+    area.store_words(PUSH, &words);
+    area.store_u64(0, channel.prelude_entry());
+    area.store_u64(8, ring_entry(area_address + PUSH as u64, words.len() as u32));
+    channel.advance(device, 2);
+    let started = Instant::now();
+    while area.load(RESULT) != VALUE && started.elapsed() < WAIT {
+        std::hint::spin_loop();
+    }
+    let done = area.load(RESULT) == VALUE;
+    println!("{engine:?}: {} after {:?}", if done { "released" } else { "NOT RELEASED" }, started.elapsed());
+    channel.close(device, space).unwrap();
+    done
+}
+
+fn main() {
+    let version = env::args().nth(1).expect("usage: channel_check VERSION");
+    let rm = LinuxRm::open(&version, &HOST_615).unwrap();
+    let mut device = Device::open(rm, &HOST_615).unwrap();
+    let space = device.create_address_space(&[RANGE]).unwrap();
+    let graphics = run(&mut device, &space, 0x800_0000, Engine::Graphics);
+    let copy = run(&mut device, &space, 0x900_0000, Engine::Copy);
+    device.destroy_address_space(&space).unwrap();
+    std::process::exit(if graphics && copy { 0 } else { 1 });
+}

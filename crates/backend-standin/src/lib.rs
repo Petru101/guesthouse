@@ -161,6 +161,7 @@ impl Backend for StandIn {
             host: found("1.0".into(), &setup.guest_branch),
             guest: found(setup.guest_driver_version.to_string(), &setup.guest_branch),
             host_branch_known: true,
+            guest_branch_known: true,
             host_version_tested: true,
             mixed_branches_tested: false,
             card: CardLabel::Tested,

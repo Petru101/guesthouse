@@ -10,12 +10,12 @@ fn gibibytes(text: &str) -> Option<u64> {
     all_digits.then(|| digits.parse::<u64>().ok()).flatten()?.checked_mul(1 << 30)
 }
 
-/// The guest's RAM, from the `RAM` variable.
+/// The guest's RAM, from `GUESTHOUSE_RAM`.
 pub fn guest_ram(value: Option<&str>) -> u64 {
     value.and_then(gibibytes).unwrap_or(DEFAULT_GUEST_RAM_GIB << 30)
 }
 
-/// The most video memory the guest may have, from the `VRAM` variable. Zero and unset mean no cap.
+/// The most video memory the guest may have, from `GUESTHOUSE_VRAM`. Zero and unset mean no cap.
 pub fn video_cap(value: Option<&str>) -> Option<u64> {
     value.and_then(gibibytes).filter(|&bytes| bytes != 0)
 }

@@ -40,7 +40,7 @@ Recordings hold guest data. They never go in git. Keep them in `/captures/`, whi
 - Comments say why. If a comment says what the next line does, delete it.
 - The message path shouldn't allocate or lock. Measure first, though: `core/tests/no_allocation.rs` and the benchmark will tell you, and a clever change needs a number behind it.
 - Dependencies are few, and each one has a comment saying why it's there.
-- `unsafe` lives in `daemon` where the operating system needs it, with a `SAFETY` comment on each block. The one exception is `viewer/import.rs` in `app`, as GTK's call for a texture on a dmabuf is `unsafe`.
+- `unsafe` lives in `daemon` and in the parts of `backend-nvidia` that talk to the kernel or to memory the GPU reads, with a `SAFETY` comment on each block. The one exception is `viewer/import.rs` in `app`, as GTK's call for a texture on a dmabuf is `unsafe`.
 
 ## Keeping the layers apart
 
@@ -54,7 +54,7 @@ The prototype is the reference, bugs included, until the replay tool has proved 
 
 Each handler has tests in `core/src/session/tests.rs`, which send whole messages through a `Session` with the stand-in backend. Name a test after what must be true, like `fences_only_go_up`.
 
-`core/tests/handler_fuzz.rs` sends random messages and fails on any panic. `FUZZ_ROUNDS=20000000 FUZZ_SEED=7 cargo test --release -p guesthouse-core --test handler_fuzz` runs one for longer.
+`core/tests/handler_fuzz.rs`, and the same in `backend-nvidia/tests/boot.rs` on the fake RM, send random messages and fail on any panic. `FUZZ_ROUNDS=20000000 FUZZ_SEED=7 cargo test --release -p guesthouse-core --test handler_fuzz` runs one for longer.
 
 ## Commits
 

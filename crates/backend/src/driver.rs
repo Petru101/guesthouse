@@ -84,6 +84,8 @@ pub struct DriverSurvey {
     pub guest: DriverFound,
     /// The backend has a profile for the host's branch.
     pub host_branch_known: bool,
+    /// The backend has a profile for the guest's branch.
+    pub guest_branch_known: bool,
     /// This exact host version has been tested.
     pub host_version_tested: bool,
     /// This pair of different host and guest branches has been tested.
@@ -120,6 +122,12 @@ pub fn decide_start(survey: &DriverSurvey) -> StartDecision {
             host.version, host.branch
         ));
     }
+    if !survey.guest_branch_known {
+        return StartDecision::Refuse(format!(
+            "The guest driver {} is on branch {}, which this build has no profile for.",
+            guest.version, guest.branch
+        ));
+    }
     if host.branch != guest.branch && !survey.mixed_branches_tested {
         return StartDecision::Refuse(format!(
             "The host driver is on branch {} and the guest driver on branch {}. They must match \
@@ -147,10 +155,18 @@ mod tests {
             host: found("100.20", "100"),
             guest: found("32.0.15.1020", "100"),
             host_branch_known: true,
+            guest_branch_known: true,
             host_version_tested: true,
             mixed_branches_tested: false,
             card: CardLabel::Tested,
         }
+    }
+
+    #[test]
+    fn a_guest_branch_with_no_profile_is_the_guests_problem_and_says_so() {
+        let survey = DriverSurvey { guest_branch_known: false, ..survey() };
+        let StartDecision::Refuse(reason) = decide_start(&survey) else { panic!("it should refuse") };
+        assert!(reason.starts_with("The guest driver 32.0.15.1020 is on branch 100"), "{reason}");
     }
 
     #[test]

@@ -1,0 +1,394 @@
+//! The NVIDIA backend.
+//!
+//! This talks to the host's kernel module through the [`rm::Rm`] layer, runs the guest's commands on
+//! real channels, and answers what the guest's drivers ask of their own kernel driver.
+//!
+//! Three things vary, and each has its own place. The [`profile`] module holds a generation's classes
+//! and a driver branch's layouts, and cards themselves are read live. See `ARCHITECTURE.md`.
+
+pub mod answers;
+pub mod channel;
+pub mod escape;
+#[cfg(any(test, feature = "fake-rm"))]
+pub mod fake_guest;
+pub mod inf;
+pub mod private_data;
+pub mod profile;
+pub mod pushbuffer;
+pub mod queue;
+pub mod record;
+mod ring_position;
+pub mod rm;
+pub mod sensors;
+pub mod staging;
+pub mod startup;
+
+use answers::adapter::{AdapterAnswers, Inputs};
+use answers::nodes::node_list;
+use answers::perf_data;
+use answers::registry::AdapterRegistry;
+use guesthouse_backend::{
+    AdapterFacts, AllocationShape, Backend, BackendError, DriverSurvey, GpuRange, HostServices, MapRequest,
+    MemoryId, PciCard, Refusal, RegistryName, RegistryValue, Setup, SlotCopy, SpaceId, StagingCopy,
+    StagingStart, Status, UnmapRequest, VendorQuery, Work, WorkStart,
+};
+use inf::{INF_NAME, Inf};
+use profile::{
+    Generation, GuestBranch, HostBranch, generation_for, guest_branch, guest_channel_classes, host_branch,
+};
+use queue::LiveQueue;
+use record::{CardReader, HostFacts, build, read_host_facts};
+use ring_position::GuestRing;
+use rm::device::{AddressSpace, Device};
+use rm::linux::LinuxRm;
+use rm::{Handle, Rm, RmError};
+use sensors::SnapshotReader;
+use staging::Copier;
+use std::collections::HashMap;
+use std::fs;
+use std::os::fd::OwnedFd;
+use std::time::Instant;
+
+pub(crate) const CHANNEL_ADDRESS_ALIGN: u64 = 64 << 10;
+
+const NVIDIA_VENDOR: u16 = 0x10DE;
+
+/// How many entries a queue may have unfinished before its next submission waits. This is our own
+/// measured number: a long benchmark finished at this limit, and failed at 6,144 and with no limit.
+const UNFINISHED_ENTRIES_LIMIT: u64 = 4000;
+
+/// What the guest's runtime says a Vulkan context is for.
+const CLIENT_HINT_VULKAN: u32 = 4;
+
+const RECORD_QUEUE_TOKEN: usize = 0x40;
+const RECORD_QUEUE_HEAP: usize = 0x5C;
+const QUEUE_HEAP_SIZE: u64 = 1 << 32;
+
+pub(crate) fn memory_error(error: RmError) -> BackendError {
+    BackendError::new(error.to_string())
+}
+
+fn handle_of(memory: MemoryId) -> Handle {
+    memory.0 as Handle
+}
+
+/// How an RM comes to be, which tests don't use.
+pub trait OpenRm: Rm + Sized {
+    fn open_rm(version: &str, sizes: &'static HostBranch) -> Result<Self, RmError>;
+}
+
+impl OpenRm for LinuxRm {
+    fn open_rm(version: &str, sizes: &'static HostBranch) -> Result<Self, RmError> {
+        Self::open(version, sizes)
+    }
+}
+
+#[cfg(any(test, feature = "fake-rm"))]
+impl OpenRm for rm::fake::FakeRm {
+    fn open_rm(_version: &str, _sizes: &'static HostBranch) -> Result<Self, RmError> {
+        Err(RmError::System("a fake RM is built by hand".to_owned()))
+    }
+}
+
+/// See the crate documentation.
+pub struct NvidiaBackend<R> {
+    pub(crate) device: Device<R>,
+    pub(crate) generation: &'static Generation,
+    pub(crate) host_branch: &'static HostBranch,
+    guest: &'static GuestBranch,
+    /// The class behind each handle the guest's driver uses.
+    channel_classes: Vec<(u32, u32)>,
+    facts: AdapterFacts,
+    answers: AdapterAnswers,
+    pub(crate) spaces: HashMap<SpaceId, AddressSpace>,
+    next_space: u64,
+    pub(crate) queues: HashMap<u32, LiveQueue>,
+    pub(crate) copier: Option<Copier>,
+    /// Rings named in queues' private data, by queue.
+    pub(crate) guest_rings: HashMap<u32, GuestRing>,
+    /// The host's live readings, if it has any.
+    sensors: Option<Box<dyn SnapshotReader>>,
+    card_uuid: [u8; 16],
+}
+
+impl<R: Rm> NvidiaBackend<R> {
+    /// How long a graphics channel group may hold the GPU, for channels made from now on. 0 leaves
+    /// the RM's own choice.
+    pub fn set_graphics_timeslice(&mut self, micros: u64) {
+        self.device.graphics_timeslice_micros = micros;
+    }
+
+    /// Reads the card and works out everything the guest will be told. Nothing here changes the card.
+    pub fn start(
+        mut device: Device<R>,
+        host_branch: &'static HostBranch,
+        guest: &'static GuestBranch,
+        setup: &Setup,
+        host: &HostFacts,
+        inf_bytes: &[u8],
+    ) -> Result<Self, Refusal> {
+        let failed = |error: RmError| Refusal(format!("Reading the card failed: {error}"));
+        let mut card = CardReader::new(&mut device);
+        let architecture = card.read(record::ARCHITECTURE, &[]).map_err(failed)?;
+        let architecture = u32::from_le_bytes(architecture[..4].try_into().expect("four bytes"));
+        let generation = generation_for(architecture).ok_or_else(|| {
+            Refusal(format!("This build has no profile for GPU architecture {architecture:#x}."))
+        })?;
+        let engines = card.engines().map_err(failed)?;
+        let graphics_copy = card.graphics_copy().map_err(failed)?;
+        let nodes = node_list(&engines, graphics_copy);
+        let record = build(&guest.record, generation, &mut card, host, &nodes)?;
+        let node_count = nodes.len() as u32;
+
+        let name = card.text(record::NAME, 4).map_err(failed)?;
+        let pci = card.read(record::PCI_INFO, &[]).map_err(failed)?;
+        let word = |at: usize| u32::from_le_bytes(pci[at..at + 4].try_into().expect("four bytes"));
+        let found =
+            PciCard { vendor: word(0) as u16, device: (word(0) >> 16) as u16, revision: word(8) as u8 };
+        if let Some(card) = setup.card.filter(|card| card.device != found.device) {
+            return Err(Refusal(format!(
+                "Setup chose card {:04x} but the first NVIDIA device is {:04x}. Only the first NVIDIA GPU can \
+                 be used for now.",
+                card.device, found.device
+            )));
+        }
+        let pci_card = setup.card.unwrap_or(found);
+
+        let inf = Inf::parse(inf_bytes);
+        let registry = AdapterRegistry::from_inf(&inf, &pci_card)?;
+        let layout = &guest.record;
+        let dedicated = record[layout.dedicated..layout.dedicated + 8].try_into().expect("eight bytes");
+        let guid_seed: String =
+            record[layout.uuid..layout.uuid + 16].iter().map(|byte| format!("{byte:02x}")).collect();
+        let clock = |at: usize| {
+            let bytes = record[at..at + 4].try_into().expect("four bytes");
+            u64::from(u32::from_le_bytes(bytes)) * 1000
+        };
+        let (graphics_hertz, memory_hertz) = (clock(layout.rated_clocks), clock(layout.rated_clocks + 4));
+        let card_uuid = record[layout.uuid..layout.uuid + 16].try_into().expect("sixteen bytes");
+        let inputs = Inputs { guid_seed, graphics_hertz, memory_hertz, nodes, registry, record };
+        Ok(Self {
+            device,
+            generation,
+            host_branch,
+            guest,
+            channel_classes: guest_channel_classes(guest, generation),
+            facts: AdapterFacts {
+                card: pci_card,
+                name,
+                video_memory: u64::from_le_bytes(dedicated),
+                node_count,
+                guest_driver_version: setup.guest_driver_version.packed(),
+            },
+            answers: AdapterAnswers::new(inputs, layout),
+            spaces: HashMap::new(),
+            next_space: 1,
+            queues: HashMap::new(),
+            copier: None,
+            guest_rings: HashMap::new(),
+            sensors: None,
+            card_uuid,
+        })
+    }
+
+    /// Where live readings come from. Nothing is read from the card unless this is called.
+    pub fn set_sensors(&mut self, sensors: Box<dyn SnapshotReader>) {
+        self.sensors = Some(sensors);
+    }
+
+    pub fn answers(&self) -> &AdapterAnswers {
+        &self.answers
+    }
+
+    pub fn device(&self) -> &Device<R> {
+        &self.device
+    }
+
+    pub fn device_mut(&mut self) -> &mut Device<R> {
+        &mut self.device
+    }
+
+    fn space(spaces: &HashMap<SpaceId, AddressSpace>, space: SpaceId) -> Result<&AddressSpace, BackendError> {
+        spaces.get(&space).ok_or_else(|| BackendError::new("this address space is closed"))
+    }
+}
+
+impl<R: Rm + OpenRm> Backend for NvidiaBackend<R> {
+    fn supports(card: &PciCard) -> bool {
+        card.vendor == NVIDIA_VENDOR
+    }
+
+    fn survey(setup: &Setup) -> Result<DriverSurvey, Refusal> {
+        startup::survey(setup)
+    }
+
+    fn open(setup: &Setup, survey: &DriverSurvey) -> Result<Self, Refusal> {
+        let no_profile = || Refusal("The start decision passed a branch with no profile.".to_owned());
+        let host_profile = host_branch(&survey.host.branch).ok_or_else(no_profile)?;
+        let guest_profile = guest_branch(&setup.guest_branch).ok_or_else(no_profile)?;
+        let inf_path = setup.driver_folder.join(INF_NAME);
+        let inf = fs::read(&inf_path).map_err(|error| Refusal(format!("{}: {error}", inf_path.display())))?;
+        let host = read_host_facts().map_err(Refusal)?;
+        let opened = |error: RmError| Refusal(format!("Opening the card failed: {error}"));
+        let rm = R::open_rm(&survey.host.version, host_profile).map_err(opened)?;
+        let device = Device::open(rm, host_profile).map_err(opened)?;
+        let mut backend = Self::start(device, host_profile, guest_profile, setup, &host, &inf)?;
+        // Readings are a bonus, so a failure here only means going without.
+        match sensors::start(&backend.card_uuid) {
+            Ok(snapshot) => backend.set_sensors(Box::new(snapshot)),
+            Err(error) => log::info!("no host sensors: {error}"),
+        }
+        Ok(backend)
+    }
+
+    fn facts(&self) -> &AdapterFacts {
+        &self.facts
+    }
+
+    fn allocate_video_memory(&mut self, size: u64) -> Result<(MemoryId, u64), BackendError> {
+        let (handle, given) = self.device.alloc_video_memory(size).map_err(memory_error)?;
+        Ok((MemoryId(u64::from(handle)), given))
+    }
+
+    fn adopt_host_pages(&mut self, host_address: u64, size: u64) -> Result<MemoryId, BackendError> {
+        let handle = self.device.alloc_host_pages(host_address, size).map_err(memory_error)?;
+        Ok(MemoryId(u64::from(handle)))
+    }
+
+    fn release_memory(&mut self, memory: MemoryId) {
+        if let Err(error) = self.device.free(handle_of(memory)) {
+            log::warn!("freeing memory: {error}");
+        }
+    }
+
+    fn preserve_contents(
+        &mut self,
+        host: &mut dyn HostServices,
+        own_space: SpaceId,
+        from: MemoryId,
+        to: MemoryId,
+        size: u64,
+    ) -> Result<(), BackendError> {
+        self.move_contents(host, own_space, handle_of(from), handle_of(to), size)
+    }
+
+    fn create_address_space(&mut self, ranges: &[GpuRange]) -> Result<SpaceId, BackendError> {
+        let pairs: Vec<(u64, u64)> = ranges.iter().map(|range| (range.start, range.end)).collect();
+        let space = self.device.create_address_space(&pairs).map_err(memory_error)?;
+        let id = SpaceId(self.next_space);
+        self.next_space += 1;
+        self.spaces.insert(id, space);
+        Ok(id)
+    }
+
+    fn destroy_address_space(&mut self, space: SpaceId) {
+        if let Some(space) = self.spaces.remove(&space)
+            && let Err(error) = self.device.destroy_address_space(&space)
+        {
+            log::warn!("closing an address space: {error}");
+        }
+    }
+
+    fn map(&mut self, request: &MapRequest) -> Result<(), BackendError> {
+        let space = Self::space(&self.spaces, request.space)?;
+        let map = rm::device::Mapping {
+            memory: handle_of(request.memory),
+            offset: request.offset,
+            length: request.length,
+            address: request.address,
+            small_pages: request.small_pages,
+            gpu_cached: request.gpu_cached,
+        };
+        self.device.map(space, &map).map_err(memory_error)
+    }
+
+    fn unmap(&mut self, unmap: &UnmapRequest) -> Result<(), BackendError> {
+        let space = Self::space(&self.spaces, unmap.space)?;
+        self.device.unmap(space, handle_of(unmap.memory), unmap.address, unmap.length).map_err(memory_error)
+    }
+
+    fn describe_allocation(&mut self, private: &[u8]) -> AllocationShape {
+        private_data::shape(&self.guest.allocation, private)
+    }
+
+    fn finish_allocation_data(&mut self, private: &mut [u8], size: u64) {
+        private_data::finish(&self.guest.allocation, private, size);
+    }
+
+    /// Each queue gets a number of its own, which can't be zero, and the guest needs a heap size.
+    fn finish_queue_data(&mut self, queue: u32, private: &mut [u8], serial: u32) -> Result<(), BackendError> {
+        let too_short = || BackendError::new("a queue's private data is too short");
+        if let Some(ring) = GuestRing::of_queue(private) {
+            self.guest_rings.insert(queue, ring);
+        }
+        let token = serial.wrapping_add(1).max(1);
+        let field = private.get_mut(RECORD_QUEUE_TOKEN..RECORD_QUEUE_TOKEN + 4).ok_or_else(too_short)?;
+        field.copy_from_slice(&token.to_le_bytes());
+        let field = private.get_mut(RECORD_QUEUE_HEAP..RECORD_QUEUE_HEAP + 8).ok_or_else(too_short)?;
+        field.copy_from_slice(&QUEUE_HEAP_SIZE.to_le_bytes());
+        Ok(())
+    }
+
+    fn kept_gpu_ranges(&self) -> &'static [GpuRange] {
+        &[escape::RUNTIME_GPU_RANGE]
+    }
+
+    fn escape(&mut self, data: &mut [u8]) {
+        if let Err(error) = escape::answer(&mut self.device, &self.channel_classes, data) {
+            log::warn!("an escape failed: {error}");
+        }
+    }
+
+    fn adapter_answer(&mut self, query: &VendorQuery<'_>, out: &mut Vec<u8>) -> Option<Status> {
+        let live = self.sensors.as_ref().and_then(|sensors| sensors.latest());
+        live.and_then(|live| perf_data::answer(query, &live, out)).or_else(|| self.answers.answer(query, out))
+    }
+
+    fn registry_value(&mut self, name: &RegistryName) -> Option<RegistryValue> {
+        self.answers.registry().lookup(name)
+    }
+
+    fn gpu_clock(&mut self) -> Result<u64, BackendError> {
+        self.device.gpu_time().map_err(memory_error)
+    }
+
+    fn export_memory(&mut self, memory: MemoryId, size: u64) -> Result<OwnedFd, BackendError> {
+        self.device.export_dmabuf(handle_of(memory), size).map_err(memory_error)
+    }
+
+    /// Vulkan is let through on video nodes: its video queue families can also transfer, it uses
+    /// them for plain copies, and its driver crashes if the context is refused. It has no family on
+    /// the other engines without a channel, so there the hint changes nothing.
+    fn context_allowed(&mut self, node: u32, client_hint: u32) -> bool {
+        let vulkan_copies = client_hint == CLIENT_HINT_VULKAN && self.answers.node_is_video(node);
+        self.answers.node_has_channel(node) || vulkan_copies
+    }
+
+    fn unfinished_work_limit(&self) -> Option<u64> {
+        Some(UNFINISHED_ENTRIES_LIMIT)
+    }
+
+    fn start_work(&mut self, host: &mut dyn HostServices, work: &Work<'_>) -> WorkStart {
+        self.start_work_on_gpu(host, work)
+    }
+
+    fn ring_doorbell(&mut self, queue: u32, doorbell: u64) {
+        self.ring(queue, doorbell);
+    }
+
+    fn close_queue(&mut self, queue: u32) {
+        self.close(queue);
+    }
+
+    fn start_staging_copy(&mut self, host: &mut dyn HostServices, copy: &StagingCopy) -> StagingStart {
+        self.start_copy(host, copy)
+    }
+
+    fn poll_staging_copy(&mut self, host: &mut dyn HostServices, now: Instant) -> Option<Status> {
+        self.poll_copy(host, now)
+    }
+
+    fn start_slot_copy(&mut self, host: &mut dyn HostServices, copy: &SlotCopy) -> StagingStart {
+        self.start_frame_copy(host, copy)
+    }
+}
