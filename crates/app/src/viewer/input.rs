@@ -53,6 +53,10 @@ impl Screen {
         scroll.set_propagation_phase(phase);
         let this = self.clone();
         scroll.connect_scroll(move |_, _, dy| {
+            if let Some(input) = this.0.forwarded.borrow_mut().as_mut() {
+                input.scroll(dy as i32);
+                return glib::Propagation::Stop;
+            }
             if let Some(guest) = this.0.guest.borrow_mut().as_mut() {
                 let name = if dy > 0.0 { "wheel-down" } else { "wheel-up" };
                 guest.button(name, true);
@@ -67,6 +71,10 @@ impl Screen {
         if self.0.captured.get() {
             return;
         }
+        if let Some(input) = self.0.forwarded.borrow_mut().as_mut() {
+            input.move_to(self.in_frame(x, self.frame_width()), self.in_frame(y, self.frame_height()));
+            return;
+        }
         let picture = &self.0.picture;
         let scaled = |value: f64, size: i32| (value * TABLET_RANGE as f64 / f64::from(size.max(1))) as i64;
         let position = (scaled(x, picture.width()), scaled(y, picture.height()));
@@ -77,6 +85,21 @@ impl Screen {
             self.0.pointer.set(Some(position));
             guest.move_to(position.0, position.1);
         }
+    }
+
+    fn frame_width(&self) -> (i32, i32) {
+        let size = self.0.latest.borrow().as_ref().map_or(0, |texture| texture.width());
+        (size, self.0.picture.width())
+    }
+
+    fn frame_height(&self) -> (i32, i32) {
+        let size = self.0.latest.borrow().as_ref().map_or(0, |texture| texture.height());
+        (size, self.0.picture.height())
+    }
+
+    /// From the widget's pixels to the guest's frame's, which an Ubuntu guest's session wants.
+    fn in_frame(&self, value: f64, (frame, widget): (i32, i32)) -> f64 {
+        value * f64::from(frame) / f64::from(widget.max(1))
     }
 
     pub(super) fn on_button(&self, gesture: &gtk::GestureClick, x: f64, y: f64, down: bool) {
@@ -90,6 +113,10 @@ impl Screen {
     }
 
     pub(super) fn press(&self, name: &'static str, down: bool) {
+        if let Some(input) = self.0.forwarded.borrow_mut().as_mut() {
+            input.button(name, down);
+            return;
+        }
         if let Some(guest) = self.0.guest.borrow_mut().as_mut() {
             guest.button(name, down);
             let mut held = self.0.buttons_down.borrow_mut();
@@ -103,6 +130,10 @@ impl Screen {
 
     pub(super) fn on_key(&self, keycode: u32, down: bool) {
         let code = keycode.saturating_sub(X11_KEY_OFFSET);
+        if let Some(input) = self.0.forwarded.borrow_mut().as_mut() {
+            input.key(code, down);
+            return;
+        }
         let mut held = self.0.keys_down.borrow_mut();
         if let Some(guest) = self.0.guest.borrow_mut().as_mut()
             && (down || held.contains(&code))

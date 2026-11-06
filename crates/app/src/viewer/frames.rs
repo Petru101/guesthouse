@@ -2,8 +2,32 @@
 
 use gtk::gdk;
 use gtk::prelude::*;
+use guesthouse_app_core::machine::Machine;
 
 const BYTES_PER_PIXEL: usize = 4;
+
+/// Where a machine's own frames come from, besides QEMU's display.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FrameRoute {
+    /// Only QEMU's display: firmware, an install, or a machine with no GPU.
+    QemuDisplay,
+    /// The frame socket, for a guest on GPU-PV.
+    FrameSocket,
+    /// The nvfwd device, for an Ubuntu guest on the GPU.
+    Forwarded,
+}
+
+impl FrameRoute {
+    pub fn of(machine: &Machine) -> Self {
+        if machine.has_gpu() {
+            Self::FrameSocket
+        } else if machine.wants_forwarded_gpu() {
+            Self::Forwarded
+        } else {
+            Self::QemuDisplay
+        }
+    }
+}
 
 pub trait FrameSource {
     /// A new texture of the newest frame, if there's a new one. A still screen has none to give. It's

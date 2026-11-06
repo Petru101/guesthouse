@@ -5,6 +5,7 @@ mod clipboard;
 mod dbus_frames;
 mod display_attach;
 mod display_surface;
+mod forwarded_frames;
 mod frames;
 mod import;
 mod input;
@@ -19,6 +20,7 @@ use crate::common::in_background;
 use crate::window::{MachineHandle, Window};
 use adw::prelude::*;
 use clipboard::SharedClipboard;
+use frames::FrameRoute;
 use gtk::glib;
 use guesthouse_app_core::library::save_thumbnail;
 use guesthouse_app_core::log::write_log;
@@ -113,11 +115,11 @@ impl ScreenPage {
                 ScreenPage(parts).on_capture_changed();
             }
         };
-        let (gpu_frames, overlay) = {
+        let (route, overlay) = {
             let machine = self.0.machine.borrow();
-            (machine.has_gpu(), machine.overlay)
+            (FrameRoute::of(&machine), machine.overlay)
         };
-        let screen = Screen::new(self.run_folder(), gpu_frames, overlay, on_capture);
+        let screen = Screen::new(self.run_folder(), route, overlay, on_capture);
         self.0.toolbar.set_content(Some(screen.widget()));
         *self.0.screen.borrow_mut() = Some(screen);
     }
@@ -345,7 +347,7 @@ impl ScreenPage {
     pub fn show_hint(&self, status: Option<&Status>) {
         let Some(screen) = self.screen() else { return };
         if status.is_some() {
-            screen.follow_machine(self.run_folder(), self.0.machine.borrow().has_gpu());
+            screen.follow_machine(self.run_folder(), FrameRoute::of(&self.0.machine.borrow()));
         }
         let hint = match status {
             Some(status) if status.state == State::Installing => status.step.clone(),

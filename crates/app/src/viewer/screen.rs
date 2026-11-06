@@ -3,14 +3,16 @@
 //! Frames come from a [`FrameSource`], with a new texture for each one.
 
 use super::dbus_frames::DbusFrames;
-use super::frames::{FrameSource, thumbnail};
+use super::forwarded_frames::ForwardedFrames;
+use super::frames::{FrameRoute, FrameSource, thumbnail};
 use super::overlay::PerformanceOverlay;
 use super::pointer_lock::{PointerLock, pointer_lock};
 use super::socket_frames::SocketFrames;
 use adw::prelude::*;
 use gtk::{gdk, glib};
+use guesthouse_app_core::forwarded_input::ForwardedInput;
 use guesthouse_app_core::input::{Guest, INPUT_SOCKET, MOUSE, TABLET};
-use guesthouse_app_core::vm_args::DISPLAY_SOCKET;
+use guesthouse_app_core::vm_args::{DISPLAY_SOCKET, FORWARDED_INPUT_SOCKET};
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -35,7 +37,9 @@ pub(super) struct Inner {
     pub(super) run_folder: RefCell<PathBuf>,
     /// The guest's frames from the GPU, when it has any.
     pub(super) gpu: RefCell<Option<Box<dyn FrameSource>>>,
-    pub(super) gpu_frames: Cell<bool>,
+    pub(super) route: Cell<FrameRoute>,
+    /// An Ubuntu guest's keyboard and pointer, once it's showing its own frames.
+    pub(super) forwarded: RefCell<Option<ForwardedInput>>,
     /// QEMU's display, for whatever has no GPU frames to show.
     pub(super) qemu: RefCell<Option<Box<dyn FrameSource>>>,
     /// A GPU guest has no frames of its own until its driver is up, and again after a reset.
@@ -66,7 +70,7 @@ pub struct Screen(pub(super) Rc<Inner>);
 impl Screen {
     pub fn new(
         run_folder: PathBuf,
-        gpu_frames: bool,
+        route: FrameRoute,
         show_overlay: bool,
         capture_changed: impl Fn() + 'static,
     ) -> Self {
@@ -100,7 +104,8 @@ impl Screen {
             gpu: RefCell::default(),
             qemu: RefCell::default(),
             booting: Cell::new(true),
-            gpu_frames: Cell::new(gpu_frames),
+            route: Cell::new(route),
+            forwarded: RefCell::default(),
             input_socket: RefCell::new(run_folder.join(INPUT_SOCKET)),
             run_folder: RefCell::new(run_folder),
             guest: RefCell::default(),
@@ -152,9 +157,9 @@ impl Screen {
 
     /// Follows the machine to another slot, or to its GPU, as an install does when it ends in its first
     /// boot.
-    pub fn follow_machine(&self, run_folder: PathBuf, gpu_frames: bool) {
+    pub fn follow_machine(&self, run_folder: PathBuf, route: FrameRoute) {
         let socket = run_folder.join(INPUT_SOCKET);
-        if self.0.gpu_frames.replace(gpu_frames) != gpu_frames || *self.0.input_socket.borrow() != socket {
+        if self.0.route.replace(route) != route || *self.0.input_socket.borrow() != socket {
             *self.0.run_folder.borrow_mut() = run_folder;
             self.0.gpu.borrow_mut().take();
             self.0.qemu.borrow_mut().take();
@@ -275,11 +280,32 @@ impl Screen {
         if gpu.as_ref().is_some_and(|source| !source.alive()) {
             *gpu = None;
         }
-        if gpu.is_none() && self.0.gpu_frames.get() {
-            let display = WidgetExt::display(&self.0.root);
-            let connected =
-                SocketFrames::connect(&self.0.run_folder.borrow(), &display, self.monitor_refresh());
-            *gpu = connected.ok().map(|source| Box::new(source) as Box<dyn FrameSource>);
+        if gpu.is_none() {
+            let (folder, display) = (self.0.run_folder.borrow(), WidgetExt::display(&self.0.root));
+            *gpu = match self.0.route.get() {
+                FrameRoute::QemuDisplay => None,
+                FrameRoute::FrameSocket => SocketFrames::connect(&folder, &display, self.monitor_refresh())
+                    .ok()
+                    .map(|source| Box::new(source) as Box<dyn FrameSource>),
+                FrameRoute::Forwarded => ForwardedFrames::connect(&folder, &display)
+                    .ok()
+                    .map(|source| Box::new(source) as Box<dyn FrameSource>),
+            };
+        }
+    }
+
+    /// An Ubuntu guest's session takes its input down its own port.
+    fn follow_forwarded(&self) {
+        let mut forwarded = self.0.forwarded.borrow_mut();
+        if forwarded.as_ref().is_some_and(|input| !input.alive()) {
+            *forwarded = None;
+        }
+        let wanted = self.0.route.get() == FrameRoute::Forwarded && !self.0.booting.get();
+        if !wanted {
+            *forwarded = None;
+        } else if forwarded.is_none() {
+            let socket = self.0.run_folder.borrow().join(FORWARDED_INPUT_SOCKET);
+            *forwarded = ForwardedInput::connect(&socket).ok();
         }
     }
 
@@ -289,7 +315,7 @@ impl Screen {
         if qemu.as_ref().is_some_and(|source| !source.alive()) {
             *qemu = None;
         }
-        let wanted = self.0.booting.get() || !self.0.gpu_frames.get();
+        let wanted = self.0.booting.get() || self.0.route.get() == FrameRoute::QemuDisplay;
         if qemu.is_none() && wanted {
             let monitor = self.0.run_folder.borrow().join(DISPLAY_SOCKET);
             if monitor.exists() {
@@ -317,6 +343,7 @@ impl Screen {
         drop(guest);
         self.follow_gpu();
         self.follow_qemu();
+        self.follow_forwarded();
     }
 
     fn close_guest(&self) {
