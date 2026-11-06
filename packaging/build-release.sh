@@ -6,6 +6,7 @@
 #
 # The stages run in this order, and with none named all of them do:
 #   qemu      QEMU, its firmware blobs, and the libraries it needs from the build system
+#   bundled   guesthouse-VERSION-bundled-source.tar, the source of those libraries and blobs
 #   app       the app, the daemon and their helpers
 #   payload   guesthouse-VERSION-x86_64.tar.xz
 #   source    guesthouse-VERSION-source.tar.xz, and SHA256SUMS
@@ -18,6 +19,10 @@ set -eu
 QEMU_TAG=v11.1.3
 QEMU_COMMIT=005c61c0ef6f6ae615283440b4bb7be51b2c6ddd
 QEMU_UPSTREAM=${QEMU_UPSTREAM:-https://gitlab.com/qemu-project/qemu.git}
+# QEMU's own release of that tag. Its firmware blobs are the ones in the tree, and unlike a clone it has
+# the source of each in roms/, which a clone leaves empty.
+QEMU_RELEASE_URL=https://download.qemu.org/qemu-${QEMU_TAG#v}.tar.xz
+QEMU_RELEASE_SHA256=5a8289c7940dc77d3873c81a6c29ba3afe1446fc9d36e77fa1658cdbecb84b22
 APP_ID=io.github.xnixy.Guesthouse
 ARCH=x86_64
 
@@ -88,11 +93,12 @@ build_qemu() {
     ninja -C "$OUT/qemu-build" $targets
 }
 
-# Which package a library came from, as whoever receives a copy can ask for its source.
+# Which package a library came from, and the source package that was built from.
 library_package() {
     if command -v dpkg-query >/dev/null 2>&1; then
         package=$(dpkg-query -S "$(readlink -f "$1")" 2>/dev/null | head -n 1 | cut -d : -f 1)
-        [ -z "$package" ] || dpkg-query -W -f '${Package} ${Version}' "$package"
+        [ -z "$package" ] ||
+            dpkg-query -W -f '${Package} ${Version} source ${source:Package} ${source:Version}' "$package"
     elif command -v rpm >/dev/null 2>&1; then
         rpm -qf "$1"
     fi
@@ -105,7 +111,13 @@ bundle_libraries() {
     folder=$2
     list=$OUT/stage/LIBRARIES.txt
     mkdir -p "$folder"
-    : >"$list"
+    cat >"$list" <<'EOF'
+# The libraries in qemu/build/lib, and the firmware in qemu/pc-bios, aren't mine, and come with their
+# licences. Each release has an asset called guesthouse-VERSION-bundled-source.tar with the exact
+# source of all of them. Its SOURCES.txt says what's where.
+#
+# Library, package, its version, and the source package it was built from:
+EOF
     ldd "$program" | awk '$2 == "=>" && $3 ~ /^\// { print $1, $3 }' | while read -r name path; do
         if printf '%s\n' "$name" | grep -Eq "$HOST_LIBRARIES"; then
             continue
@@ -130,6 +142,63 @@ stage_qemu() {
     cp -R "$QEMU_TREE/pc-bios/." "$OUT/stage/qemu/pc-bios/"
     cp -RL "$OUT/qemu-build/pc-bios/." "$OUT/stage/qemu/pc-bios/"
     say "QEMU is in $target"
+}
+
+# The exact versions the bundled libraries were built from, with Ubuntu's patches and packaging. An
+# archive stops listing an old version soon after a new one, and then a newer image is the answer.
+fetch_library_sources() {
+    awk '$3 != "" && $4 == "source" { print $5 "=" $6 }' "$OUT/stage/LIBRARIES.txt" | sort -u |
+        while read -r wanted; do
+            (cd "$1" && apt-get source -q --download-only --only-source "$wanted") ||
+                die "the archive has no $wanted any more. Remove the qemu image and build again."
+            name=${wanted%%=*}
+            version=${wanted#*=}
+            [ -f "$1/${name}_${version#*:}.dsc" ] || die "$wanted didn't arrive."
+        done
+}
+
+fetch_firmware_source() {
+    curl -fsSL -o "$1/qemu-${QEMU_TAG#v}.tar.xz" "$QEMU_RELEASE_URL"
+    [ "$(sha256sum "$1/qemu-${QEMU_TAG#v}.tar.xz" | cut -d ' ' -f 1)" = "$QEMU_RELEASE_SHA256" ] ||
+        die "$QEMU_RELEASE_URL isn't the file it should be."
+}
+
+write_sources_note() {
+    cat <<EOF
+The source of everything in a Guesthouse release that isn't mine and isn't in its source bundle.
+
+libraries/  Ubuntu 24.04's source packages for the libraries in qemu/build/lib, at the exact versions
+            they were built from: each .dsc with its original source and Ubuntu's changes. debian/rules
+            in each is how it was built. To unpack one: dpkg-source -x NAME_VERSION.dsc
+
+firmware/   QEMU's own release of $QEMU_TAG, unmodified. Its pc-bios/ holds the firmware in qemu/pc-bios,
+            and roms/ the source of it, with the recipes in roms/Makefile.
+
+recipes/    How the libraries' image and QEMU itself were set up here.
+
+Which library came from which source package:
+
+EOF
+    grep -v '^#' "$OUT/stage/LIBRARIES.txt"
+}
+
+# Separate from the source bundle, as it's large and building Guesthouse doesn't need it. It's a plain
+# tar, as all it holds is packed already.
+stage_bundled() {
+    command -v apt-get >/dev/null 2>&1 || die "this stage runs in the image from Containerfile.qemu."
+    [ -f "$OUT/stage/LIBRARIES.txt" ] || die "the qemu stage comes first."
+    name=guesthouse-$(release_version)-bundled-source
+    bundle=$OUT/bundled-source
+    [ ! -d "$bundle" ] || rm -rf "${bundle:?}"
+    mkdir -p "$bundle/libraries" "$bundle/firmware" "$bundle/recipes"
+    fetch_library_sources "$bundle/libraries"
+    fetch_firmware_source "$bundle/firmware"
+    cp "$REPO/packaging/Containerfile.qemu" "$REPO/packaging/qemu-configure-flags" \
+        "$REPO/packaging/build-release.sh" "$bundle/recipes/"
+    write_sources_note >"$bundle/SOURCES.txt"
+    tar -C "$bundle" --transform "s,^\.,$name," --owner=0 --group=0 --sort=name -cf "$OUT/$name.tar" .
+    rm -rf "${bundle:?}"
+    say "the bundled source is $OUT/$name.tar"
 }
 
 # The real backend goes in if the tree has one, and otherwise the daemon says it has none.
@@ -214,16 +283,20 @@ stage_source() {
     tar -C "$(qemu_tree)" --exclude=.git -cf - . | tar -C "$bundle/qemu-source" -xf -
     tar -C "$bundle" --transform "s,^\.,$name," --owner=0 --group=0 --sort=name -cJf "$OUT/$name.tar.xz" .
     rm -rf "${bundle:?}"
-    (cd "$OUT" && sha256sum "guesthouse-$version-$ARCH.tar.xz" "$name.tar.xz" >SHA256SUMS)
+    bundled=guesthouse-$version-bundled-source.tar
+    [ -f "$OUT/$bundled" ] || bundled=""
+    # shellcheck disable=SC2086 # empty, or one name with no spaces
+    (cd "$OUT" && sha256sum "guesthouse-$version-$ARCH.tar.xz" "$name.tar.xz" $bundled >SHA256SUMS)
     say "the source is $OUT/$name.tar.xz"
     say "for RELEASE_VERSION, PAYLOAD_SHA256 and SOURCE_SHA256 in install.sh:"
     say "$version"
-    cut -d ' ' -f 1 "$OUT/SHA256SUMS"
+    head -n 2 "$OUT/SHA256SUMS" | cut -d ' ' -f 1
 }
 
 run_stage() {
     case $1 in
         qemu) stage_qemu ;;
+        bundled) stage_bundled ;;
         app) stage_app ;;
         payload) stage_payload ;;
         source) stage_source ;;

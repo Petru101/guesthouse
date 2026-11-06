@@ -1,8 +1,9 @@
 # Where QEMU and the libraries that go with it are built. They need the glibc of the system they're
-# built on, so this stays the oldest system a release runs on: Ubuntu 24.04, with 2.39.
+# built on, so this stays the oldest system a release runs on: Ubuntu 24.04, with 2.39. The package
+# lists stay, with source packages in them, as a release carries the source of what it bundles.
 FROM docker.io/library/ubuntu:24.04
-RUN apt-get update \
+RUN sed -i 's/^Types: deb$/Types: deb deb-src/' /etc/apt/sources.list.d/ubuntu.sources \
+    && apt-get update \
     && apt-get install -y --no-install-recommends gcc g++ make ninja-build python3 python3-venv git \
-      ca-certificates bzip2 xz-utils pkg-config flex bison libglib2.0-dev libpixman-1-dev zlib1g-dev \
-      libfdt-dev libslirp-dev libpipewire-0.3-dev libusb-1.0-0-dev \
-    && rm -rf /var/lib/apt/lists
+      ca-certificates curl dpkg-dev bzip2 xz-utils pkg-config flex bison libglib2.0-dev \
+      libpixman-1-dev zlib1g-dev libfdt-dev libslirp-dev libpipewire-0.3-dev libusb-1.0-0-dev
