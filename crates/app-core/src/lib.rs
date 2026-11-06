@@ -38,6 +38,7 @@ pub mod share;
 pub mod slots;
 pub mod snapshots;
 pub mod start_checks;
+pub mod stopped;
 pub mod tasks;
 #[doc(hidden)]
 pub mod testing;
