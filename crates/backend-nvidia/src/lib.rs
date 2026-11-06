@@ -19,6 +19,7 @@ pub mod private_data;
 pub mod profile;
 pub mod pushbuffer;
 pub mod record;
+mod ring_position;
 pub mod rm;
 pub mod sensors;
 pub mod staging;
@@ -38,6 +39,7 @@ use profile::{
     Generation, GuestBranch, HostBranch, generation_for, guest_branch, guest_channel_classes, host_branch,
 };
 use record::{CardReader, HostFacts, build, read_host_facts};
+use ring_position::GuestRing;
 use rm::device::{AddressSpace, Device};
 use rm::linux::LinuxRm;
 use rm::{Handle, Rm, RmError};
@@ -102,6 +104,8 @@ pub struct NvidiaBackend<R> {
     pub(crate) spaces: HashMap<SpaceId, AddressSpace>,
     next_space: u64,
     pub(crate) copier: Option<Copier>,
+    /// Rings named in queues' private data, by queue.
+    pub(crate) guest_rings: HashMap<u32, GuestRing>,
     /// The host's live readings, if it has any.
     sensors: Option<Box<dyn SnapshotReader>>,
     card_uuid: [u8; 16],
@@ -180,6 +184,7 @@ impl<R: Rm> NvidiaBackend<R> {
             spaces: HashMap::new(),
             next_space: 1,
             copier: None,
+            guest_rings: HashMap::new(),
             sensors: None,
             card_uuid,
         })
