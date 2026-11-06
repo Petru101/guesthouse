@@ -3,6 +3,7 @@
 //! One thread does everything. That is what keeps the message path free of locks, and it gives the
 //! session one order for the messages of both channels.
 
+use crate::gpu_note::write_note;
 use crate::router::{Channel, FrameSink, Router};
 use crate::viewer::ViewerPort;
 use guesthouse_backend::{Backend, GuestMemory};
@@ -13,7 +14,7 @@ use std::io::{self, ErrorKind, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::ptr;
 use std::time::{Duration, Instant};
 
@@ -84,6 +85,9 @@ pub struct Server<B, M> {
     /// When the last channel closed, if they're all closed.
     all_closed_since: Option<Instant>,
     qemu_gone_after: Duration,
+    run_folder: PathBuf,
+    /// What the app has been told about the guest's GPU work.
+    said_stopped: bool,
 }
 
 impl<B: Backend, M: GuestMemory> Server<B, M> {
@@ -102,6 +106,7 @@ impl<B: Backend, M: GuestMemory> Server<B, M> {
             ports.push(Port { channel, listener, connection: None });
         }
         let viewers = ViewerPort::bind(run_folder)?;
+        write_note(run_folder, false)?;
         Ok(Self {
             router,
             ports,
@@ -112,6 +117,8 @@ impl<B: Backend, M: GuestMemory> Server<B, M> {
             qemu_seen: false,
             all_closed_since: None,
             qemu_gone_after: QEMU_GONE_AFTER,
+            run_folder: run_folder.to_owned(),
+            said_stopped: false,
         })
     }
 
@@ -229,7 +236,19 @@ impl<B: Backend, M: GuestMemory> Server<B, M> {
         let mut sink = Connections { ports: &mut self.ports, scratch: &mut self.scratch };
         self.waiting = self.router.poll(Instant::now(), &mut sink)?;
         self.router.session_mut().offer_frames(&mut self.viewers);
+        self.keep_the_app_told();
         Ok(())
+    }
+
+    /// A note that can't be written costs the user the reason, and nothing else.
+    fn keep_the_app_told(&mut self) {
+        let stopped = self.router.session().gpu_work_stopped();
+        if stopped != self.said_stopped {
+            self.said_stopped = stopped;
+            if let Err(error) = write_note(&self.run_folder, stopped) {
+                log::warn!("writing the GPU note for the app: {error}");
+            }
+        }
     }
 
     /// Reads and handles what a channel has. A channel that fails closes, and QEMU can connect again.

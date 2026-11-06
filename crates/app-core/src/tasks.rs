@@ -9,6 +9,7 @@ use crate::machine::Machine;
 use crate::processes::{leftovers, memory_taken, running_slots, uses_disk};
 use crate::settings::write_json;
 use crate::slots;
+use guesthouse_daemon::gpu_note::read_note;
 use guesthouse_daemon::slot::{SLOTS, Slot};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -135,8 +136,20 @@ pub fn free_slot(context: &Context) -> Option<Slot> {
     slots::all().find(is_free)
 }
 
-/// Looks at what is really running, so a VM started some other way counts like any other.
+/// What is going on with a machine, and if its GPU has stopped, that comes first.
 pub fn status(context: &Context, machine: &Machine) -> Status {
+    let mut found = what_is_running(context, machine);
+    let folder = found.slot.map(|number| context.run_folder(Some(slots::number(number))));
+    if found.state == State::Running
+        && let Some(note) = folder.and_then(|folder| read_note(&folder))
+    {
+        found.error = note;
+    }
+    found
+}
+
+/// Looks at what is really running, so a VM started some other way counts like any other.
+fn what_is_running(context: &Context, machine: &Machine) -> Status {
     let running = running_slots(context);
     let slot = running.iter().find(|(_, pid)| uses_disk(context, **pid, machine)).map(|(number, _)| *number);
     let state = if slot.is_some() { State::Running } else { State::Off };
@@ -209,6 +222,7 @@ mod tests {
     use super::*;
     use crate::processes::stand_in::fake_process;
     use crate::testing::{Scratch, scratch_context};
+    use guesthouse_daemon::gpu_note::write_note;
 
     fn machine() -> Machine {
         Machine::new("sample", "Sample", "/d", "/v")
@@ -222,6 +236,36 @@ mod tests {
             step: "x".into(),
             error: error.into(),
         }
+    }
+
+    fn running_vm(context: &Context, vm: &Machine) {
+        let qemu = context.paths.qemu.display().to_string();
+        let monitor = format!("unix:{}/qmp.sock,server=on", context.run_folder(None).display());
+        let disk = format!("file={},format=qcow2", vm.disk);
+        fake_process(context, 40, &[&qemu, "-qmp", &monitor, &disk], &[], "");
+    }
+
+    #[test]
+    fn a_vm_whose_gpu_has_stopped_says_so_on_its_row() {
+        let scratch = Scratch::new();
+        let context = scratch_context(&scratch);
+        context.make_run_folder(None).unwrap();
+        let vm = machine();
+        running_vm(&context, &vm);
+        assert_eq!(status(&context, &vm).error, "");
+        write_note(&context.run_folder(None), true).unwrap();
+        let found = status(&context, &vm);
+        assert_eq!(found.state, State::Running);
+        assert!(found.error.contains("GPU has stopped"), "{found:?}");
+    }
+
+    #[test]
+    fn a_note_left_by_a_vm_that_has_gone_is_not_shown() {
+        let scratch = Scratch::new();
+        let context = scratch_context(&scratch);
+        context.make_run_folder(None).unwrap();
+        write_note(&context.run_folder(None), true).unwrap();
+        assert_eq!(status(&context, &machine()).error, "");
     }
 
     #[test]

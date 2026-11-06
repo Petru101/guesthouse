@@ -56,6 +56,15 @@ Nothing tells the host when a fence moves, so it has to look. `Session::poll` sa
 
 The tests hold this path to a standard: `core/tests/no_allocation.rs` fails if a steady flow of submissions and signals touches the allocator, and `cargo bench -p guesthouse-core` gives the time per message. Those numbers cover parsing, bookkeeping and building the reply, and not the socket, QEMU or the guest. `daemon/examples/round_trip.rs` times a round trip through the socket against any running daemon.
 
+## When a process fails
+
+The GPU can stop answering a process, and nothing tells the host, so a queue that passes `QUEUE_TIMEOUT` counts as failed. The guest can't be left waiting, so its fences go up anyway. That would make a program think work ran that didn't, and that's the part to get right.
+
+- A submission that can't run fails. The host has no message for telling the guest a device is lost, but the guest's driver takes a failed submission that way, so the program hears it as it would on real Windows.
+- A second failed queue takes the whole process off the GPU: its channels close, then its fences go up. Other processes carry on.
+- A process that faults counts once, however many queues it had. `FaultRate` in `core/src/fault_rate.rs` keeps the last minute of these. Too many in that time stop all of the guest's GPU work until it restarts, as a guest can start new processes for as long as it likes and each fault can stall the whole card. It's a rate because a lifetime count would catch any VM that runs for long enough.
+- When that happens the daemon logs it and leaves a note in the run folder, and the app shows the note on the machine's row.
+
 ## What a message can ask for
 
 A handler answers everything, and nothing a message says may stop the daemon. So a size the host makes room for goes through `declared_size` or `declared_count` in `messages/src/wire.rs`, shared memory access returns `MemoryError` and never panics, and address arithmetic is checked. Release builds keep overflow checks on, as a stop is better than a wrong sum. The limits are the ones a real guest can't reach:
