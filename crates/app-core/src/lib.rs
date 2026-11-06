@@ -28,6 +28,7 @@ pub mod paths;
 pub mod processes;
 pub mod random;
 pub mod settings;
+pub mod setup;
 pub mod share;
 pub mod slots;
 pub mod snapshots;
