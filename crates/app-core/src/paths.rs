@@ -25,6 +25,8 @@ const INSTALLED_PROGRAM: &str = "/usr/libexec/guesthouse";
 const USER_PROGRAM: &str = ".local/lib/guesthouse/current";
 /// What the program folder holds besides the binaries, which tells it from any other folder.
 const PROGRAM_MARK: &str = "guest";
+/// What tells the repo's guest folder from any other folder of that name.
+const REPO_GUEST_MARK: &str = "setup.ps1";
 const SHARED_MEMORY: &str = "/dev/shm";
 const QEMU_PROGRAM: &str = "qemu/build/qemu-system-x86_64";
 const SYSTEM_QEMU: &str = "qemu-system-x86_64";
@@ -71,6 +73,8 @@ pub struct Paths {
     pub state: PathBuf,
     /// The folder that holds each slot's run folder, and what the daemon is given as its base.
     pub runtime: PathBuf,
+    /// The files that go into a Windows guest. See [`guest_folder`].
+    guest: PathBuf,
     /// The program folder: QEMU and the guest's files. It isn't in this repo, and the app runs plain
     /// VMs without it.
     pub program: PathBuf,
@@ -131,6 +135,7 @@ impl Paths {
             .map_or_else(|| state.join("runtime"), |folder| folder.join(APP_FOLDER));
         let program = program_folder(variables, running_from);
         Self {
+            guest: guest_folder(&program, running_from),
             qemu: variables.folder(QEMU_VARIABLE).unwrap_or_else(|| qemu_program(variables, &program)),
             binaries: running_from.map_or_else(|| program.clone(), Path::to_owned),
             store,
@@ -185,9 +190,15 @@ impl Paths {
         self.config.join("app.json")
     }
 
-    /// The files that go into a Windows guest, from the program folder.
+    /// The files that go into a Windows guest.
     pub fn guest_files(&self) -> PathBuf {
-        self.program.join("guest")
+        self.guest.clone()
+    }
+
+    /// Whether the program folder brought the guest's files, rather than a build of the repo. A
+    /// program folder comes with the rest of what a GPU needs, and the repo doesn't.
+    pub fn guest_files_in_program(&self) -> bool {
+        self.guest == self.program.join(PROGRAM_MARK) && self.guest.is_dir()
     }
 
     /// A file in the program folder.
@@ -220,6 +231,18 @@ fn qemu_program(variables: &Variables, program: &Path) -> PathBuf {
     let path = variables.get("PATH").unwrap_or_default();
     let system = env::split_paths(&path).map(|folder| folder.join(SYSTEM_QEMU)).find(|file| file.exists());
     system.unwrap_or(own)
+}
+
+/// The program folder's guest files, or else the repo's if this is a build of it, which is found by
+/// going up from the running program.
+fn guest_folder(program: &Path, running_from: Option<&Path>) -> PathBuf {
+    let own = program.join(PROGRAM_MARK);
+    if own.is_dir() {
+        return own;
+    }
+    let is_repo = |folder: &&Path| folder.join(PROGRAM_MARK).join(REPO_GUEST_MARK).is_file();
+    let repo = running_from.and_then(|start| start.ancestors().find(is_repo));
+    repo.map_or(own, |folder| folder.join(PROGRAM_MARK))
 }
 
 fn program_folder(variables: &Variables, running_from: Option<&Path>) -> PathBuf {
@@ -298,6 +321,29 @@ mod tests {
     fn the_variable_beats_the_pointer() {
         let variables = Variables::of(&[("HOME", "/h"), ("GUESTHOUSE_STORE", "/s")]);
         assert_eq!(Paths::new(&variables, None).store, Path::new("/s"));
+    }
+
+    #[test]
+    fn a_build_of_the_repo_finds_its_guest_files() {
+        let scratch = Scratch::new();
+        let release = scratch.path("repo/target/release");
+        fs::create_dir_all(&release).unwrap();
+        scratch.write("repo/guest/setup.ps1", "set up");
+        let variables = Variables::of(&[("HOME", "/h")]);
+        let paths = Paths::new(&variables, Some(&release));
+        assert_eq!(paths.guest_files(), scratch.path("repo/guest"));
+        assert!(!paths.guest_files_in_program());
+    }
+
+    #[test]
+    fn the_program_folder_wins_over_the_repo() {
+        let scratch = Scratch::new();
+        let release = scratch.path("repo/target/release");
+        fs::create_dir_all(release.join("guest")).unwrap();
+        scratch.write("repo/guest/setup.ps1", "set up");
+        let paths = Paths::new(&Variables::of(&[("HOME", "/h")]), Some(&release));
+        assert_eq!(paths.guest_files(), release.join("guest"));
+        assert!(paths.guest_files_in_program());
     }
 
     #[test]

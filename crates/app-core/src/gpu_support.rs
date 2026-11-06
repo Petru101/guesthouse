@@ -1,10 +1,14 @@
 //! What this install can do with the GPU. The app runs without the program folder, and then plain VMs
-//! are what it has. A daemon alone says nothing, as every build of this repo makes one.
+//! are what it has. A daemon alone says nothing, as every build of this repo makes one, and neither
+//! do the guest's files, which the repo has too. So a build of the repo also needs a QEMU with the patch.
 
 use crate::context::Context;
 use crate::linux::layout::SEED_FOLDER;
 use crate::linux::{guest_sources, sensor_daemon};
 use crate::machine::Kind;
+use std::path::Path;
+use std::process::Command;
+use std::sync::OnceLock;
 
 /// Said wherever a GPU machine would have been offered.
 pub const NO_GPU_YET: &str = "GPU machines aren't available yet. The part that talks to the card isn't public, so this build runs plain VMs.";
@@ -16,9 +20,23 @@ const UBUNTU_WITH_GPU: &str =
     "Installs by itself. Its GPU is a preview, and if the GPU can't start it boots with a plain screen.";
 const UBUNTU_WITHOUT_GPU: &str =
     "Installs by itself, and boots with a plain screen. This QEMU has no GPU device for it.";
+/// What only the patched QEMU has.
+const PATCHED_QEMU_DEVICE: &str = "gpupv-render";
 
 pub fn gpu_ready(context: &Context) -> bool {
-    context.paths.guest_files().is_dir()
+    let paths = &context.paths;
+    paths.guest_files().is_dir() && (paths.guest_files_in_program() || qemu_is_patched(&paths.qemu))
+}
+
+/// QEMU's answer doesn't change while the app runs, and this is asked often.
+fn qemu_is_patched(qemu: &Path) -> bool {
+    static ANSWER: OnceLock<bool> = OnceLock::new();
+    *ANSWER.get_or_init(|| qemu_lists_our_device(qemu))
+}
+
+fn qemu_lists_our_device(qemu: &Path) -> bool {
+    let listing = Command::new(qemu).args(["-device", "help"]).output();
+    listing.is_ok_and(|output| String::from_utf8_lossy(&output.stdout).contains(PATCHED_QEMU_DEVICE))
 }
 
 fn ubuntu_install_ready(context: &Context) -> bool {
@@ -70,6 +88,20 @@ mod tests {
     use super::*;
     use crate::testing::{Scratch, scratch_context};
     use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn only_the_patched_qemu_lists_our_device() {
+        let scratch = Scratch::new();
+        let plain = scratch.write("plain", "#!/bin/sh\necho 'name \"virtio-net-pci\"'\n");
+        let patched = scratch.write("patched", "#!/bin/sh\necho 'name \"gpupv-render\"'\n");
+        for file in [&plain, &patched] {
+            fs::set_permissions(file, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        assert!(!qemu_lists_our_device(&plain));
+        assert!(qemu_lists_our_device(&patched));
+        assert!(!qemu_lists_our_device(&scratch.path("no-such-qemu")));
+    }
 
     #[test]
     fn with_no_program_folder_everything_is_a_plain_vm() {
