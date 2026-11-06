@@ -16,8 +16,8 @@ use std::path::{Path, PathBuf};
 const STATE_FILE: &str = "display.json";
 const SCREEN_LINE: &str = "screen ";
 const ON_THE_DRIVER: &str = "ours";
-/// Whether the host's screen can show HDR, which only the app can find out. A task has no display.
-pub const SCREEN_HDR_PREF: &str = "screen_shows_hdr";
+/// What the app found out about the host's screen, as only it can. A task has no display.
+pub const SCREEN_HDR_PREF: &str = "screen_hdr";
 
 /// The package's id, written by the packaging, which tells one build of the driver from another.
 const PACKAGE_ID_FILE: &str = "package.txt";
@@ -134,9 +134,42 @@ pub fn screen_text(state: &DisplayState, ring: Option<ScreenNote>) -> String {
     format!("{}x{} at {} Hz{hdr}", ring.width, ring.height, screen.hz)
 }
 
+/// Whether the host's screen can show HDR. Anything short of a yes keeps Windows in SDR.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScreenHdr {
+    Shows,
+    Cannot,
+    CantTell,
+}
+
+impl ScreenHdr {
+    const WORDS: [(Self, &'static str); 3] =
+        [(Self::Shows, "shows"), (Self::Cannot, "cannot"), (Self::CantTell, "cant-tell")];
+
+    pub fn word(self) -> &'static str {
+        Self::WORDS.iter().find(|(answer, _)| *answer == self).map_or("", |(_, word)| word)
+    }
+
+    /// Why Windows stays in SDR, if it does.
+    pub fn sdr_reason(self) -> Option<&'static str> {
+        match self {
+            Self::Shows => None,
+            Self::Cannot => Some("This screen can't show HDR, so Windows stays in SDR."),
+            Self::CantTell => {
+                Some("Guesthouse can't tell if this desktop's screen shows HDR, so Windows stays in SDR.")
+            }
+        }
+    }
+}
+
 /// What the app last found out about this PC's screen.
-pub fn screen_shows_hdr(context: &Context) -> bool {
-    read_prefs(context).get(SCREEN_HDR_PREF).and_then(Value::as_bool).unwrap_or(false)
+pub fn screen_hdr(context: &Context) -> ScreenHdr {
+    let prefs = read_prefs(context);
+    let word = prefs.get(SCREEN_HDR_PREF).and_then(Value::as_str);
+    ScreenHdr::WORDS
+        .iter()
+        .find(|(_, known)| Some(*known) == word)
+        .map_or(ScreenHdr::CantTell, |found| found.0)
 }
 
 /// What the daemon says is on its ring, if that daemon is still there to say it.

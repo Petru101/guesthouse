@@ -5,8 +5,8 @@ use super::Task;
 use super::desktop::{GUEST_FOLDER, GUEST_USER, SessionScript, apply_screen, put_file, run_in_session_text};
 use crate::agent::guest_script;
 use crate::display::{
-    DisplayState, Driver, DriverPackage, PACKAGE_FILES, RunningScreen, SUPPORT_FILES, read_state, ring_in,
-    screen_shows_hdr, write_state,
+    DisplayState, Driver, DriverPackage, PACKAGE_FILES, RunningScreen, SUPPORT_FILES, ScreenHdr, read_state,
+    ring_in, screen_hdr, write_state,
 };
 use crate::failure::Result;
 use crate::log::write_log;
@@ -53,7 +53,6 @@ const NOT_UP: &str =
     "The display driver did not come up, so it was taken out and Windows is on its basic display.";
 const NOT_CONFIRMED: &str = "Windows hasn't confirmed this change with a picture yet.";
 const BLANK_BOOT: &str = "The display driver sent no picture on this boot. If that happens again on the next one,                           it's taken out.";
-const NO_HDR_SCREEN: &str = "This screen can't show HDR, so Windows stays in SDR.";
 
 /// Why the screen is being set. A boot can give up on the driver, and a change to a running machine
 /// never does: a late picture is no reason to take the driver from under it.
@@ -86,7 +85,7 @@ impl Wanted {
             width: width.parse().unwrap_or_default(),
             height: height.parse().unwrap_or_default(),
             hz: machine.refresh_hz,
-            hdr: machine.hdr && screen_shows_hdr(task.context),
+            hdr: machine.hdr && screen_hdr(task.context) == ScreenHdr::Shows,
         }
     }
 
@@ -95,7 +94,7 @@ impl Wanted {
     }
 
     /// What couldn't be done, in words.
-    fn shortfall(&self, machine_hdr: bool, screen: RunningScreen) -> String {
+    fn shortfall(&self, task: &Task, screen: RunningScreen) -> String {
         if (screen.width, screen.height, screen.hz) != (self.width, self.height, self.hz) {
             let (width, height, hz) = (self.width, self.height, self.hz);
             return format!(
@@ -103,7 +102,8 @@ impl Wanted {
                 screen.width, screen.height, screen.hz
             );
         }
-        if machine_hdr && !self.hdr { NO_HDR_SCREEN.to_owned() } else { String::new() }
+        let reason = screen_hdr(task.context).sdr_reason().filter(|_| task.machine.hdr);
+        reason.unwrap_or_default().to_owned()
     }
 }
 
@@ -322,7 +322,7 @@ fn apply(task: &mut Task, state: &mut DisplayState, occasion: Occasion) -> Resul
     state.running = Some(screen);
     state.shown_frames = true;
     state.blank_boots = 0;
-    state.note = wanted.shortfall(task.machine.hdr, screen);
+    state.note = wanted.shortfall(task, screen);
     Ok(())
 }
 

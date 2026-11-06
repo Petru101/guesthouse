@@ -6,7 +6,7 @@ use crate::rows::{choice_row, row_button};
 use crate::viewer::OVERLAY_KEYS;
 use adw::prelude::*;
 use guesthouse_app_core::display::{
-    DisplayState, Driver, DriverPackage, forget_note, read_state, screen_shows_hdr,
+    DisplayState, Driver, DriverPackage, forget_note, read_state, screen_hdr,
 };
 use guesthouse_app_core::machine::{
     Kind, MAX_REFRESH_HZ, MIN_REFRESH_HZ, REFRESH_RATES, SCREENS, read_refresh,
@@ -20,7 +20,6 @@ const RATE_NOTE: &str = "Set each time the machine starts.";
 const BASIC_NOTE: &str =
     "Windows is on its basic display, which has one rate. This is for the display driver.";
 const HDR_NOTE: &str = "Windows goes to HDR when the machine starts, or at once if it's running.";
-const NO_HDR_NOTE: &str = "This screen can't show HDR, so Windows stays in SDR.";
 const DRIVER_ROW: &str = "Display driver";
 const DRIVER_IN: &str = "In Windows. It was signed on this machine with a certificate made for it, which Windows \
                          trusts as a root. Its private key was deleted before the install.";
@@ -234,7 +233,7 @@ impl Display {
             RATE_NOTE.to_owned()
         };
         parts.rate.set_subtitle(&note);
-        parts.hdr.set_subtitle(if screen_shows_hdr(&context) { HDR_NOTE } else { NO_HDR_NOTE });
+        parts.hdr.set_subtitle(screen_hdr(&context).sdr_reason().unwrap_or(HDR_NOTE));
         let package = DriverPackage::find(&context);
         parts.driver.set_subtitle(&self.driver_note(&state, package.is_some()));
         let missing = state.driver != Driver::Installed && package.is_some();

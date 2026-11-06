@@ -1,12 +1,12 @@
 //! Whether this PC's screen can show HDR. A task has no display, so the app finds out and leaves the
-//! answer in its settings. GDK can't say whether a monitor is in HDR, so this asks Mutter, and on a
-//! desktop with no Mutter what the display takes has to do.
+//! answer in its settings. GDK can't say whether a monitor is in HDR, so this asks Mutter. On a desktop
+//! with no Mutter nobody can say, and that means SDR.
 
 use super::Window;
 use crate::viewer::takes_hdr_frames;
 use adw::prelude::*;
 use gtk::{gio, glib};
-use guesthouse_app_core::display::SCREEN_HDR_PREF;
+use guesthouse_app_core::display::{SCREEN_HDR_PREF, ScreenHdr};
 use serde_json::json;
 
 const BUS_NAME: &str = "org.gnome.Mutter.DisplayConfig";
@@ -20,31 +20,56 @@ const OVERRIDE_VARIABLE: &str = "GUESTHOUSE_SCREEN_HDR";
 const MONITORS_AT: usize = 1;
 const PROPERTIES_AT: usize = 2;
 
-/// Reads `GetCurrentState`'s reply: `(serial, monitors, logical monitors, properties)`.
-fn a_monitor_is_in_hdr(reply: &glib::Variant) -> bool {
+/// Reads `GetCurrentState`'s reply: `(serial, monitors, logical monitors, properties)`. `None` is a
+/// reply of another shape, or one that doesn't say.
+fn hdr_in_reply(reply: &glib::Variant) -> Option<bool> {
+    if !reply.is_container() || reply.n_children() <= MONITORS_AT {
+        return None;
+    }
     let monitors = reply.child_value(MONITORS_AT);
-    (0..monitors.n_children()).any(|index| {
-        let properties = monitors.child_value(index).child_value(PROPERTIES_AT);
-        let mode = glib::VariantDict::new(Some(&properties)).lookup::<u32>(COLOUR_MODE);
-        mode.ok().flatten() == Some(COLOUR_MODE_BT2100)
-    })
+    if !monitors.is_container() {
+        return None;
+    }
+    let mut modes = Vec::new();
+    for index in 0..monitors.n_children() {
+        let monitor = monitors.child_value(index);
+        if !monitor.is_container() || monitor.n_children() <= PROPERTIES_AT {
+            return None;
+        }
+        let properties = monitor.child_value(PROPERTIES_AT);
+        if !properties.is_type(glib::VariantTy::VARDICT) {
+            return None;
+        }
+        modes.extend(glib::VariantDict::new(Some(&properties)).lookup::<u32>(COLOUR_MODE).ok().flatten());
+    }
+    (!modes.is_empty()).then(|| modes.contains(&COLOUR_MODE_BT2100))
+}
+
+fn answer_from(reply: Option<&glib::Variant>) -> ScreenHdr {
+    match reply.and_then(hdr_in_reply) {
+        Some(true) => ScreenHdr::Shows,
+        Some(false) => ScreenHdr::Cannot,
+        None => ScreenHdr::CantTell,
+    }
 }
 
 impl Window {
-    fn remember_screen_hdr(&self, shows: bool) {
-        self.remember(json!({SCREEN_HDR_PREF: shows}));
+    fn remember_screen_hdr(&self, answer: ScreenHdr) {
+        self.remember(json!({SCREEN_HDR_PREF: answer.word()}));
     }
 
     /// Finds out, and leaves the answer for the next task.
     pub fn note_screen_hdr(&self) {
         if let Ok(said) = std::env::var(OVERRIDE_VARIABLE) {
-            self.remember_screen_hdr(said == "1");
+            self.remember_screen_hdr(if said == "1" { ScreenHdr::Shows } else { ScreenHdr::Cannot });
             return;
         }
-        let takes_frames = takes_hdr_frames(&WidgetExt::display(self.widget()));
-        let bus = gio::bus_get_sync(gio::BusType::Session, gio::Cancellable::NONE);
-        let (true, Ok(bus)) = (takes_frames, bus) else {
-            self.remember_screen_hdr(false);
+        if !takes_hdr_frames(&WidgetExt::display(self.widget())) {
+            self.remember_screen_hdr(ScreenHdr::Cannot);
+            return;
+        }
+        let Ok(bus) = gio::bus_get_sync(gio::BusType::Session, gio::Cancellable::NONE) else {
+            self.remember_screen_hdr(ScreenHdr::CantTell);
             return;
         };
         let this = self.clone();
@@ -58,7 +83,55 @@ impl Window {
             gio::DBusCallFlags::NONE,
             CALL_MILLISECONDS,
             gio::Cancellable::NONE,
-            move |reply| this.remember_screen_hdr(reply.map_or(true, |reply| a_monitor_is_in_hdr(&reply))),
+            move |reply| this.remember_screen_hdr(answer_from(reply.ok().as_ref())),
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn monitor(colour_mode: Option<u32>) -> glib::Variant {
+        let mut properties: HashMap<String, glib::Variant> = HashMap::new();
+        if let Some(mode) = colour_mode {
+            properties.insert(COLOUR_MODE.to_owned(), mode.to_variant());
+        }
+        (("DP-1", "", "", ""), Vec::<u32>::new(), properties).to_variant()
+    }
+
+    fn reply(monitors: &[glib::Variant]) -> glib::Variant {
+        let list = glib::Variant::array_from_iter_with_type(monitors[0].type_(), monitors.iter());
+        glib::Variant::tuple_from_iter([1u32.to_variant(), list])
+    }
+
+    #[test]
+    fn one_monitor_in_hdr_is_enough() {
+        let found = reply(&[monitor(Some(0)), monitor(Some(COLOUR_MODE_BT2100))]);
+        assert_eq!(answer_from(Some(&found)), ScreenHdr::Shows);
+    }
+
+    #[test]
+    fn monitors_that_all_say_no_mean_no() {
+        assert_eq!(answer_from(Some(&reply(&[monitor(Some(0))]))), ScreenHdr::Cannot);
+    }
+
+    #[test]
+    fn no_answer_is_sdr_and_says_so() {
+        assert_eq!(answer_from(None), ScreenHdr::CantTell);
+        assert_eq!(answer_from(Some(&reply(&[monitor(None)]))), ScreenHdr::CantTell);
+    }
+
+    #[test]
+    fn a_reply_of_another_shape_is_not_a_panic() {
+        for odd in [
+            7u32.to_variant(),
+            (1u32,).to_variant(),
+            (1u32, 2u32).to_variant(),
+            (1u32, vec![1u32]).to_variant(),
+        ] {
+            assert_eq!(answer_from(Some(&odd)), ScreenHdr::CantTell, "{odd}");
+        }
     }
 }
