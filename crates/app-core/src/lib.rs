@@ -4,6 +4,7 @@ pub mod bridge;
 pub mod clock;
 pub mod context;
 pub mod failure;
+pub mod host;
 pub mod log;
 pub mod machine;
 pub mod monitor;
