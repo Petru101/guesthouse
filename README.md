@@ -177,6 +177,17 @@ cargo run -p guesthouse-app       # the app, which needs GTK 4 and libadwaita's 
 
 This repo has no NVIDIA or Microsoft files in it. You supply your own Windows ISO and NVIDIA's driver. This is a personal project, and it has nothing to do with NVIDIA or Microsoft.
 
+## Thanks
+
+None of this would exist without other people's work:
+
+- QEMU, which this is a patch for
+- Microsoft's dxgkrnl driver for Linux, the public source for how GPU-PV talks
+- NVIDIA's open GPU kernel modules
+- gVisor's nvproxy, the closest thing to the Linux route I've seen
+- Mesa's Zink, which GNOME runs on in Linux guests
+- GTK, libadwaita and the Rust crates the app is built on
+
 ## Licence
 
 Copyright (C) 2026 xnixy
