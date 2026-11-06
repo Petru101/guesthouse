@@ -358,6 +358,9 @@ stage_source() {
     tar -C "$(qemu_tree)" --exclude=.git -cf - . | tar -C "$bundle/qemu-source" -xf -
     # The crates are linked into the programs, and carry their licences with them here.
     (cd "$REPO" && cargo vendor --locked --quiet "$bundle/vendor" >/dev/null)
+    mkdir -p "$bundle/.cargo"
+    printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "vendor"\n' \
+        >"$bundle/.cargo/config.toml"
     pack "$bundle" "$name" "$OUT/$name.tar.xz" -cJf
     rm -rf "${bundle:?}"
     bundled=guesthouse-$version-bundled-source.tar
