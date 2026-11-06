@@ -7,9 +7,11 @@
 
 mod area;
 pub mod copy;
+mod list;
 
 pub use area::Area;
 pub use copy::{COPY_AREA_EXTRA, COPY_WINDOW, CopyChannel};
+pub use list::{LIST_AREA, ListChannel, ListFull};
 
 use crate::profile::{Generation, HostBranch};
 use crate::pushbuffer::{increasing, ring_entry};
