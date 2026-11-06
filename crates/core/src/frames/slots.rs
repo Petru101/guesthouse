@@ -14,7 +14,7 @@ enum Slot {
     /// Holds a finished frame that hasn't left yet.
     Pending { sequence: u64 },
     /// The viewer has it.
-    Viewer,
+    Viewer { sequence: u64 },
 }
 
 /// A release that doesn't match what the slot is doing. A viewer's mistake, which changes nothing.
@@ -70,13 +70,35 @@ impl Slots {
 
     /// The frame in this slot has left, so the slot is the viewer's.
     pub fn sent(&mut self, slot: u32) {
-        self.slots[slot as usize] = Slot::Viewer;
+        let state = &mut self.slots[slot as usize];
+        if let Slot::Pending { sequence } = *state {
+            *state = Slot::Viewer { sequence };
+        }
+    }
+
+    /// The viewer has gone, and the slots outlive it. Only a producer that keeps its memory needs this.
+    /// The newest picture goes back to waiting, as the next viewer may have nothing else to show: a
+    /// still desktop sends no more frames.
+    pub fn viewer_gone(&mut self) {
+        let shown = |slot: &Slot| match slot {
+            Slot::Viewer { sequence } => Some(*sequence),
+            _ => None,
+        };
+        let newest = self.slots.iter().filter_map(shown).max();
+        let waiting = self.pending().is_some();
+        for slot in &mut self.slots {
+            match shown(slot) {
+                Some(sequence) if !waiting && Some(sequence) == newest => *slot = Slot::Pending { sequence },
+                Some(_) => *slot = Slot::Free,
+                None => {}
+            }
+        }
     }
 
     /// The viewer gives a slot back.
     pub fn released(&mut self, slot: u32) -> Result<(), NotTheViewers> {
         match self.slots.get_mut(slot as usize) {
-            Some(state @ Slot::Viewer) => {
+            Some(state @ Slot::Viewer { .. }) => {
                 *state = Slot::Free;
                 Ok(())
             }
@@ -108,6 +130,27 @@ mod tests {
         slots.finished(slot, sequence);
         slots.sent(slot);
         slot
+    }
+
+    #[test]
+    fn the_newest_picture_outlives_its_viewer() {
+        let mut slots = Slots::new(3);
+        let older = given_to_viewer(&mut slots, 1);
+        let newer = given_to_viewer(&mut slots, 2);
+        slots.viewer_gone();
+        assert_eq!(slots.pending(), Some((newer, 2)));
+        assert_eq!(slots.released(older), Err(NotTheViewers));
+        assert!(slots.has_free());
+    }
+
+    #[test]
+    fn a_frame_still_waiting_beats_one_a_viewer_saw() {
+        let mut slots = Slots::new(3);
+        given_to_viewer(&mut slots, 1);
+        let waiting = slots.claim().unwrap();
+        slots.finished(waiting, 2);
+        slots.viewer_gone();
+        assert_eq!(slots.pending(), Some((waiting, 2)));
     }
 
     #[test]
