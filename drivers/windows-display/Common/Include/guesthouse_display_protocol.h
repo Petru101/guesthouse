@@ -21,6 +21,8 @@
 #define GH_KIND_REGISTER 1u
 #define GH_KIND_FRAME 2u
 #define GH_KIND_CLOSE 3u
+#define GH_KIND_CURSOR_SHAPE 4u
+#define GH_KIND_CURSOR_MOVE 5u
 
 /* In a FRAME, nothing was written and the driver only wants a slot. In a reply, nothing is free yet. */
 #define GH_NO_SLOT 0xFFFFFFFFu
@@ -31,6 +33,8 @@
 #define GH_STATUS_STALE_GENERATION 1u
 /* The daemon can't use this ring. The driver shouldn't try again until the mode changes. */
 #define GH_STATUS_REFUSED 2u
+/* Only to a cursor message: no viewer draws a cursor of its own, so it has to be in the frames. */
+#define GH_STATUS_CURSOR_NOT_WANTED 3u
 
 /* DRM fourcc codes, so that neither side needs a table. */
 #define GH_FOURCC_XRGB8888 0x34325258u
@@ -44,6 +48,10 @@
 #define GH_CICP_MATRIX_IDENTITY 0u
 
 #define GH_FRAME_HAS_HDR_METADATA 0x1u
+
+/* A shape can be bigger than is wise for one escape, so it goes in pieces, each after a gh_cursor_shape header. */
+#define GH_CURSOR_PIECE_BYTES 32768u
+#define GH_CURSOR_MAX_SIDE 256u
 
 typedef struct gh_header {
 	uint64_t magic;
@@ -100,6 +108,30 @@ typedef struct gh_close {
 	gh_header header;
 } gh_close;
 
+/* One piece of a cursor's picture, which follows this in the message. Pixels are BGRA with straight alpha. */
+typedef struct gh_cursor_shape {
+	gh_header header;
+	uint32_t shape; /* Goes up with each new picture. */
+	uint32_t width;
+	uint32_t height;
+	uint32_t pitch;
+	uint32_t hot_x;
+	uint32_t hot_y;
+	uint32_t total_bytes; /* Pitch times height. */
+	uint32_t piece_offset;
+	uint32_t piece_bytes;
+	uint32_t reserved;
+} gh_cursor_shape;
+
+/* Where the picture's top left corner is, on the screen. It can be off the screen by up to the picture's size. */
+typedef struct gh_cursor_move {
+	gh_header header;
+	int32_t x;
+	int32_t y;
+	uint32_t visible;
+	uint32_t sdr_white_nits;
+} gh_cursor_move;
+
 /* The answer to every request. The largest request is what the buffer is sized for, so this always fits. */
 typedef struct gh_reply {
 	gh_header header;
@@ -127,5 +159,7 @@ GH_STATIC_ASSERT(sizeof(gh_register) == 64, "gh_register is part of the wire for
 GH_STATIC_ASSERT(sizeof(gh_hdr_metadata) == 24, "gh_hdr_metadata is part of the wire format");
 GH_STATIC_ASSERT(sizeof(gh_frame) == 80, "gh_frame is part of the wire format");
 GH_STATIC_ASSERT(sizeof(gh_close) == 24, "gh_close is part of the wire format");
+GH_STATIC_ASSERT(sizeof(gh_cursor_shape) == 64, "gh_cursor_shape is part of the wire format");
+GH_STATIC_ASSERT(sizeof(gh_cursor_move) == 40, "gh_cursor_move is part of the wire format");
 GH_STATIC_ASSERT(sizeof(gh_reply) == 40, "gh_reply is part of the wire format");
 GH_STATIC_ASSERT(sizeof(gh_slot_stamp) == 16, "gh_slot_stamp is part of the wire format");

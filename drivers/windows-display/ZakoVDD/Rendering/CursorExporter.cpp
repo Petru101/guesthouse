@@ -173,8 +173,9 @@ const wchar_t* CursorReadyEventName(unsigned int monitorIndex)
 }
 
 CursorExporter::CursorExporter(unsigned int monitorIndex, IDDCX_MONITOR monitor, HANDLE hNewCursorDataAvailable,
-                               std::shared_ptr<Guesthouse::CursorImage> image)
-	: m_MonitorIndex(monitorIndex), m_Monitor(monitor), m_Image(std::move(image)), m_hCursorDataAvailable(hNewCursorDataAvailable)
+                               std::shared_ptr<Guesthouse::CursorImage> image, LUID renderAdapter)
+	: m_MonitorIndex(monitorIndex), m_Monitor(monitor), m_Image(std::move(image)), m_HostChannel(renderAdapter),
+	  m_HostLink(m_HostChannel, monitorIndex), m_hCursorDataAvailable(hNewCursorDataAvailable)
 {
 }
 
@@ -314,6 +315,14 @@ void CursorExporter::Run()
 				{
 					m_Image->SetShape(m_CachedShape.ShapeId, m_CachedShape.Width, m_CachedShape.Height, m_CachedShape.Pitch,
 					                  m_CachedShape.Buffer.data());
+					Guesthouse::CursorPicture picture = {};
+					picture.shape = m_CachedShape.ShapeId;
+					picture.width = m_CachedShape.Width;
+					picture.height = m_CachedShape.Height;
+					picture.pitch = m_CachedShape.Pitch;
+					picture.hotX = static_cast<std::uint32_t>(m_CachedShape.XHot);
+					picture.hotY = static_cast<std::uint32_t>(m_CachedShape.YHot);
+					m_HostLink.SendShape(picture, m_CachedShape.Buffer.data());
 				}
 			}
 			else
@@ -351,6 +360,8 @@ void CursorExporter::Run()
 		if (m_Image)
 		{
 			m_Image->SetPosition(visibility != 0, m_LastX, m_LastY);
+			m_HostLink.SendMove(m_LastX, m_LastY, visibility != 0, queryResult.SdrWhiteLevelNits);
+			m_Image->SetDrawnByViewer(m_HostLink.ViewerDrawsIt());
 		}
 
 		if (!m_MetaView)

@@ -56,7 +56,7 @@ SwapChainProcessor::SwapChainProcessor(IDDCX_SWAPCHAIN hSwapChain, shared_ptr<Di
 	{
 		try
 		{
-			m_CursorExporter = std::make_unique<CursorExporter>(MonitorIndex, Monitor, hMouseEvent, m_CursorImage);
+			m_CursorExporter = std::make_unique<CursorExporter>(MonitorIndex, Monitor, hMouseEvent, m_CursorImage, Device->AdapterLuid);
 			if (!m_CursorExporter->Start())
 			{
 				VDD_LOG_WARNING("[VddCursor] Start failed; cursor will not be exported for this monitor");

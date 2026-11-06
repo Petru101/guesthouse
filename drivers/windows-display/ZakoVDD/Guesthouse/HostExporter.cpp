@@ -155,7 +155,7 @@ PassConstants HostExporter::Constants(std::uint32_t width, std::uint32_t height,
 	{
 		m_CursorShapeId = cursor.shapeId;
 	}
-	if (cursor.visible && m_CursorShapeId != 0)
+	if (cursor.visible && m_CursorShapeId != 0 && !m_Cursor->DrawnByViewer())
 	{
 		constants.cursorEnabled = 1;
 		constants.cursorX = cursor.x;

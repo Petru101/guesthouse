@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <mutex>
 #include <vector>
@@ -9,11 +10,15 @@ namespace Guesthouse
 
 // The hardware cursor as the frame pass wants it. CursorExporter's thread writes it and the frame thread reads it.
 //
-// This only moves when a frame arrives, because a hardware cursor moving doesn't make Windows send a frame. That's why
-// our vdd_settings.xml turns the hardware cursor off: DWM then draws it, at the right white level, and every move is a frame.
+// This is the fallback for when no viewer draws the cursor itself, which CursorLink finds out. It only moves when a frame arrives,
+// because a hardware cursor moving doesn't make Windows send a frame.
 class CursorImage
 {
 public:
+	// A viewer is drawing the cursor, so it must not be in the frames too.
+	void SetDrawnByViewer(bool drawn) { m_DrawnByViewer = drawn; }
+	bool DrawnByViewer() const { return m_DrawnByViewer; }
+
 	struct Snapshot
 	{
 		bool visible = false;
@@ -67,6 +72,7 @@ public:
 private:
 	mutable std::mutex m_Mutex;
 	Snapshot m_Now;
+	std::atomic<bool> m_DrawnByViewer{false};
 };
 
 }

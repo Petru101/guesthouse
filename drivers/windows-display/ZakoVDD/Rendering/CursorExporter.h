@@ -3,6 +3,8 @@
 #include "..\Driver.h"
 #include "vdd_cursor_shared.h"
 #include "..\Guesthouse\CursorImage.h"
+#include "..\Guesthouse\CursorLink.h"
+#include "..\Guesthouse\KernelEscapeChannel.h"
 
 #include <memory>
 #include <vector>
@@ -16,7 +18,7 @@ class CursorExporter
 {
 public:
 	CursorExporter(unsigned int monitorIndex, IDDCX_MONITOR monitor, HANDLE hNewCursorDataAvailable,
-	               std::shared_ptr<Guesthouse::CursorImage> image);
+	               std::shared_ptr<Guesthouse::CursorImage> image, LUID renderAdapter);
 	~CursorExporter();
 	CursorExporter(const CursorExporter&) = delete;
 	CursorExporter& operator=(const CursorExporter&) = delete;
@@ -49,6 +51,8 @@ private:
 	unsigned int m_MonitorIndex = 0;
 	IDDCX_MONITOR m_Monitor = nullptr;
 	std::shared_ptr<Guesthouse::CursorImage> m_Image;
+	Guesthouse::KernelEscapeChannel m_HostChannel;
+	Guesthouse::CursorLink m_HostLink;
 	HANDLE m_hCursorDataAvailable = nullptr; // Owned by IndirectDeviceContext.
 	HANDLE m_hTerminateEvent = nullptr;
 	HANDLE m_hThread = nullptr;

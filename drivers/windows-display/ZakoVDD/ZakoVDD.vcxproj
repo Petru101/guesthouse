@@ -31,6 +31,7 @@
     <ClCompile Include="Edid\Edid.cpp" />
     <ClCompile Include="Logging\Logger.cpp" />
     <ClCompile Include="Guesthouse\ColourTransform.cpp" />
+    <ClCompile Include="Guesthouse\CursorLink.cpp" />
     <ClCompile Include="Guesthouse\FramePass.cpp" />
     <ClCompile Include="Guesthouse\HostExporter.cpp" />
     <ClCompile Include="Guesthouse\HostLink.cpp" />
@@ -65,6 +66,7 @@
     <ClInclude Include="Logging\Logger.h" />
     <ClInclude Include="Guesthouse\ColourTransform.h" />
     <ClInclude Include="Guesthouse\CursorImage.h" />
+    <ClInclude Include="Guesthouse\CursorLink.h" />
     <ClInclude Include="Guesthouse\EscapeChannel.h" />
     <ClInclude Include="Guesthouse\FramePass.h" />
     <ClInclude Include="Guesthouse\HdrMetadataTracker.h" />

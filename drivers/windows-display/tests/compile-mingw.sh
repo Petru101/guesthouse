@@ -8,7 +8,7 @@ OUT=$HERE/build/mingw
 mkdir -p "$OUT"
 # The sources use Windows path separators for zako's folders, which MSVC accepts and Linux doesn't.
 mkdir -p "$OUT/shim"
-for file in FramePass KernelEscapeChannel HostExporter; do
+for file in FramePass KernelEscapeChannel HostExporter CursorLink; do
     sed 's#"\.\.\\Logging\\Logger\.h"#"../../../ZakoVDD/Logging/Logger.h"#; s#"Shaders/FramePass.generated.h"#"FramePass.generated.h"#' \
         "$GUESTHOUSE/$file.cpp" > "$OUT/shim/$file.cpp"
     "$ROOT/scripts/inbuilder.sh" "$ROOT" x86_64-w64-mingw32-g++ -std=c++17 -Wall -Wextra -Werror -c \
