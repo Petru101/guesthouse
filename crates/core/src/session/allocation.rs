@@ -112,6 +112,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
                 allocation.memory = Some(memory);
                 allocation.size = size;
             }
+            log::debug!("allocation {handle:#x}: {:#x} bytes, guest backed {guest_backed}", allocation.size);
             let flags = (entry.flags & PRIMARY) | CACHED_FOR_CPU;
             CreateAllocationAnswer::set_entry(index, handle, entry.private_size, flags, allocation.size, out);
             if let Some(surface) = shape.surface {

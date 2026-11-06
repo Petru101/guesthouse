@@ -64,6 +64,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         }
         if request.address != 0 {
             // A guest-chosen address, usually in a reserved range: map only the pages it asked for.
+            log::debug!("map {handle:#x} at {:#x}: {first:#x} for {length:#x}", request.address);
             let chosen = self.map_chosen(request.address, memory, first, length, space, handle);
             if let Err(error) = chosen {
                 log::warn!("mapping {handle:#x} at {:#x}: {error}", request.address);

@@ -47,12 +47,19 @@ fn round_up(value: u64, grain: u64) -> u64 {
     value.div_ceil(grain).saturating_mul(grain)
 }
 
+/// The size field, or what a compute allocation really wants. Those have their page size in the size
+/// field, and say the same bigger number in the two others, which means all of the block.
+fn stated_size(layout: &AllocationLayout, data: &[u8]) -> u32 {
+    let (size, whole) = (word(data, layout.size), word(data, layout.whole_size));
+    if size != 0 && whole > size && whole == word(data, layout.asked_size) { whole } else { size }
+}
+
 /// The size of an allocation in video memory.
 pub fn allocation_size(layout: &AllocationLayout, data: &[u8]) -> u64 {
     if !is_ours(layout, data) || data.len() < layout.size + 4 {
         return DEFAULT_SIZE;
     }
-    let mut size = u64::from(word(data, layout.size));
+    let mut size = u64::from(stated_size(layout, data));
     let (depth, mips, layers) =
         (word(data, layout.depth), word(data, layout.depth + 4), word(data, layout.depth + 8));
     if size == 0 {
@@ -91,7 +98,7 @@ pub fn allocation_size(layout: &AllocationLayout, data: &[u8]) -> u64 {
 /// The size of an allocation in the guest's own memory, with no rounding.
 pub fn exact_size(layout: &AllocationLayout, data: &[u8]) -> u64 {
     if is_ours(layout, data) && data.len() >= layout.size + 4 {
-        match word(data, layout.size) {
+        match stated_size(layout, data) {
             0 => DEFAULT_SIZE,
             size => u64::from(size),
         }
@@ -208,6 +215,23 @@ mod tests {
         let mut bytes = blank_request();
         set_word(&mut bytes, LAYOUT.size, size);
         bytes
+    }
+
+    #[test]
+    fn a_block_that_asks_for_all_of_itself_is_bigger_than_its_size_field() {
+        let mut bytes = data(0x20_0000);
+        set_word(&mut bytes, LAYOUT.whole_size, 0x100_0000);
+        set_word(&mut bytes, LAYOUT.asked_size, 0x100_0000);
+        assert_eq!(allocation_size(LAYOUT, &bytes), 0x100_0000);
+        assert_eq!(exact_size(LAYOUT, &bytes), 0x100_0000);
+    }
+
+    #[test]
+    fn a_piece_of_a_block_keeps_its_size_field() {
+        let mut bytes = data(0x20_0000);
+        set_word(&mut bytes, LAYOUT.whole_size, 0x100_0000);
+        set_word(&mut bytes, LAYOUT.asked_size, 0x8000);
+        assert_eq!(allocation_size(LAYOUT, &bytes), 0x20_0000);
     }
 
     #[test]
