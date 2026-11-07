@@ -8,6 +8,7 @@ use crate::ring_request::RingMove;
 use crate::rm::Rm;
 use crate::{NvidiaBackend, UNFINISHED_ENTRIES_LIMIT, memory_error};
 use guesthouse_backend::{HostServices, SpaceId, Work, WorkSource, WorkStart};
+use std::time::{Duration, Instant};
 
 // The fields of a submission's private data.
 const LIST_OFFSET: usize = 0x0C;
@@ -26,6 +27,10 @@ const RING_BYTES: usize = 0x10000;
 /// A new ring starts with one entry, the rest of the commands the move was among, and the guest's
 /// driver counts on from there.
 const FIRST_POSITION_ON_NEW_RING: u32 = 1;
+
+/// How long a queue's later work is held for a move's fence. The core calls a queue stuck when a
+/// fence takes this long, so a move that hasn't gone by then never will.
+const MOVE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The guest writes this method to end a copy, which a channel here is refused. The launch method
 /// does the same in the same two words.
@@ -72,6 +77,7 @@ struct PendingMove {
     /// The move submission's fence. It retires with that submission, whose last method is the move.
     fence: u64,
     reached: u64,
+    registered: Instant,
 }
 
 /// A queue, as far as the GPU goes.
@@ -311,16 +317,27 @@ impl<R: Rm> NvidiaBackend<R> {
     /// The move submission has retired, so the GPU has run the move. Counting switches to the new
     /// ring now, and not before: a doorbell for the new ring is a small index, and storing it while
     /// the GPU is still on the old ring stops it short of the move.
-    fn settle_move(&mut self, host: &dyn HostServices, queue_id: u32) -> Result<(), WorkStart> {
-        let Some(pending) = self.queues.get(&queue_id).and_then(|queue| queue.pending_move) else {
-            return Ok(());
+    ///
+    /// A move whose fence can't be read, or hasn't retired by [`MOVE_TIMEOUT`], fails the queue.
+    fn settle_move(&mut self, host: &dyn HostServices, queue_id: u32, now: Instant) -> Result<(), WorkStart> {
+        let Some(queue) = self.queues.get_mut(&queue_id) else { return Ok(()) };
+        let Some(pending) = queue.pending_move else { return Ok(()) };
+        let fail = |queue: &mut LiveQueue, why: String| {
+            log::warn!("queue {queue_id:#x} gives up its move to ring {:#x}: {why}", pending.ring_address);
+            queue.pending_move = None;
+            Err(WorkStart::QueueFailed)
         };
-        let seen = host.fence_value(pending.fence).unwrap_or(0);
+        let seen = match host.fence_value(pending.fence) {
+            Ok(seen) => seen,
+            Err(error) => return fail(queue, format!("its fence can't be read: {error}")),
+        };
         if seen < pending.reached {
+            if now.saturating_duration_since(pending.registered) > MOVE_TIMEOUT {
+                return fail(queue, format!("its fence is at {seen:#x} and not {:#x}", pending.reached));
+            }
             return Err(WorkStart::Busy);
         }
-        let queue = self.queues.get_mut(&queue_id).expect("the pending move was just read");
-        let Some(pending) = queue.pending_move.take() else { return Ok(()) };
+        queue.pending_move = None;
         let QueueChannel::Ring { channel, ring_address } = &mut queue.channel else { return Ok(()) };
         Self::finish_ring_move(channel, ring_address, &mut queue.position, pending);
         Ok(())
@@ -334,7 +351,7 @@ impl<R: Rm> NvidiaBackend<R> {
         entries: u32,
         end: u32,
     ) -> Result<u32, WorkStart> {
-        self.settle_move(host, work.queue)?;
+        self.settle_move(host, work.queue, Instant::now())?;
         let first = end.saturating_sub(entries);
         self.ring_channel(host, work, ring_address, first);
         if let Some(old_ring) = self.queue_ring(work.queue).filter(|known| *known != ring_address) {
@@ -401,8 +418,13 @@ impl<R: Rm> NvidiaBackend<R> {
         if let Err(error) = channel.register_move(&mut self.device, handle, ring_address, ring_entries) {
             return Err(stop(&format!("the move can't be registered: {error}")));
         }
-        queue.pending_move =
-            Some(PendingMove { ring_address, ring_entries, fence: work.fence, reached: work.fence_value });
+        queue.pending_move = Some(PendingMove {
+            ring_address,
+            ring_entries,
+            fence: work.fence,
+            reached: work.fence_value,
+            registered: Instant::now(),
+        });
         // The doorbell for the new ring can come before the GPU has moved, and the GPU takes a
         // position below its own as the ring wrapping. What it would run past the move is the old
         // ring's stale entries, so those go, all but the ones a submission can still be waiting on.
