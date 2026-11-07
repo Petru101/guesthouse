@@ -9,6 +9,7 @@ pub mod display_note;
 pub mod environment;
 pub mod gpu_note;
 pub mod guest_memory;
+pub mod jail;
 pub mod logger;
 pub mod router;
 pub mod server;

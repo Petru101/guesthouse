@@ -15,7 +15,7 @@ path = "src/main.rs"
 # Answers messages with no GPU behind them, to try the sockets by hand. Never for a real guest.
 stand-in = ["dep:guesthouse-backend-standin"]
 # The real backend, which opens the host's GPU.
-nvidia = ["dep:guesthouse-backend-nvidia", "dep:serde_json"]
+nvidia = ["dep:guesthouse-backend-nvidia", "dep:serde_json", "dep:guesthouse-sensors"]
 
 [dependencies]
 guesthouse-backend.workspace = true
@@ -23,10 +23,14 @@ guesthouse-backend-nvidia = { workspace = true, optional = true }
 guesthouse-backend-standin = { workspace = true, optional = true }
 guesthouse-core.workspace = true
 guesthouse-frame-socket.workspace = true
+# The jail the daemon puts itself in once its setup is done.
+guesthouse-jail.workspace = true
 guesthouse-messages.workspace = true
 guesthouse-transport.workspace = true
 # mmap and ppoll, which the standard library does not offer.
 libc = "0.2"
+# The sensors' snapshot file, which the jail has to name.
+guesthouse-sensors = { workspace = true, optional = true }
 # The facade, for the logger in logger.rs to serve.
 log = "0.4"
 # The app writes what setup found as JSON, and this reads it.
@@ -38,3 +42,8 @@ guesthouse-backend-nvidia = { workspace = true, features = ["fake-rm"] }
 
 [lints]
 workspace = true
+
+# A jail can't be undone, so each case jails a child process of its own.
+[[test]]
+name = "jail"
+harness = false

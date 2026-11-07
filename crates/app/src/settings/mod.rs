@@ -6,6 +6,7 @@ mod display;
 mod forwards;
 mod gpu_preview;
 mod hardware;
+mod jail;
 mod network;
 mod remove;
 mod sharing;
@@ -57,6 +58,7 @@ struct Parts {
     snapshots: snapshots::Snapshots,
     _token: token::Token,
     _gpu_preview: gpu_preview::GpuPreview,
+    _jail: jail::Jail,
     sharing: sharing::Sharing,
     network: network::Network,
     usb: usb::Usb,
@@ -83,6 +85,7 @@ impl SettingsDialog {
             usb: usb::Usb::new(&shared, &page),
             _token: token::Token::new(&shared, &page),
             _gpu_preview: gpu_preview::GpuPreview::new(&shared, &page),
+            _jail: jail::Jail::new(&shared, &page),
             remove: remove::Remove::new(&shared, &page),
             shared,
         }));

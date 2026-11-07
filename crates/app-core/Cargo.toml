@@ -19,9 +19,15 @@ path = "src/bin/share.rs"
 name = "guesthouse-check"
 path = "src/bin/check.rs"
 
+[[bin]]
+name = "guesthouse-jail"
+path = "src/bin/jail.rs"
+
 [dependencies]
 # Only for its slot names, so the app and the daemon can never disagree about what a VM owns.
 guesthouse-daemon.workspace = true
+# The jail QEMU runs in, which guesthouse-jail puts it in, and what this PC's kernel offers for one.
+guesthouse-jail.workspace = true
 # The host card's readings, which the daemon's sensor thread publishes and the overlay shows.
 guesthouse-sensors.workspace = true
 # Local time for the log and for snapshot dates. The standard library has no time zones.
@@ -33,6 +39,15 @@ rustix = { version = "1", features = ["fs", "net", "process"] }
 # Machine files, task files and QMP are all JSON.
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+[dev-dependencies]
+# ptrace, for a test that QEMU's jail refuses it.
+libc = "0.2"
+
+# A program under guesthouse-jail, which can't leave the jail, so each case is a process of its own.
+[[test]]
+name = "jail"
+harness = false
 
 # The whole flow of a VM with pretend programs, which needs a main of its own to be them.
 [[test]]

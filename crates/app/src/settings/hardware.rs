@@ -1,4 +1,4 @@
-//! Cores, memory and pinning.
+//! Cores, memory, pinning and sound.
 
 use super::{Shared, is_off};
 use crate::rows::number_row;
@@ -9,6 +9,8 @@ use guesthouse_app_core::settings::max_vram_gib;
 use guesthouse_app_core::tasks::Status;
 
 const VM_MUST_BE_OFF: &str = "The VM must be off to change these.";
+const SOUND_NOTE: &str = "Through PipeWire. Off, the guest's sound card plays nothing, and QEMU gets no way to your \
+                          audio server or any other socket of your desktop's.";
 
 pub struct Hardware {
     group: adw::PreferencesGroup,
@@ -17,6 +19,7 @@ pub struct Hardware {
     vram: adw::SpinRow,
     pin: adw::SwitchRow,
     pin_possible: bool,
+    sound: adw::SwitchRow,
 }
 
 impl Hardware {
@@ -67,7 +70,15 @@ impl Hardware {
             format!("Keeps the VM on CPUs {}.", cpu_list(&cpus))
         });
         group.add(&pin);
-        let this = Self { group, cores, ram, vram, pin, pin_possible: !cpus.is_empty() };
+        // Only a GPU machine has ever had sound.
+        let sound = adw::SwitchRow::builder()
+            .title("Sound")
+            .subtitle(SOUND_NOTE)
+            .active(machine.sound)
+            .visible(machine.kind == Kind::Windows)
+            .build();
+        group.add(&sound);
+        let this = Self { group, cores, ram, vram, pin, pin_possible: !cpus.is_empty(), sound };
         this.connect(shared);
         this
     }
@@ -93,6 +104,11 @@ impl Hardware {
             saving.machine.borrow_mut().vcache_pin = row.is_active();
             saving.save();
         });
+        let saving = shared.clone();
+        self.sound.connect_active_notify(move |row| {
+            saving.machine.borrow_mut().sound = row.is_active();
+            saving.save();
+        });
     }
 
     pub fn set_status(&self, status: &Status) {
@@ -101,6 +117,7 @@ impl Hardware {
         self.ram.set_sensitive(off);
         self.vram.set_sensitive(off);
         self.pin.set_sensitive(off && self.pin_possible);
+        self.sound.set_sensitive(off);
         self.group.set_description((!off).then_some(VM_MUST_BE_OFF));
     }
 }

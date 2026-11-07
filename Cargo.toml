@@ -10,6 +10,7 @@ default-members = [
     "crates/core",
     "crates/daemon",
     "crates/frame-socket",
+    "crates/jail",
     "crates/messages",
     "crates/replay",
     "crates/sensors",
@@ -35,6 +36,7 @@ guesthouse-daemon = { path = "crates/daemon" }
 guesthouse-app-core = { path = "crates/app-core" }
 guesthouse-frame-socket = { path = "crates/frame-socket" }
 guesthouse-sensors = { path = "crates/sensors" }
+guesthouse-jail = { path = "crates/jail" }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

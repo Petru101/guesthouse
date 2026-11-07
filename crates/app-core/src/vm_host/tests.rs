@@ -80,8 +80,13 @@ fn end_pretend_program(file: &Path) {
     }
 }
 
+/// The scratch context offers no jail, so a GPU machine here may start without one.
+fn gpu_machine() -> Machine {
+    Machine { start_without_jail: true, ..Machine::new("vm", "VM", "/d", "/v") }
+}
+
 fn windows_plan(context: &crate::context::Context) -> (Machine, VmPlan) {
-    let machine = Machine::new("vm", "VM", "/d", "/v");
+    let machine = gpu_machine();
     machine.save(context).unwrap();
     make_token(context, &machine).unwrap();
     let plan = VmPlan::new(context, &machine, Boot::Gpu, slots::first(), 0);
@@ -183,7 +188,7 @@ fn a_daemon_that_stops_says_why_and_no_qemu_is_started() {
     context.paths.qemu = scratch.program("not-qemu", &format!("#!/bin/sh\ntouch {}\n", marker.display()));
     scratch.program("bin/guesthouse-daemon", "#!/bin/sh\necho 'no card here'\nexit 1\n");
     let host = LocalHost { context: &context };
-    let machine = Machine::new("vm", "VM", "/d", "/v");
+    let machine = gpu_machine();
     let plan = VmPlan::new(&context, &machine, Boot::Gpu, slots::first(), 0);
     let error = host.start(&plan, &machine).unwrap_err();
     assert!(error.0.contains("the daemon stopped: no card here"), "{error}");
@@ -255,8 +260,111 @@ fn memory_that_doesnt_fit_stops_a_start_before_anything_runs() {
     scratch.program("bin/guesthouse-daemon", &daemon);
     context.paths.qemu = scratch.program("not-qemu", &daemon);
     let host = LocalHost { context: &context };
-    let machine = Machine::new("vm", "VM", "/d", "/v");
+    let machine = gpu_machine();
     let plan = VmPlan::new(&context, &machine, Boot::Gpu, slots::first(), 0);
     assert_eq!(host.start(&plan, &machine).unwrap_err().0, "no room for it");
     assert!(!marker.exists(), "neither the daemon nor QEMU may start");
+}
+
+/// Skips the launcher's words and runs what comes after, as the real one does once it's jailed.
+const PRETEND_LAUNCHER: &str = "#!/bin/sh\nwhile [ \"$1\" != -- ]; do shift; done\nshift\nexec \"$@\"\n";
+
+fn a_kernel_with_landlock(_: &VmPlan) -> crate::jailing::Offer {
+    crate::jailing::Offer {
+        support: guesthouse_jail::Support { landlock_abi: 10, seccomp: true },
+        ..crate::jailing::Offer::nothing()
+    }
+}
+
+#[test]
+fn a_jailed_start_runs_qemu_through_the_launcher_with_a_clean_environment() {
+    let scratch = Scratch::new();
+    let mut context = scratch_context(&scratch);
+    let (daemon, qemu) = pretend_programs(&scratch, &mut context);
+    let seen = scratch.path("qemu-environment");
+    let qemu_program = format!(
+        "#!/bin/sh\nenv > {}\necho $$ > {}\nexec sleep {PRETEND_LIFE_SECONDS}\n",
+        seen.display(),
+        qemu.display()
+    );
+    context.paths.qemu = scratch.program("not-qemu", &qemu_program);
+    scratch.program("bin/guesthouse-jail", PRETEND_LAUNCHER);
+    context.jail_offer = a_kernel_with_landlock;
+    context.agent = Arc::new(ScriptedAgent::answering(&["up"]));
+    let machine = Machine::new("vm", "VM", "/d", "/v");
+    machine.save(&context).unwrap();
+    make_token(&context, &machine).unwrap();
+    let plan = VmPlan::new(&context, &machine, Boot::Gpu, slots::first(), 0);
+    let started = LocalHost { context: &context }.start(&plan, &machine);
+    // The pretend agent answers at once, so QEMU may not have got far yet.
+    left_running(&qemu);
+    let environment = fs::read_to_string(&seen).unwrap_or_default();
+    end_pretend_program(&qemu);
+    end_pretend_program(&daemon);
+    assert_eq!(started, Ok(()));
+    assert!(environment.contains("PATH=/usr/bin"), "{environment}");
+    assert!(!environment.contains("HOME="), "the app's environment stays behind: {environment}");
+    assert!(plan.io_file.exists(), "the window's file is there for the jail to name");
+    let note = crate::jailing::read_note(&plan.run_folder).unwrap();
+    assert!(note.starts_with("Jailed, without namespaces"), "{note}");
+}
+
+#[test]
+fn a_machine_that_cant_be_jailed_doesnt_start_unless_allowed() {
+    let scratch = Scratch::new();
+    let mut context = scratch_context(&scratch);
+    let (daemon, qemu) = pretend_programs(&scratch, &mut context);
+    let machine = Machine::new("vm", "VM", "/d", "/v");
+    let plan = VmPlan::new(&context, &machine, Boot::Gpu, slots::first(), 0);
+    let refused = LocalHost { context: &context }.start(&plan, &machine).unwrap_err();
+    assert!(refused.0.contains("can't be jailed"), "{refused}");
+    assert_eq!((read_pid(&daemon), read_pid(&qemu)), (None, None), "nothing ran");
+}
+
+#[test]
+fn a_machine_allowed_to_start_unjailed_tells_the_daemon_and_its_row() {
+    let scratch = Scratch::new();
+    let mut context = scratch_context(&scratch);
+    let (daemon, qemu) = pretend_programs(&scratch, &mut context);
+    let seen = scratch.path("daemon-environment");
+    let daemon_program = format!(
+        "#!/bin/sh\nenv > {}\necho $$ > {}\ntouch \"$1/run/vgpu.sock\" \"$1/run/global.sock\"\nexec sleep {PRETEND_LIFE_SECONDS}\n",
+        seen.display(),
+        daemon.display()
+    );
+    scratch.program("bin/guesthouse-daemon", &daemon_program);
+    context.agent = Arc::new(ScriptedAgent::answering(&["up"]));
+    let (machine, plan) = windows_plan(&context);
+    let started = LocalHost { context: &context }.start(&plan, &machine);
+    left_running(&qemu);
+    end_pretend_program(&qemu);
+    end_pretend_program(&daemon);
+    assert_eq!(started, Ok(()));
+    assert!(fs::read_to_string(&seen).unwrap().contains("GUESTHOUSE_JAIL=off"));
+    let note = crate::jailing::read_note(&plan.run_folder).unwrap();
+    assert!(note.starts_with("Not jailed: "), "{note}");
+}
+
+#[test]
+fn a_machine_with_its_sound_off_gets_no_pipewire_and_no_sockets_of_its_own() {
+    let scratch = Scratch::new();
+    let mut context = scratch_context(&scratch);
+    let (daemon, qemu) = pretend_programs(&scratch, &mut context);
+    let said = scratch.path("launcher-words");
+    let launcher = format!("#!/bin/sh\necho \"$@\" > {}\n{}", said.display(), &PRETEND_LAUNCHER[10..]);
+    scratch.program("bin/guesthouse-jail", &launcher);
+    context.jail_offer = a_kernel_with_landlock;
+    context.agent = Arc::new(ScriptedAgent::answering(&["up"]));
+    let machine = Machine { sound: false, ..Machine::new("vm", "VM", "/d", "/v") };
+    machine.save(&context).unwrap();
+    make_token(&context, &machine).unwrap();
+    let plan = VmPlan::new(&context, &machine, Boot::Gpu, slots::first(), 0);
+    let started = LocalHost { context: &context }.start(&plan, &machine);
+    left_running(&qemu);
+    end_pretend_program(&qemu);
+    end_pretend_program(&daemon);
+    assert_eq!(started, Ok(()));
+    let words = fs::read_to_string(&said).unwrap();
+    assert!(words.contains("--no-new-unix-sockets"), "{words}");
+    assert!(words.contains("none,id=silent") && !words.contains("pipewire"), "{words}");
 }

@@ -1,7 +1,7 @@
 //! The guest's network, as QEMU's words.
 
 use super::arguments::words;
-use super::{SHARE_ADDRESS, VmPlan};
+use super::{SHARE_ADDRESS, TAP_FD, VmPlan};
 use crate::network::{self, CONTROL_MAC, GUEST_AGENT_PORT, Mode, bridge_helper};
 use crate::text::{qemu_value, shell_quote};
 
@@ -45,6 +45,8 @@ impl VmPlan {
             }
             (Mode::Nat, false) => format!("user,{model},{link}"),
             (Mode::None, _) => format!("user,{model},restrict=on,{link}"),
+            // The jail's launcher has the device from the helper already, as QEMU can't run it.
+            (Mode::Bridged, _) if self.jail.is_some() => format!("tap,{model},fd={TAP_FD}"),
             (Mode::Bridged, _) => {
                 let bridge = if self.network.bridge.is_empty() {
                     network::DEFAULT_BRIDGE

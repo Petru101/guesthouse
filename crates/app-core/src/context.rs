@@ -3,8 +3,10 @@
 use crate::agent::{GuestAgent, TcpAgent};
 use crate::bridge::BridgeHost;
 use crate::clock::{Clock, RealClock};
+use crate::jailing::Offer;
 use crate::monitor::{Monitor, QmpMonitor};
 use crate::paths::Paths;
+use crate::vm_args::VmPlan;
 use guesthouse_daemon::slot::Slot;
 use std::fs::{self, DirBuilder, Permissions};
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
@@ -38,6 +40,8 @@ pub struct Context {
     pub meminfo: PathBuf,
     /// Claims a guest's memory. A test has no gigabytes to spare.
     pub reserve_memory: fn(&Path, u64) -> crate::Result<()>,
+    /// What this PC offers a GPU machine's jail. A test's pretend programs can't be jailed.
+    pub jail_offer: fn(&VmPlan) -> Offer,
     /// Stands in for what this PC can give a GPU machine, which depends on everything else running.
     pub ram_limit: Option<u64>,
     pub bridge: BridgeHost,
@@ -63,6 +67,7 @@ impl Context {
             driver_version_file: "/sys/module/nvidia/version".into(),
             meminfo: "/proc/meminfo".into(),
             reserve_memory: crate::guest_memory::reserve,
+            jail_offer: Offer::here,
             ram_limit: None,
             bridge: BridgeHost::default(),
             monitor: Arc::new(QmpMonitor),

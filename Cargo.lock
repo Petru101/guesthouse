@@ -556,7 +556,9 @@ version = "0.2.0"
 dependencies = [
  "chrono",
  "guesthouse-daemon",
+ "guesthouse-jail",
  "guesthouse-sensors",
+ "libc",
  "regex",
  "rustix",
  "serde",
@@ -619,7 +621,9 @@ dependencies = [
  "guesthouse-backend-standin",
  "guesthouse-core",
  "guesthouse-frame-socket",
+ "guesthouse-jail",
  "guesthouse-messages",
+ "guesthouse-sensors",
  "guesthouse-transport",
  "libc",
  "log",
@@ -631,6 +635,13 @@ name = "guesthouse-frame-socket"
 version = "0.2.0"
 dependencies = [
  "rustix",
+]
+
+[[package]]
+name = "guesthouse-jail"
+version = "0.2.0"
+dependencies = [
+ "libc",
 ]
 
 [[package]]

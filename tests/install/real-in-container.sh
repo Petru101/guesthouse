@@ -59,7 +59,7 @@ check_app() {
 
 # -r also resolves every symbol, so a library that's here but too old shows too.
 check_libraries() {
-    for program in guesthouse guesthouse-check guesthouse-daemon guesthouse-share guesthouse-task \
+    for program in guesthouse guesthouse-check guesthouse-daemon guesthouse-jail guesthouse-share guesthouse-task \
         qemu/build/qemu-system-x86_64 qemu/build/nvfwd-sensord; do
         [ -e "$current/$program" ] || fail "$program isn't there"
         ldd -r "$current/$program" >"$T/ldd" 2>&1 || true

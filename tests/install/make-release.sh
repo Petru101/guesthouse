@@ -14,7 +14,7 @@ name=guesthouse-$version-x86_64
 tree=$releases/tree-$version/$name
 
 mkdir -p "$tree/qemu/build" "$tree/qemu/pc-bios" "$tree/share" "$releases/v$version"
-for program in guesthouse guesthouse-no-hdr guesthouse-daemon guesthouse-task guesthouse-share; do
+for program in guesthouse guesthouse-no-hdr guesthouse-daemon guesthouse-jail guesthouse-task guesthouse-share; do
     printf '#!/bin/sh\necho "%s %s"\n' "$program" "$version" >"$tree/$program"
 done
 printf '#!/bin/sh\necho "qemu %s"\n' "$version" >"$tree/qemu/build/qemu-system-x86_64"

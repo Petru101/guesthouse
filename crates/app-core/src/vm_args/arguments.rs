@@ -20,7 +20,7 @@ const IO_MEMORY_SIZE: &str = "64G";
 const HOST_CAPABILITIES: u32 = 1;
 const MIB: u64 = 1 << 20;
 const BYTES_PER_PIXEL: u64 = 4;
-const RECONNECT_MS: u32 = 500;
+pub(super) const MONITOR_SOCKETS: [&str; 4] = ["qmp.sock", "watch.sock", "input.sock", DISPLAY_SOCKET];
 
 impl VmPlan {
     /// The firmware only offers modes that fit the VGA memory, and with Windows' highestmode boot
@@ -101,9 +101,15 @@ impl VmPlan {
             "-display",
             "dbus,p2p=yes",
         ]));
-        for socket in ["qmp.sock", "watch.sock", "input.sock", DISPLAY_SOCKET] {
-            arguments
-                .extend(words(&["-qmp", &format!("unix:{},server=on,wait=off", self.in_run_folder(socket))]));
+        if self.passes_unix_sockets() {
+            arguments.extend(self.monitors_on_descriptors());
+        } else {
+            for socket in MONITOR_SOCKETS {
+                arguments.extend(words(&[
+                    "-qmp",
+                    &format!("unix:{},server=on,wait=off", self.in_run_folder(socket)),
+                ]));
+            }
         }
         arguments.extend(words(&[
             "-serial",
@@ -141,7 +147,7 @@ impl VmPlan {
             "-device",
             "hv-timesync",
             "-chardev",
-            &format!("socket,id=gpg,path={},reconnect-ms={RECONNECT_MS}", self.in_run_folder("global.sock")),
+            &self.client_socket("gpg", "global.sock"),
             // On tmpfs, because the GPU pins these pages.
             "-object",
             &format!(
@@ -153,7 +159,7 @@ impl VmPlan {
                 "gpupv-global,chardev=gpg,instanceid={GLOBAL_INSTANCE},iomem=gpio,iomem-base={VMBUS_WINDOW_BASE}"
             ),
             "-chardev",
-            &format!("socket,id=gpv,path={},reconnect-ms={RECONNECT_MS}", self.in_run_folder("vgpu.sock")),
+            &self.client_socket("gpv", "vgpu.sock"),
             "-device",
             &format!("gpupv-vgpu,chardev=gpv,instanceid={VGPU_INSTANCE}"),
             // Shared, because the GPU maps some of the guest's own pages.
@@ -214,7 +220,7 @@ impl VmPlan {
         if self.tpm.is_some() {
             arguments.extend(words(&[
                 "-chardev",
-                &format!("socket,id=tpm,path={}", self.in_run_folder("tpm.sock")),
+                &self.client_socket("tpm", "tpm.sock"),
                 "-tpmdev",
                 "emulator,id=tpm0,chardev=tpm",
                 "-device",
@@ -222,6 +228,7 @@ impl VmPlan {
             ]));
         }
         arguments.extend(self.second_nic());
+        arguments.extend(self.qemu_sandbox_arguments());
         arguments
     }
 
@@ -229,6 +236,7 @@ impl VmPlan {
     pub fn qemu_command(&self) -> Vec<String> {
         let qemu = self.qemu.to_string_lossy().into_owned();
         let mut command = self.ubuntu_launcher();
+        command.extend(self.jail_words());
         if let Some(cpus) = &self.pin {
             command.extend(words(&["taskset", "-c", cpus]));
         }
@@ -237,9 +245,17 @@ impl VmPlan {
         command
     }
 
-    /// What QEMU needs in its environment: the share's program finds its folder there.
+    /// What QEMU needs in its environment: the share's program finds its folder there. A jailed QEMU
+    /// gets this and no more, and the rest of the app's is cleared: see [`Self::clears_environment`].
     pub fn qemu_environment(&self) -> Vec<(String, String)> {
-        self.share.iter().map(|folder| ("SHARE".to_owned(), folder.clone())).collect()
+        let mut environment =
+            self.jail.as_ref().map(|jail| self.jailed_environment(jail)).unwrap_or_default();
+        environment.extend(self.share.iter().map(|folder| ("SHARE".to_owned(), folder.clone())));
+        environment
+    }
+
+    pub fn clears_environment(&self) -> bool {
+        self.jail.is_some()
     }
 
     /// The virtual TPM's process. It ends when QEMU lets go of it, so nothing has to stop it.

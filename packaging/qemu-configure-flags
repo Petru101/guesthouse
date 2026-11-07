@@ -1,6 +1,7 @@
 --target-list=x86_64-softmmu
 --enable-kvm
 --enable-slirp
+--enable-seccomp
 --enable-dbus-display
 --enable-pipewire
 --audio-drv-list=pipewire
