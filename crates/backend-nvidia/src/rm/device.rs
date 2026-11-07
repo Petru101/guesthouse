@@ -13,6 +13,8 @@ const DEVICE_HANDLE: Handle = 0xC000_0001;
 const SUBDEVICE_HANDLE: Handle = 0xC000_0002;
 const FIRST_OBJECT: Handle = 0xC000_1000;
 
+/// Which of the host's cards the device is, counting from zero in the RM's order.
+const DEVICE_PARAM_CARD: usize = 0x00;
 /// Each channel gets its own address space from this client, which needs this mode on the device.
 const VA_MODE_MULTIPLE: u32 = 2;
 const DEVICE_PARAM_VA_MODE: usize = 0x30;
@@ -83,10 +85,16 @@ pub struct Device<R> {
 }
 
 impl<R: Rm> Device<R> {
-    /// Makes the client, device and subdevice that everything else hangs from.
-    pub fn open(mut rm: R, sizes: &'static HostBranch) -> Result<Self, RmError> {
+    /// Makes the client, device and subdevice that everything else hangs from, on the first card.
+    pub fn open(rm: R, sizes: &'static HostBranch) -> Result<Self, RmError> {
+        Self::open_card(rm, sizes, 0)
+    }
+
+    /// The same on the card with this number. Only the first has been run.
+    pub fn open_card(mut rm: R, sizes: &'static HostBranch, card: u32) -> Result<Self, RmError> {
         let client = rm.new_client()?;
         let mut params = vec![0; sizes.device_params];
+        put_u32(&mut params, DEVICE_PARAM_CARD, card);
         put_u32(&mut params, DEVICE_PARAM_VA_MODE, VA_MODE_MULTIPLE);
         let status = rm.alloc(client, DEVICE_HANDLE, DEVICE, &mut params)?;
         RmError::check(|| format!("class {DEVICE:#x}"), status)?;
@@ -268,6 +276,16 @@ mod tests {
         let (_, params) = device.rm.allocated().next().unwrap();
         assert_eq!(params[DEVICE_PARAM_VA_MODE], VA_MODE_MULTIPLE as u8);
         assert_eq!(params.len(), HOST_615.device_params);
+    }
+
+    #[test]
+    fn the_first_card_is_the_default_and_another_is_named_in_the_device() {
+        let device = device();
+        let (_, params) = device.rm.allocated().next().unwrap();
+        assert_eq!(params[DEVICE_PARAM_CARD..DEVICE_PARAM_CARD + 4], [0, 0, 0, 0]);
+        let second = Device::open_card(FakeRm::new(), &HOST_615, 1).unwrap();
+        let (_, params) = second.rm.allocated().next().unwrap();
+        assert_eq!(params[DEVICE_PARAM_CARD..DEVICE_PARAM_CARD + 4], [1, 0, 0, 0]);
     }
 
     #[test]

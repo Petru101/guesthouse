@@ -14,7 +14,8 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::ptr;
 
 const CONTROL_DEVICE: &str = "/dev/nvidiactl";
-const GPU_DEVICE: &str = "/dev/nvidia0";
+/// Each card's device file is this with its number on the end.
+const GPU_DEVICE_PREFIX: &str = "/dev/nvidia";
 
 const IOCTL_READ_WRITE: u64 = 3 << 30;
 const IOCTL_SIZE_SHIFT: u32 = 16;
@@ -133,6 +134,7 @@ impl AlignedParams {
 pub struct LinuxRm {
     control_file: File,
     gpu_file: File,
+    gpu_path: String,
     client: Handle,
     sizes: &'static HostBranch,
     doorbell: *mut u8,
@@ -141,22 +143,36 @@ pub struct LinuxRm {
 }
 
 impl LinuxRm {
-    /// Opens the device files, and tells the kernel module which version this client was written
-    /// for. Call this only once the start decision has passed.
+    /// Opens the device files of the first card, and tells the kernel module which version this
+    /// client was written for. Call this only once the start decision has passed.
     pub fn open(version: &str, sizes: &'static HostBranch) -> Result<Self, RmError> {
-        let open = |path| {
+        Self::open_card(version, sizes, 0)
+    }
+
+    /// The same for the card with this number, which is its device file's and the one its line in
+    /// `/proc/driver/nvidia/gpus` calls the minor. Only the first has been run.
+    pub fn open_card(version: &str, sizes: &'static HostBranch, card: u32) -> Result<Self, RmError> {
+        let open = |path: &str| {
             let file = OpenOptions::new().read(true).write(true).open(path);
             file.map_err(|error| system(path, error))
         };
         let control_file = open(CONTROL_DEVICE)?;
-        let gpu_file = open(GPU_DEVICE)?;
+        let gpu_path = format!("{GPU_DEVICE_PREFIX}{card}");
+        let gpu_file = open(&gpu_path)?;
         let mut request = [0; VERSION_REQUEST_SIZE];
         put32(&mut request, 0, VERSION_COMMAND_STRICT);
         let text = version.as_bytes();
         request[VERSION_STRING_AT..VERSION_STRING_AT + text.len()].copy_from_slice(text);
         ioctl(&control_file, ESCAPE_CHECK_VERSION, &mut request)?;
-        let rm =
-            Self { control_file, gpu_file, client: 0, sizes, doorbell: ptr::null_mut(), render_node: None };
+        let rm = Self {
+            control_file,
+            gpu_file,
+            gpu_path,
+            client: 0,
+            sizes,
+            doorbell: ptr::null_mut(),
+            render_node: None,
+        };
         rm.register(&rm.gpu_file)?;
         Ok(rm)
     }
@@ -340,7 +356,7 @@ impl Rm for LinuxRm {
 
     fn map_doorbell(&mut self, subdevice: Handle, usermode: Handle) -> Result<(), RmError> {
         let sizes = self.sizes;
-        let path = GPU_DEVICE;
+        let path = self.gpu_path.as_str();
         let file = OpenOptions::new().read(true).write(true).open(path);
         let file = file.map_err(|error| system(path, error))?;
         self.register(&file)?;
