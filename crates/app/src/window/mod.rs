@@ -31,7 +31,7 @@ use guesthouse_daemon::slot::Slot;
 use library_page::LibraryPage;
 use refresh::RefreshState;
 use serde_json::{Value, json};
-use std::cell::{Cell, RefCell};
+use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -59,6 +59,7 @@ struct Inner {
     vm_running: Cell<bool>,
     host_key_down: Cell<bool>,
     refresh: RefCell<RefreshState>,
+    screen_watch: OnceCell<Option<Rc<screen_hdr::ScreenWatch>>>,
 }
 
 /// A handle to the window, which any page can hold.
@@ -99,6 +100,7 @@ impl Window {
             vm_running: Cell::new(false),
             host_key_down: Cell::new(false),
             refresh: RefCell::default(),
+            screen_watch: OnceCell::new(),
         }));
         this.add_style();
         this.0.library.connect_new_machine(&this);

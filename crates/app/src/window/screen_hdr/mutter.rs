@@ -1,4 +1,4 @@
-//! Asking Mutter over D-Bus.
+//! Asking Mutter over D-Bus, for a GNOME whose Mutter doesn't offer the colour management protocol.
 
 use super::Window;
 use gtk::{gio, glib};
