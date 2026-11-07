@@ -69,6 +69,9 @@ impl QueueChannel {
 struct PendingMove {
     ring_address: u64,
     ring_entries: u32,
+    /// The move submission's fence. It retires with that submission, whose last method is the move.
+    fence: u64,
+    reached: u64,
 }
 
 /// A queue, as far as the GPU goes.
@@ -305,6 +308,24 @@ impl<R: Rm> NvidiaBackend<R> {
         host.write_u64(at, entry).is_ok()
     }
 
+    /// The move submission has retired, so the GPU has run the move. Counting switches to the new
+    /// ring now, and not before: a doorbell for the new ring is a small index, and storing it while
+    /// the GPU is still on the old ring stops it short of the move.
+    fn settle_move(&mut self, host: &dyn HostServices, queue_id: u32) -> Result<(), WorkStart> {
+        let Some(pending) = self.queues.get(&queue_id).and_then(|queue| queue.pending_move) else {
+            return Ok(());
+        };
+        let seen = host.fence_value(pending.fence).unwrap_or(0);
+        if seen < pending.reached {
+            return Err(WorkStart::Busy);
+        }
+        let queue = self.queues.get_mut(&queue_id).expect("the pending move was just read");
+        let Some(pending) = queue.pending_move.take() else { return Ok(()) };
+        let QueueChannel::Ring { channel, ring_address } = &mut queue.channel else { return Ok(()) };
+        Self::finish_ring_move(channel, ring_address, &mut queue.position, pending);
+        Ok(())
+    }
+
     fn start_on_ring(
         &mut self,
         host: &mut dyn HostServices,
@@ -313,6 +334,7 @@ impl<R: Rm> NvidiaBackend<R> {
         entries: u32,
         end: u32,
     ) -> Result<u32, WorkStart> {
+        self.settle_move(host, work.queue)?;
         let first = end.saturating_sub(entries);
         self.ring_channel(host, work, ring_address, first);
         if let Some(old_ring) = self.queue_ring(work.queue).filter(|known| *known != ring_address) {
@@ -379,7 +401,8 @@ impl<R: Rm> NvidiaBackend<R> {
         if let Err(error) = channel.register_move(&mut self.device, handle, ring_address, ring_entries) {
             return Err(stop(&format!("the move can't be registered: {error}")));
         }
-        queue.pending_move = Some(PendingMove { ring_address, ring_entries });
+        queue.pending_move =
+            Some(PendingMove { ring_address, ring_entries, fence: work.fence, reached: work.fence_value });
         // The doorbell for the new ring can come before the GPU has moved, and the GPU takes a
         // position below its own as the ring wrapping. What it would run past the move is the old
         // ring's stale entries, so those go, all but the ones a submission can still be waiting on.
@@ -582,20 +605,17 @@ impl<R: Rm> NvidiaBackend<R> {
         let Some(queue) = self.queues.get_mut(&handle) else { return };
         let position = position as u32;
         match &mut queue.channel {
-            QueueChannel::Ring { channel, ring_address } => {
-                channel.advance(&mut self.device, position);
-                if let Some(pending) = queue.pending_move.take() {
-                    Self::finish_ring_move(channel, ring_address, &mut queue.position, pending);
-                }
-            }
+            // The move itself stays pending until its fence retires. Switching here would let the
+            // next doorbell store a new-ring index over the put the GPU still has to reach.
+            QueueChannel::Ring { channel, .. } => channel.advance(&mut self.device, position),
             QueueChannel::List(list) => list.channel.advance(&mut self.device, position),
             QueueChannel::Unusable => {}
         }
     }
 
-    /// The GPU runs out the old ring and moves on its own, and the control block says nothing of
-    /// it: GP_GET there never changes. From here the channel counts on the new ring, from the entry
-    /// the guest's driver left at its start, and the next doorbell runs that entry with its own.
+    /// The move submission's fence has retired, so the GPU has run the method and is on the new ring.
+    /// GP_GET in the control block never moves, which is why the fence is the signal instead.
+    /// From here the channel counts on the new ring, from the entry the driver left at its start.
     fn finish_ring_move(
         channel: &mut Channel,
         ring_address: &mut u64,
