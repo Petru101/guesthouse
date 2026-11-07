@@ -47,7 +47,18 @@ fn serve_monitor(mut stream: UnixStream) {
 fn listen_on(socket: &str) {
     // QEMU replaces a socket an earlier run left.
     let _ = fs::remove_file(socket);
-    let listener = UnixListener::bind(socket).unwrap();
+    serve_monitors(UnixListener::bind(socket).unwrap());
+}
+
+/// A monitor on a socket the jail's launcher opened, as a QEMU with no sound gets them.
+fn listen_on_descriptor(chardev: &str) {
+    use std::os::fd::FromRawFd;
+    let fd = chardev.split(',').find_map(|part| part.strip_prefix("fd=")).unwrap().parse().unwrap();
+    // SAFETY: the launcher left this socket open for QEMU, and nothing else here holds it.
+    serve_monitors(unsafe { UnixListener::from_raw_fd(fd) });
+}
+
+fn serve_monitors(listener: UnixListener) {
     thread::spawn(move || {
         for stream in listener.incoming().map_while(Result::ok) {
             thread::spawn(move || serve_monitor(stream));
@@ -96,6 +107,9 @@ fn pretend_qemu(arguments: &[String]) {
         return;
     }
     for pair in arguments.windows(2) {
+        if pair[0] == "-chardev" && pair[1].starts_with("socket,id=monitor") {
+            listen_on_descriptor(&pair[1]);
+        }
         if pair[0] == "-qmp" {
             let path = pair[1].strip_prefix("unix:").unwrap().split(',').next().unwrap();
             listen_on(path);

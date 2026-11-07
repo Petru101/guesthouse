@@ -83,13 +83,14 @@ fn daemon_calls() {
 }
 
 fn qemu_calls() {
-    seccomp::install(&filters::qemu(false), Threads::This).unwrap();
+    seccomp::install(&filters::qemu(false, false), Threads::This).unwrap();
     let traced = unsafe { libc::ptrace(libc::PTRACE_ATTACH, libc::getppid(), 0, 0) };
     assert_eq!((traced, std::io::Error::last_os_error().raw_os_error()), (-1, Some(libc::EPERM)));
     assert_eq!(unsafe { libc::unshare(libc::CLONE_NEWUSER) }, -1);
     let byte = 0u8;
     assert_eq!(unsafe { libc::ioctl(0, libc::TIOCSTI, &raw const byte) }, -1);
     // QEMU still runs programs and threads.
+    assert!(UnixStream::pair().is_ok());
     assert!(Command::new("/usr/bin/true").status().unwrap().success());
 }
 
@@ -134,7 +135,20 @@ fn bridged_device() {
     assert_eq!(flags & libc::FD_CLOEXEC, 0, "it stays open for QEMU");
 }
 
-const CASES: [(&str, fn()); 6] = [
+fn qemu_with_no_new_unix_sockets() {
+    seccomp::install(&filters::qemu(false, true), Threads::This).unwrap();
+    assert!(
+        refused(UnixStream::connect("/run/user/1000/bus"))
+            || unsafe { *libc::__errno_location() } == libc::EPERM
+    );
+    let made = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0) };
+    assert_eq!((made, std::io::Error::last_os_error().raw_os_error()), (-1, Some(libc::EPERM)));
+    assert!(UnixStream::pair().is_ok(), "a pair reaches nothing");
+    assert!(TcpListener::bind(("127.0.0.1", 0)).is_ok(), "the user network stays");
+}
+
+const CASES: [(&str, fn()); 7] = [
+    ("qemu_with_no_new_unix_sockets", qemu_with_no_new_unix_sockets),
     ("bridged_device", bridged_device),
     ("files_and_ports", files_and_ports),
     ("devices", devices),

@@ -70,13 +70,17 @@ const TERMINAL_REQUESTS: [c_ulong; 2] = [TIOCSTI, TIOCLINUX];
 
 /// The filter for QEMU. With `own_sandboxes`, a program it starts makes namespaces of its own, as
 /// passt does for its sandbox, so those calls stay open.
-pub fn qemu(own_sandboxes: bool) -> Filter {
+pub fn qemu(own_sandboxes: bool, no_new_unix_sockets: bool) -> Filter {
     let mut rules: Vec<Rule> = all(&DENIED, Action::Fail(EPERM)).collect();
     rules.extend(
         TERMINAL_REQUESTS
             .iter()
             .map(|request| Rule::when(SYS_ioctl, Condition::Equals(1, *request as u32), Action::Fail(EPERM))),
     );
+    if no_new_unix_sockets {
+        // Pairs can't reach anything outside, and the ones it needs were opened before.
+        rules.push(Rule::when(SYS_socket, Condition::Equals(0, AF_UNIX as u32), Action::Fail(EPERM)));
+    }
     if !own_sandboxes {
         rules.extend(all(&MOUNTS, Action::Fail(EPERM)));
         rules.extend(all(&[SYS_unshare, SYS_setns], Action::Fail(EPERM)));
@@ -99,10 +103,10 @@ mod tests {
 
     #[test]
     fn namespaces_stay_open_only_for_a_program_with_a_sandbox_of_its_own() {
-        assert!(denies(&qemu(false), SYS_unshare));
-        assert!(denies(&qemu(false), SYS_mount));
-        assert!(!denies(&qemu(true), SYS_unshare));
-        assert!(!denies(&qemu(true), SYS_mount));
-        assert!(denies(&qemu(true), SYS_ptrace));
+        assert!(denies(&qemu(false, false), SYS_unshare));
+        assert!(denies(&qemu(false, false), SYS_mount));
+        assert!(!denies(&qemu(true, false), SYS_unshare));
+        assert!(!denies(&qemu(true, false), SYS_mount));
+        assert!(denies(&qemu(true, false), SYS_ptrace));
     }
 }

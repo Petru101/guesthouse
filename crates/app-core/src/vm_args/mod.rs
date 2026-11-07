@@ -9,7 +9,7 @@ mod nic;
 mod qemu_jail;
 mod ubuntu;
 
-pub use qemu_jail::TAP_FD;
+pub use qemu_jail::{PID_FILE, TAP_FD};
 pub use ubuntu::{FORWARDED_INPUT_SOCKET, FRAMES_PREFIX, INSTALL_LOG, ssh_port};
 
 use crate::context::Context;

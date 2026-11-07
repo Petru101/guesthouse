@@ -131,3 +131,23 @@ fn a_jailed_qemu_gets_a_clean_environment() {
     let rules = plan.qemu_jail_plan(&jail(true));
     assert!(granted(&rules, Grant::Own).contains(&"/home/me/Shared".to_owned()));
 }
+
+#[test]
+fn with_no_sound_the_launcher_opens_every_unix_socket_and_qemu_makes_none() {
+    let (_scratch, plan) = jailed(Machine { tpm: true, ..windows() }, false);
+    let jail = QemuJail { sound_socket: None, ..jail(false) };
+    let plan = VmPlan { jail: Some(jail), sound: None, ..plan };
+    let command = plan.qemu_command();
+    assert!(command.iter().any(|word| word == "--no-new-unix-sockets"));
+    assert_eq!(command.iter().filter(|word| *word == "--unix-listen").count(), 4);
+    assert_eq!(command.iter().filter(|word| *word == "--unix-connect").count(), 3);
+    let arguments = plan.qemu_arguments();
+    assert!(
+        !arguments.iter().any(|word| word.starts_with("unix:") || word.contains(",path=")),
+        "{arguments:?}"
+    );
+    assert!(arguments.iter().any(|word| word == "socket,id=gpv,fd=25"));
+    assert!(arguments.iter().any(|word| word == "socket,id=tpm,fd=26"));
+    let with_sound = VmPlan { sound: Some(crate::vm_args::Sound { sink: None }), ..plan };
+    assert!(!with_sound.qemu_command().iter().any(|word| word == "--no-new-unix-sockets"));
+}

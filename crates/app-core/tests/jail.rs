@@ -1,6 +1,7 @@
 //! QEMU's jail on this PC's kernel, with no VM. A GPU machine's plan is made as a start would make
 //! it, and its words are run with this program standing in for QEMU. In there it tries what a guest
-//! that had taken QEMU over would, and says how that went with its exit code.
+//! that had taken QEMU over would, and says how that went with its exit code. It has no sound, so the
+//! launcher opens QEMU's unix sockets and QEMU may make none.
 
 use guesthouse_app_core::linux::forwarding::sandbox_runs;
 use guesthouse_app_core::machine::Machine;
@@ -11,6 +12,7 @@ use guesthouse_jail::Support;
 use std::env;
 use std::fs;
 use std::net::TcpListener;
+use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::process::{self, Command};
 
@@ -38,6 +40,8 @@ fn probe() {
         ("not the home folder", fs::read_dir(variable("PROBE_HOME")).is_err()),
         ("its agent port", TcpListener::bind(("127.0.0.1", port("PROBE_AGENT_PORT"))).is_ok()),
         ("not another port", TcpListener::bind(("127.0.0.1", port("PROBE_OTHER_PORT"))).is_err()),
+        ("no new unix socket", unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0) } == -1),
+        ("its own unix sockets", (20..26).all(|fd| fs::read_link(format!("/proc/self/fd/{fd}")).is_ok())),
         ("no ptrace", unsafe { libc::ptrace(libc::PTRACE_ATTACH, libc::getppid(), 0, 0) } == -1),
         ("no new privileges", status_says(["NoNewPrivs:", "1"])),
         ("a filter", status_says(["Seccomp:", "2"])),
@@ -75,6 +79,9 @@ fn run_jailed(namespaces: bool) -> bool {
     fs::copy(env::current_exe().unwrap(), &qemu).unwrap();
     let plan = VmPlan::new(&context, &own, Boot::Gpu, slots::number(3), 0);
     fs::create_dir_all(&plan.run_folder).unwrap();
+    // The daemon's sockets, which the launcher connects to for a QEMU with no sound.
+    let _daemon =
+        ["global.sock", "vgpu.sock"].map(|name| UnixListener::bind(plan.run_folder.join(name)).unwrap());
     let jail = QemuJail {
         launcher: env!("CARGO_BIN_EXE_guesthouse-jail").into(),
         namespaces,

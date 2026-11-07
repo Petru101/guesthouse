@@ -90,8 +90,9 @@ fn without_namespaces(plan: &VmPlan, landlock_abi: u32) -> String {
         "bubblewrap can't make them on this PC"
     };
     let mut note = format!("Jailed, without namespaces: {why}.");
-    // Namespaces hide the session bus and the rest. Without them, only a newer Landlock can.
-    if landlock_abi < SOCKETS_BY_PATH_ABI {
+    // Namespaces hide the session bus and the rest. Without them, only a newer Landlock can, or
+    // QEMU getting its sockets from the launcher, which it can't with sound.
+    if landlock_abi < SOCKETS_BY_PATH_ABI && plan.sound.is_some() {
         note += " This kernel can't keep QEMU from your desktop's sockets without them.";
     }
     note
@@ -185,8 +186,18 @@ mod tests {
         let choice = choose_for(&windows(), &offer(10, false)).unwrap();
         assert!(choice.qemu.is_some());
         assert_eq!(choice.note, "Jailed, without namespaces: bubblewrap can't make them on this PC.");
-        let older = choose_for(&windows(), &offer(4, false)).unwrap();
-        assert!(older.note.contains("desktop's sockets"), "{}", older.note);
+        let quiet = choose_for(&windows(), &offer(4, false)).unwrap();
+        assert!(
+            !quiet.note.contains("desktop's sockets"),
+            "with no sound QEMU makes no sockets: {}",
+            quiet.note
+        );
+        let scratch = Scratch::new();
+        let context = scratch_context(&scratch);
+        let plan = VmPlan::new(&context, &windows(), Boot::Gpu, slots::first(), 0);
+        let with_sound = VmPlan { sound: Some(crate::vm_args::Sound { sink: None }), ..plan };
+        let loud = choose(&context, &windows(), &with_sound, &offer(4, false)).unwrap();
+        assert!(loud.note.contains("desktop's sockets"), "{}", loud.note);
     }
 
     #[test]

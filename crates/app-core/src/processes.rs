@@ -38,7 +38,9 @@ fn monitor_word(context: &Context, slot: Slot) -> Vec<u8> {
 
 fn names_slot(context: &Context, words: &Words, slot: Slot) -> bool {
     let wanted = monitor_word(context, slot);
-    words.iter().any(|word| word.starts_with(&wanted))
+    let pid_file = context.paths.run_folder(slot).join(crate::vm_args::PID_FILE);
+    let pid_file = pid_file.as_os_str().as_encoded_bytes();
+    words.iter().any(|word| word.starts_with(&wanted) || word == pid_file)
 }
 
 /// Finds a VM by its program and run folder.

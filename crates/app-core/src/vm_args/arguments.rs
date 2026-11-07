@@ -20,7 +20,7 @@ const IO_MEMORY_SIZE: &str = "64G";
 const HOST_CAPABILITIES: u32 = 1;
 const MIB: u64 = 1 << 20;
 const BYTES_PER_PIXEL: u64 = 4;
-const RECONNECT_MS: u32 = 500;
+pub(super) const MONITOR_SOCKETS: [&str; 4] = ["qmp.sock", "watch.sock", "input.sock", DISPLAY_SOCKET];
 
 impl VmPlan {
     /// The firmware only offers modes that fit the VGA memory, and with Windows' highestmode boot
@@ -101,9 +101,15 @@ impl VmPlan {
             "-display",
             "dbus,p2p=yes",
         ]));
-        for socket in ["qmp.sock", "watch.sock", "input.sock", DISPLAY_SOCKET] {
-            arguments
-                .extend(words(&["-qmp", &format!("unix:{},server=on,wait=off", self.in_run_folder(socket))]));
+        if self.passes_unix_sockets() {
+            arguments.extend(self.monitors_on_descriptors());
+        } else {
+            for socket in MONITOR_SOCKETS {
+                arguments.extend(words(&[
+                    "-qmp",
+                    &format!("unix:{},server=on,wait=off", self.in_run_folder(socket)),
+                ]));
+            }
         }
         arguments.extend(words(&[
             "-serial",
@@ -141,7 +147,7 @@ impl VmPlan {
             "-device",
             "hv-timesync",
             "-chardev",
-            &format!("socket,id=gpg,path={},reconnect-ms={RECONNECT_MS}", self.in_run_folder("global.sock")),
+            &self.client_socket("gpg", "global.sock"),
             // On tmpfs, because the GPU pins these pages.
             "-object",
             &format!(
@@ -153,7 +159,7 @@ impl VmPlan {
                 "gpupv-global,chardev=gpg,instanceid={GLOBAL_INSTANCE},iomem=gpio,iomem-base={VMBUS_WINDOW_BASE}"
             ),
             "-chardev",
-            &format!("socket,id=gpv,path={},reconnect-ms={RECONNECT_MS}", self.in_run_folder("vgpu.sock")),
+            &self.client_socket("gpv", "vgpu.sock"),
             "-device",
             &format!("gpupv-vgpu,chardev=gpv,instanceid={VGPU_INSTANCE}"),
             // Shared, because the GPU maps some of the guest's own pages.
@@ -214,7 +220,7 @@ impl VmPlan {
         if self.tpm.is_some() {
             arguments.extend(words(&[
                 "-chardev",
-                &format!("socket,id=tpm,path={}", self.in_run_folder("tpm.sock")),
+                &self.client_socket("tpm", "tpm.sock"),
                 "-tpmdev",
                 "emulator,id=tpm0,chardev=tpm",
                 "-device",

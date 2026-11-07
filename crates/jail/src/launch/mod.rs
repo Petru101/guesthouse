@@ -6,6 +6,7 @@
 //! `--tap` gets a bridged network's device from QEMU's setuid helper first, as a helper can't gain
 //! its privileges once the jail is on. The device is left open at `FD` for the program.
 
+mod handover;
 mod tap;
 
 pub use tap::open as open_tap;
@@ -21,6 +22,18 @@ use std::process::Command;
 const END_OF_PLAN: &str = "--";
 const OWN_SANDBOXES: &str = "--own-sandboxes";
 const TAP: &str = "--tap";
+const UNIX_LISTEN: &str = "--unix-listen";
+const UNIX_CONNECT: &str = "--unix-connect";
+const NO_NEW_UNIX_SOCKETS: &str = "--no-new-unix-sockets";
+
+/// A unix socket the launcher opens for the program, so the program needs to make none itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnixSocket {
+    pub path: PathBuf,
+    pub fd: i32,
+    /// Listening on the path, rather than connected to it.
+    pub listen: bool,
+}
 
 /// What a bridged network's device comes from.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -36,6 +49,9 @@ pub struct Launch {
     pub plan: Plan,
     pub own_sandboxes: bool,
     pub tap: Option<Tap>,
+    pub unix_sockets: Vec<UnixSocket>,
+    /// Refuse the program any unix socket it would make, which leaves it the ones opened for it.
+    pub no_new_unix_sockets: bool,
     pub program: Vec<OsString>,
 }
 
@@ -54,12 +70,26 @@ impl Launch {
                 tap.fd.to_string(),
             ]);
         }
+        for socket in &self.unix_sockets {
+            let kind = if socket.listen { UNIX_LISTEN } else { UNIX_CONNECT };
+            words.extend([kind.to_owned(), socket.path.display().to_string(), socket.fd.to_string()]);
+        }
+        if self.no_new_unix_sockets {
+            words.push(NO_NEW_UNIX_SOCKETS.to_owned());
+        }
         words.push(END_OF_PLAN.to_owned());
         words
     }
 
     pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<Self, String> {
-        let mut launch = Self { plan: Plan::default(), own_sandboxes: false, tap: None, program: Vec::new() };
+        let mut launch = Self {
+            plan: Plan::default(),
+            own_sandboxes: false,
+            tap: None,
+            unix_sockets: Vec::new(),
+            no_new_unix_sockets: false,
+            program: Vec::new(),
+        };
         let mut words = arguments.into_iter();
         let mut next = |after: &str| {
             let word = words.next().ok_or_else(|| format!("{after} needs a value"))?;
@@ -70,6 +100,17 @@ impl Launch {
             match name.as_str() {
                 END_OF_PLAN => break,
                 OWN_SANDBOXES => launch.own_sandboxes = true,
+                NO_NEW_UNIX_SOCKETS => launch.no_new_unix_sockets = true,
+                UNIX_LISTEN | UNIX_CONNECT => {
+                    let (path, fd) = (next(&name)?, next(&name)?);
+                    let fd =
+                        fd.parse().map_err(|_| format!("{name} needs a descriptor number, not {fd:?}"))?;
+                    launch.unix_sockets.push(UnixSocket {
+                        path: path.into(),
+                        fd,
+                        listen: name == UNIX_LISTEN,
+                    });
+                }
                 TAP => {
                     let (helper, bridge, fd) = (next(TAP)?, next(TAP)?, next(TAP)?);
                     let fd =
@@ -98,11 +139,16 @@ impl Launch {
         {
             return error;
         }
+        for socket in &self.unix_sockets {
+            if let Err(error) = handover::open_unix(socket) {
+                return error;
+            }
+        }
         let applied = match landlock::apply(&self.plan) {
             Ok(applied) => applied,
             Err(error) => return error,
         };
-        let filter = filters::qemu(self.own_sandboxes);
+        let filter = filters::qemu(self.own_sandboxes, self.no_new_unix_sockets);
         if let Err(error) = seccomp::install(&filter, Threads::This) {
             return error;
         }
@@ -131,6 +177,8 @@ mod tests {
             plan,
             own_sandboxes: true,
             tap: Some(Tap { helper: "/usr/libexec/qemu-bridge-helper".into(), bridge: "br0".into(), fd: 3 }),
+            unix_sockets: vec![UnixSocket { path: "/r/qmp.sock".into(), fd: 20, listen: true }],
+            no_new_unix_sockets: true,
             program: ["/usr/bin/qemu-system-x86_64", "-name", "gpupv", "--"].map(OsString::from).to_vec(),
         }
     }

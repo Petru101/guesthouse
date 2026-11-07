@@ -5,11 +5,19 @@
 //! stays out, and so does every other VM. What the network may do follows the machine's mode: NAT
 //! is the internet for the guest, so only binds are held to the forwarded ports.
 
+use super::arguments::{MONITOR_SOCKETS, words};
 use super::{QemuJail, VmPlan};
 use crate::network::{Mode, Protocol, bridge_helper};
-use guesthouse_jail::launch::{Launch, Tap};
+use guesthouse_jail::launch::{Launch, Tap, UnixSocket};
 use guesthouse_jail::{Grant, Network, Plan, Ports};
 use std::path::{Path, PathBuf};
+
+/// Where the launcher leaves QEMU's unix sockets, when it opens them: monitors first, then clients.
+const FIRST_UNIX_FD: i32 = 20;
+const CLIENT_SOCKETS: [(&str, &str); 3] = [("gpg", "global.sock"), ("gpv", "vgpu.sock"), ("tpm", "tpm.sock")];
+const RECONNECT_MS: u32 = 500;
+/// QEMU's pid file, which names the run folder in its words when no monitor socket does.
+pub const PID_FILE: &str = "qemu.pid";
 
 /// Where a bridged network's device is open for QEMU. Out of the way of what QEMU opens itself.
 pub const TAP_FD: i32 = 10;
@@ -161,10 +169,85 @@ impl VmPlan {
         let plan = self.qemu_jail_plan(jail);
         let mut words =
             if self.in_namespaces(jail) { Self::namespace_words(&plan, &jail.launcher) } else { Vec::new() };
-        let launch = Launch { plan, own_sandboxes: self.network.passt, tap: self.tap(), program: Vec::new() };
+        let launch = Launch {
+            plan,
+            own_sandboxes: self.network.passt,
+            tap: self.tap(),
+            unix_sockets: self.unix_sockets(),
+            no_new_unix_sockets: self.passes_unix_sockets(),
+            program: Vec::new(),
+        };
         words.push(jail.launcher.display().to_string());
         words.extend(launch.words());
         words
+    }
+
+    /// The launcher opens every unix socket QEMU needs, and QEMU may make none, so a QEMU that's been
+    /// taken over can't reach the session bus or any other socket of the desktop's, whatever the
+    /// kernel's Landlock and with or without namespaces. Only with no sound, as PipeWire's client
+    /// makes its own socket.
+    pub(super) fn passes_unix_sockets(&self) -> bool {
+        self.jail.as_ref().is_some() && self.sound.is_none()
+    }
+
+    fn client_names(&self) -> impl Iterator<Item = (usize, &'static str, &'static str)> + '_ {
+        let tpm = self.tpm.is_some();
+        CLIENT_SOCKETS
+            .into_iter()
+            .enumerate()
+            .filter(move |(_, (id, _))| *id != "tpm" || tpm)
+            .map(|(at, (id, file))| (at, id, file))
+    }
+
+    fn unix_sockets(&self) -> Vec<UnixSocket> {
+        if !self.passes_unix_sockets() {
+            return Vec::new();
+        }
+        let monitors = MONITOR_SOCKETS.iter().enumerate().map(|(at, name)| UnixSocket {
+            path: self.run_folder.join(name),
+            fd: FIRST_UNIX_FD + at as i32,
+            listen: true,
+        });
+        let mut sockets: Vec<UnixSocket> = monitors.collect();
+        let first_client = FIRST_UNIX_FD + MONITOR_SOCKETS.len() as i32;
+        sockets.extend(self.client_names().map(|(at, _, file)| UnixSocket {
+            path: self.run_folder.join(file),
+            fd: first_client + at as i32,
+            listen: false,
+        }));
+        sockets
+    }
+
+    /// The monitors on the descriptors the launcher opened, and a pid file that names the run folder.
+    pub(super) fn monitors_on_descriptors(&self) -> Vec<String> {
+        let mut arguments = Vec::new();
+        for at in 0..MONITOR_SOCKETS.len() {
+            let fd = FIRST_UNIX_FD + at as i32;
+            arguments.extend(words(&[
+                "-chardev",
+                &format!("socket,id=monitor{at},fd={fd},server=on,wait=off"),
+                "-mon",
+                &format!("chardev=monitor{at},mode=control"),
+            ]));
+        }
+        arguments.extend(words(&["-pidfile", &self.run_folder.join(PID_FILE).display().to_string()]));
+        arguments
+    }
+
+    /// A socket QEMU connects to: on the launcher's descriptor, or by its path.
+    pub(super) fn client_socket(&self, id: &str, file: &str) -> String {
+        let first_client = FIRST_UNIX_FD + MONITOR_SOCKETS.len() as i32;
+        let on_fd = self.client_names().find(|(_, name, _)| *name == id);
+        match on_fd {
+            Some((at, _, _)) if self.passes_unix_sockets() => {
+                format!("socket,id={id},fd={}", first_client + at as i32)
+            }
+            _ if id == "tpm" => format!("socket,id={id},path={}", self.run_folder.join(file).display()),
+            _ => format!(
+                "socket,id={id},path={},reconnect-ms={RECONNECT_MS}",
+                self.run_folder.join(file).display()
+            ),
+        }
     }
 
     /// QEMU's own filter, if this QEMU has one. passt's sandbox mounts, which the filter refuses.

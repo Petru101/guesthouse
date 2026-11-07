@@ -2,6 +2,7 @@
 //! gets one end of a socket pair, and sends the open device back through it.
 
 use super::Tap;
+use super::handover::place;
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::process::Command;
@@ -57,19 +58,6 @@ fn receive_descriptor(socket: &OwnedFd) -> io::Result<OwnedFd> {
         let fd = libc::CMSG_DATA(header).cast::<RawFd>().read_unaligned();
         Ok(OwnedFd::from_raw_fd(fd))
     }
-}
-
-/// Puts `device` at the number QEMU was told, open across the exec.
-fn place(device: OwnedFd, at: RawFd) -> io::Result<()> {
-    if device.as_raw_fd() == at {
-        // SAFETY: a flag on a descriptor this owns, which is then left open on purpose.
-        checked(unsafe { libc::fcntl(at, libc::F_SETFD, 0) })?;
-        std::mem::forget(device);
-        return Ok(());
-    }
-    // SAFETY: dup2 makes a copy without the close-on-exec flag at a number of the caller's choosing.
-    checked(unsafe { libc::dup2(device.as_raw_fd(), at) })?;
-    Ok(())
 }
 
 /// Runs the helper and leaves its device open at the tap's number.
