@@ -428,6 +428,8 @@ impl<R: Rm> NvidiaBackend<R> {
         // The doorbell for the new ring can come before the GPU has moved, and the GPU takes a
         // position below its own as the ring wrapping. What it would run past the move is the old
         // ring's stale entries, so those go, all but the ones a submission can still be waiting on.
+        // Holding the new ring's put until the move retires should stop that doorbell. This stays
+        // as a second guard in case one gets through early.
         let old_entries = channel.ring_entries();
         let stale = old_entries.saturating_sub(UNFINISHED_ENTRIES_LIMIT as u32);
         Self::clear_entries(host, work.space, old_ring, old_entries, end, stale);
