@@ -25,6 +25,7 @@ They're in `crates/`, listed here from the bottom up. Each depends only on crate
 | `transport` | The byte stream from QEMU: frames, packet kinds, guest page ranges. |
 | `messages` | What the guest's messages look like, and how to write the answers. No state, no decisions. |
 | `sensors` | The host card's newest readings, in a small file any process of the user can read. |
+| `jail` | What a guest-facing process may still do once it's jailed: Landlock, seccomp, and no new privileges. |
 | `backend` | The `Backend` trait: what a GPU vendor must provide. Also the decision on whether to start. |
 | `backend-standin` | A pretend GPU, for tests only. |
 | `backend-nvidia` | The NVIDIA backend: the host's resource manager, channels, and what the guest's driver expects to hear. |
@@ -79,6 +80,14 @@ A handler answers everything, and nothing a message says may stop the daemon. So
 Past these the port is stricter than the prototype, which took such messages and did something else with them. For anything a guest really sends, the two still give the same replies.
 
 A surface's width, height, pitch and tiling are only what its description says, and they aren't tied to the size of its memory. All the daemon's copies run in its own address space, which no process shares, so `session/copy_bounds.rs` measures each one in bytes against the allocation's real size, on both sides, and a copy that doesn't fit is refused with `UNSUCCESSFUL`. Each side is held to the same rule. A tiled surface has to fit whole, source or target, and `Backend::tiled_bytes` says how big that is, as the layout is the vendor's. `Backend::copy_pixel_bytes` says how wide the source's pixels are, and the check and the copy both use that one number. A colour the backend doesn't know counts as four bytes, and the check still holds, as it measures the bytes the copy moves.
+
+## Jails
+
+A guest that takes over QEMU or the daemon should get as little of the user's account as possible, so both run jailed, with nothing an unprivileged user doesn't have. The `jail` crate holds the parts: a `Plan` of paths and ports for Landlock, and two seccomp filters in `filters/`.
+
+The daemon jails itself, in `daemon/src/jail.rs`. Landlock goes on before any thread exists, as it only covers the thread that applies it. The filter goes on once the card is open and the sockets are bound, for every thread. It's an allow-list, and a call that isn't on it writes a line to `daemon.out` and gets `ENOSYS`, so a missing call costs a feature and says which. NVIDIA's ioctls aren't filtered by number: Landlock already holds the daemon to the card's device files.
+
+QEMU is started by `guesthouse-jail`, which applies a plan the app writes in `vm_args/qemu_jail.rs` and then becomes QEMU. QEMU's filter is a deny-list, as the calls QEMU makes depend on its build and devices. Where bubblewrap can make namespaces, it goes around the launcher too, with each path of the plan bound at its own place. `jailing.rs` decides at each start, and leaves a line for the machine's row when the jail is short of something. A kernel's Landlock gets the rights it has, each on its own, and none of it needs namespaces, so Ubuntu 24.04's limits on those only cost the bubblewrap part.
 
 ## Slots
 

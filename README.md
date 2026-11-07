@@ -151,6 +151,7 @@ What's in place for Windows guests:
 - **Programs in a VM can't see each other on the GPU.** Each process gets its own GPU page tables, like on real Windows. My test has one process hold a secret and another try to read and overwrite it by its GPU address. On the Rust backend it read none of the 16,384 words, in every try, and its writes left the secret whole. The same read got all 16,384 words of a process's own secret, and of one it was properly given through a shared handle, and the same write overwrote a process's own buffer, so the test does reach memory when it's allowed to. The one thing they still share is a block of fences, which only holds counters.
 - **Windows never talks to the host's driver.** It talks to my daemon, and the daemon makes the calls. Sizes and ranges in every message get checked, and the parsers and handlers are fuzz tested.
 - **You can cap a VM's video memory.** With a limit set, a program that goes over it loses its device. Without one, the VM is told to leave a share of the card for the host, but that's a budget and not a wall. A second GPU VM won't start until the first one has a cap.
+- **QEMU and the daemon are jailed.** Each one only reaches what that VM needs: its disk, its firmware variables, its memory, its run folder and its shared folder, and for the daemon the card. Not the rest of your home folder and not another VM. The daemon has no network at all. Neither can gain privileges, even through a setuid program, or trace your other programs. It's Landlock and seccomp, which need no root, and where bubblewrap can make namespaces, QEMU gets those too. A PC that can't do the Landlock part won't start a GPU machine unless you allow that machine in its settings, and then its row says it isn't jailed.
 - **The daemon's sockets are for its owner alone.** The guest agent's port is on loopback with a token per machine, so other users on the PC can reach the port but not the agent.
 - **A failing program only costs itself.** A program that keeps failing on the GPU loses its own device, and the rest of the VM carries on.
 
@@ -158,11 +159,12 @@ What a guest can still do:
 
 - **Get in the way.** A program can't read or change its neighbours, but trying faults the GPU, and in the one try I timed, that froze other work on the card for about four seconds, the host's included. If too many programs fault in a minute, that VM's GPU stops until Windows restarts, and the app says so.
 - **See some of your hardware.** Windows sees your card's real UUID and ECID, your CPU and how much RAM you have.
-- **Reach your user account, if there's a bug.** The daemon runs as you with the card open, so a bug in it or in NVIDIA's driver is a bug in your user account. Only run a Windows guest you'd trust with that.
+- **Reach the card's driver.** The daemon keeps the card open, so a bug in it that hands a guest the daemon also hands it NVIDIA's driver, and a bug there is a bug in your kernel. Only run a Windows guest you'd trust with that.
+- **Reach your desktop's sockets, on an older kernel.** Without bubblewrap's namespaces, only a recent kernel's Landlock keeps QEMU from sockets like your session bus. Fedora 45's has it. On Ubuntu 24.04, which doesn't let bubblewrap make them out of the box, a QEMU taken over could still reach those. The machine's row says when that's the case. Its sound goes through PipeWire, as it always has.
 
 What's still coming:
 
-- **Jails.** For Windows guests the daemon and QEMU run as you, with nothing around them. For Linux guests QEMU runs in a bubblewrap sandbox, and a proper jail around the part that talks to the driver is the next wall to build.
+- **Jails for the rest.** For Linux guests QEMU runs in a bubblewrap sandbox, and a proper jail around the part that talks to the driver is the next wall to build. The virtual TPM, and machines with no GPU, aren't jailed yet.
 - **Trust a Linux guest like you trust yourself.** A Linux guest gets the GPU the way a program of yours does. It can do what your user can do to the card, it sees whole-card sensor and memory readings, and it can slow or crash your GPU session, which takes your desktop with it. It only gets calls on the list, it can only name its own GPU clients, and QEMU runs in a sandbox with no root. As far as I could test, it can't reach QEMU's memory or anyone else's GPU work. There's no full jail yet, so a bug in NVIDIA's driver or in this device is still a bug in your user account. Treat a guest as being as trusted as you, and don't run one you don't trust.
 
 ## My favourite bugs
