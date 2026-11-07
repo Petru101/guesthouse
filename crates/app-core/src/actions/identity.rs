@@ -1,6 +1,7 @@
 //! NVIDIA's vendor number going into a machine. A start on Microsoft's number has Windows write the
-//! driver package for NVIDIA's, and the next start shows it. Nothing here can stop a machine: a guest
-//! that won't take the package keeps Microsoft's number, and the row says why.
+//! driver package for NVIDIA's, and the next start shows it, restarting Windows once on the way (see
+//! identity_restart.rs). Nothing here can stop a machine: a guest that won't take the package keeps
+//! Microsoft's number, and the row says why.
 
 use super::Task;
 use crate::agent::guest_script;

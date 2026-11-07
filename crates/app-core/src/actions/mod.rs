@@ -6,6 +6,7 @@ mod display;
 mod gpu_check;
 mod guest_files;
 mod identity;
+mod identity_restart;
 mod install;
 mod ubuntu;
 
@@ -14,6 +15,7 @@ use desktop::{note_boot, set_up_desktop, wait_for_desktop};
 use gpu_check::check_gpu;
 use guest_files::{place_driver_files, place_profile_store};
 use identity::{after_failed_gpu, set_up_identity};
+use identity_restart::restart_after_switch;
 pub use install::{
     INSTALL_STEPS, answer_disc_path, answer_file, install, install_step, make_answer_disc, wait_for_setup,
 };
@@ -175,6 +177,7 @@ fn get_ready(task: &mut Task) -> Result<()> {
         return Err(Failure::new("Windows started, but its desktop never came up."));
     }
     check_gpu(task).map_err(|failure| after_failed_gpu(task, failure))?;
+    restart_after_switch(task)?;
     set_up_desktop(task)?;
     place_driver_files(task)?;
     place_profile_store(task)?;
