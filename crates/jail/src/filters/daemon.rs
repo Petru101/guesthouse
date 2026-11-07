@@ -92,8 +92,11 @@ const SOCKETS: [c_long; 10] = [
     SYS_sendmmsg,
 ];
 
-const WAITING: [c_long; 15] = [
+const WAITING: [c_long; 18] = [
     SYS_poll,
+    SYS_select,
+    SYS_pselect6,
+    SYS_epoll_pwait2,
     SYS_epoll_create1,
     SYS_epoll_ctl,
     SYS_epoll_wait,
