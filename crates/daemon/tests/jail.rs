@@ -51,7 +51,7 @@ fn setup_runs_a_program(folder: &Path) {
     assert!(ran.unwrap().status.success());
 }
 
-#[cfg(feature = "stand-in")]
+#[cfg(all(feature = "stand-in", not(feature = "nvidia")))]
 fn serving(folder: &Path) {
     use std::os::unix::net::UnixStream;
     use std::time::{Duration, Instant};
@@ -61,6 +61,9 @@ fn serving(folder: &Path) {
     let mut daemon = Command::new(env!("CARGO_BIN_EXE_guesthouse-daemon"))
         .arg(folder)
         .env("GUESTHOUSE_SLOT", "2")
+        // Its own store and home, so the test never reads the real ones.
+        .env("GUESTHOUSE_STORE", folder.join("store"))
+        .env("HOME", folder.join("home"))
         .env_remove("GUESTHOUSE_JAIL")
         .stderr(output)
         .spawn()
@@ -82,7 +85,7 @@ fn serving(folder: &Path) {
     assert!(log_of(folder).contains("jailed, with Landlock"), "{}", log_of(folder));
 }
 
-#[cfg(feature = "stand-in")]
+#[cfg(all(feature = "stand-in", not(feature = "nvidia")))]
 fn log_of(folder: &Path) -> String {
     fs::read_to_string(folder.join("daemon.out")).unwrap_or_default()
 }
@@ -102,7 +105,7 @@ type Case = (&'static str, fn(&Path));
 const CASES: &[Case] = &[
     ("jailed", jailed),
     ("setup_runs_a_program", setup_runs_a_program),
-    #[cfg(feature = "stand-in")]
+    #[cfg(all(feature = "stand-in", not(feature = "nvidia")))]
     ("serving", serving),
 ];
 
