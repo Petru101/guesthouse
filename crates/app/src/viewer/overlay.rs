@@ -33,7 +33,7 @@ impl PerformanceOverlay {
             .build();
         label.add_css_class("performance-overlay");
         screen.widget().add_overlay(&label);
-        label.set_label(&overlay::text(0, 0.0, None, sampler.now()));
+        label.set_label(&overlay::text(0, 0.0, None, sampler.now(), screen.sdr_white_nits()));
         let shown = Rc::new(Cell::new((screen.frames_shown(), Instant::now())));
         let (watched, updating) = (screen.clone(), label.clone());
         let source = glib::timeout_add_local(UPDATE, move || {
@@ -41,10 +41,8 @@ impl PerformanceOverlay {
             let now = watched.frames_shown();
             let sample = sampler.latest();
             let seconds = since.elapsed().as_secs_f64();
-            let mut text = overlay::text((now - frames) as u32, seconds, sample.as_ref(), sampler.now());
-            if let Some(nits) = watched.sdr_white_nits() {
-                text.push_str(&format!("\nHDR, SDR white {nits} nits"));
-            }
+            let nits = watched.sdr_white_nits();
+            let text = overlay::text((now - frames) as u32, seconds, sample.as_ref(), sampler.now(), nits);
             updating.set_label(&text);
             shown.set((now, Instant::now()));
             glib::ControlFlow::Continue
