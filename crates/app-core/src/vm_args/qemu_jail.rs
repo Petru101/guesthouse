@@ -45,8 +45,10 @@ const SYSTEM: [(Grant, &str); 11] = [
 const DEVICES: [&str; 5] = ["/dev/kvm", "/dev/null", "/dev/zero", "/dev/random", "/dev/urandom"];
 /// What bubblewrap's namespaces start from, before this VM's own files go in. The network stays, for
 /// QEMU's user network. `--new-session` is left out so the app can still stop QEMU with its process
-/// group, and the filter refuses typing into a terminal instead.
-const NAMESPACES: &str = "bwrap --unshare-user --unshare-pid --unshare-ipc --unshare-uts --unshare-cgroup-try \
+/// group, and the filter refuses typing into a terminal instead. The pid namespace is left out too:
+/// in one, the viewer's pid reads as 0, and QEMU's D-Bus display then refuses to let it in. Landlock
+/// still keeps QEMU from tracing what's outside its jail, and from signalling it where it has scopes.
+const NAMESPACES: &str = "bwrap --unshare-user --unshare-ipc --unshare-uts --unshare-cgroup-try \
     --tmpfs /tmp --ro-bind /usr /usr --symlink usr/lib /lib --symlink usr/lib64 /lib64 --symlink usr/bin /bin \
     --symlink usr/sbin /sbin --proc /proc --dev /dev --ro-bind /sys /sys";
 /// Already in the namespaces' base.

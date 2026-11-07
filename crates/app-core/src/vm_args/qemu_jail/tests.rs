@@ -85,6 +85,7 @@ fn bubblewrap_comes_first_and_binds_each_file_where_it_is() {
     assert!(bound("--ro-bind", "/p/guesthouse-jail"));
     assert!(bound("--dev-bind-try", "/dev/kvm"));
     assert!(!command.iter().any(|word| word == "--new-session"), "the app stops QEMU by its group");
+    assert!(!command.iter().any(|word| word == "--unshare-pid"), "the D-Bus display needs the viewer's pid");
     let launcher = command.iter().position(|word| word == "/p/guesthouse-jail").unwrap();
     let qemu = command.iter().position(|word| word == "/usr/bin/qemu-system-x86_64").unwrap();
     assert!(launcher < qemu);
