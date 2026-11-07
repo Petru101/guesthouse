@@ -61,6 +61,8 @@ Everything here was measured on one machine: Ryzen 9 9950X3D, RTX 5090, Fedora 4
 
 ### Windows guests
 
+**The VM shows NVIDIA's vendor ID.** Windows' own GPU-PV driver only binds to a Microsoft device ID, and Edge, Chromium and streaming programs look at the vendor ID before they will use a GPU, so on Microsoft's they stay on the CPU. So the first start has Windows make a small driver package from its own GPU-PV driver, bound to NVIDIA's vendor ID with a device ID NVIDIA has never shipped, and signed like the display driver. From the next start the VM shows that ID, and Edge is hardware accelerated with no flags. Until then the machine's row says so. A guest that won't take the package keeps Microsoft's ID and the row says why.
+
 Direct3D 12, Direct3D 11, Vulkan and OpenGL all run on the real card, along with the desktop and normal apps. So do CUDA, NVENC and NVDEC, on the real video engines, which ffmpeg uses with H.264, HEVC and AV1. `nvidia-smi` finds the card. A fresh install takes about 9 minutes from picking the ISO to the GPU working.
 
 **Is it really the GPU, at full speed?** Yes. This is my own benchmark, run on Linux and then inside the VM:
@@ -176,7 +178,6 @@ I'd rather you hear this from me:
 - **`nvidia-smi` shows a nonsense number for memory in Windows.** The last time I looked, Task Manager didn't show the GPU either.
 - **Sunshine mostly doesn't work in a guest yet.** With the display driver in, it works through Windows Graphics Capture with software encoding, in a test with my own small receiver. Its default capture, Desktop Duplication, is unreliable here: Windows keeps losing it, and I don't know why yet. NVENC through Sunshine doesn't work, as it looks for NVIDIA's vendor ID and Windows reports Microsoft's. I haven't tried it with Moonlight. For now, don't do a default Sunshine install in a guest.
 - **I'm not sure about HDR yet.** It's a must for me. The app turns it on in Windows through the display driver, and in tests known colours arrive exact at up to 4K 240 Hz, with no frame lost. On my own monitors the colours aren't washed out, but I can't tell if it's as bright as it should be. The performance overlay will show that once #24 is fixed.
-- **Edge runs on software rendering for now.** See #23.
 - **OpenCL isn't set up in guests yet, and Direct3D 9 doesn't start.** The first needs a registry entry the guest scripts don't add yet. The second fails on any display in a guest.
 - **The first start can flash.** For a few seconds while the display driver goes in, the screen changes and nothing responds. Later starts don't do it.
 - **The viewer drops frames.** With the old viewer, at 144 Hz about 116 frames a second reached it, and about 90 at 4K. I haven't measured the new one yet. It also costs speed: Superposition scored 16,240 with it open, in one run.
