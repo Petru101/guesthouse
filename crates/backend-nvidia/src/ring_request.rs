@@ -54,11 +54,12 @@ pub(crate) struct RingMove {
     pub entries: u32,
 }
 
-/// The rings asked for and not yet moved to, by the GPU address each got.
+/// The rings asked for and not yet moved to, by the GPU address each got. A ring nobody moves to is
+/// forgotten when the memory at its address is freed.
 #[derive(Debug, Default)]
 pub(crate) struct RingMoves {
     answered: HashMap<MemoryId, RingMove>,
-    mapped: HashMap<u64, RingMove>,
+    mapped: HashMap<u64, (MemoryId, RingMove)>,
 }
 
 impl RingMoves {
@@ -69,15 +70,25 @@ impl RingMoves {
     }
 
     /// Memory got a GPU address. A ring is found again by that address when a queue moves to it.
+    /// Its first lock puts shared pages where the ring's memory was, so other memory mapped at a
+    /// ring's address becomes the ring.
     pub fn mapped(&mut self, memory: MemoryId, address: u64) {
         if let Some(ring) = self.answered.remove(&memory) {
-            self.mapped.insert(address, ring);
+            self.mapped.insert(address, (memory, ring));
+        } else if let Some((owner, _)) = self.mapped.get_mut(&address) {
+            *owner = memory;
         }
+    }
+
+    /// Memory was freed, whether or not a queue moved to it.
+    pub fn released(&mut self, memory: MemoryId) {
+        self.answered.remove(&memory);
+        self.mapped.retain(|_, (owner, _)| *owner != memory);
     }
 
     /// The ring at an address, once.
     pub fn take(&mut self, address: u64) -> Option<RingMove> {
-        self.mapped.remove(&address)
+        self.mapped.remove(&address).map(|(_, ring)| ring)
     }
 }
 
@@ -135,6 +146,41 @@ mod tests {
         moves.mapped(MemoryId(8), 0x4000);
         moves.mapped(MemoryId(7), 0x4000);
         assert_eq!(moves.take(0x4000), Some(RingMove { handle: 0xC1D0_0001, entries: 0x1_0000 }));
+        assert_eq!(moves.take(0x4000), None);
+    }
+
+    #[test]
+    fn a_freed_ring_is_forgotten_whether_or_not_it_was_mapped() {
+        let mut moves = RingMoves::default();
+        moves.answered(MemoryId(7), 0xC1D0_0001, 0x8_0000);
+        moves.answered(MemoryId(8), 0xC1D0_0002, 0x8_0000);
+        moves.mapped(MemoryId(8), 0x4000);
+        moves.released(MemoryId(7));
+        moves.released(MemoryId(8));
+        moves.mapped(MemoryId(7), 0x8000);
+        assert_eq!(moves.take(0x4000), None);
+        assert_eq!(moves.take(0x8000), None);
+    }
+
+    #[test]
+    fn a_ring_stays_when_its_first_lock_puts_shared_pages_in_its_place() {
+        let mut moves = RingMoves::default();
+        moves.answered(MemoryId(7), 0xC1D0_0001, 0x8_0000);
+        moves.mapped(MemoryId(7), 0x4000);
+        // The lock unmaps the ring's own memory, maps shared pages there, then frees the memory.
+        moves.mapped(MemoryId(9), 0x4000);
+        moves.released(MemoryId(7));
+        assert!(moves.take(0x4000).is_some());
+    }
+
+    #[test]
+    fn a_ring_in_shared_pages_is_forgotten_when_they_are_freed() {
+        let mut moves = RingMoves::default();
+        moves.answered(MemoryId(7), 0xC1D0_0001, 0x8_0000);
+        moves.mapped(MemoryId(7), 0x4000);
+        moves.mapped(MemoryId(9), 0x4000);
+        moves.released(MemoryId(7));
+        moves.released(MemoryId(9));
         assert_eq!(moves.take(0x4000), None);
     }
 

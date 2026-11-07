@@ -331,6 +331,7 @@ impl<R: Rm + OpenRm> Backend for NvidiaBackend<R> {
     }
 
     fn release_memory(&mut self, memory: MemoryId) {
+        self.ring_moves.released(memory);
         if let Err(error) = self.device.free(handle_of(memory)) {
             log::warn!("freeing memory: {error}");
         }
