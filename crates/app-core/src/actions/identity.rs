@@ -18,6 +18,7 @@ const STAGED_MARK: &str = "identity staged";
 const STAY_MARK: &str = "stay: ";
 
 const QEMU_WITHOUT: &str = "This QEMU can't show Windows NVIDIA's vendor ID, so Windows sees Microsoft's.";
+const NO_SCRIPT: &str = "This build has no script for NVIDIA's vendor ID, so Windows sees Microsoft's.";
 const DID_NOT_STAGE: &str = "Windows could not make the driver package for NVIDIA's vendor ID, so it keeps \
                              Microsoft's. The log has what Windows said.";
 const NEXT_START: &str =
@@ -33,7 +34,6 @@ fn script_id(script: &str) -> String {
 
 /// Has Windows write the package, and records what came of it.
 fn stage(task: &Task, state: &mut IdentityState, script: &str) -> Result<()> {
-    task.step("Preparing NVIDIA's vendor ID");
     let (vendor, device) = (NVIDIA_RENDER.vendor, NVIDIA_RENDER.device);
     let sent = format!("$vendor = '{vendor:04X}'\n$device = '{device:04X}'\n{script}");
     let said = task.ask_guest(&sent, STAGE_SECONDS);
@@ -60,11 +60,15 @@ fn set_up(task: &Task) -> Result<()> {
     if state.shown == Shown::Nvidia {
         return write_state(task.context, &task.machine, &state);
     }
+    task.step("Preparing NVIDIA's vendor ID");
     if !qemu_sets_identity(&task.context.paths.qemu) {
         state.reason = QEMU_WITHOUT.to_owned();
         return write_state(task.context, &task.machine, &state);
     }
-    let script = guest_script(task.context, SCRIPT)?;
+    let Ok(script) = guest_script(task.context, SCRIPT) else {
+        state.reason = NO_SCRIPT.to_owned();
+        return write_state(task.context, &task.machine, &state);
+    };
     if state.failed_script != script_id(&script) {
         stage(task, &mut state, &script)?;
     }

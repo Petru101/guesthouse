@@ -137,3 +137,13 @@ fn a_failed_gpu_start_on_nvidias_number_goes_back_to_microsofts() {
     assert_eq!(state.shown, Shown::Microsoft);
     assert_eq!(state.reason, FELL_BACK);
 }
+
+#[test]
+fn a_build_without_the_script_keeps_microsofts_number_and_says_so() {
+    let scratch = Scratch::new();
+    let rig = Rig::new(&scratch, true, &[STAGED]);
+    fs::remove_file(rig.context.paths.guest_files().join("gpu-identity.ps1")).unwrap();
+    assert_eq!(rig.boot(), "");
+    assert_eq!(rig.asked().len(), 0);
+    assert_eq!(rig.state().reason, NO_SCRIPT);
+}
