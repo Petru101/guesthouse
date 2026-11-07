@@ -1,11 +1,11 @@
-//! The figures over the screen. It only exists while it's on, and reads the frame count once a second,
-//! so with it off there's no thread and no timer. No card reader is wired in yet, so the host's figures
-//! say they aren't available.
+//! The figures over the screen. It only exists while it's on, and reads the frame count and the
+//! host's sensors once a second, so with it off there's no thread and no timer.
 
 use super::screen::Screen;
 use gtk::glib;
 use gtk::prelude::*;
 use guesthouse_app_core::gpu_sample::{SAMPLE_INTERVAL, Sampler};
+use guesthouse_app_core::host_sensors::HostSensors;
 use guesthouse_app_core::overlay;
 use std::cell::Cell;
 use std::rc::Rc;
@@ -22,7 +22,7 @@ pub struct PerformanceOverlay {
 
 impl PerformanceOverlay {
     pub fn new(screen: &Screen) -> Self {
-        let sampler = Sampler::start(Box::new(|| None), SAMPLE_INTERVAL);
+        let sampler = Sampler::start(Box::new(HostSensors::open), SAMPLE_INTERVAL);
         let label = gtk::Label::builder()
             .xalign(0.0)
             .halign(gtk::Align::Start)
