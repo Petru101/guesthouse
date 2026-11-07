@@ -1,4 +1,5 @@
 use super::*;
+use crate::gpu_identity::NVIDIA_RENDER;
 use crate::machine::Kind;
 use crate::network::Protocol;
 use crate::slots;
@@ -88,6 +89,18 @@ fn a_gpu_vm_has_its_devices() {
     assert!(arguments.iter().any(|word| word.starts_with("gpupv-render,")));
     assert!(has(&arguments, "usb-mouse,bus=xhci.0"), "for games");
     assert!(arguments.iter().any(|word| word.contains(&plan.ram_file.display().to_string())));
+}
+
+/// A machine shows Microsoft's identity until its folder says it holds the package for NVIDIA's.
+#[test]
+fn the_render_device_shows_the_identity_the_machine_is_ready_for() {
+    let (_scratch, plan) = plan(&windows(), Boot::Gpu);
+    let render = |plan: &VmPlan| {
+        plan.qemu_arguments().into_iter().find(|word| word.starts_with("gpupv-render,")).unwrap()
+    };
+    assert!(!render(&plan).contains("vendor-id"), "QEMU's own identity needs no properties");
+    let plan = VmPlan { render_identity: NVIDIA_RENDER, ..plan };
+    assert!(render(&plan).ends_with(",vendor-id=0x10de,device-id=0x2bfe"));
 }
 
 #[test]

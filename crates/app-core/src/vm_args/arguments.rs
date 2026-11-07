@@ -166,7 +166,10 @@ impl VmPlan {
             "-machine",
             "memory-backend=ram0",
             "-device",
-            &format!("gpupv-render,channel={VGPU_INSTANCE},hostcaps={HOST_CAPABILITIES}"),
+            &format!(
+                "gpupv-render,channel={VGPU_INSTANCE},hostcaps={HOST_CAPABILITIES}{}",
+                self.render_identity.qemu_properties()
+            ),
         ])
     }
 
