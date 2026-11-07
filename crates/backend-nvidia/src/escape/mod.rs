@@ -6,6 +6,7 @@
 mod control;
 mod gpu_range;
 mod node_list;
+mod pstate;
 mod time_pairs;
 mod video_memory;
 

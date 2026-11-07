@@ -2,7 +2,7 @@
 //! the list. The guest's handles mean nothing here: a control's number names its class, and so the
 //! object it belongs on.
 
-use super::{EscapeFacts, get, put, time_pairs};
+use super::{EscapeFacts, get, pstate, put, time_pairs};
 use crate::rm::classes::{
     BUS_ENTRIES_THAT_CLEAR, CONTROL_GET_CLASS_ENGINE, CONTROL_GET_PROBED_IDS, ENGINE_GRAPHICS,
 };
@@ -87,6 +87,19 @@ fn params_of(data: &mut [u8], size: u32, wanted: usize) -> Option<&mut [u8]> {
     params.filter(|_| size as usize == wanted)
 }
 
+/// Answers the controls this side keeps the books for, and says whether this was one of them.
+fn answered_here(facts: &EscapeFacts<'_>, command: u32, size: u32, data: &mut [u8]) -> bool {
+    let status = match command {
+        pstate::CONTROL => {
+            let Some(params) = params_of(data, size, pstate::SIZE) else { return false };
+            if pstate::answer(facts.live.as_ref(), params) { 0 } else { STATUS_NOT_SUPPORTED }
+        }
+        _ => return false,
+    };
+    put(data, CONTROL_STATUS, status);
+    true
+}
+
 pub(super) fn run<R: Rm>(
     device: &mut Device<R>,
     facts: &EscapeFacts<'_>,
@@ -95,6 +108,9 @@ pub(super) fn run<R: Rm>(
     let (Some(command), Some(size)) = (get(data, CONTROL_COMMAND), get(data, CONTROL_SIZE)) else {
         return Ok(());
     };
+    if answered_here(facts, command, size, data) {
+        return Ok(());
+    }
     if command == CONTROL_GET_CLASS_ENGINE
         && let Some(handle) = get(data, CONTROL_PARAMS)
         && let Some(&(_, class)) = facts.channel_classes.iter().find(|object| object.0 == handle)
@@ -153,6 +169,7 @@ mod tests {
     use super::*;
     use crate::profile::{BLACKWELL, GUEST_617, HOST_615, guest_channel_classes};
     use crate::rm::fake::{Call, FakeRm};
+    use crate::sensors::Snapshot;
 
     const GET_NAME_STRING: u32 = 0x2080_0110;
     const NAME_SIZE: usize = 68;
@@ -368,6 +385,20 @@ mod tests {
             assert_eq!(get(&data, CONTROL_STATUS), Some(0), "{command:#x}");
             assert!(!reached_the_rm(&device, command), "{command:#x}");
         }
+    }
+
+    #[test]
+    fn the_performance_state_comes_from_the_sampler_or_is_refused() {
+        let mut data = control(pstate::CONTROL, pstate::SIZE);
+        run(&mut device(), &NO_FACTS, &mut data).unwrap();
+        assert_eq!(get(&data, CONTROL_STATUS), Some(STATUS_NOT_SUPPORTED));
+        let live = Snapshot { performance_state: Some(0), ..Snapshot::default() };
+        let mut data = control(pstate::CONTROL, pstate::SIZE);
+        let mut device = device();
+        run(&mut device, &EscapeFacts { live: Some(live), ..NO_FACTS }, &mut data).unwrap();
+        assert_eq!(get(&data, CONTROL_STATUS), Some(0));
+        assert_eq!(get(&data, CONTROL_PARAMS), Some(1));
+        assert!(!reached_the_rm(&device, pstate::CONTROL));
     }
 
     #[test]
