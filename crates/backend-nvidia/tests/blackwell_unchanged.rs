@@ -1,7 +1,7 @@
 //! Holds what a Blackwell guest is told and what its channels ask of the RM to fixed digests. Adding
 //! another generation must leave every one of them alone. All of it runs on the pretend RM.
 
-use guesthouse_backend::{Backend, Status, VendorQuery, VideoMemoryUse};
+use guesthouse_backend::{Backend, GuestBooks, Status, VendorQuery, VideoMemoryUse};
 use guesthouse_backend_nvidia::NvidiaBackend;
 use guesthouse_backend_nvidia::answers::nodes::{copy_record_flags, node_entry, node_list, node_metadata};
 use guesthouse_backend_nvidia::channel::{AREA_SIZE, Channel, ChannelPlace, Engine, VideoEngine};
@@ -71,7 +71,8 @@ fn the_list_of_nodes_for_the_video_runtime_has_not_changed() {
     let mut backend = fake_backend(FakeRm::new());
     let mut data = vec![0; ESCAPE_LIST_NODES_SIZE];
     data[ESCAPE_FUNCTION..ESCAPE_FUNCTION + 4].copy_from_slice(&ESCAPE_LIST_NODES.to_le_bytes());
-    backend.escape(1, &mut data, &|| VideoMemoryUse { total: 0, used: 0 });
+    let memory = || VideoMemoryUse { total: 0, used: 0 };
+    backend.escape(1, &mut data, &GuestBooks { memory: &memory, processes: &Vec::new });
     assert_eq!(digest(&data), 0x1ae3_70ad_4aee_1d38);
 }
 

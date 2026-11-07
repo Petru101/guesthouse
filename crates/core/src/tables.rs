@@ -27,6 +27,8 @@ impl Mapping {
 #[derive(Debug, Default)]
 pub struct Allocation {
     pub size: u64,
+    /// The process that made it.
+    pub owner: u32,
     /// What backs it. A guest-backed allocation has none until the guest has listed its pages.
     pub memory: Option<MemoryId>,
     /// Where it sits in the shared window, once the guest has locked it.

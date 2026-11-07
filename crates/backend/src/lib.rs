@@ -109,8 +109,9 @@ pub trait Backend: Sized {
     /// messages, so this is only for what has to follow the guest's own start.
     fn guest_restarted(&mut self) {}
 
-    /// `memory` adds up the guest's allocations, so it's only for the escapes that ask.
-    fn escape(&mut self, process: u32, data: &mut [u8], memory: &dyn Fn() -> VideoMemoryUse);
+    /// `memory` adds up the guest's allocations and `processes` sorts them by owner, so both are
+    /// only for the escapes that ask.
+    fn escape(&mut self, process: u32, data: &mut [u8], books: &GuestBooks<'_>);
 
     /// Answers an adapter query the vendor owns by appending the answer to `out`. Returns `None` for
     /// a query it leaves to the core.

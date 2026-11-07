@@ -15,9 +15,9 @@ mod random_messages;
 
 use guesthouse_backend::{
     AdapterFacts, AllocationShape, Backend, BackendError, CardLabel, DriverFound, DriverSurvey, GpuRange,
-    HostServices, MapRequest, MemoryId, PciCard, Refusal, RegistryName, RegistryValue, Setup, SlotCopy,
-    SpaceId, StagingCopy, StagingStart, Status, SurfaceShape, UnmapRequest, VendorQuery, VideoMemoryUse,
-    Work, WorkStart,
+    GuestBooks, HostServices, MapRequest, MemoryId, PciCard, Refusal, RegistryName, RegistryValue, Setup,
+    SlotCopy, SpaceId, StagingCopy, StagingStart, Status, SurfaceShape, UnmapRequest, VendorQuery, Work,
+    WorkStart,
 };
 pub use memory::SparseMemory;
 pub use random_messages::RandomMessages;
@@ -378,7 +378,7 @@ impl Backend for StandIn {
         Ok(())
     }
 
-    fn escape(&mut self, _process: u32, data: &mut [u8], _memory: &dyn Fn() -> VideoMemoryUse) {
+    fn escape(&mut self, _process: u32, data: &mut [u8], _books: &GuestBooks<'_>) {
         data.iter_mut().for_each(|byte| *byte ^= 0xFF);
     }
 

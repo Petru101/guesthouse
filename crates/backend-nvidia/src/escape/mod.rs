@@ -14,7 +14,8 @@ pub use gpu_range::{RUNTIME_GPU_RANGE, RUNTIME_PLACED_RANGE};
 use crate::answers::nodes::Node;
 use crate::rm::device::Device;
 use crate::rm::{Rm, RmError};
-use guesthouse_backend::VideoMemoryUse;
+use crate::sensors::Snapshot;
+use guesthouse_backend::GuestBooks;
 
 // The escape's fixed fields.
 const HEADER_SIZE_FIELD: usize = 0x08;
@@ -65,8 +66,10 @@ pub struct EscapeFacts<'a> {
     /// The class behind each of the guest's handles.
     pub channel_classes: &'a [(u32, u32)],
     pub nodes: &'a [Node],
-    /// Adds up the guest's allocations, so it's only for the escapes that ask.
-    pub memory: &'a dyn Fn() -> VideoMemoryUse,
+    /// The core's books on the guest's memory, added up only for the escapes that ask.
+    pub books: &'a GuestBooks<'a>,
+    /// The host's newest readings, if the sensors are running.
+    pub live: Option<Snapshot>,
 }
 
 /// Whether this escape asks to open an encoding session.
@@ -85,7 +88,7 @@ pub fn allow_encoding(data: &mut [u8]) {
 pub fn answer<R: Rm>(device: &mut Device<R>, facts: EscapeFacts<'_>, data: &mut [u8]) -> Result<(), RmError> {
     let Some(function) = get(data, FUNCTION) else { return Ok(()) };
     match function {
-        FUNCTION_RM_CONTROL => control::run(device, facts.channel_classes, data)?,
+        FUNCTION_RM_CONTROL => control::run(device, &facts, data)?,
         FUNCTION_LIST_GPUS => {
             // The RM's number serves as the handle, which comes back to the host later.
             let gpu_id = device.gpu_id()?;
@@ -97,7 +100,7 @@ pub fn answer<R: Rm>(device: &mut Device<R>, facts: EscapeFacts<'_>, data: &mut 
         FUNCTION_LIST_COMPUTE_GPUS => {}
         FUNCTION_CHECK_DISPLAY => {}
         FUNCTION_RUNTIME_GPU_RANGE => gpu_range::answer(data),
-        FUNCTION_VIDEO_MEMORY => video_memory::answer((facts.memory)(), data),
+        FUNCTION_VIDEO_MEMORY => video_memory::answer((facts.books.memory)(), data),
         FUNCTION_LIST_NODES => node_list::answer(facts.nodes, data),
         _ => put(data, HEADER_SIZE_FIELD, HEADER_SIZE),
     }
@@ -114,7 +117,12 @@ pub(super) mod tests {
     use crate::rm::classes::CONTROL_GET_GPU_ID;
     use crate::rm::fake::FakeRm;
 
+    use guesthouse_backend::{ProcessMemory, VideoMemoryUse};
+
     pub(super) const NO_MEMORY: fn() -> VideoMemoryUse = || VideoMemoryUse { total: 0, used: 0 };
+    pub(super) const NO_PROCESSES: fn() -> Vec<ProcessMemory> = Vec::new;
+    pub(super) const NO_BOOKS: GuestBooks<'static> =
+        GuestBooks { memory: &NO_MEMORY, processes: &NO_PROCESSES };
 
     pub(super) fn device() -> Device<FakeRm> {
         let mut rm = FakeRm::new();
@@ -126,7 +134,7 @@ pub(super) mod tests {
     }
 
     pub(super) const NO_FACTS: EscapeFacts<'static> =
-        EscapeFacts { channel_classes: &[], nodes: &[], memory: &NO_MEMORY };
+        EscapeFacts { channel_classes: &[], nodes: &[], books: &NO_BOOKS, live: None };
 
     pub(super) fn escape(function: u32, size: usize) -> Vec<u8> {
         let mut data = vec![0; size];
@@ -171,7 +179,8 @@ pub(super) mod tests {
         let mut data = escape(FUNCTION_VIDEO_MEMORY, 0x54);
         put(&mut data, HEADER_SIZE_FIELD, 0x54);
         let memory = || VideoMemoryUse { total: 1 << 30, used: 0 };
-        answer(&mut device(), EscapeFacts { memory: &memory, ..NO_FACTS }, &mut data).unwrap();
+        let books = GuestBooks { memory: &memory, processes: &NO_PROCESSES };
+        answer(&mut device(), EscapeFacts { books: &books, ..NO_FACTS }, &mut data).unwrap();
         assert_eq!(get(&data, HEADER_SIZE_FIELD), Some(0x54));
         assert_eq!(get(&data, RESULT), Some(1));
     }

@@ -6,7 +6,6 @@ use crate::gpu_addresses::ADDRESSES_END;
 use crate::pending::QueueAction;
 use crate::tables::{Allocation, Queue};
 use guesthouse_backend::{AllocationShape, Backend, GuestMemory, MapRequest, SurfaceShape, UnmapRequest};
-use guesthouse_messages::Status;
 use guesthouse_messages::address::PAGE_SIZE;
 use guesthouse_messages::allocation::{
     CACHED_FOR_CPU, CreateAllocation, CreateAllocationAnswer, DestroyAllocation, OpenResource, PRIMARY,
@@ -14,6 +13,7 @@ use guesthouse_messages::allocation::{
 };
 use guesthouse_messages::standard::StandardRecord;
 use guesthouse_messages::wire::{align_up, checked_align_up};
+use guesthouse_messages::{MessageHeader, Status};
 use std::time::Instant;
 
 /// The guest's own number for 32-bit colour.
@@ -93,12 +93,14 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             CreateAllocationAnswer::fail(status, out);
             return Ok(());
         }
+        let owner = MessageHeader::process_of(message)?;
         let resource = self.handles.take();
         self.resources.insert(resource, Vec::with_capacity(request.count));
         CreateAllocationAnswer::set_resource(resource, out);
         for (index, (entry, shape)) in request.entries().zip(shapes).enumerate() {
             let handle = self.handles.take();
             let mut allocation = Allocation {
+                owner,
                 resource,
                 gpu_cached: shape.gpu_cached,
                 surface: shape.surface,

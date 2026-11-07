@@ -231,6 +231,19 @@ mod dispatch {
         send(&mut session, &request);
         assert!(!session.processes_32_bit.contains(&process));
     }
+
+    #[test]
+    fn a_process_is_known_by_its_pid_in_the_guest_until_it_goes() {
+        let mut session = session();
+        let mut request = message(Command::CreateProcess, 0x233);
+        set_u32(&mut request, 0x20, 6600);
+        let process = status_of(&send(&mut session, &request));
+        assert_eq!(session.guest_pids.get(&process), Some(&6600));
+        let mut request = message(Command::DestroyProcess, HEADER_SIZE);
+        set_u32(&mut request, 8, process);
+        send(&mut session, &request);
+        assert_eq!(session.guest_pids.get(&process), None);
+    }
 }
 
 mod adapter {
