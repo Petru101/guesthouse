@@ -1,6 +1,7 @@
 //! NVIDIA's vendor number going into a machine. A start on Microsoft's number has Windows write the
-//! driver package for NVIDIA's, and the next start shows it. Nothing here can stop a machine: a guest
-//! that won't take the package keeps Microsoft's number, and the row says why.
+//! driver package for NVIDIA's, and the next start shows it, restarting Windows once on the way (see
+//! identity_restart.rs). Nothing here can stop a machine: a guest that won't take the package keeps
+//! Microsoft's number, and the row says why.
 
 use super::Task;
 use crate::agent::guest_script;
@@ -43,6 +44,7 @@ fn stage(task: &Task, state: &mut IdentityState, script: &str) -> Result<()> {
         state.failed_script.clear();
         state.reason.clear();
         state.note = NEXT_START.to_owned();
+        state.restart_due = true;
         return Ok(());
     }
     state.failed_script = script_id(script);
@@ -93,6 +95,7 @@ pub(super) fn after_failed_gpu(task: &Task, failure: Failure) -> Failure {
         return failure;
     }
     state.shown = Shown::Microsoft;
+    state.restart_due = false;
     state.note.clear();
     state.reason = FELL_BACK.to_owned();
     if let Err(problem) = write_state(task.context, &task.machine, &state) {
