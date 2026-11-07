@@ -14,6 +14,8 @@ fake-rm = []
 [dependencies]
 guesthouse-backend.workspace = true
 guesthouse-messages.workspace = true
+# The snapshot of the host card's readings, shared with the app.
+guesthouse-sensors.workspace = true
 # ioctl and mmap, which the standard library does not offer.
 libc = "0.2"
 # The facade, as in the core.

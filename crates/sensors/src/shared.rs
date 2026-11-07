@@ -3,7 +3,7 @@
 //! A reader takes no lock, as it is on the message path. Each write makes a counter odd, stores the
 //! fields, and makes it even, and a reader that saw it change gives up rather than retrying for long.
 
-use super::{Snapshot, SnapshotReader, is_fresh, milliseconds_since_epoch};
+use crate::{Snapshot, SnapshotReader, is_fresh, milliseconds_since_epoch};
 use std::fs::{File, OpenOptions};
 use std::io;
 use std::os::fd::AsRawFd;

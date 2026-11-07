@@ -12,6 +12,7 @@ default-members = [
     "crates/frame-socket",
     "crates/messages",
     "crates/replay",
+    "crates/sensors",
     "crates/transport",
     "tools/card-check",
 ]
@@ -33,6 +34,7 @@ guesthouse-core = { path = "crates/core" }
 guesthouse-daemon = { path = "crates/daemon" }
 guesthouse-app-core = { path = "crates/app-core" }
 guesthouse-frame-socket = { path = "crates/frame-socket" }
+guesthouse-sensors = { path = "crates/sensors" }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
