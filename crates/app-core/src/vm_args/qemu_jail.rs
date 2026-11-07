@@ -25,7 +25,9 @@ const DNS_PORT: u16 = 53;
 /// Any free port, which sending a datagram binds first.
 const EPHEMERAL_PORT: u16 = 0;
 /// QEMU's own filter, on top. Starting programs stays allowed, for passt and the shared folder's.
-const QEMU_SANDBOX: &str = "on,obsolete=deny,elevateprivileges=deny,spawn=allow,resourcecontrol=deny";
+/// Its privileges group stays out: it ends QEMU's user network's child at `setsid`, before the
+/// shared folder's program runs, and no new privileges, which the launcher sets, already covers it.
+const QEMU_SANDBOX: &str = "on,obsolete=deny,spawn=allow,resourcecontrol=deny";
 
 /// What any QEMU reads. `/proc` and `/sys` give nothing away, as Landlock doesn't let a jailed
 /// process look into one outside its jail.
