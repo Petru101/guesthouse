@@ -41,6 +41,9 @@ const RM_ENCODE: [u32; 4] = [0x1B, 0x1C, 0x1D, 0x3F];
 const RM_JPEG: [u32; 8] = [0x2B, 0x2C, 0x2D, 0x2E, 0x2F, 0x30, 0x31, 0x32];
 const RM_OPTICAL_FLOW: [u32; 2] = [0x33, 0x3E];
 const RM_SECURITY: u32 = 0x26;
+/// The RM's own software engine, which cards list and nothing here runs on.
+const RM_SOFTWARE: u32 = 0x22;
+const ENGINE_GRAPHICS_RM: u32 = crate::rm::classes::ENGINE_GRAPHICS;
 
 const SECURITY_NAME: &str = "Security";
 const SECURITY_VIRTUAL_NAME: &str = "Security_1";
@@ -84,6 +87,38 @@ impl Node {
     fn named(kind: u32, name: impl Into<String>) -> Self {
         Self { name: name.into(), ..Self::new(kind, ENGINE_OTHER) }
     }
+}
+
+/// Whether an RM engine number is one of the copy engines.
+pub fn is_copy_engine(engine: u32) -> bool {
+    RM_COPY.contains(&engine)
+}
+
+/// What an RM engine number is, in words, for someone reading a card's list: `copy 2`, `decoder 0`.
+pub fn engine_label(engine: u32) -> String {
+    let index_in = |table: &[u32]| table.iter().position(|&known| known == engine);
+    if engine == ENGINE_GRAPHICS_RM {
+        return "graphics".to_owned();
+    }
+    if engine == RM_SECURITY {
+        return "security".to_owned();
+    }
+    if engine == RM_SOFTWARE {
+        return "software".to_owned();
+    }
+    let kinds: [(&str, &[u32]); 5] = [
+        ("copy", &RM_COPY),
+        ("decoder", &RM_DECODE),
+        ("encoder", &RM_ENCODE),
+        ("JPEG", &RM_JPEG),
+        ("optical flow", &RM_OPTICAL_FLOW),
+    ];
+    for (kind, table) in kinds {
+        if let Some(index) = index_in(table) {
+            return format!("{kind} {index}");
+        }
+    }
+    "other".to_owned()
 }
 
 /// The indices in `table` of the engines this card has, as a card with fused-off parts skips some.
@@ -256,6 +291,17 @@ mod tests {
         assert_eq!(bytes.len(), 8 + 64 + 4 + 2);
         assert_eq!(bytes[4], ENGINE_3D as u8);
         assert_eq!(bytes[72..76], (1u32 | 12 << 16).to_le_bytes());
+    }
+
+    #[test]
+    fn an_engine_number_is_labelled_by_kind_and_index() {
+        assert_eq!(engine_label(0x01), "graphics");
+        assert_eq!(engine_label(0x0B), "copy 2");
+        assert_eq!(engine_label(0x16), "decoder 3");
+        assert_eq!(engine_label(0x3F), "encoder 3");
+        assert_eq!(engine_label(0x26), "security");
+        assert_eq!(engine_label(0x22), "software");
+        assert_eq!(engine_label(0x77), "other");
     }
 
     #[test]

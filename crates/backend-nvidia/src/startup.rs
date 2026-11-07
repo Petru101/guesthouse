@@ -10,6 +10,11 @@ const HOST_VERSION_FILE: &str = "/sys/module/nvidia/version";
 /// Cards that have been run. This changes nothing the backend does. It is only what a person is told.
 const TESTED_DEVICES: [u16; 1] = [0x2B85];
 
+/// Whether this card is one that has been run. A label for people, like [`CardLabel`].
+pub fn card_tested(device: u16) -> bool {
+    TESTED_DEVICES.contains(&device)
+}
+
 /// A Windows driver version's last digits are the vendor's version: `x.y.z6.1742` is `617.42`.
 fn guest_version_digits(version: DriverVersion) -> (u32, u32) {
     let [_, _, third, fourth] = version.parts.map(u32::from);
@@ -26,7 +31,7 @@ pub fn survey_versions(host_version: &str, setup: &Setup) -> DriverSurvey {
     let branch = host_branch_of_version(host_version);
     let profile = host_branch(branch);
     let (guest_branch_number, guest_point) = guest_version_digits(setup.guest_driver_version);
-    let tested_card = setup.card.is_some_and(|card| TESTED_DEVICES.contains(&card.device));
+    let tested_card = setup.card.is_some_and(|card| card_tested(card.device));
     DriverSurvey {
         host: DriverFound { version: host_version.to_owned(), branch: branch.to_owned() },
         guest: DriverFound {
