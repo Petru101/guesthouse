@@ -20,6 +20,11 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    run_task(&context, &LocalHost { context: &context }, action, machine, rest);
-    ExitCode::SUCCESS
+    match run_task(&context, &LocalHost { context: &context }, action, machine, rest) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("{error}");
+            ExitCode::FAILURE
+        }
+    }
 }

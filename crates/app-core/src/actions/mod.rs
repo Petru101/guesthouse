@@ -337,7 +337,14 @@ fn take_lock(context: &Context) -> Result<File> {
 }
 
 /// The task program's whole life: runs the action, and leaves what happened for the app to read.
-pub fn run_task(context: &Context, host: &dyn VmHost, action: &str, machine_id: &str, arguments: &[String]) {
+/// The error comes back too, so the program can exit with a failure when the action didn't happen.
+pub fn run_task(
+    context: &Context,
+    host: &dyn VmHost,
+    action: &str,
+    machine_id: &str,
+    arguments: &[String],
+) -> Result<()> {
     let machine = match load(context, machine_id) {
         Ok(machine) => machine,
         Err(error) => {
@@ -349,18 +356,18 @@ pub fn run_task(context: &Context, host: &dyn VmHost, action: &str, machine_id: 
                 error: error.0.clone(),
             };
             let _ = write_task(context, None, &record);
-            eprintln!("{error}");
-            return;
+            return Err(error);
         }
     };
     let mut task = Task::new(context, host, action, machine);
     let lock = if action == "force" { Ok(None) } else { take_lock(context).map(Some) };
     let result = lock.and_then(|_lock| run_action(&mut task, arguments));
-    if let Err(error) = result {
-        task.error = error.0;
+    if let Err(error) = &result {
+        task.error = error.0.clone();
     }
     task.finish();
     let _ = writeln!(std::io::stdout(), "{} {action} finished", clock_text());
+    result
 }
 
 #[cfg(test)]
