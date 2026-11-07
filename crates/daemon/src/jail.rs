@@ -83,6 +83,32 @@ pub fn gpu_devices(devices: &Path, render_nodes: &Path) -> Vec<PathBuf> {
     found
 }
 
+/// The shared memory files QEMU and the daemon both map, by their slot's names.
+pub const WINDOW_FILE: &str = "iomem";
+pub const RAM_FILE: &str = "ram";
+
+#[cfg(feature = "nvidia")]
+impl Needs {
+    /// What the real daemon of this slot needs.
+    pub fn of_card(slot: crate::slot::Slot, project: &Path, driver_folder: &Path) -> Self {
+        let snapshot = guesthouse_sensors::snapshot_path();
+        Self {
+            run_folder: slot.run_folder(project),
+            shared_files: vec![slot.shared_file(WINDOW_FILE), slot.shared_file(RAM_FILE), snapshot],
+            devices: host_gpu_devices(),
+            driver_folder: Some(driver_folder.to_owned()),
+        }
+    }
+}
+
+impl Needs {
+    /// The jail names each file, so each must be there before it: see [`make_if_missing`].
+    pub fn prepare(&self) -> io::Result<()> {
+        fs::create_dir_all(&self.run_folder)?;
+        self.shared_files.iter().try_for_each(|file| make_if_missing(file))
+    }
+}
+
 /// The GPU's device files on this PC.
 pub fn host_gpu_devices() -> Vec<PathBuf> {
     gpu_devices(Path::new(DEVICES), Path::new(RENDER_NODES))

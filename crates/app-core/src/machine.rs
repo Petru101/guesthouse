@@ -69,6 +69,10 @@ fn default_refresh() -> u32 {
     144
 }
 
+fn is_off(setting: &bool) -> bool {
+    !setting
+}
+
 fn default_on() -> bool {
     true
 }
@@ -139,8 +143,8 @@ pub struct Machine {
     #[serde(default = "default_on")]
     pub gpu_preview: bool,
     /// A GPU machine may start with no jail on a PC that can't give it one. The user's choice, and
-    /// off unless they make it.
-    #[serde(default)]
+    /// off unless they make it. Left out of the file when off, so an older build can still read it.
+    #[serde(default, skip_serializing_if = "is_off")]
     pub start_without_jail: bool,
 }
 
@@ -365,6 +369,15 @@ mod tests {
 
     fn sample() -> Machine {
         Machine::new("sample", "Sample", "/d", "/v")
+    }
+
+    #[test]
+    fn an_older_build_can_read_a_machine_that_keeps_its_jail() {
+        let text = serde_json::to_string(&sample()).unwrap();
+        assert!(!text.contains("start_without_jail"), "{text}");
+        let allowed = serde_json::to_string(&Machine { start_without_jail: true, ..sample() }).unwrap();
+        let read: Machine = serde_json::from_str(&allowed).unwrap();
+        assert!(read.start_without_jail);
     }
 
     #[test]
