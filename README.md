@@ -114,6 +114,14 @@ In theory this route isn't tied to the 5090 the way the Windows one is. It forwa
 
 Delay is where it's behind. A simple app takes about 20 to 30 ms from key press to picture, against about 11.5 on the host, and Godot takes 40 to 100 ms, more on Vulkan than OpenGL.
 
+### Keys in the viewer
+
+- **Ctrl+Alt+M** captures the mouse, and again lets it go.
+- **Ctrl+Alt+Return** goes full screen, and again comes back. So does the top edge of the screen.
+- **Ctrl+Alt+P** shows or hides the performance overlay.
+
+Capture the mouse for games. The guest then gets the mouse's own motion instead of a position on a tablet, which is what a game's mouse look needs, and the response is much better. Full screen doesn't capture it by itself. The header's mouse button does the same as the key.
+
 ## How it works
 
 ```

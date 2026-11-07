@@ -68,7 +68,7 @@ impl Screen {
     }
 
     pub(super) fn on_motion(&self, x: f64, y: f64) {
-        if self.0.captured.get() {
+        if self.captured() {
             return;
         }
         if let Some(input) = self.0.forwarded.borrow_mut().as_mut() {
@@ -167,14 +167,6 @@ impl Screen {
 
     pub fn shortcuts_inhibited(&self) -> bool {
         self.toplevel().is_some_and(|surface| surface.is_shortcuts_inhibited())
-    }
-
-    /// Hands the desktop its shortcuts back. A click on the screen takes them again.
-    pub fn release(&self) {
-        if let Some(root) = self.0.root.root() {
-            gtk::prelude::RootExt::set_focus(&root, None::<&gtk::Widget>);
-        }
-        self.on_focus(false);
     }
 
     /// Lifts what is held down, because the guest won't see those keys come up otherwise.
