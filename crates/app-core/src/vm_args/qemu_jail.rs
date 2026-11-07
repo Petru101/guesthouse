@@ -79,6 +79,11 @@ impl VmPlan {
         }
         let mut tcp_bind = vec![self.agent_port];
         tcp_bind.extend(self.forwarded_ports(Protocol::Tcp));
+        // The user network reaches the shared folder's program through a pair of loopback TCP
+        // sockets it makes for each connection, on a port it can't know beforehand.
+        if self.share.is_some() {
+            tcp_bind.push(EPHEMERAL_PORT);
+        }
         let tcp_bind = Ports::Only(tcp_bind);
         if self.network.mode == Mode::Nat {
             return Network { tcp_bind, tcp_connect: Ports::Any, udp_bind: Ports::Any, udp_send: Ports::Any };
@@ -86,9 +91,10 @@ impl VmPlan {
         // A restricted user network only answers forwards, and asks the host's resolver for names.
         let mut udp_bind = vec![EPHEMERAL_PORT];
         udp_bind.extend(self.forwarded_ports(Protocol::Udp));
+        let tcp_connect = if self.share.is_some() { Ports::Any } else { Ports::none() };
         Network {
             tcp_bind,
-            tcp_connect: Ports::none(),
+            tcp_connect,
             udp_bind: Ports::Only(udp_bind),
             udp_send: Ports::Only(vec![DNS_PORT]),
         }

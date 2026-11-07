@@ -152,3 +152,13 @@ fn with_no_sound_the_launcher_opens_every_unix_socket_and_qemu_makes_none() {
     let with_sound = VmPlan { sound: Some(crate::vm_args::Sound { sink: None }), ..plan };
     assert!(!with_sound.qemu_command().iter().any(|word| word == "--no-new-unix-sockets"));
 }
+
+#[test]
+fn a_shared_folder_gets_the_loopback_pair_its_program_is_reached_through() {
+    let (_scratch, plan) = jailed(Machine { share: "/home/me/Shared".into(), ..windows() }, true);
+    let network = plan.qemu_jail_plan(&jail(true)).network;
+    assert_eq!(network.tcp_bind, Ports::Only(vec![plan.agent_port, 8080, EPHEMERAL_PORT]));
+    let restricted = Machine { share: "/home/me/Shared".into(), network_mode: Mode::None, ..windows() };
+    let (_scratch, plan) = jailed(restricted, true);
+    assert_eq!(plan.qemu_jail_plan(&jail(true)).network.tcp_connect, Ports::Any);
+}
