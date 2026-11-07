@@ -1,6 +1,7 @@
 //! The page that shows a guest's screen, with its toolbar, the mouse, fullscreen and the thumbnail.
 
 mod capture;
+mod capture_state;
 mod clipboard;
 mod cursor_layer;
 mod dbus_frames;
@@ -36,8 +37,8 @@ use std::time::Duration;
 
 pub use socket_frames::takes_hdr_frames;
 
-pub const RELEASE_KEYS: &str = "Ctrl+Alt+G";
 pub const FULLSCREEN_KEYS: &str = "Ctrl+Alt+Return";
+/// One key: it captures the mouse, and pressed again it lets go.
 pub const CAPTURE_KEYS: &str = "Ctrl+Alt+M";
 pub const OVERLAY_KEYS: &str = "Ctrl+Alt+P";
 /// Pixels at the top of the screen that bring the header back in fullscreen.
@@ -203,12 +204,11 @@ impl ScreenPage {
 
     pub fn toggle_capture(&self) {
         let Some(screen) = self.screen() else { return };
-        if screen.capture_asked() {
-            screen.stop_capture();
-        } else if let Some(problem) = screen.capture_problem() {
-            self.0.window.toast(problem, adw::ToastPriority::Normal);
-        } else {
-            screen.start_capture();
+        match screen.capture_problem() {
+            Some(problem) if !screen.capture_asked() => {
+                self.0.window.toast(problem, adw::ToastPriority::Normal)
+            }
+            _ => screen.toggle_capture(),
         }
     }
 
@@ -229,19 +229,10 @@ impl ScreenPage {
             // In fullscreen this is all the user sees of the way out, so it waits for no other toast.
             self.0
                 .window
-                .toast(&format!("Mouse captured. {RELEASE_KEYS} releases it."), adw::ToastPriority::High);
+                .toast(&format!("Mouse captured. {CAPTURE_KEYS} releases it."), adw::ToastPriority::High);
             if self.0.window.widget().is_fullscreen() {
                 self.0.toolbar.set_reveal_top_bars(false);
             }
-        }
-        self.show_hint(None);
-    }
-
-    /// The way out: takes nothing from the guest, so it works whatever state that is in.
-    pub fn release(&self) {
-        self.0.window.widget().unfullscreen();
-        if let Some(screen) = self.screen() {
-            screen.release();
         }
         self.show_hint(None);
     }
@@ -254,12 +245,12 @@ impl ScreenPage {
         let button = &parts.fullscreen_button;
         button.set_icon_name(if fullscreen { "view-restore-symbolic" } else { "view-fullscreen-symbolic" });
         button.set_tooltip_text(Some(&if fullscreen {
-            format!("Leave Fullscreen ({RELEASE_KEYS})")
+            format!("Leave Fullscreen ({FULLSCREEN_KEYS})")
         } else {
             format!("Fullscreen ({FULLSCREEN_KEYS})")
         }));
         if fullscreen {
-            let text = format!("{RELEASE_KEYS} leaves fullscreen. So does the top edge of the screen.");
+            let text = format!("{FULLSCREEN_KEYS} leaves fullscreen. So does the top edge of the screen.");
             parts.window.toast(&text, adw::ToastPriority::Normal);
         }
     }
@@ -360,10 +351,10 @@ impl ScreenPage {
             Some(status) if status.state == State::Installing => status.step.clone(),
             _ if !screen.has_frames() => "Waiting for the screen".to_owned(),
             _ if !screen.has_input() => "Another viewer has the keyboard and mouse".to_owned(),
-            _ if screen.captured() => format!("Mouse captured. {RELEASE_KEYS} releases it."),
+            _ if screen.captured() => format!("Mouse captured. {CAPTURE_KEYS} releases it."),
             _ if screen.capture_asked() => "Move the pointer into the window to capture it".to_owned(),
             _ if screen.shortcuts_inhibited() => {
-                format!("Keys go to the guest. {RELEASE_KEYS} releases them.")
+                "Keys go to the guest. Another window takes them back".to_owned()
             }
             _ => "Click the screen to send it keys".to_owned(),
         };

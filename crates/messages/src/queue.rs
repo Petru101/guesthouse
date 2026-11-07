@@ -222,10 +222,54 @@ impl<'a> DriverEscape<'a> {
     }
 }
 
-/// The 16 bytes the guest expects back from a limit change, then a status.
-pub fn queued_limit_answer(message: &[u8], out: &mut Vec<u8>) {
-    out.extend_from_slice(clamped(message, 0x18, 0x10));
-    put_u32(out, crate::Status::SUCCESS.0);
+/// What a queued-limit message is about: setting a device's limit on queued presents, or reading it.
+pub const SET_QUEUED_PRESENT_LIMIT: u32 = 1;
+pub const GET_QUEUED_PRESENT_LIMIT: u32 = 2;
+/// How many presents a device may have in flight until it says otherwise. Three is the frame latency
+/// Windows' graphics runtime starts every device at, so a read before any set answers that.
+pub const DEFAULT_QUEUED_PRESENT_LIMIT: u32 = 3;
+
+/// A device's limit on queued presents, set or asked for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QueuedLimit {
+    pub device: u32,
+    pub kind: u32,
+    pub limit: u32,
+}
+
+impl QueuedLimit {
+    const DEVICE: usize = crate::HEADER_SIZE;
+    const KIND: usize = crate::HEADER_SIZE + 4;
+    const LIMIT: usize = crate::HEADER_SIZE + 8;
+    /// The guest reads this much back: the device, the kind and the limit's union.
+    const ECHOED: usize = 0x10;
+
+    pub fn parse(message: &[u8]) -> Result<Self, Malformed> {
+        Ok(Self {
+            device: u32_at(message, Self::DEVICE)?,
+            kind: u32_at(message, Self::KIND)?,
+            limit: u32_at(message, Self::LIMIT)?,
+        })
+    }
+
+    pub fn is_read(&self) -> bool {
+        self.kind == GET_QUEUED_PRESENT_LIMIT
+    }
+
+    pub fn is_set(&self) -> bool {
+        self.kind == SET_QUEUED_PRESENT_LIMIT
+    }
+
+    /// The 16 bytes the guest expects back, then a status. A read gets the device's limit in place of
+    /// whatever the guest sent in that field.
+    pub fn answer(&self, message: &[u8], limit: u32, out: &mut Vec<u8>) {
+        let start = out.len();
+        out.extend_from_slice(clamped(message, Self::DEVICE, Self::ECHOED));
+        if self.is_read() {
+            set_u32(out, start + Self::LIMIT - Self::DEVICE, limit);
+        }
+        put_u32(out, crate::Status::SUCCESS.0);
+    }
 }
 
 /// The clock answer: a status, the GPU's frequency, and both clocks now.
@@ -285,11 +329,29 @@ mod tests {
     }
 
     #[test]
-    fn limit_answer_repeats_sixteen_bytes() {
-        let message: Vec<u8> = (0..0x30).collect();
+    fn setting_a_limit_repeats_sixteen_bytes() {
+        let mut message: Vec<u8> = (0..0x30).collect();
+        set_u32(&mut message, 0x1C, SET_QUEUED_PRESENT_LIMIT);
         let mut out = Vec::new();
-        queued_limit_answer(&message, &mut out);
+        let request = QueuedLimit::parse(&message).unwrap();
+        assert!(request.is_set());
+        request.answer(&message, 9, &mut out);
         assert_eq!(out.len(), 20);
-        assert_eq!(out[0], 0x18);
+        assert_eq!(&out[..0x10], &message[0x18..0x28]);
+        assert_eq!(u32_at(&out, 0x10), Ok(crate::Status::SUCCESS.0));
+    }
+
+    #[test]
+    fn reading_a_limit_fills_in_the_limit() {
+        let mut message = vec![0xEE; 0x30];
+        set_u32(&mut message, 0x18, 0x40);
+        set_u32(&mut message, 0x1C, GET_QUEUED_PRESENT_LIMIT);
+        let request = QueuedLimit::parse(&message).unwrap();
+        assert!(request.is_read());
+        let mut out = Vec::new();
+        request.answer(&message, 2, &mut out);
+        assert_eq!(u32_at(&out, 0), Ok(0x40));
+        assert_eq!(u32_at(&out, 8), Ok(2));
+        assert_eq!(u32_at(&out, 0xC), Ok(0xEEEE_EEEE), "the rest of the union is the guest's");
     }
 }

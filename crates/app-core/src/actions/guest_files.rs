@@ -1,14 +1,18 @@
 //! Puts the driver's files in an existing guest's system folders. The driver's own folder reaches the
-//! guest at install, but a program like a benchmark's launcher looks in System32 by name.
+//! guest at install, but a program like a benchmark's launcher looks in System32 by name. The same for
+//! NVIDIA's settings store, which the driver's installer would make and a game reads its profile from.
 
 use super::Task;
 use super::desktop::{GUEST_FOLDER, put_guest_file};
+use crate::agent::guest_script;
 use crate::failure::Result;
 use crate::log::write_log;
 use crate::setup::guest_files::guest_file_list;
 use crate::text::base64_encode;
 
 const SCRIPT_NAME: &str = "nv-files.ps1";
+const PROFILES_SCRIPT: &str = "nv-profiles.ps1";
+const PROFILES_SECONDS: u64 = 30;
 const LIST_NAME: &str = "nv-files.txt";
 const LOG_NAME: &str = "nv-files.log";
 const CHECK_SECONDS: u64 = 20;
@@ -47,6 +51,26 @@ fn count_missing(task: &Task) -> Option<u32> {
 fn run_placing_script(task: &Task) -> String {
     let (script, list, log) = (guest_path(SCRIPT_NAME), guest_path(LIST_NAME), guest_path(LOG_NAME));
     task.ask_guest(&format!("& {script} {list} | Tee-Object {log}"), PLACE_SECONDS)
+}
+
+/// The folder NVIDIA's settings store lives in, with the driver's own profile database in it. A guest
+/// that has it keeps it, as the files change once a program has used them.
+pub(super) fn place_profile_store(task: &mut Task) -> Result<()> {
+    let script = match guest_script(task.context, PROFILES_SCRIPT) {
+        Ok(script) => script,
+        Err(failure) => {
+            write_log(task.context, &format!("profile store: {}", failure.0))?;
+            return Ok(());
+        }
+    };
+    let said = task.ask_guest(&script, PROFILES_SECONDS);
+    if said.contains(FAILED_MARK) {
+        task.error = "NVIDIA's settings store did not reach Windows. The log says why.".to_owned();
+    }
+    if !said.trim().starts_with("kept") {
+        write_log(task.context, &format!("profile store: {}", said.trim()))?;
+    }
+    Ok(())
 }
 
 /// Windows is up by now, so anything that goes wrong here is said and doesn't stop the machine.

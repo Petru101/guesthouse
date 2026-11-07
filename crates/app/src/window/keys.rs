@@ -9,7 +9,7 @@ use gtk::prelude::*;
 const HOST_MODIFIERS: gdk::ModifierType = gdk::ModifierType::CONTROL_MASK.union(gdk::ModifierType::ALT_MASK);
 
 fn is_host_key(key: gdk::Key) -> bool {
-    [gdk::Key::g, gdk::Key::m, gdk::Key::p, gdk::Key::Return, gdk::Key::KP_Enter].contains(&key)
+    [gdk::Key::m, gdk::Key::p, gdk::Key::Return, gdk::Key::KP_Enter].contains(&key)
 }
 
 pub fn add_host_keys(window: &Window) {
@@ -36,7 +36,6 @@ fn on_key(window: &Window, key: gdk::Key, state: gdk::ModifierType) -> Propagati
     // A held key repeats, and must not flip fullscreen back and forth.
     if !window.0.host_key_down.replace(true) {
         match key {
-            gdk::Key::g => page.release(),
             gdk::Key::m => page.toggle_capture(),
             gdk::Key::p => page.toggle_overlay(),
             _ => page.toggle_fullscreen(),

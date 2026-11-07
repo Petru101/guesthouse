@@ -300,7 +300,7 @@ async fn viewer_page(
     page.toggle_fullscreen();
     glib::timeout_future(SETTLE).await;
     shot_after_paint(&window, &folder, "18-viewer-fullscreen").await;
-    page.release();
+    page.toggle_fullscreen();
     glib::timeout_future(SETTLE).await;
     window.pages().pop_to_tag("library");
     glib::timeout_future(LONG).await;

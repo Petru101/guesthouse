@@ -6,7 +6,10 @@ use crate::deferred::DeferredAction;
 use crate::pending::GateStep;
 use crate::tables::{Queue, ReservedRange};
 use guesthouse_backend::{Backend, GuestMemory, SpaceId, UnmapRequest, WorkSource};
-use guesthouse_messages::queue::{CreateContext, CreateHardwareQueue, SubmitToContext, SubmitToQueue};
+use guesthouse_messages::queue::{
+    CreateContext, CreateHardwareQueue, DEFAULT_QUEUED_PRESENT_LIMIT, QueuedLimit, SubmitToContext,
+    SubmitToQueue,
+};
 use guesthouse_messages::sync::first_handle;
 use guesthouse_messages::wire::{Malformed, put_u32, u8_at, u32_at};
 use guesthouse_messages::{MessageHeader, Status};
@@ -121,6 +124,26 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             self.backend.finish_context_data(request.node, private);
         }
         Ok(())
+    }
+
+    /// A device's limit on queued presents. A set is kept for that device, and a read answers it, or
+    /// the default until the device has set one.
+    pub(super) fn queued_limit(&mut self, message: &[u8], out: &mut Vec<u8>) -> Handled {
+        let request = QueuedLimit::parse(message)?;
+        if request.is_set() {
+            self.present_limits.insert(request.device, request.limit);
+        }
+        let limit = self.present_limits.get(&request.device).copied().unwrap_or(DEFAULT_QUEUED_PRESENT_LIMIT);
+        request.answer(message, limit, out);
+        Ok(())
+    }
+
+    /// The device's limit goes with it. A message too short to name one has nothing to forget.
+    pub(super) fn destroy_device(&mut self, message: &[u8], out: &mut Vec<u8>) {
+        if let Ok(device) = first_handle(message) {
+            self.present_limits.remove(&device);
+        }
+        answer_status(Status::SUCCESS, out);
     }
 
     /// An app that exits destroys its contexts and never names their queues.

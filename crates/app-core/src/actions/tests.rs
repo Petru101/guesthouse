@@ -1,5 +1,5 @@
 use super::desktop::{BOOTS_FILE, SERIAL_FILE};
-use super::guest_files::place_driver_files;
+use super::guest_files::{place_driver_files, place_profile_store};
 use super::*;
 use crate::agent::stand_in::ScriptedAgent;
 use crate::clock::Clock;
@@ -431,6 +431,35 @@ fn with_no_script_the_start_goes_on_and_says_so() {
     let mut task = placing_task(&context, &host);
     place_driver_files(&mut task).unwrap();
     assert!(task.error.contains("no script"));
+}
+
+#[test]
+fn the_profile_store_script_goes_to_the_guest_and_a_failure_is_said() {
+    let scratch = Scratch::new();
+    let mut context = plain_task_context(&scratch);
+    scratch.write("program/guest/nv-profiles.ps1", "make the store");
+    let agent = Arc::new(ScriptedAgent::answering(&["kept the store\r\n", "FAILED the store: locked\r\n"]));
+    context.agent = agent.clone();
+    let host = RecordingHost::default();
+    let mut task = placing_task(&context, &host);
+    place_profile_store(&mut task).unwrap();
+    assert_eq!(task.error, "");
+    place_profile_store(&mut task).unwrap();
+    assert!(task.error.contains("settings store"));
+    let asked = agent.requests.lock().unwrap();
+    assert_eq!(asked.len(), 2);
+    assert_eq!(asked[0].2, "make the store");
+}
+
+#[test]
+fn with_no_profile_store_script_the_guest_is_not_asked() {
+    let scratch = Scratch::new();
+    let mut context = plain_task_context(&scratch);
+    let agent = Arc::new(ScriptedAgent::answering(&[]));
+    context.agent = agent.clone();
+    let host = RecordingHost::default();
+    place_profile_store(&mut placing_task(&context, &host)).unwrap();
+    assert!(agent.requests.lock().unwrap().is_empty());
 }
 
 #[test]

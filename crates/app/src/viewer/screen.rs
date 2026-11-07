@@ -2,6 +2,7 @@
 //!
 //! Frames come from a [`FrameSource`], with a new texture for each one.
 
+use super::capture_state::Capture;
 use super::cursor_layer::CursorLayer;
 use super::dbus_frames::DbusFrames;
 use super::forwarded_frames::ForwardedFrames;
@@ -59,8 +60,7 @@ pub(super) struct Inner {
     pub(super) buttons_down: RefCell<BTreeSet<&'static str>>,
     pub(super) pointer: Cell<Option<(i64, i64)>>,
     pub(super) lock: RefCell<Option<Box<dyn PointerLock>>>,
-    pub(super) capture_asked: Cell<bool>,
-    pub(super) captured: Cell<bool>,
+    pub(super) capture: Cell<Capture>,
     pub(super) capture_input: RefCell<Vec<gtk::EventController>>,
     pub(super) capture_changed: RefCell<Box<dyn Fn()>>,
     pub(super) overlay_wanted: Cell<bool>,
@@ -125,8 +125,7 @@ impl Screen {
             buttons_down: RefCell::default(),
             pointer: Cell::new(None),
             lock: RefCell::new(lock),
-            capture_asked: Cell::new(false),
-            captured: Cell::new(false),
+            capture: Cell::default(),
             capture_input: RefCell::default(),
             capture_changed: RefCell::new(Box::new(capture_changed)),
             overlay_wanted: Cell::new(show_overlay),
@@ -157,11 +156,11 @@ impl Screen {
     }
 
     pub fn captured(&self) -> bool {
-        self.0.captured.get()
+        self.0.capture.get().held()
     }
 
     pub fn capture_asked(&self) -> bool {
-        self.0.capture_asked.get()
+        self.0.capture.get().asked()
     }
 
     /// Follows the machine to another slot, or to its GPU, as an install does when it ends in its first
@@ -258,7 +257,7 @@ impl Screen {
             *self.0.guest_pointer.borrow_mut() = Some(cursor);
         }
         // A pointer set here would show through the capture, which hides the root's.
-        let captured = self.0.captured.get();
+        let captured = self.captured();
         let pointer = self.0.guest_pointer.borrow().clone().filter(|_| !captured);
         if self.0.picture.cursor() != pointer {
             self.0.picture.set_cursor(pointer.as_ref());
@@ -386,7 +385,7 @@ impl Screen {
                 self.0.booting.set(true);
             }
             // The guest's driver puts its device first when it starts, and that can be at any time.
-            guest.point_with(if self.0.captured.get() { MOUSE } else { TABLET });
+            guest.point_with(if self.captured() { MOUSE } else { TABLET });
         }
         drop(guest);
         self.follow_gpu();
