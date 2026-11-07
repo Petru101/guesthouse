@@ -1,0 +1,15 @@
+[package]
+name = "guesthouse-sensors"
+description = "The host card's newest readings, in a small file any process of the user can read."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+# mmap, flock and getuid, which the standard library does not offer.
+libc = "0.2"
+
+[lints]
+workspace = true

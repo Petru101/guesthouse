@@ -2,7 +2,10 @@
 
 use super::{Handled, Session, answer_status};
 use crate::io_space::IoSpace;
-use guesthouse_backend::{Backend, BackendError, GuestMemory, RegistryName, VendorQuery, VideoMemoryUse};
+use crate::tables::Allocation;
+use guesthouse_backend::{
+    Backend, BackendError, GuestBooks, GuestMemory, ProcessMemory, RegistryName, VendorQuery, VideoMemoryUse,
+};
 use guesthouse_messages::adapter::{
     ASYNC_MESSAGES, AdapterQuery, CapsQuery, DRIVER_MODEL_NUMBER, DisplayMode, IdentityAnswer, SetIoSpace,
     adapter_identity, description_answer, driver_caps, node_description, node_of, physical_adapter_ids,
@@ -14,6 +17,7 @@ use guesthouse_messages::queue::{DriverEscape, clock_answer};
 use guesthouse_messages::registry::RegistryQuery;
 use guesthouse_messages::wire::{align_up, pad_to, put_u32, put_u64, set_u32, u32_at};
 use guesthouse_messages::{MessageHeader, Status};
+use std::collections::HashMap;
 
 /// GPU timestamps count nanoseconds.
 const GPU_CLOCK_HERTZ: u64 = 1_000_000_000;
@@ -28,6 +32,21 @@ const STATUS_SIZE: usize = 4;
 const ZERO_ANSWERS: [u32; 8] = [11, 17, 22, 55, 60, 61, 62, 76];
 
 const NO_IO_SPACE: BackendError = BackendError(std::borrow::Cow::Borrowed("no IO space yet"));
+
+/// What each process holds, by its PID in the guest. A process the guest never named is left out,
+/// as a list is no place for a handle of this side's.
+fn memory_by_process(allocations: &HashMap<u32, Allocation>, pids: &HashMap<u32, u32>) -> Vec<ProcessMemory> {
+    let mut held: HashMap<u32, u64> = HashMap::new();
+    for allocation in allocations.values() {
+        if let Some(&pid) = pids.get(&allocation.owner) {
+            *held.entry(pid).or_default() += allocation.size;
+        }
+    }
+    let mut processes: Vec<ProcessMemory> =
+        held.into_iter().map(|(pid, bytes)| ProcessMemory { pid, bytes }).collect();
+    processes.sort_unstable_by_key(|process| process.pid);
+    processes
+}
 
 impl<B: Backend, M: GuestMemory> Session<B, M> {
     pub(super) fn adapter_identity(&self, out: &mut Vec<u8>) {
@@ -71,7 +90,9 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             let total = self.config.limits.video_cap.unwrap_or(self.backend.facts().video_memory);
             let allocations = &self.allocations;
             let memory = || VideoMemoryUse { total, used: allocations.values().map(|one| one.size).sum() };
-            self.backend.escape(process, out, &memory);
+            let pids = &self.guest_pids;
+            let processes = || memory_by_process(allocations, pids);
+            self.backend.escape(process, out, &GuestBooks { memory: &memory, processes: &processes });
         }
         pad_to(out, align_up(escape.size as u64, ESCAPE_ALIGN) as usize);
         if ours {
@@ -211,5 +232,29 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         }
         query.answer(&value.bytes, out)?;
         Ok(Status::SUCCESS)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn allocation(owner: u32, size: u64) -> Allocation {
+        Allocation { owner, size, ..Allocation::default() }
+    }
+
+    #[test]
+    fn memory_is_added_up_by_guest_pid_and_a_nameless_process_is_left_out() {
+        let allocations = HashMap::from([
+            (1, allocation(0x10, 4096)),
+            (2, allocation(0x10, 8192)),
+            (3, allocation(0x20, 1)),
+            (4, allocation(0x30, 7)),
+        ]);
+        let pids = HashMap::from([(0x10, 6600), (0x20, 1532)]);
+        assert_eq!(
+            memory_by_process(&allocations, &pids),
+            [ProcessMemory { pid: 1532, bytes: 1 }, ProcessMemory { pid: 6600, bytes: 12288 }]
+        );
     }
 }

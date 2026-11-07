@@ -8,10 +8,11 @@ use crate::tables::{Queue, ReservedRange};
 use guesthouse_backend::{Backend, GuestMemory, SpaceId, UnmapRequest, WorkSource};
 use guesthouse_messages::queue::{CreateContext, CreateHardwareQueue, SubmitToContext, SubmitToQueue};
 use guesthouse_messages::sync::first_handle;
-use guesthouse_messages::wire::{Malformed, put_u32, u8_at};
+use guesthouse_messages::wire::{Malformed, put_u32, u8_at, u32_at};
 use guesthouse_messages::{MessageHeader, Status};
 
-/// Where a new process's flags are, and the flag for a 32-bit one.
+/// Where a new process's PID in the guest is, where its flags are, and the flag for a 32-bit one.
+const PROCESS_ID: usize = 0x20;
 const PROCESS_FLAGS: usize = 0x232;
 const PROCESS_32_BIT: u8 = 4;
 
@@ -21,6 +22,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         if u8_at(message, PROCESS_FLAGS)? & PROCESS_32_BIT != 0 {
             self.processes_32_bit.insert(handle);
         }
+        self.guest_pids.insert(handle, u32_at(message, PROCESS_ID)?);
         put_u32(out, handle);
         Ok(())
     }
@@ -29,6 +31,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
     pub(super) fn destroy_process(&mut self, message: &[u8], out: &mut Vec<u8>) -> Handled {
         let process = MessageHeader::process_of(message)?;
         self.processes_32_bit.remove(&process);
+        self.guest_pids.remove(&process);
         self.process_going(process);
         self.context_processes.retain(|_, owner| *owner != process);
         self.backend.process_gone(process);

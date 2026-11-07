@@ -556,6 +556,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "guesthouse-daemon",
+ "guesthouse-sensors",
  "regex",
  "rustix",
  "serde",
@@ -578,6 +579,7 @@ dependencies = [
  "guesthouse-backend-standin",
  "guesthouse-core",
  "guesthouse-messages",
+ "guesthouse-sensors",
  "libc",
  "log",
 ]
@@ -645,6 +647,13 @@ dependencies = [
  "guesthouse-daemon",
  "guesthouse-messages",
  "guesthouse-transport",
+]
+
+[[package]]
+name = "guesthouse-sensors"
+version = "0.1.0"
+dependencies = [
+ "libc",
 ]
 
 [[package]]

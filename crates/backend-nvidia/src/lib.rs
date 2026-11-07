@@ -35,9 +35,9 @@ use answers::registry::AdapterRegistry;
 use channel::VideoEngine;
 use encode_sessions::EncodeSessions;
 use guesthouse_backend::{
-    AdapterFacts, AllocationShape, Backend, BackendError, DriverSurvey, GpuRange, HostServices, MapRequest,
-    MemoryId, PciCard, Refusal, RegistryName, RegistryValue, Setup, SlotCopy, SpaceId, StagingCopy,
-    StagingStart, Status, SurfaceShape, UnmapRequest, VendorQuery, VideoMemoryUse, Work, WorkStart,
+    AdapterFacts, AllocationShape, Backend, BackendError, DriverSurvey, GpuRange, GuestBooks, HostServices,
+    MapRequest, MemoryId, PciCard, Refusal, RegistryName, RegistryValue, Setup, SlotCopy, SpaceId,
+    StagingCopy, StagingStart, Status, SurfaceShape, UnmapRequest, VendorQuery, Work, WorkStart,
 };
 use inf::{INF_NAME, Inf};
 use profile::{
@@ -410,10 +410,11 @@ impl<R: Rm + OpenRm> Backend for NvidiaBackend<R> {
         self.device.guest_clock.restart();
     }
 
-    fn escape(&mut self, process: u32, data: &mut [u8], memory: &dyn Fn() -> VideoMemoryUse) {
+    fn escape(&mut self, process: u32, data: &mut [u8], books: &GuestBooks<'_>) {
         log::debug!("escape {:02x?}, {} bytes", data.get(0x10..0x14), data.len());
+        let live = self.sensors.as_ref().and_then(|sensors| sensors.latest());
         let facts =
-            escape::EscapeFacts { channel_classes: &self.channel_classes, nodes: &self.nodes, memory };
+            escape::EscapeFacts { channel_classes: &self.channel_classes, nodes: &self.nodes, books, live };
         if let Err(error) = escape::answer(&mut self.device, facts, data) {
             log::warn!("an escape failed: {error}");
         }

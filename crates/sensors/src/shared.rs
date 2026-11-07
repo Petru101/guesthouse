@@ -3,7 +3,7 @@
 //! A reader takes no lock, as it is on the message path. Each write makes a counter odd, stores the
 //! fields, and makes it even, and a reader that saw it change gives up rather than retrying for long.
 
-use super::{Snapshot, SnapshotReader, is_fresh, milliseconds_since_epoch};
+use crate::{Snapshot, SnapshotReader, is_fresh, milliseconds_since_epoch};
 use std::fs::{File, OpenOptions};
 use std::io;
 use std::os::fd::AsRawFd;
@@ -17,7 +17,7 @@ const ONLY_THE_OWNER: u32 = 0o600;
 const NOT_READ: u64 = u64::MAX;
 const COUNTER: usize = 0;
 const FIELDS: usize = 1;
-const FIELD_COUNT: usize = 11;
+const FIELD_COUNT: usize = 13;
 const WORDS: usize = FIELDS + FIELD_COUNT;
 const FILE_SIZE: usize = WORDS * size_of::<u64>();
 /// How often a reader looks again if a write was under way. Writes take well under a microsecond.
@@ -59,6 +59,8 @@ fn to_words(snapshot: &Snapshot) -> [u64; FIELD_COUNT] {
     [
         snapshot.taken_at,
         encode(snapshot.temperature_celsius),
+        encode(snapshot.load_percent),
+        encode(snapshot.performance_state),
         encode(snapshot.power_milliwatts),
         encode(snapshot.power_limit_milliwatts),
         encode(snapshot.graphics_megahertz),
@@ -75,15 +77,17 @@ fn from_words(words: [u64; FIELD_COUNT]) -> Snapshot {
     Snapshot {
         taken_at: words[0],
         temperature_celsius: decode(words[1]),
-        power_milliwatts: decode(words[2]),
-        power_limit_milliwatts: decode(words[3]),
-        graphics_megahertz: decode(words[4]),
-        graphics_most_megahertz: decode(words[5]),
-        memory_megahertz: decode(words[6]),
-        memory_most_megahertz: decode(words[7]),
-        fan_percent: decode(words[8]),
-        memory_used_bytes: decode_long(words[9]),
-        memory_total_bytes: decode_long(words[10]),
+        load_percent: decode(words[2]),
+        performance_state: decode(words[3]),
+        power_milliwatts: decode(words[4]),
+        power_limit_milliwatts: decode(words[5]),
+        graphics_megahertz: decode(words[6]),
+        graphics_most_megahertz: decode(words[7]),
+        memory_megahertz: decode(words[8]),
+        memory_most_megahertz: decode(words[9]),
+        fan_percent: decode(words[10]),
+        memory_used_bytes: decode_long(words[11]),
+        memory_total_bytes: decode_long(words[12]),
     }
 }
 
@@ -188,6 +192,8 @@ mod tests {
         Snapshot {
             taken_at: milliseconds_since_epoch(),
             temperature_celsius: Some(40),
+            load_percent: Some(7),
+            performance_state: Some(0),
             memory_total_bytes: Some(32 << 30),
             ..Snapshot::default()
         }

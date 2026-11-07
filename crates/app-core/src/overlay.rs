@@ -52,9 +52,25 @@ pub fn gpu_lines(sample: Option<&Sample>, now: Duration) -> Vec<String> {
     ]
 }
 
-pub fn text(frames: u32, seconds: f64, sample: Option<&Sample>, now: Duration) -> String {
+/// What the picture on screen is. An HDR picture comes with how bright the guest wants SDR white,
+/// and an SDR one says so, so a missing line can't be read as either.
+pub fn picture_line(sdr_white_nits: Option<u32>) -> String {
+    match sdr_white_nits {
+        Some(nits) => format!("HDR, SDR white {nits} nits"),
+        None => "SDR picture".to_owned(),
+    }
+}
+
+pub fn text(
+    frames: u32,
+    seconds: f64,
+    sample: Option<&Sample>,
+    now: Duration,
+    sdr_white_nits: Option<u32>,
+) -> String {
     let mut lines = frame_lines(frames, seconds);
     lines.extend(gpu_lines(sample, now));
+    lines.push(picture_line(sdr_white_nits));
     lines.join("\n")
 }
 
@@ -122,7 +138,13 @@ mod tests {
     }
 
     #[test]
+    fn the_picture_is_named_either_way() {
+        assert_eq!(picture_line(Some(240)), "HDR, SDR white 240 nits");
+        assert_eq!(picture_line(None), "SDR picture");
+    }
+
+    #[test]
     fn the_text_is_the_lines_together() {
-        assert_eq!(text(60, 1.0, None, at(0)).matches('\n').count(), 2);
+        assert_eq!(text(60, 1.0, None, at(0), None).matches('\n').count(), 3);
     }
 }

@@ -21,6 +21,7 @@ pub mod gpu_sample;
 pub mod gpu_support;
 pub mod guest_memory;
 pub mod host;
+pub mod host_sensors;
 pub mod input;
 pub mod iso;
 pub mod library;

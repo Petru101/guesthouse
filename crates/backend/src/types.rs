@@ -55,6 +55,20 @@ pub struct VideoMemoryUse {
     pub used: u64,
 }
 
+/// What the core can add up about a guest's memory, for a vendor's escape that asks.
+pub struct GuestBooks<'a> {
+    pub memory: &'a dyn Fn() -> VideoMemoryUse,
+    pub processes: &'a dyn Fn() -> Vec<ProcessMemory>,
+}
+
+/// One of the guest's processes and the video memory it holds, in bytes, for a vendor's process
+/// list. The PID is the guest's own, as the guest's tools match it to a name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProcessMemory {
+    pub pid: u32,
+    pub bytes: u64,
+}
+
 /// A failed backend call on the message path. The text is for the log.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BackendError(pub Cow<'static, str>);

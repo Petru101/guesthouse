@@ -123,6 +123,8 @@ pub struct Session<B, M> {
     pub(crate) io_space: Option<IoSpace>,
 
     pub(crate) processes_32_bit: HashSet<u32>,
+    /// Each process's PID in the guest, by the handle this side gave it.
+    pub(crate) guest_pids: HashMap<u32, u32>,
     pub(crate) spaces: HashMap<u32, SpaceId>,
     /// The daemon's own address space, apart from `spaces` so that no message can name it.
     own_space: Option<SpaceId>,
@@ -200,6 +202,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             fences: FencePool::new(),
             io_space: None,
             processes_32_bit: HashSet::new(),
+            guest_pids: HashMap::new(),
             spaces: HashMap::new(),
             own_space: None,
             closed_spaces: HashSet::new(),

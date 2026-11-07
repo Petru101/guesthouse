@@ -24,6 +24,7 @@ They're in `crates/`, listed here from the bottom up. Each depends only on crate
 |---|---|
 | `transport` | The byte stream from QEMU: frames, packet kinds, guest page ranges. |
 | `messages` | What the guest's messages look like, and how to write the answers. No state, no decisions. |
+| `sensors` | The host card's newest readings, in a small file any process of the user can read. |
 | `backend` | The `Backend` trait: what a GPU vendor must provide. Also the decision on whether to start. |
 | `backend-standin` | A pretend GPU, for tests only. |
 | `backend-nvidia` | The NVIDIA backend: the host's resource manager, channels, and what the guest's driver expects to hear. |

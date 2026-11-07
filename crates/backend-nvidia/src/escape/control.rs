@@ -2,7 +2,7 @@
 //! the list. The guest's handles mean nothing here: a control's number names its class, and so the
 //! object it belongs on.
 
-use super::{get, put, time_pairs};
+use super::{EscapeFacts, get, processes, pstate, put, time_pairs};
 use crate::rm::classes::{
     BUS_ENTRIES_THAT_CLEAR, CONTROL_GET_CLASS_ENGINE, CONTROL_GET_PROBED_IDS, ENGINE_GRAPHICS,
 };
@@ -80,17 +80,50 @@ fn refused<R: Rm>(device: &mut Device<R>, command: u32, params: &[u8]) -> Result
     Ok(command == CONTROL_BUS_INFO && clears_counters(params))
 }
 
+/// The parameters, if the guest sized them as the layout says. The RM says the same of a wrong
+/// size, so the guest can't tell.
+fn params_of(data: &mut [u8], size: u32, wanted: usize) -> Option<&mut [u8]> {
+    let params = data.get_mut(CONTROL_PARAMS..).and_then(|rest| rest.get_mut(..wanted));
+    params.filter(|_| size as usize == wanted)
+}
+
+/// Answers the controls this side keeps the books for, and says whether this was one of them.
+fn answered_here(facts: &EscapeFacts<'_>, command: u32, size: u32, data: &mut [u8]) -> bool {
+    let status = match command {
+        processes::CONTROL_GET_PIDS => {
+            let Some(params) = params_of(data, size, processes::PIDS_SIZE) else { return false };
+            let listed = processes::list(&(facts.books.processes)(), params);
+            if listed { 0 } else { STATUS_NOT_SUPPORTED }
+        }
+        processes::CONTROL_GET_PID_INFO => {
+            let Some(params) = params_of(data, size, processes::INFO_SIZE) else { return false };
+            processes::describe(&(facts.books.processes)(), params);
+            0
+        }
+        pstate::CONTROL => {
+            let Some(params) = params_of(data, size, pstate::SIZE) else { return false };
+            if pstate::answer(facts.live.as_ref(), params) { 0 } else { STATUS_NOT_SUPPORTED }
+        }
+        _ => return false,
+    };
+    put(data, CONTROL_STATUS, status);
+    true
+}
+
 pub(super) fn run<R: Rm>(
     device: &mut Device<R>,
-    channel_classes: &[(u32, u32)],
+    facts: &EscapeFacts<'_>,
     data: &mut [u8],
 ) -> Result<(), RmError> {
     let (Some(command), Some(size)) = (get(data, CONTROL_COMMAND), get(data, CONTROL_SIZE)) else {
         return Ok(());
     };
+    if answered_here(facts, command, size, data) {
+        return Ok(());
+    }
     if command == CONTROL_GET_CLASS_ENGINE
         && let Some(handle) = get(data, CONTROL_PARAMS)
-        && let Some(&(_, class)) = channel_classes.iter().find(|object| object.0 == handle)
+        && let Some(&(_, class)) = facts.channel_classes.iter().find(|object| object.0 == handle)
     {
         let at = CONTROL_PARAMS + CLASS_PARAM_ANSWER;
         put(data, at, class);
@@ -114,10 +147,8 @@ pub(super) fn run<R: Rm>(
         }
         return Ok(());
     };
-    // The RM says the same for a size that isn't its structure's, so the guest can't tell, and only
-    // parameters of the right shape are ever handed over.
-    let params = data.get_mut(CONTROL_PARAMS..).and_then(|rest| rest.get_mut(..params_size));
-    let Some(params) = params.filter(|_| size as usize == params_size) else {
+    // Only parameters of the right shape are ever handed over.
+    let Some(params) = params_of(data, size, params_size) else {
         put(data, CONTROL_STATUS, STATUS_INVALID_PARAM_STRUCT);
         return Ok(());
     };
@@ -144,10 +175,12 @@ pub(super) fn run<R: Rm>(
 #[cfg(test)]
 mod tests {
     use super::super::FUNCTION_RM_CONTROL;
-    use super::super::tests::{device, escape};
+    use super::super::tests::{NO_FACTS, device, escape};
     use super::*;
     use crate::profile::{BLACKWELL, GUEST_617, HOST_615, guest_channel_classes};
     use crate::rm::fake::{Call, FakeRm};
+    use crate::sensors::Snapshot;
+    use guesthouse_backend::{GuestBooks, ProcessMemory};
 
     const GET_NAME_STRING: u32 = 0x2080_0110;
     const NAME_SIZE: usize = 68;
@@ -163,7 +196,7 @@ mod tests {
     fn a_control_not_on_the_list_never_reaches_the_rm() {
         let mut device = device();
         let mut data = control(0x2080_9999, 8);
-        run(&mut device, &[], &mut data).unwrap();
+        run(&mut device, &NO_FACTS, &mut data).unwrap();
         assert!(!device.rm.calls.iter().any(|call| matches!(call, Call::Control { .. })));
     }
 
@@ -171,7 +204,7 @@ mod tests {
     fn a_control_on_the_list_runs_on_the_object_its_number_names() {
         let mut device = device();
         let mut data = control(GET_NAME_STRING, NAME_SIZE);
-        run(&mut device, &[], &mut data).unwrap();
+        run(&mut device, &NO_FACTS, &mut data).unwrap();
         let ran = device.rm.calls.iter().find_map(|call| match call {
             Call::Control { object, command, .. } => Some((*object, *command)),
             _ => None,
@@ -186,7 +219,7 @@ mod tests {
             let mut device = device();
             let mut data = control(GET_NAME_STRING, 0x100);
             put(&mut data, CONTROL_SIZE, size as u32);
-            run(&mut device, &[], &mut data).unwrap();
+            run(&mut device, &NO_FACTS, &mut data).unwrap();
             assert!(!device.rm.calls.iter().any(|call| matches!(call, Call::Control { .. })), "{size}");
             assert_eq!(get(&data, CONTROL_STATUS), Some(crate::rm::STATUS_INVALID_PARAM_STRUCT));
         }
@@ -197,7 +230,7 @@ mod tests {
         let mut device = device();
         let mut data = control(GET_NAME_STRING, NAME_SIZE - 4);
         put(&mut data, CONTROL_SIZE, NAME_SIZE as u32);
-        run(&mut device, &[], &mut data).unwrap();
+        run(&mut device, &NO_FACTS, &mut data).unwrap();
         assert!(!device.rm.calls.iter().any(|call| matches!(call, Call::Control { .. })));
         assert_eq!(get(&data, CONTROL_STATUS), Some(crate::rm::STATUS_INVALID_PARAM_STRUCT));
     }
@@ -207,7 +240,8 @@ mod tests {
         let classes = guest_channel_classes(&GUEST_617, &BLACKWELL);
         let mut data = control(CONTROL_GET_CLASS_ENGINE, 16);
         put(&mut data, CONTROL_PARAMS, classes[2].0);
-        run(&mut device(), &classes, &mut data).unwrap();
+        let facts = EscapeFacts { channel_classes: &classes, ..NO_FACTS };
+        run(&mut device(), &facts, &mut data).unwrap();
         assert_eq!(get(&data, CONTROL_PARAMS + 4), Some(classes[2].1));
         assert_eq!(get(&data, CONTROL_PARAMS + 12), Some(ENGINE_GRAPHICS));
     }
@@ -215,7 +249,7 @@ mod tests {
     #[test]
     fn the_probed_list_names_this_card_and_marks_the_rest_invalid() {
         let mut data = control(CONTROL_GET_PROBED_IDS, 3 * MAX_PROBED_GPUS * 4);
-        run(&mut device(), &[], &mut data).unwrap();
+        run(&mut device(), &NO_FACTS, &mut data).unwrap();
         assert_eq!(get(&data, CONTROL_PARAMS), Some(0x300));
         assert_eq!(get(&data, CONTROL_PARAMS + 4), Some(INVALID_GPU_ID));
         assert_eq!(get(&data, CONTROL_PARAMS + 2 * MAX_PROBED_GPUS * 4), Some(0));
@@ -240,7 +274,7 @@ mod tests {
         let mut device = device();
         let size = device.guest_control_size(CONTROL_GET_ATTACHED_IDS).unwrap();
         let mut data = control(CONTROL_GET_ATTACHED_IDS, size);
-        run(&mut device, &[], &mut data).unwrap();
+        run(&mut device, &NO_FACTS, &mut data).unwrap();
         assert_eq!(get(&data, CONTROL_PARAMS), Some(0x300));
         assert_eq!(get(&data, CONTROL_PARAMS + 4), Some(INVALID_GPU_ID));
         assert!(!reached_the_rm(&device, CONTROL_GET_ATTACHED_IDS));
@@ -252,7 +286,7 @@ mod tests {
             let mut device = device();
             let mut data = control(command, device.guest_control_size(command).unwrap());
             put(&mut data, CONTROL_PARAMS, 0x300);
-            run(&mut device, &[], &mut data).unwrap();
+            run(&mut device, &NO_FACTS, &mut data).unwrap();
             assert!(reached_the_rm(&device, command), "{command:#x}");
         }
     }
@@ -263,7 +297,7 @@ mod tests {
             let mut device = device();
             let mut data = control(command, device.guest_control_size(command).unwrap());
             put(&mut data, CONTROL_PARAMS, 0x400);
-            run(&mut device, &[], &mut data).unwrap();
+            run(&mut device, &NO_FACTS, &mut data).unwrap();
             assert!(!reached_the_rm(&device, command), "{command:#x}");
             assert_eq!(get(&data, CONTROL_STATUS), Some(STATUS_NOT_SUPPORTED));
         }
@@ -281,7 +315,7 @@ mod tests {
     #[test]
     fn plain_bus_entries_reach_the_rm() {
         let mut device = device();
-        run(&mut device, &[], &mut bus_list(&[0, 1, 0x1F])).unwrap();
+        run(&mut device, &NO_FACTS, &mut bus_list(&[0, 1, 0x1F])).unwrap();
         assert!(reached_the_rm(&device, CONTROL_BUS_INFO));
     }
 
@@ -290,7 +324,7 @@ mod tests {
         for index in BUS_ENTRIES_THAT_CLEAR {
             let mut device = device();
             let mut data = bus_list(&[1, index]);
-            run(&mut device, &[], &mut data).unwrap();
+            run(&mut device, &NO_FACTS, &mut data).unwrap();
             assert!(!reached_the_rm(&device, CONTROL_BUS_INFO), "{index:#x}");
             assert_eq!(get(&data, CONTROL_STATUS), Some(STATUS_NOT_SUPPORTED));
         }
@@ -301,7 +335,7 @@ mod tests {
         let mut data = bus_list(&[1, BUS_ENTRIES_THAT_CLEAR[0]]);
         put(&mut data, CONTROL_PARAMS + BUS_LIST_SIZE, 1);
         let mut device = device();
-        run(&mut device, &[], &mut data).unwrap();
+        run(&mut device, &NO_FACTS, &mut data).unwrap();
         assert!(reached_the_rm(&device, CONTROL_BUS_INFO));
     }
 
@@ -313,7 +347,7 @@ mod tests {
         let mut data = control(time_pairs::CONTROL, size);
         data[CONTROL_PARAMS] = 1;
         data[CONTROL_PARAMS + 1] = 1;
-        run(&mut device, &[], &mut data).unwrap();
+        run(&mut device, &NO_FACTS, &mut data).unwrap();
         assert!(!reached_the_rm(&device, time_pairs::CONTROL));
         assert_eq!(get(&data, CONTROL_STATUS), Some(0));
     }
@@ -325,7 +359,7 @@ mod tests {
         let mut data = control(time_pairs::CONTROL, size);
         data[CONTROL_PARAMS] = 1;
         data[CONTROL_PARAMS + 1] = 1;
-        run(&mut device, &[], &mut data).unwrap();
+        run(&mut device, &NO_FACTS, &mut data).unwrap();
         assert!(reached_the_rm(&device, time_pairs::CONTROL));
     }
 
@@ -334,7 +368,7 @@ mod tests {
         const CONTROL_ATTACH_IDS: u32 = 0x0000_0215;
         let mut device = device();
         let mut data = control(CONTROL_ATTACH_IDS, 0x84);
-        run(&mut device, &[], &mut data).unwrap();
+        run(&mut device, &NO_FACTS, &mut data).unwrap();
         assert!(!reached_the_rm(&device, CONTROL_ATTACH_IDS));
         assert_eq!(get(&data, CONTROL_STATUS), Some(0), "the guest's one card is attached already");
     }
@@ -344,7 +378,7 @@ mod tests {
         for command in [0x2080_852A, 0x2080_0522, 0x2080_9009, 0x2080_A040, 0x2080_B201, 0x2080_2096] {
             let mut device = device();
             let mut data = control(command, 8);
-            run(&mut device, &[], &mut data).unwrap();
+            run(&mut device, &NO_FACTS, &mut data).unwrap();
             assert_eq!(get(&data, CONTROL_STATUS), Some(STATUS_NOT_SUPPORTED), "{command:#x}");
             assert!(!reached_the_rm(&device, command), "{command:#x}");
         }
@@ -358,16 +392,66 @@ mod tests {
         for command in [0x0080_1909, 0x0090_010B, 0x0080_9908] {
             let mut device = device();
             let mut data = control(command, 16);
-            run(&mut device, &[], &mut data).unwrap();
+            run(&mut device, &NO_FACTS, &mut data).unwrap();
             assert_eq!(get(&data, CONTROL_STATUS), Some(0), "{command:#x}");
             assert!(!reached_the_rm(&device, command), "{command:#x}");
         }
     }
 
+    fn books_with(processes: Vec<ProcessMemory>) -> EscapeFacts<'static> {
+        let processes: &'static Vec<ProcessMemory> = Box::leak(Box::new(processes));
+        let list: &'static dyn Fn() -> Vec<ProcessMemory> = Box::leak(Box::new(move || processes.clone()));
+        let books: &'static GuestBooks<'static> =
+            Box::leak(Box::new(GuestBooks { memory: &super::super::tests::NO_MEMORY, processes: list }));
+        EscapeFacts { books, ..NO_FACTS }
+    }
+
+    #[test]
+    fn the_process_list_is_the_guests_own_and_never_reaches_the_rm() {
+        let facts = books_with(vec![ProcessMemory { pid: 1532, bytes: 1 << 20 }]);
+        let mut device = device();
+        let mut data = control(processes::CONTROL_GET_PIDS, processes::PIDS_SIZE);
+        run(&mut device, &facts, &mut data).unwrap();
+        assert!(!reached_the_rm(&device, processes::CONTROL_GET_PIDS));
+        assert_eq!(get(&data, CONTROL_STATUS), Some(0));
+        assert_eq!(get(&data, CONTROL_PARAMS + 8), Some(1));
+        assert_eq!(get(&data, CONTROL_PARAMS + 12), Some(1532));
+        let mut data = control(processes::CONTROL_GET_PID_INFO, processes::INFO_SIZE);
+        put(&mut data, CONTROL_PARAMS, 1);
+        put(&mut data, CONTROL_PARAMS + 8, 1532);
+        run(&mut device, &facts, &mut data).unwrap();
+        assert!(!reached_the_rm(&device, processes::CONTROL_GET_PID_INFO));
+        assert_eq!(get(&data, CONTROL_PARAMS + 8 + 0x10), Some(1 << 20));
+    }
+
+    #[test]
+    fn a_process_list_of_the_wrong_size_is_not_answered() {
+        let facts = books_with(vec![ProcessMemory { pid: 1532, bytes: 1 << 20 }]);
+        let mut device = device();
+        let mut data = control(processes::CONTROL_GET_PIDS, processes::PIDS_SIZE - 4);
+        run(&mut device, &facts, &mut data).unwrap();
+        assert!(!reached_the_rm(&device, processes::CONTROL_GET_PIDS));
+        assert_eq!(get(&data, CONTROL_PARAMS + 8), Some(0));
+    }
+
+    #[test]
+    fn the_performance_state_comes_from_the_sampler_or_is_refused() {
+        let mut data = control(pstate::CONTROL, pstate::SIZE);
+        run(&mut device(), &NO_FACTS, &mut data).unwrap();
+        assert_eq!(get(&data, CONTROL_STATUS), Some(STATUS_NOT_SUPPORTED));
+        let live = Snapshot { performance_state: Some(0), ..Snapshot::default() };
+        let mut data = control(pstate::CONTROL, pstate::SIZE);
+        let mut device = device();
+        run(&mut device, &EscapeFacts { live: Some(live), ..NO_FACTS }, &mut data).unwrap();
+        assert_eq!(get(&data, CONTROL_STATUS), Some(0));
+        assert_eq!(get(&data, CONTROL_PARAMS), Some(1));
+        assert!(!reached_the_rm(&device, pstate::CONTROL));
+    }
+
     #[test]
     fn other_unlisted_controls_keep_their_status() {
         let mut data = control(0x2080_1399, 8);
-        run(&mut device(), &[], &mut data).unwrap();
+        run(&mut device(), &NO_FACTS, &mut data).unwrap();
         assert_eq!(get(&data, CONTROL_STATUS), Some(0));
     }
 }
