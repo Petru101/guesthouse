@@ -7019,3 +7019,73 @@ index 9859a4c..bc93134 100644
 -- 
 2.56.0
 
+From 0594fd7c65e6eacc4e9e8b851328a63d6d3dfe3b Mon Sep 17 00:00:00 2001
+From: xnixy <x@ruxn.com>
+Date: Fri, 6 Nov 2026 18:40:28 -0800
+Subject: [PATCH 26/26] hw/hyperv: let the render device's PCI identity be set
+
+Give gpupv-render vendor-id and device-id properties. They default to the
+Microsoft identity Windows' own virtual render driver binds to, and a guest
+that holds a driver package for another identity can be shown that one.
+---
+ hw/hyperv/gpupv.c | 16 ++++++++++++++--
+ 1 file changed, 14 insertions(+), 2 deletions(-)
+
+diff --git a/hw/hyperv/gpupv.c b/hw/hyperv/gpupv.c
+index 6a3bfbd..28a31f0 100644
+--- a/hw/hyperv/gpupv.c
++++ b/hw/hyperv/gpupv.c
+@@ -408,6 +408,9 @@ static void gpupv_vgpu_class_init(ObjectClass *klass, const void *data)
+ #define GPUPV_CFG_END       224
+ 
+ #define TYPE_GPUPV_RENDER "gpupv-render"
++/* Microsoft's virtual render device, which the inbox driver binds to. */
++#define GPUPV_RENDER_VENDOR 0x1414
++#define GPUPV_RENDER_DEVICE 0x008e
+ OBJECT_DECLARE_SIMPLE_TYPE(GpupvRender, GPUPV_RENDER)
+ 
+ struct GpupvRender {
+@@ -416,6 +419,8 @@ struct GpupvRender {
+     uint64_t luid;
+     uint32_t version;
+     uint32_t hostcaps;
++    uint16_t vendor_id;
++    uint16_t device_id;
+ };
+ 
+ static uint32_t gpupv_render_read(PCIDevice *dev, uint32_t addr, int len)
+@@ -456,6 +461,11 @@ static void gpupv_render_realize(PCIDevice *dev, Error **errp)
+         return;
+     }
+ 
++    /* The identity Windows sees. Its own virtual render driver binds to the
++     * default, and a guest holding a driver package for another one can be
++     * given that instead. */
++    pci_config_set_vendor_id(dev->config, s->vendor_id);
++    pci_config_set_device_id(dev->config, s->device_id);
+     memcpy(dev->config + GPUPV_CFG_CHANNEL, &guid, sizeof(guid));
+     stl_le_p(dev->config + GPUPV_CFG_VERSION, s->version);
+     stq_le_p(dev->config + GPUPV_CFG_LUID, s->luid);
+@@ -467,6 +477,8 @@ static const Property gpupv_render_props[] = {
+     DEFINE_PROP_UINT64("luid", GpupvRender, luid, 0x0000000100000abcULL),
+     DEFINE_PROP_UINT32("version", GpupvRender, version, 40),
+     DEFINE_PROP_UINT32("hostcaps", GpupvRender, hostcaps, 0),
++    DEFINE_PROP_UINT16("vendor-id", GpupvRender, vendor_id, GPUPV_RENDER_VENDOR),
++    DEFINE_PROP_UINT16("device-id", GpupvRender, device_id, GPUPV_RENDER_DEVICE),
+ };
+ 
+ static void gpupv_render_class_init(ObjectClass *klass, const void *data)
+@@ -477,8 +489,8 @@ static void gpupv_render_class_init(ObjectClass *klass, const void *data)
+     k->realize = gpupv_render_realize;
+     k->config_read = gpupv_render_read;
+     k->config_write = gpupv_render_write;
+-    k->vendor_id = 0x1414;
+-    k->device_id = 0x008e;
++    k->vendor_id = GPUPV_RENDER_VENDOR;
++    k->device_id = GPUPV_RENDER_DEVICE;
+     k->class_id = PCI_CLASS_DISPLAY_3D;
+     dc->desc = "GPU-PV virtual render device";
+     device_class_set_props(dc, gpupv_render_props);
+-- 
+2.56.0
+
