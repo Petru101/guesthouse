@@ -72,9 +72,9 @@ Direct3D 12, Direct3D 11, Vulkan and OpenGL all run on the real card, along with
 | Compute | 115–119 TFLOPS | 122.6 TFLOPS |
 | Video memory copy | 1,064–1,072 GB/s | 1,036 GB/s |
 | One dispatch with a barrier | 2.05 µs | 2.05 µs |
-| Empty submission round trip | 21 µs | 240 µs |
+| Empty submission round trip | 21 µs | 26 µs, on the Rust daemon |
 
-Once work reaches the card it runs at full speed. Getting it there is what costs extra.
+Once work reaches the card it runs at full speed. Getting it there costs a few µs more than on the host. The prototype took 240 µs for that round trip.
 
 **How fast is a real program?** Superposition at 1080p Extreme in Direct3D 11 scores about **20,000** to **21,000** with no viewer open, but not every time. I've seen 18,400, and on the prototype five runs back to back in one boot fell from 21,354 to 15,332. On the Rust daemon the same test held: 20,186, 19,997, 19,487, a crash inside Superposition, then 20,054. I don't know why the prototype fell, or why it crashed. In OpenGL it's about 11,800. The lowest 5090 I could find on Unigine's leaderboard is around 31,000, so call it two thirds of what the card can do. Something is still eating the rest, and I don't know what yet.
 
