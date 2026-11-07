@@ -344,3 +344,27 @@ fn a_machine_allowed_to_start_unjailed_tells_the_daemon_and_its_row() {
     let note = crate::jailing::read_note(&plan.run_folder).unwrap();
     assert!(note.starts_with("Not jailed: "), "{note}");
 }
+
+#[test]
+fn a_machine_with_its_sound_off_gets_no_pipewire_and_no_sockets_of_its_own() {
+    let scratch = Scratch::new();
+    let mut context = scratch_context(&scratch);
+    let (daemon, qemu) = pretend_programs(&scratch, &mut context);
+    let said = scratch.path("launcher-words");
+    let launcher = format!("#!/bin/sh\necho \"$@\" > {}\n{}", said.display(), &PRETEND_LAUNCHER[10..]);
+    scratch.program("bin/guesthouse-jail", &launcher);
+    context.jail_offer = a_kernel_with_landlock;
+    context.agent = Arc::new(ScriptedAgent::answering(&["up"]));
+    let machine = Machine { sound: false, ..Machine::new("vm", "VM", "/d", "/v") };
+    machine.save(&context).unwrap();
+    make_token(&context, &machine).unwrap();
+    let plan = VmPlan::new(&context, &machine, Boot::Gpu, slots::first(), 0);
+    let started = LocalHost { context: &context }.start(&plan, &machine);
+    left_running(&qemu);
+    end_pretend_program(&qemu);
+    end_pretend_program(&daemon);
+    assert_eq!(started, Ok(()));
+    let words = fs::read_to_string(&said).unwrap();
+    assert!(words.contains("--no-new-unix-sockets"), "{words}");
+    assert!(words.contains("none,id=silent") && !words.contains("pipewire"), "{words}");
+}

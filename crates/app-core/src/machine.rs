@@ -69,6 +69,10 @@ fn default_refresh() -> u32 {
     144
 }
 
+fn is_on(setting: &bool) -> bool {
+    *setting
+}
+
 fn is_off(setting: &bool) -> bool {
     !setting
 }
@@ -146,6 +150,11 @@ pub struct Machine {
     /// off unless they make it. Left out of the file when off, so an older build can still read it.
     #[serde(default, skip_serializing_if = "is_off")]
     pub start_without_jail: bool,
+    /// Sound for a GPU machine, through PipeWire. Off, the guest's sound card plays nothing and
+    /// QEMU has no socket to PipeWire, so its jail can refuse it any socket of its own. Left out of
+    /// the file when on, so an older build can still read it.
+    #[serde(default = "default_on", skip_serializing_if = "is_on")]
+    pub sound: bool,
 }
 
 impl Machine {
@@ -177,6 +186,7 @@ impl Machine {
             forwards: Vec::new(),
             gpu_preview: true,
             start_without_jail: false,
+            sound: true,
         }
     }
 
@@ -378,6 +388,15 @@ mod tests {
         let allowed = serde_json::to_string(&Machine { start_without_jail: true, ..sample() }).unwrap();
         let read: Machine = serde_json::from_str(&allowed).unwrap();
         assert!(read.start_without_jail);
+    }
+
+    #[test]
+    fn sound_is_on_unless_the_file_says_off() {
+        assert!(!serde_json::to_string(&sample()).unwrap().contains("sound"), "the default stays out");
+        let quiet = serde_json::to_string(&Machine { sound: false, ..sample() }).unwrap();
+        assert!(!serde_json::from_str::<Machine>(&quiet).unwrap().sound);
+        let older = r#"{"name": "Old", "disk": "/d", "vars": "/v"}"#;
+        assert!(serde_json::from_str::<Machine>(older).unwrap().sound);
     }
 
     #[test]

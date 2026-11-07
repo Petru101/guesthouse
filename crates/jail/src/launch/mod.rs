@@ -158,7 +158,8 @@ impl Launch {
         } else {
             format!(", which leaves out {}", missing.join(", "))
         };
-        eprintln!("jailed, with Landlock {}{leaves_out}", applied.landlock_abi);
+        let sockets = if self.no_new_unix_sockets { ", and no unix socket of its own" } else { "" };
+        eprintln!("jailed, with Landlock {}{leaves_out}{sockets}", applied.landlock_abi);
         let (program, arguments) = self.program.split_first().expect("parse makes sure there's a program");
         Command::new(program).args(arguments).exec()
     }

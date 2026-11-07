@@ -220,7 +220,8 @@ impl LocalHost<'_> {
     /// The VM with its GPU: the daemon must be up before QEMU, and anything left of an earlier run
     /// goes first.
     fn start_gpu(&self, plan: &VmPlan, machine: &Machine) -> Result<()> {
-        let plan = VmPlan { sound: sound_on_this_host(), ..plan.clone() };
+        let sound = if machine.sound { sound_on_this_host() } else { None };
+        let plan = VmPlan { sound, ..plan.clone() };
         let choice = jailing::choose(self.context, machine, &plan, &(self.context.jail_offer)(&plan))?;
         let plan = VmPlan { jail: choice.qemu.clone(), ..plan };
         self.stop(machine, LEFT_OVER_STOP_SECONDS)?;
