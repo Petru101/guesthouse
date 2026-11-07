@@ -5,6 +5,7 @@ use crate::context::{Context, SLOT_VARIABLE};
 use crate::daemon::detached;
 use crate::display::{read_state, ring_in, screen_text};
 use crate::failure::{Failure, Result};
+use crate::gpu_identity::read_state as read_identity;
 use crate::log::open_for_appending;
 use crate::machine::Machine;
 use crate::processes::{leftovers, memory_taken, running_slots, uses_disk};
@@ -95,6 +96,8 @@ pub struct Status {
     pub screen: String,
     /// Why the screen isn't what was asked for.
     pub display_problem: String,
+    /// What stands in the way of NVIDIA's vendor ID, or when it comes.
+    pub identity_note: String,
 }
 
 pub fn task_path(context: &Context, slot: Option<Slot>) -> PathBuf {
@@ -166,6 +169,8 @@ pub fn status(context: &Context, machine: &Machine) -> Status {
     if machine.has_gpu() {
         let shown = read_state(context, machine);
         found.display_problem = shown.problem(found.state == State::Running).to_owned();
+        let identity = read_identity(context, machine);
+        found.identity_note = identity.problem(found.state == State::Running).to_owned();
         if found.state == State::Running {
             let slot = found.slot.map(slots::number);
             found.screen = screen_text(&shown, ring_in(context, slot));

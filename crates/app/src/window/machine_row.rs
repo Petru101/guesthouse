@@ -156,6 +156,9 @@ impl MachineRow {
         if !status.display_problem.is_empty() {
             lines.push(status.display_problem.clone());
         }
+        if !status.identity_note.is_empty() {
+            lines.push(status.identity_note.clone());
+        }
         if blocked {
             lines.push(no_slot_text(&self.window.context()));
         }

@@ -5,6 +5,7 @@ mod desktop;
 mod display;
 mod gpu_check;
 mod guest_files;
+mod identity;
 mod install;
 mod ubuntu;
 
@@ -12,6 +13,7 @@ pub use desktop::{apply_share, boots, rebooted};
 use desktop::{note_boot, set_up_desktop, wait_for_desktop};
 use gpu_check::check_gpu;
 use guest_files::place_driver_files;
+use identity::{after_failed_gpu, set_up_identity};
 pub use install::{
     INSTALL_STEPS, answer_disc_path, answer_file, install, install_step, make_answer_disc, wait_for_setup,
 };
@@ -172,9 +174,11 @@ fn get_ready(task: &mut Task) -> Result<()> {
     if !wait_for_desktop(task) {
         return Err(Failure::new("Windows started, but its desktop never came up."));
     }
-    check_gpu(task)?;
+    check_gpu(task).map_err(|failure| after_failed_gpu(task, failure))?;
     set_up_desktop(task)?;
-    place_driver_files(task)
+    place_driver_files(task)?;
+    set_up_identity(task);
+    Ok(())
 }
 
 /// Asks Windows to go, then makes sure it does. The start has already failed, and this can only add to
