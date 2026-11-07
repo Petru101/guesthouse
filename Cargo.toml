@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/*"]
+members = ["crates/*", "tools/card-check"]
 # The app needs GTK's development files, which nothing else here does. Build it with `-p guesthouse-app`.
 default-members = [
     "crates/app-core",
@@ -13,6 +13,7 @@ default-members = [
     "crates/messages",
     "crates/replay",
     "crates/transport",
+    "tools/card-check",
 ]
 
 [workspace.package]
