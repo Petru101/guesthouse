@@ -6,7 +6,7 @@
 
 That's Godot's full Forward+ renderer on Vulkan, in Windows, in a VM on Fedora. Nothing is passed through. The host never gives up the card, so my GNOME desktop keeps running on it the whole time.
 
-> **Status:** early. Everything is here now, the Windows GPU part included, but there's no release to install yet, so for now you build it yourself. All of it has only run on my PC, on one RTX 5090. See [where this is at](#where-this-is-at).
+> **Status:** early. The first release is out, and everything's here, the Windows GPU part included. All of it has only run on my PC, on one RTX 5090. See [where this is at](#where-this-is-at).
 
 ## Why I'm building this
 
@@ -33,7 +33,7 @@ This repo has:
 - the desktop app, in `crates/app`
 - the Linux GPU route, in `linux/`, with its QEMU device in the patch
 - a display driver for Windows guests, in `drivers/windows-display/`, which the app installs by itself
-- an installer, `install.sh`, with nothing to install until there's a release
+- an installer, `install.sh`
 
 A Windows GPU machine needs NVIDIA's kernel module loaded, with `/dev/nvidiactl` and `/dev/nvidia0`, and `nvidia-smi` on your PATH. It has run on one RTX 5090, with NVIDIA 615.78.08 on the host and 617.42 in Windows 11 Pro, build 26300, and on nothing else. It has never run on another card, or on a PC with two NVIDIA cards.
 
@@ -163,24 +163,26 @@ What's still coming:
 
 I'd rather you hear this from me:
 
-- **There's nothing to install yet.** There's no release, so for now you build it yourself.
 - **It has only ever run on my PC, on an RTX 5090.** A clean clone does set itself up and pass its tests now, but that's still my machine and my card.
 - **Drivers are tied together.** Linux and Windows have to come from the same NVIDIA branch, and a new branch means new work.
 - **`nvidia-smi` shows a nonsense number for memory in Windows.** The last time I looked, Task Manager didn't show the GPU either.
 - **Sunshine mostly doesn't work in a guest yet.** With the display driver in, it works through Windows Graphics Capture with software encoding, in a test with my own small receiver. Its default capture, Desktop Duplication, is unreliable here: Windows keeps losing it, and I don't know why yet. NVENC through Sunshine doesn't work, as it looks for NVIDIA's vendor ID and Windows reports Microsoft's. I haven't tried it with Moonlight. For now, don't do a default Sunshine install in a guest.
-- **HDR hasn't met a real screen yet.** It's a must for me. The app turns it on in Windows now, through the display driver, and in tests known colours arrive exact at up to 4K 240 Hz, in SDR and HDR, with no frame lost. That's a test picture reaching a test client on a desktop with no real monitor, so I still have to try it on my own screens, and a real game still has to prove it.
+- **I'm not sure about HDR yet.** It's a must for me. The app turns it on in Windows through the display driver, and in tests known colours arrive exact at up to 4K 240 Hz, with no frame lost. On my own monitors the colours aren't washed out, but I can't tell if it's as bright as it should be. The performance overlay will show that once #24 is fixed.
+- **Edge runs on software rendering for now.** See #23.
+- **OpenCL isn't set up in guests yet, and Direct3D 9 doesn't start.** The first needs a registry entry the guest scripts don't add yet. The second fails on any display in a guest.
+- **The first start can flash.** For a few seconds while the display driver goes in, the screen changes and nothing responds. Later starts don't do it.
 - **The viewer drops frames.** With the old viewer, at 144 Hz about 116 frames a second reached it, and about 90 at 4K. I haven't measured the new one yet. It also costs speed: Superposition scored 16,240 with it open, in one run.
 - **Several GPU VMs at once is early.** I've tested three Windows VMs together on one card, started by the app's own task program. Each one needs a video memory cap, and each sees only its own cap. They all stayed exact with Direct3D 12, Vulkan and OpenGL running at once, and when I killed one VM's QEMU, the others carried on and its memory came back. They share the card's speed fairly: a long test ran at about 4,000 frames a second alone and about 1,500 each with three. I haven't tested what a GPU fault in one VM does to the others, and I haven't tried it from the app's window.
-- **Long OpenGL lists break.** Superposition in OpenGL now scores about 11,800, with the right picture, but OpenGL lists past 2,048 entries lose their oldest entries. I can bring them back when a list follows on from the one before it. When it doesn't, the queue stops rather than fault the GPU, so Godot's OpenGL renderer doesn't get through its heavy scene. See #6.
+- **OpenGL can go wrong on very long lists.** Superposition in OpenGL now scores about 11,800, with the right picture, but OpenGL lists past 2,048 entries lose their oldest entries. I can bring them back when a list follows on from the one before it. When it doesn't, the queue stops rather than fault the GPU, so Godot's OpenGL renderer doesn't get through its heavy scene. See #6.
 - **A Windows password stops a start.** The app waits for the desktop, so if Windows asks for a password at logon, the start fails after about four minutes and the VM turns off. A machine the app installed logs on by itself.
-- **A build from source stays at about 64 Hz.** The display driver gets built in Windows, so a plain `cargo build` has none to install, and Windows stays on its basic display. A release will carry the driver. To build it yourself, see `drivers/windows-display/BUILDING.md`.
+- **A build from source stays at about 64 Hz.** The display driver gets built in Windows, so a plain `cargo build` has none to install, and Windows stays on its basic display. A release carries the driver. To build it yourself, see `drivers/windows-display/BUILDING.md`.
 
 ## What's next
 
 The full list, with what's already done, is in the [roadmap](https://github.com/xnixy/guesthouse/issues/2). The short version:
 
-1. A first release, so you can install it
-2. Find the missing third of the speed
+1. Find the missing third of the speed
+2. Other NVIDIA cards. See #9
 3. Lock down Linux guests, and put jails around the daemon and QEMU
 4. Several GPU VMs at once from the app itself
 
@@ -200,7 +202,9 @@ With GTK 4.14, add `--no-default-features`: that leaves out HDR and nothing else
 
 ## Installing
 
-There's no release yet, so the script has nothing to fetch and says so. The one line goes here once it works.
+```sh
+curl -fsSL https://raw.githubusercontent.com/xnixy/guesthouse/main/install.sh | sh
+```
 
 `install.sh` and `uninstall.sh` are at the top of this repo. They're plain `sh`, and they're meant to be read before you run them. Nothing runs until the last line, so a download that gets cut off does nothing. To read it first, download it, read it, and run it with `sh install.sh --dry-run`, which checks everything, shows the plan and stops.
 
