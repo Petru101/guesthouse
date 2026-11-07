@@ -30,6 +30,7 @@ notes*.md
 # Build output.
 /target/
 /build/
+/tools/card-check/guesthouse-card-check
 __pycache__/
 
 # Secrets.

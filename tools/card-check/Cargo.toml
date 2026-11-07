@@ -1,0 +1,22 @@
+[package]
+name = "guesthouse-card-check"
+description = "A program for a stranger with an NVIDIA card: reads what the host says about it, tries a channel on it, and writes a short file to post."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "guesthouse-card-check"
+path = "src/main.rs"
+
+[dependencies]
+guesthouse-backend.workspace = true
+guesthouse-backend-nvidia.workspace = true
+
+[dev-dependencies]
+guesthouse-backend-nvidia = { workspace = true, features = ["fake-rm"] }
+
+[lints]
+workspace = true

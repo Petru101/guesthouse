@@ -591,6 +591,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "guesthouse-card-check"
+version = "0.1.0"
+dependencies = [
+ "guesthouse-backend",
+ "guesthouse-backend-nvidia",
+]
+
+[[package]]
 name = "guesthouse-core"
 version = "0.1.0"
 dependencies = [
