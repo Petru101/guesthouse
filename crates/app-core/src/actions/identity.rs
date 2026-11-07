@@ -43,6 +43,7 @@ fn stage(task: &Task, state: &mut IdentityState, script: &str) -> Result<()> {
         state.failed_script.clear();
         state.reason.clear();
         state.note = NEXT_START.to_owned();
+        state.restart_due = true;
         return Ok(());
     }
     state.failed_script = script_id(script);
@@ -93,6 +94,7 @@ pub(super) fn after_failed_gpu(task: &Task, failure: Failure) -> Failure {
         return failure;
     }
     state.shown = Shown::Microsoft;
+    state.restart_due = false;
     state.note.clear();
     state.reason = FELL_BACK.to_owned();
     if let Err(problem) = write_state(task.context, &task.machine, &state) {

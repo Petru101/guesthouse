@@ -75,9 +75,17 @@ pub struct IdentityState {
     /// What the user should hear about a machine that's up.
     #[serde(default)]
     pub note: String,
+    /// The next start is Windows' first on NVIDIA's number, which ends with Windows restarting once.
+    #[serde(default)]
+    pub restart_due: bool,
 }
 
 impl IdentityState {
+    /// Whether this start, the first on NVIDIA's number, has to restart Windows before it's ready.
+    pub fn restarts_windows(&self) -> bool {
+        self.shown == Shown::Nvidia && self.restart_due
+    }
+
     /// What the user should hear, if anything. A note is about the machine as it runs now.
     pub fn problem(&self, up: bool) -> &str {
         if self.reason.is_empty() && up { &self.note } else { &self.reason }

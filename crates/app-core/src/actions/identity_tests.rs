@@ -67,6 +67,7 @@ fn a_guest_that_takes_the_package_is_shown_nvidias_number_from_the_next_start() 
     assert_eq!(state.shown, Shown::Nvidia);
     assert_eq!(state.reason, "");
     assert_eq!(state.note, NEXT_START);
+    assert!(state.restarts_windows(), "the next start restarts Windows once");
     assert_eq!(shown_identity(&rig.context, &rig.machine), NVIDIA_RENDER);
 }
 
@@ -129,13 +130,14 @@ fn a_failed_gpu_start_on_nvidias_number_goes_back_to_microsofts() {
     let task = Task::new(&rig.context, &host, "start", rig.machine.clone());
     let same = after_failed_gpu(&task, Failure::new("no GPU"));
     assert_eq!(same.0, "no GPU", "a machine on Microsoft's number has nothing to go back to");
-    let state = IdentityState { shown: Shown::Nvidia, ..IdentityState::default() };
+    let state = IdentityState { shown: Shown::Nvidia, restart_due: true, ..IdentityState::default() };
     write_state(&rig.context, &rig.machine, &state).unwrap();
     let said = after_failed_gpu(&task, Failure::new("no GPU"));
     assert_eq!(said.0, format!("no GPU {FELL_BACK}"));
     let state = rig.state();
     assert_eq!(state.shown, Shown::Microsoft);
     assert_eq!(state.reason, FELL_BACK);
+    assert!(!state.restart_due);
 }
 
 #[test]
