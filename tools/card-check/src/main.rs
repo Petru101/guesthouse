@@ -78,17 +78,30 @@ fn choose_card(host: &Host, wanted: Option<u32>) -> Result<u32, String> {
     if listed(minor) { Ok(minor) } else { Err(format!("There is no card {minor}.")) }
 }
 
-/// Writes the report where it was run from, or in the temp folder, and says where.
-fn save(text: &str) {
+/// Writes the report where it was run from, or in the temp folder, and waits for the disk to have
+/// it, so that it survives a reset. Says where it went.
+fn write_report(text: &str) -> io::Result<PathBuf> {
     let here = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let mut last = io::Error::other("nowhere to write");
     for folder in [here, env::temp_dir()] {
         let path = folder.join(REPORT_NAME);
-        if fs::write(&path, text).is_ok() {
-            println!("\nWritten to {}", path.display());
-            return;
+        let written = fs::File::create(&path).and_then(|mut file| {
+            file.write_all(text.as_bytes())?;
+            file.sync_all()
+        });
+        match written {
+            Ok(()) => return Ok(path),
+            Err(error) => last = error,
         }
     }
-    println!("\nCould not write {REPORT_NAME} anywhere. The text above is the report.");
+    Err(last)
+}
+
+fn save(text: &str) {
+    match write_report(text) {
+        Ok(path) => println!("\nWritten to {}", path.display()),
+        Err(_) => println!("\nCould not write {REPORT_NAME} anywhere. The text above is the report."),
+    }
 }
 
 fn branch_of(host: &Host) -> (Option<&'static HostBranch>, Branch) {
@@ -189,10 +202,14 @@ fn run(options: &Options) -> ExitCode {
     if options.read_only {
         return ExitCode::SUCCESS;
     }
-    let Some(generation) = findings.generation else {
-        println!("\nNo channel test: this build has no classes for a card it has no profile for.");
+    let listed = host.cards.iter().find(|card| card.minor == minor).expect("chosen from the list");
+    if let Some(why) = channels::refusal(listed, &findings) {
+        let why = format!("\n{why}\n");
+        print!("{why}");
+        text.push_str(&why);
+        save(&text);
         return ExitCode::FAILURE;
-    };
+    }
     println!("\n{CHANNEL_WARNING}");
     print!("Run the channel test? Type y or n: ");
     let _ = io::stdout().flush();
@@ -200,10 +217,17 @@ fn run(options: &Options) -> ExitCode {
         println!("Not run. The file holds the read-only part.");
         return ExitCode::SUCCESS;
     }
-    let results = match channels::run_all(&mut device, generation, profile, &findings.nodes, channels::WAIT) {
+    let mut progress = |label: &str| {
+        println!("Trying {label}.");
+        let trying = format!("{text}\n{}", report::progress_lines(label));
+        write_report(&trying).map(drop).map_err(|error| error.to_string())
+    };
+    let results =
+        channels::run_on_listed_card(&mut device, listed, &findings, profile, channels::WAIT, &mut progress);
+    let results = match results {
         Ok(results) => results,
         Err(error) => {
-            let failed = format!("\nChannel test: could not make an address space: {error}\n");
+            let failed = format!("\nChannel test: not finished: {error}\n");
             print!("{failed}");
             text.push_str(&failed);
             save(&text);

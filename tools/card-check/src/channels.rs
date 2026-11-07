@@ -3,6 +3,8 @@
 //! guest is involved. This is the first thing a VM would do on the card, and the first thing that
 //! could go wrong on a card nobody has tried.
 
+use crate::host::{CardListed, same_card};
+use crate::survey::Findings;
 use guesthouse_backend_nvidia::answers::nodes::{ENGINE_VIDEO_ENCODE, Node};
 use guesthouse_backend_nvidia::channel::{AREA_SIZE, Channel, ChannelPlace, Engine, VideoEngine};
 use guesthouse_backend_nvidia::profile::{Generation, HostBranch};
@@ -116,6 +118,10 @@ fn video_engines(generation: &Generation, nodes: &[Node]) -> Vec<Engine> {
         .collect()
 }
 
+/// Told the label of each channel just before it's tried, so that something on disk says which one
+/// the card stopped on if it stops. If the telling fails, the channel isn't tried.
+pub type Progress<'a> = &'a mut dyn FnMut(&str) -> Result<(), String>;
+
 /// Runs every channel in turn, graphics first. `wait` is how long each may take.
 pub fn run_all<R: Rm>(
     device: &mut Device<R>,
@@ -123,16 +129,56 @@ pub fn run_all<R: Rm>(
     sizes: &HostBranch,
     nodes: &[Node],
     wait: Duration,
-) -> Result<Vec<ChannelResult>, RmError> {
-    let space = device.create_address_space(&[RANGE])?;
+    progress: Progress<'_>,
+) -> Result<Vec<ChannelResult>, String> {
+    let failed = |error: RmError| error.to_string();
+    let space = device.create_address_space(&[RANGE]).map_err(failed)?;
     let mut engines = vec![Engine::Graphics, Engine::Copy];
     engines.extend(video_engines(generation, nodes));
     let mut results = Vec::with_capacity(engines.len());
     for (index, engine) in engines.into_iter().enumerate() {
+        let label = label(engine);
+        progress(&label)?;
         let area_address = FIRST_AREA + index as u64 * AREA_STEP;
         let outcome = run_one(device, generation, sizes, &space, area_address, engine, wait);
-        results.push(ChannelResult { label: label(engine), outcome });
+        results.push(ChannelResult { label, outcome });
     }
-    device.destroy_address_space(&space)?;
+    device.destroy_address_space(&space).map_err(failed)?;
     Ok(results)
+}
+
+/// Why the channel test can't start on this card, if it can't. A card's number comes from the
+/// driver's list, and the device opened by that number says its own name: if the two differ, the
+/// channels could reach another card, so none is made.
+pub fn refusal(listed: &CardListed, findings: &Findings) -> Option<String> {
+    if !same_card(&listed.model, &findings.name) {
+        return Some(format!(
+            "Card {} opened as {:?}, but the driver lists {:?} under that number. They don't line up on \
+             this PC, so the channel test was not run: it could reach another card.",
+            listed.minor, findings.name, listed.model
+        ));
+    }
+    if findings.generation.is_none() {
+        return Some(
+            "No channel test: this build has no classes for a card it has no profile for.".to_owned(),
+        );
+    }
+    None
+}
+
+/// The channel test on the card the listing names, and only if that is the card that was opened.
+/// Nothing here touches the device before [`refusal`] has passed it.
+pub fn run_on_listed_card<R: Rm>(
+    device: &mut Device<R>,
+    listed: &CardListed,
+    findings: &Findings,
+    sizes: &HostBranch,
+    wait: Duration,
+    progress: Progress<'_>,
+) -> Result<Vec<ChannelResult>, String> {
+    if let Some(why) = refusal(listed, findings) {
+        return Err(why);
+    }
+    let generation = findings.generation.expect("refusal checks for one");
+    run_all(device, generation, sizes, &findings.nodes, wait, progress)
 }

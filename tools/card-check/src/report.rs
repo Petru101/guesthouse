@@ -141,6 +141,12 @@ pub fn card_lines(minor: u32, findings: &Findings) -> String {
     text
 }
 
+/// What the file says while a channel is being tried. If the card stops answering, this is the last
+/// thing in it after the reboot.
+pub fn progress_lines(label: &str) -> String {
+    format!("Channel test: trying {label}. If this is the last line, the card stopped answering on it.\n")
+}
+
 /// What the channel test did, or why it didn't run.
 pub fn channel_lines(results: &[ChannelResult]) -> String {
     let mut text = String::from("Channel test:\n");

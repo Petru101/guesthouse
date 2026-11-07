@@ -9,9 +9,9 @@ use guesthouse_backend_nvidia::rm::fake::{Call, FakeRm};
 use guesthouse_backend_nvidia::rm::fake_card::{
     FAKE_ADA, FAKE_BLACKWELL, FAKE_TURING, FakeCard, install_card,
 };
-use guesthouse_card_check::channels::{Outcome, run_all};
+use guesthouse_card_check::channels::{Outcome, refusal, run_all, run_on_listed_card};
 use guesthouse_card_check::host::{CardListed, Host};
-use guesthouse_card_check::report::{Branch, card_lines, channel_lines, heading, host_lines};
+use guesthouse_card_check::report::{Branch, card_lines, channel_lines, heading, host_lines, progress_lines};
 use guesthouse_card_check::survey::{Findings, Verdict, survey};
 use std::time::Duration;
 
@@ -79,7 +79,9 @@ fn whole_report(card: &FakeCard) -> String {
     let findings = findings_on(card);
     let mut device = device_on(card);
     let generation = findings.generation.unwrap();
-    let results = run_all(&mut device, generation, &HOST_615, &findings.nodes, Duration::ZERO).unwrap();
+    let results =
+        run_all(&mut device, generation, &HOST_615, &findings.nodes, Duration::ZERO, &mut |_| Ok(()))
+            .unwrap();
     let mut text = heading();
     text.push_str(&host_lines(&host(), Branch::Known { version_tested: true }));
     text.push_str(&card_lines(0, &findings));
@@ -188,8 +190,15 @@ fn the_channel_test_makes_this_generations_channels_and_no_other() {
     for expected in &CARDS {
         let findings = findings_on(expected.card);
         let mut device = device_on(expected.card);
-        let results =
-            run_all(&mut device, expected.generation, &HOST_615, &findings.nodes, Duration::ZERO).unwrap();
+        let results = run_all(
+            &mut device,
+            expected.generation,
+            &HOST_615,
+            &findings.nodes,
+            Duration::ZERO,
+            &mut |_| Ok(()),
+        )
+        .unwrap();
         let labels: Vec<&str> = results.iter().map(|result| result.label.as_str()).collect();
         assert_eq!(labels, ["graphics", "copy"], "no video channel where video does not run");
         assert!(results.iter().all(|result| result.outcome == Outcome::NotReleased));
@@ -207,7 +216,15 @@ fn nothing_that_identifies_the_card_is_ever_asked_for() {
     for expected in &CARDS {
         let mut device = device_on(expected.card);
         let findings = survey(&mut device).unwrap();
-        run_all(&mut device, expected.generation, &HOST_615, &findings.nodes, Duration::ZERO).unwrap();
+        run_all(
+            &mut device,
+            expected.generation,
+            &HOST_615,
+            &findings.nodes,
+            Duration::ZERO,
+            &mut |_| Ok(()),
+        )
+        .unwrap();
         for call in &device.rm.calls {
             if let Call::Control { command, .. } = call {
                 assert_ne!(*command, UUID.0, "the card's UUID is never read");
@@ -239,4 +256,54 @@ fn the_file_holds_no_path_user_name_host_name_or_uuid() {
             assert!(!long_hex, "a long number nothing in the tables has: {line}");
         }
     }
+}
+
+fn listed(minor: u32, model: &str) -> CardListed {
+    CardListed { minor, model: model.to_owned() }
+}
+
+#[test]
+fn a_card_whose_number_and_name_do_not_line_up_gets_no_channel() {
+    let mut device = device_on(&FAKE_ADA);
+    let findings = survey(&mut device).unwrap();
+    let calls_before = device.rm.calls.len();
+    let other = listed(1, "NVIDIA GeForce GTX 1660 SUPER");
+    let why = refusal(&other, &findings).unwrap();
+    assert!(why.contains("don't line up"), "{why}");
+    assert!(why.contains("Card 1"), "{why}");
+    let mut told = Vec::new();
+    let stopped =
+        run_on_listed_card(&mut device, &other, &findings, &HOST_615, Duration::ZERO, &mut |label| {
+            told.push(label.to_owned());
+            Ok(())
+        });
+    assert_eq!(stopped, Err(why));
+    assert!(told.is_empty(), "no channel was even announced");
+    assert_eq!(device.rm.calls.len(), calls_before, "nothing reached the card");
+    assert!(!device.rm.allocated().any(|(class, _)| class == ADA.channel_class));
+
+    let same = listed(1, FAKE_ADA.name);
+    assert_eq!(refusal(&same, &findings), None);
+    let ran = run_on_listed_card(&mut device, &same, &findings, &HOST_615, Duration::ZERO, &mut |label| {
+        told.push(label.to_owned());
+        Ok(())
+    });
+    assert_eq!(ran.unwrap().len(), 2);
+    assert_eq!(told, ["graphics", "copy"]);
+}
+
+#[test]
+fn each_channel_is_announced_before_it_is_tried_and_not_tried_if_that_fails() {
+    let mut device = device_on(&FAKE_TURING);
+    let findings = survey(&mut device).unwrap();
+    let mut file = String::new();
+    let mut progress = |label: &str| {
+        file = progress_lines(label);
+        if label == "graphics" { Err("the disk is full".to_owned()) } else { Ok(()) }
+    };
+    let stopped = run_all(&mut device, &TURING, &HOST_615, &findings.nodes, Duration::ZERO, &mut progress);
+    assert_eq!(stopped, Err("the disk is full".to_owned()));
+    assert!(file.contains("trying graphics"), "{file}");
+    assert!(file.contains("last line"), "{file}");
+    assert!(!device.rm.allocated().any(|(class, _)| class == TURING.channel_class), "never made");
 }

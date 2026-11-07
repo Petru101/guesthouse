@@ -59,6 +59,12 @@ pub fn parse_card(information: &str) -> Option<CardListed> {
     Some(CardListed { minor, model })
 }
 
+/// Whether the card opened by a number is the one the driver lists under it. The listing's model
+/// and the card's own name are the same text on a card that lines up.
+pub fn same_card(listed_model: &str, opened_name: &str) -> bool {
+    listed_model.trim() == opened_name.trim()
+}
+
 pub fn parse_taint_as_open(taint: &str) -> bool {
     !taint.contains(PROPRIETARY_TAINT)
 }
@@ -102,6 +108,14 @@ mod tests {
         let card = parse_card(INFORMATION).unwrap();
         assert_eq!(card, CardListed { minor: 1, model: "NVIDIA GeForce RTX 4080".to_owned() });
         assert!(!format!("{card:?}").contains("GPU-"));
+    }
+
+    #[test]
+    fn a_card_lines_up_when_the_listing_and_the_card_say_the_same_name() {
+        assert!(same_card("NVIDIA GeForce RTX 4080", "NVIDIA GeForce RTX 4080"));
+        assert!(same_card(" NVIDIA GeForce RTX 4080\n", "NVIDIA GeForce RTX 4080"));
+        assert!(!same_card("NVIDIA GeForce RTX 4080", "NVIDIA GeForce GTX 1660 SUPER"));
+        assert!(!same_card("NVIDIA GeForce RTX 4080", ""));
     }
 
     #[test]

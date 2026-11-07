@@ -14,11 +14,11 @@ Run `guesthouse-card-check` from a terminal. It needs no root, no Rust, no Windo
 
 First the part that only reads: the driver version and whether it's the open kernel module, each card the driver has, and for the card you picked its name, device ID, architecture, SM version, the engines the host lists, each copy engine's capabilities, the engine nodes a guest would be given, and the class list. Then it says what the app knows: supported, experimental or refused, and why. On an experimental card the decoder and encoder engines in that list are what fills in the node types still unset for its generation.
 
-Then it says what the channel test does and asks for a y or n. The test makes a graphics channel and a copy channel, and on a generation whose video runs one on each video engine, has each write one value to memory, and frees them. That's what a VM does first. On a card nobody has run this on, the GPU could stop answering, which freezes the desktop on that card until a reboot, so save your work first. The objects it makes go when it ends, and nothing on the system changes.
+Then it says what the channel test does and asks for a y or n. The test makes a graphics channel and a copy channel, and on a generation whose video runs one on each video engine, has each write one value to memory, and frees them. That's what a VM does first. On a card nobody has run this on, the GPU could stop answering, which freezes the desktop on that card until a reboot, so save your work first. While each channel is tried, the file says which one, so after a freeze and a reboot it still shows what was read and where it stopped. The objects it makes go when it ends, and nothing on the system changes.
 
 The file never has the card's UUID or ECID, a serial number, your PC's name, your user name or a path in it. The program never asks the card for the first two, and a test proves the file holds none of those shapes.
 
-A second card is opened through the driver's second device. That part has only been run on a first card, and the program says so when it tries one. If a second card gives an odd answer, say which number it had.
+A second card is opened through the driver's second device. That part has only been run on a first card, and the program says so when it tries one. Before the channel test it compares the name the opened card gives with the one the driver lists under that number, and if they differ it writes that down and stops, as the channels could reach another card. If a second card gives an odd answer, say which number it had.
 
 ## When it stops
 
@@ -26,4 +26,4 @@ With no NVIDIA driver loaded, or a driver with no card, it says so. With the pro
 
 ## Building
 
-`./build.sh` makes `guesthouse-card-check` here, in the image `packaging/Containerfile` describes if you have podman or docker, and otherwise with the Rust on this PC. Either way it refuses a build that needs a newer glibc than Ubuntu 24.04 has, which is the oldest system the app runs on. `cargo test -p guesthouse-card-check` runs the tests on the pretend Ada and Turing cards, with no card at all.
+`./build.sh` makes `guesthouse-card-check` here, in the image `packaging/Containerfile` describes if you have podman or docker, and otherwise with the Rust on this PC. Either way it refuses a build that needs a newer glibc than Ubuntu 24.04 has, which is the oldest system the app runs on, and one that still names a folder of the PC that built it. `cargo test -p guesthouse-card-check` runs the tests on the pretend Ada and Turing cards, with no card at all.
