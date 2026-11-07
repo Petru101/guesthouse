@@ -114,7 +114,7 @@ fn channel_digest(engine: Engine) -> u64 {
 
 #[test]
 fn channels_ask_the_rm_for_the_same_things_and_start_the_same_way() {
-    assert_eq!(channel_digest(Engine::Graphics), 0xcf57_be2a_c19a_d445);
+    assert_eq!(channel_digest(Engine::Graphics), 0xa81b_7362_be2f_325b);
     assert_eq!(channel_digest(Engine::Copy), 0x7892_39c1_051c_245f);
     let class = BLACKWELL.video_decode_class;
     assert_eq!(

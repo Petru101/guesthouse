@@ -15,6 +15,10 @@ pub const CONTROL_GET_WORK_SUBMIT_TOKEN: u32 = 0xC36F_0108;
 pub const CONTROL_SET_TIMESLICE: u32 = 0xA06C_0103;
 pub const CONTROL_SCHEDULE_CHANNEL_GROUP: u32 = 0xA06C_0101;
 pub const CONTROL_GET_CLASS_ENGINE: u32 = 0x906F_0101;
+/// Keeps a control for the GPU to run when a channel reaches a method naming it.
+pub const CONTROL_DEFERRED_API: u32 = 0x5080_0103;
+/// Moves a channel to another ring. Meant to be deferred.
+pub const CONTROL_UPDATE_CHANNEL_INFO: u32 = 0x2080_1116;
 pub const CONTROL_GET_TIME: u32 = 0x2080_0403;
 pub const CONTROL_GET_GPU_ID: u32 = 0x2080_0142;
 pub const CONTROL_GET_PROBED_IDS: u32 = 0x0000_0214;

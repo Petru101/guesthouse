@@ -22,6 +22,7 @@ pub mod pushbuffer;
 pub mod queue;
 pub mod record;
 mod ring_position;
+mod ring_request;
 pub mod rm;
 pub mod sensors;
 pub mod staging;
@@ -46,6 +47,7 @@ use profile::{
 use queue::LiveQueue;
 use record::{CardReader, HostFacts, SummaryFacts, build, read_host_facts, summary};
 use ring_position::GuestRing;
+use ring_request::RingMoves;
 use rm::device::{AddressSpace, Device};
 use rm::linux::LinuxRm;
 use rm::{Handle, Rm, RmError};
@@ -62,7 +64,7 @@ const NVIDIA_VENDOR: u16 = 0x10DE;
 
 /// How many entries a queue may have unfinished before its next submission waits. This is our own
 /// measured number: a long benchmark finished at this limit, and failed at 6,144 and with no limit.
-const UNFINISHED_ENTRIES_LIMIT: u64 = 4000;
+pub(crate) const UNFINISHED_ENTRIES_LIMIT: u64 = 4000;
 
 /// What the guest's runtime says a Vulkan context is for. Vulkan's video queue families can also
 /// transfer, and it uses them for plain copies, so its contexts on video nodes get copy channels.
@@ -129,6 +131,10 @@ pub struct NvidiaBackend<R> {
     pub(crate) peek_page: Option<peek::PeekPage>,
     /// Rings named in queues' private data, by queue.
     pub(crate) guest_rings: HashMap<u32, GuestRing>,
+    /// Rings asked for, which queues can move to.
+    pub(crate) ring_moves: RingMoves,
+    /// The memory made last, which the private data finished next belongs to.
+    last_memory: Option<MemoryId>,
     /// The host's live readings, if it has any.
     sensors: Option<Box<dyn SnapshotReader>>,
     card_uuid: [u8; 16],
@@ -223,6 +229,8 @@ impl<R: Rm> NvidiaBackend<R> {
             copier: None,
             peek_page: None,
             guest_rings: HashMap::new(),
+            ring_moves: RingMoves::default(),
+            last_memory: None,
             sensors: None,
             card_uuid,
         })
@@ -310,15 +318,20 @@ impl<R: Rm + OpenRm> Backend for NvidiaBackend<R> {
 
     fn allocate_video_memory(&mut self, size: u64) -> Result<(MemoryId, u64), BackendError> {
         let (handle, given) = self.device.alloc_video_memory(size).map_err(memory_error)?;
-        Ok((MemoryId(u64::from(handle)), given))
+        let memory = MemoryId(u64::from(handle));
+        self.last_memory = Some(memory);
+        Ok((memory, given))
     }
 
     fn adopt_host_pages(&mut self, host_address: u64, size: u64) -> Result<MemoryId, BackendError> {
         let handle = self.device.alloc_host_pages(host_address, size).map_err(memory_error)?;
-        Ok(MemoryId(u64::from(handle)))
+        let memory = MemoryId(u64::from(handle));
+        self.last_memory = Some(memory);
+        Ok(memory)
     }
 
     fn release_memory(&mut self, memory: MemoryId) {
+        self.ring_moves.released(memory);
         if let Err(error) = self.device.free(handle_of(memory)) {
             log::warn!("freeing memory: {error}");
         }
@@ -372,7 +385,9 @@ impl<R: Rm + OpenRm> Backend for NvidiaBackend<R> {
             small_pages: request.small_pages,
             gpu_cached: request.gpu_cached,
         };
-        self.device.map(space, &map).map_err(memory_error)
+        self.device.map(space, &map).map_err(memory_error)?;
+        self.ring_moves.mapped(request.memory, request.address);
+        Ok(())
     }
 
     fn unmap(&mut self, unmap: &UnmapRequest) -> Result<(), BackendError> {
@@ -386,6 +401,15 @@ impl<R: Rm + OpenRm> Backend for NvidiaBackend<R> {
 
     fn finish_allocation_data(&mut self, private: &mut [u8], size: u64) {
         private_data::finish(&self.guest.allocation, private, size);
+        let memory = self.last_memory.take();
+        if ring_request::is_ring_request(&self.guest.allocation, private)
+            && let Some(memory) = memory
+        {
+            let handle = self.device.new_handle();
+            ring_request::answer_with_handle(private, handle);
+            self.ring_moves.answered(memory, handle, size);
+            log::info!("a ring of {size:#x} bytes can be moved to with handle {handle:#x}");
+        }
     }
 
     /// Each queue gets a number of its own, which can't be zero, and the guest needs a heap size.

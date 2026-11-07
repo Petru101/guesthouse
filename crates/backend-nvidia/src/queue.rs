@@ -4,9 +4,11 @@ use crate::channel::{AREA_SIZE, Channel, ChannelPlace, Engine, LIST_AREA, ListCh
 use crate::list_repair;
 use crate::pushbuffer::{ENTRY_SIZE, Header, RingEntry};
 use crate::ring_position::has_ring_position_flag;
+use crate::ring_request::RingMove;
 use crate::rm::Rm;
-use crate::{NvidiaBackend, memory_error};
+use crate::{NvidiaBackend, UNFINISHED_ENTRIES_LIMIT, memory_error};
 use guesthouse_backend::{HostServices, SpaceId, Work, WorkSource, WorkStart};
+use std::time::{Duration, Instant};
 
 // The fields of a submission's private data.
 const LIST_OFFSET: usize = 0x0C;
@@ -15,10 +17,20 @@ const CONTEXT_LIST_ENTRIES: usize = 0x18;
 const LIST_ADDRESS: usize = 0x1C;
 const RING_END: usize = 0x78;
 const RING_ADDRESS: usize = 0x7C;
+/// The handle of the ring the queue moves to, in the submission that ends on the old ring.
+const MOVE_HANDLE: usize = 0x84;
 const SMALLEST_PRIVATE_DATA: usize = 0x84;
 
 /// How much of a guest's ring is read when standing in for the GPU.
 const RING_BYTES: usize = 0x10000;
+
+/// A new ring starts with one entry, the rest of the commands the move was among, and the guest's
+/// driver counts on from there.
+const FIRST_POSITION_ON_NEW_RING: u32 = 1;
+
+/// How long a queue's later work is held for a move's fence. The core calls a queue stuck when a
+/// fence takes this long, so a move that hasn't gone by then never will.
+const MOVE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The guest writes this method to end a copy, which a channel here is refused. The launch method
 /// does the same in the same two words.
@@ -57,6 +69,17 @@ impl QueueChannel {
     }
 }
 
+/// A ring the GPU moves to once it has run what the old ring holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PendingMove {
+    ring_address: u64,
+    ring_entries: u32,
+    /// The move submission's fence. It retires with that submission, whose last method is the move.
+    fence: u64,
+    reached: u64,
+    registered: Instant,
+}
+
 /// A queue, as far as the GPU goes.
 #[derive(Debug)]
 pub(crate) struct LiveQueue {
@@ -68,11 +91,20 @@ pub(crate) struct LiveQueue {
     position: Option<u32>,
     /// The GPU address just past the commands of the last list.
     list_end: Option<u64>,
+    /// A move registered with the GPU, which goes with the next doorbell.
+    pending_move: Option<PendingMove>,
 }
 
 impl LiveQueue {
     fn new(space: SpaceId) -> Self {
-        Self { space, channel: QueueChannel::Unusable, channel_tried: false, position: None, list_end: None }
+        Self {
+            space,
+            channel: QueueChannel::Unusable,
+            channel_tried: false,
+            position: None,
+            list_end: None,
+            pending_move: None,
+        }
     }
 }
 
@@ -282,6 +314,35 @@ impl<R: Rm> NvidiaBackend<R> {
         host.write_u64(at, entry).is_ok()
     }
 
+    /// The move submission has retired, so the GPU has run the move. Counting switches to the new
+    /// ring now, and not before: a doorbell for the new ring is a small index, and storing it while
+    /// the GPU is still on the old ring stops it short of the move.
+    ///
+    /// A move whose fence can't be read, or hasn't retired by [`MOVE_TIMEOUT`], fails the queue.
+    fn settle_move(&mut self, host: &dyn HostServices, queue_id: u32, now: Instant) -> Result<(), WorkStart> {
+        let Some(queue) = self.queues.get_mut(&queue_id) else { return Ok(()) };
+        let Some(pending) = queue.pending_move else { return Ok(()) };
+        let fail = |queue: &mut LiveQueue, why: String| {
+            log::warn!("queue {queue_id:#x} gives up its move to ring {:#x}: {why}", pending.ring_address);
+            queue.pending_move = None;
+            Err(WorkStart::QueueFailed)
+        };
+        let seen = match host.fence_value(pending.fence) {
+            Ok(seen) => seen,
+            Err(error) => return fail(queue, format!("its fence can't be read: {error}")),
+        };
+        if seen < pending.reached {
+            if now.saturating_duration_since(pending.registered) > MOVE_TIMEOUT {
+                return fail(queue, format!("its fence is at {seen:#x} and not {:#x}", pending.reached));
+            }
+            return Err(WorkStart::Busy);
+        }
+        queue.pending_move = None;
+        let QueueChannel::Ring { channel, ring_address } = &mut queue.channel else { return Ok(()) };
+        Self::finish_ring_move(channel, ring_address, &mut queue.position, pending);
+        Ok(())
+    }
+
     fn start_on_ring(
         &mut self,
         host: &mut dyn HostServices,
@@ -290,17 +351,17 @@ impl<R: Rm> NvidiaBackend<R> {
         entries: u32,
         end: u32,
     ) -> Result<u32, WorkStart> {
+        self.settle_move(host, work.queue, Instant::now())?;
         let first = end.saturating_sub(entries);
         self.ring_channel(host, work, ring_address, first);
+        if let Some(old_ring) = self.queue_ring(work.queue).filter(|known| *known != ring_address) {
+            // This submission still ends on the old ring. The move goes with its doorbell.
+            self.begin_ring_move(host, work, old_ring, ring_address, entries, end)?;
+        }
         let queue = self.queues.get_mut(&work.queue).ok_or(WorkStart::Finished)?;
-        let QueueChannel::Ring { channel, ring_address: known } = &queue.channel else {
+        let QueueChannel::Ring { channel, .. } = &queue.channel else {
             return Err(WorkStart::Finished);
         };
-        if *known != ring_address {
-            // The driver can build a bigger ring, and this channel can't follow it.
-            log::warn!("queue {:#x} moved to ring {ring_address:#x}, so it stops", work.queue);
-            return Err(WorkStart::QueueFailed);
-        }
         let mut invalidated = true;
         if let Some(previous) = queue.position {
             let start = end.wrapping_sub(entries);
@@ -317,6 +378,85 @@ impl<R: Rm> NvidiaBackend<R> {
             self.invalidate_and_wait();
         }
         Ok(end)
+    }
+
+    /// The ring a queue's channel runs, if it has one.
+    fn queue_ring(&self, queue: u32) -> Option<u64> {
+        match self.queues.get(&queue)?.channel {
+            QueueChannel::Ring { ring_address, .. } => Some(ring_address),
+            _ => None,
+        }
+    }
+
+    /// The submission that names a new ring. The guest's driver asked for the ring and got a handle,
+    /// which this submission carries, and put a method naming the handle at the end of its commands.
+    /// The entries are still on the old ring, so they run as usual, and the GPU makes the move when
+    /// it reaches the method. The new ring's first entry holds the commands that followed it.
+    fn begin_ring_move(
+        &mut self,
+        host: &mut dyn HostServices,
+        work: &Work<'_>,
+        old_ring: u64,
+        ring_address: u64,
+        entries: u32,
+        end: u32,
+    ) -> Result<(), WorkStart> {
+        let stop = |why: &str| {
+            log::warn!("queue {:#x} moved to ring {ring_address:#x} and stops: {why}", work.queue);
+            WorkStart::QueueFailed
+        };
+        let Some(RingMove { handle, entries: ring_entries }) = self.ring_moves.take(ring_address) else {
+            return Err(stop("no ring was asked for there"));
+        };
+        if word(work.private, MOVE_HANDLE) != handle {
+            return Err(stop("the submission names another move"));
+        }
+        let queue = self.queues.get_mut(&work.queue).ok_or(WorkStart::Finished)?;
+        let QueueChannel::Ring { channel, .. } = &queue.channel else {
+            return Err(WorkStart::Finished);
+        };
+        if let Err(error) = channel.register_move(&mut self.device, handle, ring_address, ring_entries) {
+            return Err(stop(&format!("the move can't be registered: {error}")));
+        }
+        queue.pending_move = Some(PendingMove {
+            ring_address,
+            ring_entries,
+            fence: work.fence,
+            reached: work.fence_value,
+            registered: Instant::now(),
+        });
+        // The doorbell for the new ring can come before the GPU has moved, and the GPU takes a
+        // position below its own as the ring wrapping. What it would run past the move is the old
+        // ring's stale entries, so those go, all but the ones a submission can still be waiting on.
+        // Holding the new ring's put until the move retires should stop that doorbell. This stays
+        // as a second guard in case one gets through early.
+        let old_entries = channel.ring_entries();
+        let stale = old_entries.saturating_sub(UNFINISHED_ENTRIES_LIMIT as u32);
+        Self::clear_entries(host, work.space, old_ring, old_entries, end, stale);
+        log::info!(
+            "queue {:#x} moves to ring {ring_address:#x} of {ring_entries:#x} entries after {entries} entries ending at {end:#x}",
+            work.queue
+        );
+        Ok(())
+    }
+
+    /// Zeroes `count` entries of a ring from `from`, which makes them do nothing.
+    fn clear_entries(
+        host: &mut dyn HostServices,
+        space: SpaceId,
+        ring: u64,
+        size: u32,
+        from: u32,
+        count: u32,
+    ) {
+        let Some(span) = host.shared_span(space, ring) else { return };
+        for index in 0..count {
+            let at = span.guest_address + u64::from(from.wrapping_add(index) % size) * ENTRY_SIZE as u64;
+            if let Err(error) = host.write_u64(at, 0) {
+                log::warn!("a stale ring entry can't be cleared: {error}");
+                return;
+            }
+        }
     }
 
     fn list_channel(&mut self, host: &mut dyn HostServices, work: &Work<'_>) -> bool {
@@ -486,13 +626,34 @@ impl<R: Rm> NvidiaBackend<R> {
     }
 
     pub(crate) fn ring(&mut self, handle: u32, position: u64) {
-        let Some(queue) = self.queues.get(&handle) else { return };
+        let Some(queue) = self.queues.get_mut(&handle) else { return };
         let position = position as u32;
-        match &queue.channel {
+        match &mut queue.channel {
+            // The move itself stays pending until its fence retires. Switching here would let the
+            // next doorbell store a new-ring index over the put the GPU still has to reach.
             QueueChannel::Ring { channel, .. } => channel.advance(&mut self.device, position),
             QueueChannel::List(list) => list.channel.advance(&mut self.device, position),
             QueueChannel::Unusable => {}
         }
+    }
+
+    /// The move submission's fence has retired, so the GPU has run the method and is on the new ring.
+    /// GP_GET in the control block never moves, which is why the fence is the signal instead.
+    /// From here the channel counts on the new ring, from the entry the driver left at its start.
+    fn finish_ring_move(
+        channel: &mut Channel,
+        ring_address: &mut u64,
+        position: &mut Option<u32>,
+        pending: PendingMove,
+    ) {
+        channel.follow_ring(pending.ring_entries);
+        *ring_address = pending.ring_address;
+        *position = Some(FIRST_POSITION_ON_NEW_RING);
+        log::info!(
+            "a channel moved to ring {:#x} of {:#x} entries",
+            pending.ring_address,
+            pending.ring_entries
+        );
     }
 
     /// What a list queue has put on its ring, for tests that play the GPU.
@@ -651,5 +812,235 @@ mod tests {
     fn a_ring_a_channel_could_not_count_is_not_used() {
         assert_eq!(ring_entries_of(1 << 34), Some(1 << 31));
         assert_eq!(ring_entries_of(1 << 35), None);
+    }
+
+    mod moves {
+        use super::*;
+        use crate::fake_guest::fake_backend;
+        use crate::rm::classes::CONTROL_DEFERRED_API;
+        use crate::rm::fake::{Call, FakeRm};
+        use guesthouse_backend::{Backend, GpuRange, MemoryId, SharedSpan};
+        use std::cell::Cell;
+
+        const QUEUE: u32 = 1;
+        /// The pretend card's graphics node, whose channels can move.
+        const GRAPHICS_NODE: u32 = 0;
+        const GPU_RANGE: GpuRange = GpuRange { start: 0x1_0000_0000, end: 0x2_0000_0000 };
+        const OLD_RING: u64 = 0x1_0010_0000;
+        const OLD_RING_BYTES: u64 = 0x1000;
+        const NEW_RING: u64 = 0x1_0020_0000;
+        const NEW_RING_BYTES: u64 = 0x8_0000;
+        const NEW_RING_ENTRIES: u32 = (NEW_RING_BYTES / ENTRY_SIZE as u64) as u32;
+        const CHANNEL_AREA: u64 = 0x1_0040_0000;
+        const MOVE: u32 = 0xC1D0_4242;
+        const FENCE: u64 = 0x9000;
+        /// The fence value the move submission signals.
+        const MOVED: u64 = 2;
+        /// Long enough for the guest's driver's move submission, with its move handle.
+        const MOVE_PRIVATE_DATA: usize = 0x118;
+
+        /// Plays a guest whose rings are in shared pages at their own addresses, and keeps every
+        /// 64-bit write.
+        struct MoveHost {
+            fence: Cell<Result<u64, MemoryError>>,
+            writes: Vec<(u64, u64)>,
+        }
+
+        impl MoveHost {
+            fn new() -> Self {
+                Self { fence: Cell::new(Ok(0)), writes: Vec::new() }
+            }
+        }
+
+        impl HostServices for MoveHost {
+            fn take_gpu_addresses(
+                &mut self,
+                _: u64,
+                _: u64,
+            ) -> Result<u64, guesthouse_backend::BackendError> {
+                Ok(CHANNEL_AREA)
+            }
+            fn read_at_gpu_address(&self, _: SpaceId, _: u64, _: &mut [u8]) -> Option<usize> {
+                None
+            }
+            fn shared_span(&self, _: SpaceId, address: u64) -> Option<SharedSpan> {
+                let length = match address {
+                    OLD_RING => OLD_RING_BYTES,
+                    NEW_RING => NEW_RING_BYTES,
+                    _ => return None,
+                };
+                Some(SharedSpan { guest_address: address, offset_in_mapping: 0, mapping_length: length })
+            }
+            fn guest_span(&self, _: SpaceId, _: u64) -> Option<guesthouse_backend::GuestSpan> {
+                None
+            }
+            fn read_guest_span(&self, _: SpaceId, _: u64, _: &mut [u8]) -> Option<usize> {
+                None
+            }
+            fn write_guest_span(&mut self, _: SpaceId, _: u64, _: u32) -> bool {
+                true
+            }
+            fn write_u32(&mut self, _: u64, _: u32) -> Result<(), MemoryError> {
+                Ok(())
+            }
+            fn write_u64(&mut self, address: u64, value: u64) -> Result<(), MemoryError> {
+                self.writes.push((address, value));
+                Ok(())
+            }
+            fn read_guest(&self, _: u64, _: &mut [u8]) -> usize {
+                0
+            }
+            fn fence_value(&self, _: u64) -> Result<u64, MemoryError> {
+                let value = self.fence.replace(Ok(0));
+                self.fence.set(value);
+                value
+            }
+        }
+
+        fn submission(ring: u64, entries: u32, end: u32, handle: u32) -> Vec<u8> {
+            let mut private = vec![0; MOVE_PRIVATE_DATA];
+            private[ENTRIES..ENTRIES + 4].copy_from_slice(&entries.to_le_bytes());
+            private[RING_END..RING_END + 4].copy_from_slice(&end.to_le_bytes());
+            private[RING_ADDRESS..RING_ADDRESS + 8].copy_from_slice(&ring.to_le_bytes());
+            private[MOVE_HANDLE..MOVE_HANDLE + 4].copy_from_slice(&handle.to_le_bytes());
+            private
+        }
+
+        fn ring_work(space: SpaceId, private: &[u8], fence_value: u64) -> Work<'_> {
+            Work { space, queue: QUEUE, node: GRAPHICS_NODE, fence: FENCE, fence_value, ..work(private) }
+        }
+
+        /// A backend with a queue running on the old ring up to entry 3, and the new ring asked for.
+        fn on_old_ring(host: &mut MoveHost) -> (NvidiaBackend<FakeRm>, SpaceId) {
+            let mut backend = fake_backend(FakeRm::new());
+            let space = backend.create_address_space(&[GPU_RANGE]).unwrap();
+            let first = submission(OLD_RING, 2, 3, 0);
+            let started = backend.start_work(host, &ring_work(space, &first, 1));
+            assert_eq!(started, WorkStart::Started { doorbell: 3, work: 2 });
+            backend.ring_moves.answered(MemoryId(0x77), MOVE, NEW_RING_BYTES);
+            backend.ring_moves.mapped(MemoryId(0x77), NEW_RING);
+            (backend, space)
+        }
+
+        /// Adds the submission that names the new ring and still ends on the old one, at 6.
+        fn moving(host: &mut MoveHost) -> (NvidiaBackend<FakeRm>, SpaceId) {
+            let (mut backend, space) = on_old_ring(host);
+            let private = submission(NEW_RING, 3, 6, MOVE);
+            let started = backend.start_work(host, &ring_work(space, &private, MOVED));
+            assert_eq!(started, WorkStart::Started { doorbell: 6, work: 3 });
+            backend.ring(QUEUE, 6);
+            (backend, space)
+        }
+
+        fn queue(backend: &NvidiaBackend<FakeRm>) -> &LiveQueue {
+            &backend.queues[&QUEUE]
+        }
+
+        #[test]
+        fn the_submission_naming_a_new_ring_registers_the_move_and_runs_on_the_old_one() {
+            let mut host = MoveHost::new();
+            let (backend, _) = moving(&mut host);
+            let registered = backend.device.rm.calls.iter().any(|call| {
+                matches!(call, Call::Control { command, params, .. }
+                    if *command == CONTROL_DEFERRED_API && word(params, 0) == MOVE)
+            });
+            assert!(registered, "the move went to the deferred API object");
+            let pending = queue(&backend).pending_move.expect("a move is pending");
+            assert_eq!((pending.ring_address, pending.ring_entries), (NEW_RING, NEW_RING_ENTRIES));
+            assert_eq!((pending.fence, pending.reached), (FENCE, MOVED));
+            assert_eq!(backend.queue_ring(QUEUE), Some(OLD_RING));
+            assert_eq!(queue(&backend).position, Some(6));
+        }
+
+        #[test]
+        fn later_work_waits_for_the_move_and_stores_no_doorbell() {
+            let mut host = MoveHost::new();
+            let (mut backend, space) = moving(&mut host);
+            host.fence.set(Ok(MOVED - 1));
+            let doorbells = backend.device.rm.doorbells().len();
+            let next = submission(NEW_RING, 2, 3, 0);
+            let started = backend.start_work(&mut host, &ring_work(space, &next, MOVED + 1));
+            assert_eq!(started, WorkStart::Busy);
+            assert_eq!(backend.device.rm.doorbells().len(), doorbells);
+            assert_eq!(backend.queue_ring(QUEUE), Some(OLD_RING));
+            assert_eq!(queue(&backend).position, Some(6));
+            assert!(queue(&backend).pending_move.is_some());
+        }
+
+        #[test]
+        fn once_the_move_retires_the_queue_counts_on_the_new_ring_from_one() {
+            let mut host = MoveHost::new();
+            let (mut backend, _) = moving(&mut host);
+            host.fence.set(Ok(MOVED));
+            assert_eq!(backend.settle_move(&host, QUEUE, Instant::now()), Ok(()));
+            assert_eq!(queue(&backend).position, Some(FIRST_POSITION_ON_NEW_RING));
+            assert_eq!(backend.queue_ring(QUEUE), Some(NEW_RING));
+            let QueueChannel::Ring { channel, .. } = &queue(&backend).channel else {
+                panic!("a ring channel")
+            };
+            assert_eq!(channel.ring_entries(), NEW_RING_ENTRIES);
+            assert_eq!(queue(&backend).pending_move, None);
+        }
+
+        #[test]
+        fn the_next_submission_after_the_move_starts_on_the_new_ring() {
+            let mut host = MoveHost::new();
+            let (mut backend, space) = moving(&mut host);
+            host.fence.set(Ok(MOVED));
+            let next = submission(NEW_RING, 2, 3, 0);
+            let started = backend.start_work(&mut host, &ring_work(space, &next, MOVED + 1));
+            assert_eq!(started, WorkStart::Started { doorbell: 3, work: 2 });
+            assert_eq!(queue(&backend).position, Some(3));
+            assert_eq!(backend.queue_ring(QUEUE), Some(NEW_RING));
+        }
+
+        #[test]
+        fn a_move_that_never_retires_fails_the_queue_after_its_time() {
+            let mut host = MoveHost::new();
+            let (mut backend, _) = moving(&mut host);
+            let soon = Instant::now() + MOVE_TIMEOUT / 2;
+            assert_eq!(backend.settle_move(&host, QUEUE, soon), Err(WorkStart::Busy));
+            let late = Instant::now() + MOVE_TIMEOUT + Duration::from_secs(1);
+            assert_eq!(backend.settle_move(&host, QUEUE, late), Err(WorkStart::QueueFailed));
+            assert_eq!(queue(&backend).pending_move, None);
+        }
+
+        #[test]
+        fn a_fence_that_cant_be_read_fails_the_move_at_once() {
+            let mut host = MoveHost::new();
+            let (mut backend, _) = moving(&mut host);
+            host.fence.set(Err(MemoryError::Outside(FENCE)));
+            assert_eq!(backend.settle_move(&host, QUEUE, Instant::now()), Err(WorkStart::QueueFailed));
+        }
+
+        #[test]
+        fn a_move_naming_another_handle_fails_the_queue() {
+            let mut host = MoveHost::new();
+            let (mut backend, space) = on_old_ring(&mut host);
+            let private = submission(NEW_RING, 3, 6, MOVE + 1);
+            let started = backend.start_work(&mut host, &ring_work(space, &private, MOVED));
+            assert_eq!(started, WorkStart::QueueFailed);
+            assert_eq!(queue(&backend).pending_move, None);
+        }
+
+        #[test]
+        fn a_move_to_a_ring_nobody_asked_for_fails_the_queue() {
+            let mut host = MoveHost::new();
+            let mut backend = fake_backend(FakeRm::new());
+            let space = backend.create_address_space(&[GPU_RANGE]).unwrap();
+            let first = submission(OLD_RING, 2, 3, 0);
+            backend.start_work(&mut host, &ring_work(space, &first, 1));
+            let private = submission(NEW_RING, 3, 6, MOVE);
+            let started = backend.start_work(&mut host, &ring_work(space, &private, MOVED));
+            assert_eq!(started, WorkStart::QueueFailed);
+        }
+
+        #[test]
+        fn clearing_entries_wraps_at_the_end_of_the_ring() {
+            let mut host = MoveHost::new();
+            NvidiaBackend::<FakeRm>::clear_entries(&mut host, SpaceId(1), OLD_RING, 8, 6, 4);
+            let at = |index: u64| OLD_RING + index * ENTRY_SIZE as u64;
+            assert_eq!(host.writes, [(at(6), 0), (at(7), 0), (at(0), 0), (at(1), 0)]);
+        }
     }
 }
