@@ -27,10 +27,17 @@ const NVIDIA_LEFT_OUT: [&str; 3] = ["nvidia-modeset", "nvidia-caps", "nvidia-nvs
 const OWNER_ONLY: u32 = 0o600;
 
 /// The system's libraries, which the management library is loaded from when this daemon's turn to
-/// read the card comes. `/proc` and `/sys` are read for the driver's version and the card's place,
-/// and reading `/proc` gives nothing away, as Landlock doesn't let a jailed process look into another.
-const READ_ONLY: [(Grant, &str); 4] =
-    [(Grant::Run, "/usr"), (Grant::Read, "/etc/ld.so.cache"), (Grant::Read, "/sys"), (Grant::Read, "/proc")];
+/// read the card comes, and `nvidia-smi`, which reads the card's rated clocks at the start. `/proc`
+/// and `/sys` are read for the driver's version and the card's place, and reading `/proc` gives
+/// nothing away, as Landlock doesn't let a jailed process look into another. A program it runs gets
+/// `/dev/null` for its input.
+const SYSTEM: [(Grant, &str); 5] = [
+    (Grant::Run, "/usr"),
+    (Grant::Read, "/etc/ld.so.cache"),
+    (Grant::Read, "/sys"),
+    (Grant::Read, "/proc"),
+    (Grant::Write, "/dev/null"),
+];
 
 /// What this daemon touches, which the jail is made from.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -47,7 +54,7 @@ pub struct Needs {
 impl Needs {
     pub fn plan(&self) -> Plan {
         let mut plan = Plan::default();
-        for (grant, path) in READ_ONLY {
+        for (grant, path) in SYSTEM {
             plan.grant(grant, path);
         }
         for device in &self.devices {

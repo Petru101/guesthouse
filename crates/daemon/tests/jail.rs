@@ -44,6 +44,13 @@ fn jailed(folder: &Path) {
     }
 }
 
+/// Setup runs `nvidia-smi` with its input on `/dev/null`, after the files' jail and before the filter.
+fn setup_runs_a_program(folder: &Path) {
+    lock_files(&Needs { run_folder: folder.join("run-2"), ..Needs::default() }).unwrap();
+    let ran = Command::new("/usr/bin/true").stdin(std::process::Stdio::null()).output();
+    assert!(ran.unwrap().status.success());
+}
+
 #[cfg(feature = "stand-in")]
 fn serving(folder: &Path) {
     use std::os::unix::net::UnixStream;
@@ -94,6 +101,7 @@ type Case = (&'static str, fn(&Path));
 
 const CASES: &[Case] = &[
     ("jailed", jailed),
+    ("setup_runs_a_program", setup_runs_a_program),
     #[cfg(feature = "stand-in")]
     ("serving", serving),
 ];
