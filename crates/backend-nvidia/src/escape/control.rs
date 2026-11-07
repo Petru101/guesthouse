@@ -2,7 +2,7 @@
 //! the list. The guest's handles mean nothing here: a control's number names its class, and so the
 //! object it belongs on.
 
-use super::{EscapeFacts, get, pstate, put, time_pairs};
+use super::{EscapeFacts, get, processes, pstate, put, time_pairs};
 use crate::rm::classes::{
     BUS_ENTRIES_THAT_CLEAR, CONTROL_GET_CLASS_ENGINE, CONTROL_GET_PROBED_IDS, ENGINE_GRAPHICS,
 };
@@ -90,6 +90,16 @@ fn params_of(data: &mut [u8], size: u32, wanted: usize) -> Option<&mut [u8]> {
 /// Answers the controls this side keeps the books for, and says whether this was one of them.
 fn answered_here(facts: &EscapeFacts<'_>, command: u32, size: u32, data: &mut [u8]) -> bool {
     let status = match command {
+        processes::CONTROL_GET_PIDS => {
+            let Some(params) = params_of(data, size, processes::PIDS_SIZE) else { return false };
+            let listed = processes::list(&(facts.books.processes)(), params);
+            if listed { 0 } else { STATUS_NOT_SUPPORTED }
+        }
+        processes::CONTROL_GET_PID_INFO => {
+            let Some(params) = params_of(data, size, processes::INFO_SIZE) else { return false };
+            processes::describe(&(facts.books.processes)(), params);
+            0
+        }
         pstate::CONTROL => {
             let Some(params) = params_of(data, size, pstate::SIZE) else { return false };
             if pstate::answer(facts.live.as_ref(), params) { 0 } else { STATUS_NOT_SUPPORTED }
@@ -170,6 +180,7 @@ mod tests {
     use crate::profile::{BLACKWELL, GUEST_617, HOST_615, guest_channel_classes};
     use crate::rm::fake::{Call, FakeRm};
     use crate::sensors::Snapshot;
+    use guesthouse_backend::{GuestBooks, ProcessMemory};
 
     const GET_NAME_STRING: u32 = 0x2080_0110;
     const NAME_SIZE: usize = 68;
@@ -385,6 +396,42 @@ mod tests {
             assert_eq!(get(&data, CONTROL_STATUS), Some(0), "{command:#x}");
             assert!(!reached_the_rm(&device, command), "{command:#x}");
         }
+    }
+
+    fn books_with(processes: Vec<ProcessMemory>) -> EscapeFacts<'static> {
+        let processes: &'static Vec<ProcessMemory> = Box::leak(Box::new(processes));
+        let list: &'static dyn Fn() -> Vec<ProcessMemory> = Box::leak(Box::new(move || processes.clone()));
+        let books: &'static GuestBooks<'static> =
+            Box::leak(Box::new(GuestBooks { memory: &super::super::tests::NO_MEMORY, processes: list }));
+        EscapeFacts { books, ..NO_FACTS }
+    }
+
+    #[test]
+    fn the_process_list_is_the_guests_own_and_never_reaches_the_rm() {
+        let facts = books_with(vec![ProcessMemory { pid: 1532, bytes: 1 << 20 }]);
+        let mut device = device();
+        let mut data = control(processes::CONTROL_GET_PIDS, processes::PIDS_SIZE);
+        run(&mut device, &facts, &mut data).unwrap();
+        assert!(!reached_the_rm(&device, processes::CONTROL_GET_PIDS));
+        assert_eq!(get(&data, CONTROL_STATUS), Some(0));
+        assert_eq!(get(&data, CONTROL_PARAMS + 8), Some(1));
+        assert_eq!(get(&data, CONTROL_PARAMS + 12), Some(1532));
+        let mut data = control(processes::CONTROL_GET_PID_INFO, processes::INFO_SIZE);
+        put(&mut data, CONTROL_PARAMS, 1);
+        put(&mut data, CONTROL_PARAMS + 8, 1532);
+        run(&mut device, &facts, &mut data).unwrap();
+        assert!(!reached_the_rm(&device, processes::CONTROL_GET_PID_INFO));
+        assert_eq!(get(&data, CONTROL_PARAMS + 8 + 0x10), Some(1 << 20));
+    }
+
+    #[test]
+    fn a_process_list_of_the_wrong_size_is_not_answered() {
+        let facts = books_with(vec![ProcessMemory { pid: 1532, bytes: 1 << 20 }]);
+        let mut device = device();
+        let mut data = control(processes::CONTROL_GET_PIDS, processes::PIDS_SIZE - 4);
+        run(&mut device, &facts, &mut data).unwrap();
+        assert!(!reached_the_rm(&device, processes::CONTROL_GET_PIDS));
+        assert_eq!(get(&data, CONTROL_PARAMS + 8), Some(0));
     }
 
     #[test]
