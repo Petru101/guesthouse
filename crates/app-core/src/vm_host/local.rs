@@ -5,11 +5,13 @@ use crate::context::Context;
 use crate::daemon::{self, DaemonStart, detached, is_own_daemon};
 use crate::failure::{Failure, Result};
 use crate::host::GIB;
+use crate::jailing;
 use crate::machine::{Machine, sorted_names};
 use crate::monitor::Command as Qmp;
 use crate::processes::{memory_taken, qemu_pid};
 use crate::start_checks::SECOND_INSTANCE_REFUSAL;
 use crate::vm_args::{OUTPUT_FILE, Sound, VmPlan};
+use guesthouse_daemon::jail::make_if_missing;
 use rustix::process::{Pid, Signal, kill_process, kill_process_group};
 use std::fs::{self, File};
 use std::process::{Child, Command, Stdio};
@@ -91,7 +93,11 @@ impl LocalHost<'_> {
         let output = File::create(self.run_file(OUTPUT_FILE))?;
         let command = plan.qemu_command();
         let (program, arguments) = command.split_first().ok_or_else(|| Failure::new("Nothing to run."))?;
-        let spawned = detached(Command::new(program).args(arguments))
+        let mut qemu = Command::new(program);
+        if plan.clears_environment() {
+            qemu.env_clear();
+        }
+        let spawned = detached(qemu.args(arguments))
             .envs(plan.qemu_environment())
             .stdin(Stdio::null())
             .stdout(output.try_clone()?)
@@ -214,6 +220,9 @@ impl LocalHost<'_> {
     /// The VM with its GPU: the daemon must be up before QEMU, and anything left of an earlier run
     /// goes first.
     fn start_gpu(&self, plan: &VmPlan, machine: &Machine) -> Result<()> {
+        let plan = VmPlan { sound: sound_on_this_host(), ..plan.clone() };
+        let choice = jailing::choose(self.context, machine, &plan, &(self.context.jail_offer)(&plan))?;
+        let plan = VmPlan { jail: choice.qemu.clone(), ..plan };
         self.stop(machine, LEFT_OVER_STOP_SECONDS)?;
         if qemu_pid(self.context, None).is_some()
             || !self.daemons().is_empty()
@@ -225,11 +234,18 @@ impl LocalHost<'_> {
         self.remove_shared_memory();
         let ram_file = self.context.paths.shared_file(RAM_FILE, plan.slot);
         (self.context.reserve_memory)(&ram_file, u64::from(machine.ram_gib) * GIB)?;
-        let start = DaemonStart::new(self.context, plan.slot, &plan.ram, plan.vram.as_deref());
+        jailing::write_note(&plan.run_folder, &choice.note)?;
+        let mut start = DaemonStart::new(self.context, plan.slot, &plan.ram, plan.vram.as_deref());
+        if !choice.daemon_jailed {
+            start = start.without_jail();
+        }
         let mut daemon = start.spawn(&plan.run_folder)?;
         self.wait_for_daemon(&mut daemon)?;
-        let with_sound = VmPlan { sound: sound_on_this_host(), ..plan.clone() };
-        let mut qemu = self.spawn_qemu(&with_sound)?;
+        if plan.jail.is_some() {
+            // The jail names QEMU's files one by one, so the window's has to be there for QEMU to take.
+            make_if_missing(&plan.io_file)?;
+        }
+        let mut qemu = self.spawn_qemu(&plan)?;
         let answered = self.wait_for_agent(machine, &mut qemu, &mut daemon);
         if answered.is_err() {
             self.end_qemu(&mut qemu);

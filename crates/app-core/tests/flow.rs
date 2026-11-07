@@ -24,6 +24,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 const INNER_VARIABLE: &str = "FLOW_TEST_INNER";
+const REAL_DAEMON_VARIABLE: &str = "GUESTHOUSE_TEST_DAEMON";
 /// Long enough for the task's own waits for a desktop.
 const MOST_WAIT: Duration = Duration::from_secs(90);
 const POLL: Duration = Duration::from_millis(200);
@@ -89,6 +90,11 @@ fn pretend_qemu(arguments: &[String]) {
         println!("gpupv-render options:\n  vendor-id=<uint16>\n  device-id=<uint16>");
         return;
     }
+    // Asked whether it has a seccomp filter of its own, as a build with one does.
+    if arguments.iter().any(|word| word == "-version") {
+        println!("QEMU emulator version 0");
+        return;
+    }
     for pair in arguments.windows(2) {
         if pair[0] == "-qmp" {
             let path = pair[1].strip_prefix("unix:").unwrap().split(',').next().unwrap();
@@ -130,12 +136,40 @@ fn collect(mut task: Child) {
     thread::spawn(move || task.wait());
 }
 
+fn jailed(pid: u32) -> bool {
+    let status = fs::read_to_string(format!("/proc/{pid}/status")).unwrap_or_default();
+    let says = |wanted: [&str; 2]| status.lines().any(|line| line.split_whitespace().eq(wanted));
+    says(["NoNewPrivs:", "1"]) && says(["Seccomp:", "2"])
+}
+
+/// The daemon, if it's the real one: the pretend one doesn't jail itself.
+fn real_daemon(context: &Context) -> Option<u32> {
+    env::var_os(REAL_DAEMON_VARIABLE)?;
+    let program = context.paths.binary("guesthouse-daemon");
+    let pids =
+        fs::read_dir("/proc").unwrap().flatten().filter_map(|entry| entry.file_name().to_str()?.parse().ok());
+    pids.into_iter().find(|pid: &u32| {
+        let words = fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
+        words.split(|byte| *byte == 0).next() == Some(program.as_os_str().as_encoded_bytes())
+    })
+}
+
 fn start_and_stop(context: &Context, machine: &Machine) {
     let task = launch(context, "start", machine, &[], None).unwrap();
     collect(task);
     let running = wait_for(context, machine, |found| found.state == State::Running && !found.busy);
     assert_eq!(running.error, "", "{running:?}");
     println!("{} is running in slot {:?}", machine.name, running.slot);
+    if machine.has_gpu() {
+        let qemu = qemu_pid(context, None).unwrap();
+        assert!(jailed(qemu), "QEMU runs jailed");
+        if let Some(daemon) = real_daemon(context) {
+            assert!(jailed(daemon), "the daemon runs jailed");
+            println!("the daemon is jailed");
+        }
+        let note = if running.jail_note.is_empty() { "a whole jail" } else { &running.jail_note };
+        println!("QEMU is jailed: {note}");
+    }
     let task = launch(context, "stop", machine, &[], None).unwrap();
     collect(task);
     let off = wait_for(context, machine, |found| found.state == State::Off && !found.busy);
@@ -199,8 +233,9 @@ fn outer() {
     fs::write(folder.join("meminfo"), PLENTY_OF_MEMORY).unwrap();
     copy_program(&this, bin.join("guesthouse-task"));
     copy_program(&this, bin.join("qemu"));
-    let daemon = env::var_os("GUESTHOUSE_TEST_DAEMON").map_or_else(|| this.clone(), PathBuf::from);
+    let daemon = env::var_os(REAL_DAEMON_VARIABLE).map_or_else(|| this.clone(), PathBuf::from);
     copy_program(&daemon, bin.join("guesthouse-daemon"));
+    copy_program(Path::new(env!("CARGO_BIN_EXE_guesthouse-jail")), bin.join("guesthouse-jail"));
     let done = Command::new(&this)
         .env(INNER_VARIABLE, "1")
         .env("FLOW_BINARIES", &bin)

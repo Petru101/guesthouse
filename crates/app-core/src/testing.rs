@@ -103,6 +103,8 @@ pub fn scratch_context(scratch: &Scratch) -> Context {
     context.processes = scratch.path("proc");
     fs::create_dir_all(&context.processes).unwrap();
     context.reserve_memory = |_, _| Ok(());
+    // A test's pretend programs are shell scripts, which no jail would let run as they do.
+    context.jail_offer = |_| crate::jailing::Offer::nothing();
     context.ram_limit = Some(PLENTY_OF_GIB);
     context
 }

@@ -24,6 +24,7 @@ pub mod host;
 pub mod host_sensors;
 pub mod input;
 pub mod iso;
+pub mod jailing;
 pub mod library;
 pub mod linux;
 pub mod log;

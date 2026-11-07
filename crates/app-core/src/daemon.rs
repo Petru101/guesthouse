@@ -3,6 +3,7 @@
 
 use crate::context::{Context, SLOT_VARIABLE};
 use crate::failure::Result;
+use guesthouse_daemon::jail;
 use guesthouse_daemon::slot::Slot;
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
@@ -38,6 +39,12 @@ impl DaemonStart {
             base: context.paths.runtime.clone(),
             environment,
         }
+    }
+
+    /// For a machine allowed to start with no jail, on a PC that can't give it one.
+    pub fn without_jail(mut self) -> Self {
+        self.environment.insert(jail::VARIABLE.to_owned(), jail::OFF.to_owned());
+        self
     }
 
     pub fn spawn(&self, run_folder: &Path) -> Result<Child> {

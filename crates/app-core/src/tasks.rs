@@ -6,6 +6,7 @@ use crate::daemon::detached;
 use crate::display::{read_state, ring_in, screen_text};
 use crate::failure::{Failure, Result};
 use crate::gpu_identity::read_state as read_identity;
+use crate::jailing;
 use crate::log::open_for_appending;
 use crate::machine::Machine;
 use crate::processes::{leftovers, memory_taken, running_slots, uses_disk};
@@ -98,6 +99,8 @@ pub struct Status {
     pub display_problem: String,
     /// What stands in the way of NVIDIA's vendor ID, or when it comes.
     pub identity_note: String,
+    /// What the running machine's jail is missing, if anything.
+    pub jail_note: String,
 }
 
 pub fn task_path(context: &Context, slot: Option<Slot>) -> PathBuf {
@@ -174,6 +177,7 @@ pub fn status(context: &Context, machine: &Machine) -> Status {
         if found.state == State::Running {
             let slot = found.slot.map(slots::number);
             found.screen = screen_text(&shown, ring_in(context, slot));
+            found.jail_note = folder.as_deref().and_then(jailing::read_note).unwrap_or_default();
         }
     }
     found

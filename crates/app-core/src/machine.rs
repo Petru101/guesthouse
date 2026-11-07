@@ -138,6 +138,10 @@ pub struct Machine {
     /// Ubuntu's GPU, which is a preview. Off, the guest gets the plain screen.
     #[serde(default = "default_on")]
     pub gpu_preview: bool,
+    /// A GPU machine may start with no jail on a PC that can't give it one. The user's choice, and
+    /// off unless they make it.
+    #[serde(default)]
+    pub start_without_jail: bool,
 }
 
 impl Machine {
@@ -168,6 +172,7 @@ impl Machine {
             bridge: default_bridge(),
             forwards: Vec::new(),
             gpu_preview: true,
+            start_without_jail: false,
         }
     }
 
