@@ -1,6 +1,7 @@
 //! The jail on this PC's kernel. Each case runs in a child of its own, as a jail can't be undone,
 //! and the child's exit says whether everything it tried went as it should.
 
+use guesthouse_jail::launch::{Tap, open_tap};
 use guesthouse_jail::seccomp::{self, Threads, trap};
 use guesthouse_jail::{Grant, Plan, Ports, Support, filters, landlock};
 use std::env;
@@ -92,7 +93,49 @@ fn qemu_calls() {
     assert!(Command::new("/usr/bin/true").status().unwrap().success());
 }
 
-const CASES: [(&str, fn()); 5] = [
+const HELPER_VARIABLE: &str = "JAIL_TEST_HELPER";
+const TAP_AT: i32 = 7;
+
+/// Stands in for QEMU's bridge helper: sends an open file back through the descriptor it's told of.
+fn pretend_bridge_helper() {
+    let arguments: Vec<String> = env::args().collect();
+    assert_eq!(arguments[1], "--use-vnet");
+    assert_eq!(arguments[3], "--br=br7");
+    let socket: i32 = arguments[2].strip_prefix("--fd=").unwrap().parse().unwrap();
+    let device = fs::File::open("/dev/null").unwrap();
+    let fd = std::os::fd::AsRawFd::as_raw_fd(&device);
+    let space = unsafe { libc::CMSG_SPACE(size_of::<i32>() as u32) } as usize;
+    let mut control = vec![0u8; space];
+    let mut byte = [0u8; 1];
+    let mut part = libc::iovec { iov_base: byte.as_mut_ptr().cast(), iov_len: 1 };
+    let mut message: libc::msghdr = unsafe { std::mem::zeroed() };
+    message.msg_iov = &raw mut part;
+    message.msg_iovlen = 1;
+    message.msg_control = control.as_mut_ptr().cast();
+    message.msg_controllen = space;
+    unsafe {
+        let header = libc::CMSG_FIRSTHDR(&raw const message);
+        (*header).cmsg_level = libc::SOL_SOCKET;
+        (*header).cmsg_type = libc::SCM_RIGHTS;
+        (*header).cmsg_len = libc::CMSG_LEN(size_of::<i32>() as u32) as usize;
+        libc::CMSG_DATA(header).cast::<i32>().write_unaligned(fd);
+        assert_eq!(libc::sendmsg(socket, &raw const message, 0), 1);
+    }
+}
+
+fn bridged_device() {
+    let tap = Tap { helper: env::current_exe().unwrap(), bridge: "br7".to_owned(), fd: TAP_AT };
+    // SAFETY: the variable is set before any thread exists.
+    unsafe { env::set_var(HELPER_VARIABLE, "1") };
+    open_tap(&tap).unwrap();
+    let target = fs::read_link(format!("/proc/self/fd/{TAP_AT}")).unwrap();
+    assert_eq!(target, Path::new("/dev/null"));
+    let flags = unsafe { libc::fcntl(TAP_AT, libc::F_GETFD) };
+    assert_eq!(flags & libc::FD_CLOEXEC, 0, "it stays open for QEMU");
+}
+
+const CASES: [(&str, fn()); 6] = [
+    ("bridged_device", bridged_device),
     ("files_and_ports", files_and_ports),
     ("devices", devices),
     ("unix_sockets", unix_sockets),
@@ -108,6 +151,10 @@ fn set_up(folder: &Path) {
 }
 
 fn main() {
+    if env::var_os(HELPER_VARIABLE).is_some() {
+        pretend_bridge_helper();
+        return;
+    }
     if let Ok(case) = env::var(CASE_VARIABLE) {
         let (_, run) = CASES.iter().find(|(name, _)| *name == case).unwrap();
         run();

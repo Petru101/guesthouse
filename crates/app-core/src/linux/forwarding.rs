@@ -35,7 +35,8 @@ fn has_device(qemu: &Path) -> bool {
     said.is_ok_and(|text| text.contains(DEVICE_ANSWER))
 }
 
-fn sandbox_runs() -> bool {
+/// Whether bubblewrap can make namespaces here. Ubuntu 24.04 can refuse it, through AppArmor.
+pub fn sandbox_runs() -> bool {
     answers_yes(Command::new("timeout").arg(CHECK_SECONDS).arg("bwrap").args(SANDBOX_QUESTION))
 }
 

@@ -556,7 +556,9 @@ version = "0.2.0"
 dependencies = [
  "chrono",
  "guesthouse-daemon",
+ "guesthouse-jail",
  "guesthouse-sensors",
+ "libc",
  "regex",
  "rustix",
  "serde",

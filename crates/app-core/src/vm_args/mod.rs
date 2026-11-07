@@ -6,8 +6,10 @@
 mod arguments;
 mod jail;
 mod nic;
+mod qemu_jail;
 mod ubuntu;
 
+pub use qemu_jail::TAP_FD;
 pub use ubuntu::{FORWARDED_INPUT_SOCKET, FRAMES_PREFIX, INSTALL_LOG, ssh_port};
 
 use crate::context::Context;
@@ -119,11 +121,26 @@ pub struct VmPlan {
     /// Sound goes to the host's default output, or the sink named, if PipeWire can be reached. QEMU
     /// won't start if it can't, and a VM matters more.
     pub sound: Option<Sound>,
+    /// The jail QEMU starts in, if any. Only a GPU machine has one so far.
+    pub jail: Option<QemuJail>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Sound {
     pub sink: Option<String>,
+}
+
+/// How a GPU machine's QEMU is jailed. The host decides this at each start, from what the PC allows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QemuJail {
+    /// `guesthouse-jail`.
+    pub launcher: PathBuf,
+    /// In bubblewrap's namespaces as well.
+    pub namespaces: bool,
+    /// QEMU's own seccomp filter on top, which a QEMU only has if it was built with it.
+    pub qemu_sandbox: bool,
+    /// PipeWire's socket, for a machine with sound.
+    pub sound_socket: Option<PathBuf>,
 }
 
 impl VmPlan {
@@ -164,6 +181,7 @@ impl VmPlan {
             io_file: context.paths.shared_file("iomem", slot),
             tools_disc: tools.is_file().then_some(tools),
             sound: None,
+            jail: None,
             run_folder,
         }
     }

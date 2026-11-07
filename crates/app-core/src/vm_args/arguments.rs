@@ -222,6 +222,7 @@ impl VmPlan {
             ]));
         }
         arguments.extend(self.second_nic());
+        arguments.extend(self.qemu_sandbox_arguments());
         arguments
     }
 
@@ -229,6 +230,7 @@ impl VmPlan {
     pub fn qemu_command(&self) -> Vec<String> {
         let qemu = self.qemu.to_string_lossy().into_owned();
         let mut command = self.ubuntu_launcher();
+        command.extend(self.jail_words());
         if let Some(cpus) = &self.pin {
             command.extend(words(&["taskset", "-c", cpus]));
         }
@@ -237,9 +239,17 @@ impl VmPlan {
         command
     }
 
-    /// What QEMU needs in its environment: the share's program finds its folder there.
+    /// What QEMU needs in its environment: the share's program finds its folder there. A jailed QEMU
+    /// gets this and no more, and the rest of the app's is cleared: see [`Self::clears_environment`].
     pub fn qemu_environment(&self) -> Vec<(String, String)> {
-        self.share.iter().map(|folder| ("SHARE".to_owned(), folder.clone())).collect()
+        let mut environment =
+            self.jail.as_ref().map(|jail| self.jailed_environment(jail)).unwrap_or_default();
+        environment.extend(self.share.iter().map(|folder| ("SHARE".to_owned(), folder.clone())));
+        environment
+    }
+
+    pub fn clears_environment(&self) -> bool {
+        self.jail.is_some()
     }
 
     /// The virtual TPM's process. It ends when QEMU lets go of it, so nothing has to stop it.

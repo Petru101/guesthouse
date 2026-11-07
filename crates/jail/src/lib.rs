@@ -13,6 +13,7 @@
 
 pub mod filters;
 pub mod landlock;
+pub mod launch;
 mod plan;
 pub mod seccomp;
 mod support;
