@@ -270,9 +270,14 @@ impl VmPlan {
         }
     }
 
-    /// A jailed QEMU starts with only the environment it needs, as the user's may hold secrets.
+    /// A jailed QEMU starts with only the environment it needs, as the user's may hold secrets. Its
+    /// temporary files, like the pid file passt is started with, go in its run folder, as the PC's
+    /// `/tmp` is out of its reach.
     pub(super) fn jailed_environment(&self, jail: &QemuJail) -> Vec<(String, String)> {
-        let mut environment = vec![("PATH".to_owned(), PATH.to_owned())];
+        let mut environment = vec![
+            ("PATH".to_owned(), PATH.to_owned()),
+            ("TMPDIR".to_owned(), self.run_folder.display().to_string()),
+        ];
         if let Some(folder) = jail.sound_socket.as_deref().and_then(Path::parent) {
             environment.push(("XDG_RUNTIME_DIR".to_owned(), folder.display().to_string()));
         }

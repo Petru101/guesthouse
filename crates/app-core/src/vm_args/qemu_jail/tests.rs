@@ -128,7 +128,12 @@ fn a_jailed_qemu_gets_a_clean_environment() {
     assert!(plan.clears_environment());
     let environment = plan.qemu_environment();
     let names: Vec<&str> = environment.iter().map(|(name, _)| name.as_str()).collect();
-    assert_eq!(names, ["PATH", "XDG_RUNTIME_DIR", "SHARE"]);
+    assert_eq!(names, ["PATH", "TMPDIR", "XDG_RUNTIME_DIR", "SHARE"]);
+    assert_eq!(
+        environment[1].1,
+        plan.run_folder.display().to_string(),
+        "QEMU's own temporary files stay its own"
+    );
     let rules = plan.qemu_jail_plan(&jail(true));
     assert!(granted(&rules, Grant::Own).contains(&"/home/me/Shared".to_owned()));
 }
