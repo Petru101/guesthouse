@@ -164,7 +164,7 @@ What a guest can still do:
 
 What's still coming:
 
-- **Jails for the rest.** For Linux guests QEMU runs in a bubblewrap sandbox, and a proper jail around the part that talks to the driver is the next wall to build. The virtual TPM, and machines with no GPU, aren't jailed yet.
+- **Jails for the rest.** For Linux guests QEMU runs in a bubblewrap sandbox, and a proper jail around the part that talks to the driver is the next wall to build. The virtual TPM, machines with no GPU, and QEMU for a machine on passt aren't jailed yet. passt makes a sandbox of its own, and that can't be made inside the jail.
 - **Trust a Linux guest like you trust yourself.** A Linux guest gets the GPU the way a program of yours does. It can do what your user can do to the card, it sees whole-card sensor and memory readings, and it can slow or crash your GPU session, which takes your desktop with it. It only gets calls on the list, it can only name its own GPU clients, and QEMU runs in a sandbox with no root. As far as I could test, it can't reach QEMU's memory or anyone else's GPU work. There's no full jail yet, so a bug in NVIDIA's driver or in this device is still a bug in your user account. Treat a guest as being as trusted as you, and don't run one you don't trust.
 
 ## My favourite bugs
