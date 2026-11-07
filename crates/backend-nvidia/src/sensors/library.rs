@@ -28,11 +28,20 @@ struct MemoryInfo {
     used: u64,
 }
 
+/// The API's utilization structure: how busy the card and its memory were.
+#[repr(C)]
+#[derive(Default)]
+struct Utilization {
+    gpu: c_uint,
+    memory: c_uint,
+}
+
 type Init = unsafe extern "C" fn() -> c_int;
 type HandleByUuid = unsafe extern "C" fn(*const c_char, *mut Device) -> c_int;
 type ReadWord = unsafe extern "C" fn(Device, *mut c_uint) -> c_int;
 type ReadWordOf = unsafe extern "C" fn(Device, c_int, *mut c_uint) -> c_int;
 type ReadMemory = unsafe extern "C" fn(Device, *mut MemoryInfo) -> c_int;
+type ReadUtilization = unsafe extern "C" fn(Device, *mut Utilization) -> c_int;
 
 /// The text form of a card's identity, as the library takes it.
 pub(super) fn uuid_text(bytes: &[u8; 16]) -> String {
@@ -46,6 +55,8 @@ pub(super) fn uuid_text(bytes: &[u8; 16]) -> String {
 pub(super) struct Library {
     device: Device,
     temperature: Option<ReadWordOf>,
+    utilization: Option<ReadUtilization>,
+    performance_state: Option<ReadWord>,
     clock: Option<ReadWordOf>,
     most_clock: Option<ReadWordOf>,
     power: Option<ReadWord>,
@@ -90,6 +101,8 @@ impl Library {
             Some(Self {
                 device,
                 temperature: symbol(library, c"nvmlDeviceGetTemperature"),
+                utilization: symbol(library, c"nvmlDeviceGetUtilizationRates"),
+                performance_state: symbol(library, c"nvmlDeviceGetPerformanceState"),
                 clock: symbol(library, c"nvmlDeviceGetClockInfo"),
                 most_clock: symbol(library, c"nvmlDeviceGetMaxClockInfo"),
                 power: symbol(library, c"nvmlDeviceGetPowerUsage"),
@@ -112,6 +125,12 @@ impl Library {
         (unsafe { getter?(self.device, which, &mut value) } == SUCCESS).then_some(value)
     }
 
+    fn utilization(&self) -> Option<Utilization> {
+        let mut busy = Utilization::default();
+        // SAFETY: as above.
+        (unsafe { self.utilization?(self.device, &mut busy) } == SUCCESS).then_some(busy)
+    }
+
     fn memory(&self) -> Option<MemoryInfo> {
         let mut info = MemoryInfo::default();
         // SAFETY: as above.
@@ -123,6 +142,8 @@ impl SensorSource for Library {
     fn read_fast(&mut self) -> FastReadings {
         FastReadings {
             temperature_celsius: self.word_of(self.temperature, SENSOR_GPU),
+            load_percent: self.utilization().map(|busy| busy.gpu),
+            performance_state: self.word(self.performance_state),
             power_milliwatts: self.word(self.power),
             graphics_megahertz: self.word_of(self.clock, CLOCK_GRAPHICS),
             memory_megahertz: self.word_of(self.clock, CLOCK_MEMORY),

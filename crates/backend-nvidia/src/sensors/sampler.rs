@@ -12,6 +12,8 @@ const SLOW_INTERVAL: Duration = Duration::from_secs(1);
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct FastReadings {
     pub temperature_celsius: Option<u32>,
+    pub load_percent: Option<u32>,
+    pub performance_state: Option<u32>,
     pub power_milliwatts: Option<u32>,
     pub graphics_megahertz: Option<u32>,
     pub memory_megahertz: Option<u32>,
@@ -55,6 +57,8 @@ impl<S: SensorSource> Sampler<S> {
         if fast_due {
             let read = self.source.read_fast();
             self.snapshot.temperature_celsius = read.temperature_celsius;
+            self.snapshot.load_percent = read.load_percent;
+            self.snapshot.performance_state = read.performance_state;
             self.snapshot.power_milliwatts = read.power_milliwatts;
             self.snapshot.graphics_megahertz = read.graphics_megahertz;
             self.snapshot.memory_megahertz = read.memory_megahertz;

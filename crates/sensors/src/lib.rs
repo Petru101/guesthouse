@@ -21,6 +21,10 @@ pub struct Snapshot {
     /// When it was taken, in milliseconds since the Unix epoch.
     pub taken_at: u64,
     pub temperature_celsius: Option<u32>,
+    /// How much of the last moment the card spent busy.
+    pub load_percent: Option<u32>,
+    /// The performance state, 0 for the fastest.
+    pub performance_state: Option<u32>,
     pub power_milliwatts: Option<u32>,
     pub power_limit_milliwatts: Option<u32>,
     pub graphics_megahertz: Option<u32>,
