@@ -101,8 +101,12 @@ pub fn allocation_size(layout: &AllocationLayout, data: &[u8]) -> u64 {
         let tiling = word(data, layout.tiling);
         let columns = u64::from(word(data, layout.columns));
         let rows = u64::from(word(data, layout.rows));
-        // A block height past the engine's isn't one, so the field holds something else.
-        if columns != 0 && tiling < BLOCK_LIMIT {
+        if columns == 0 {
+            // On a linear image the block height field holds the whole size instead. The size field
+            // has only the first plane, so an NV12 image would lose its chroma.
+            size = size.max(u64::from(tiling));
+        } else if tiling < BLOCK_LIMIT {
+            // A block height past the engine's isn't one, so the field holds something else.
             let blocks = columns.saturating_mul(rows);
             size = size.max(blocks.saturating_mul(GOB_WIDTH * (GOB_HEIGHT << tiling)));
         }
@@ -308,6 +312,56 @@ mod tests {
         set_word(&mut bytes, LAYOUT.columns, 4);
         set_word(&mut bytes, LAYOUT.rows, 2);
         assert_eq!(allocation_size(LAYOUT, &bytes), 4 * 64 * 2 * 16);
+    }
+
+    /// A linear image as ffmpeg uploads one: 640 x 480 NV12, pitch 640.
+    fn linear_image(size: u32, whole: u32) -> Vec<u8> {
+        let mut bytes = data(size);
+        bytes[LAYOUT.format] = 8;
+        set_word(&mut bytes, LAYOUT.width, 640);
+        set_word(&mut bytes, LAYOUT.height, 480);
+        set_word(&mut bytes, LAYOUT.pitch, 0x280);
+        set_word(&mut bytes, LAYOUT.depth_bits, 1);
+        set_word(&mut bytes, LAYOUT.tiling, whole);
+        bytes
+    }
+
+    #[test]
+    fn a_linear_planar_image_gets_all_its_planes() {
+        assert_eq!(allocation_size(LAYOUT, &linear_image(0x4_B000, 0x7_0800)), 0x8_0000);
+    }
+
+    #[test]
+    fn a_linear_image_whose_fields_agree_keeps_its_size() {
+        let mut bytes = data(0x9_4C00);
+        set_word(&mut bytes, LAYOUT.width, 256);
+        set_word(&mut bytes, LAYOUT.height, 2380);
+        set_word(&mut bytes, LAYOUT.pitch, 0x100);
+        set_word(&mut bytes, LAYOUT.tiling, 0x9_4C00);
+        assert_eq!(allocation_size(LAYOUT, &bytes), 0xA_0000);
+    }
+
+    #[test]
+    fn a_smaller_whole_size_never_shrinks_a_linear_image() {
+        assert_eq!(allocation_size(LAYOUT, &linear_image(0x1_7000, 0)), 0x2_0000);
+        assert_eq!(allocation_size(LAYOUT, &linear_image(0x4_B000, 0x1000)), 0x5_0000);
+    }
+
+    #[test]
+    fn a_tiled_planar_image_still_counts_its_blocks() {
+        let mut bytes = linear_image(0x4_B000, 1);
+        set_word(&mut bytes, LAYOUT.columns, 10);
+        set_word(&mut bytes, LAYOUT.rows, 46);
+        assert_eq!(allocation_size(LAYOUT, &bytes), 0x8_0000);
+    }
+
+    #[test]
+    fn a_piece_of_a_linear_pool_is_not_grown_to_the_whole() {
+        let mut bytes = data(0);
+        set_word(&mut bytes, LAYOUT.whole_size, 0x10_0000);
+        set_word(&mut bytes, LAYOUT.asked_size, 0x8000);
+        set_word(&mut bytes, LAYOUT.tiling, 0x10_0000);
+        assert_eq!(allocation_size(LAYOUT, &bytes), 0x8000);
     }
 
     #[test]
