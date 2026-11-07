@@ -1,0 +1,20 @@
+[package]
+name = "guesthouse-jail"
+description = "What a process that faces a guest may still do: Landlock, seccomp and no new privileges, set up from inside."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+# The raw system calls for Landlock and seccomp, which the standard library does not offer.
+libc = "0.2"
+
+[lints]
+workspace = true
+
+# Each case jails a child process of its own, as a jail can't be taken off again.
+[[test]]
+name = "kernel"
+harness = false
