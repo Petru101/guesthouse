@@ -52,11 +52,11 @@ pub fn gpu_lines(sample: Option<&Sample>, now: Duration) -> Vec<String> {
     ]
 }
 
-/// What the picture on screen is. An HDR picture comes with how bright the guest wants SDR white,
-/// and an SDR one says so, so a missing line can't be read as either.
+/// What the picture on screen is. An HDR picture comes with how bright the guest's desktop wants its
+/// white, and an SDR one says so, so a missing line can't be read as either.
 pub fn picture_line(sdr_white_nits: Option<u32>) -> String {
     match sdr_white_nits {
-        Some(nits) => format!("HDR, SDR white {nits} nits"),
+        Some(nits) => format!("HDR on, desktop white {nits} nits"),
         None => "SDR picture".to_owned(),
     }
 }
@@ -139,7 +139,7 @@ mod tests {
 
     #[test]
     fn the_picture_is_named_either_way() {
-        assert_eq!(picture_line(Some(240)), "HDR, SDR white 240 nits");
+        assert_eq!(picture_line(Some(240)), "HDR on, desktop white 240 nits");
         assert_eq!(picture_line(None), "SDR picture");
     }
 
