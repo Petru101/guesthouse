@@ -33,8 +33,9 @@ const MEMORY: [c_long; 10] = [
     SYS_membarrier,
 ];
 
-/// Opening is Landlock's to decide, so these are safe to have.
-const FILES: [c_long; 41] = [
+/// Opening and making are Landlock's to decide, so these are safe to have. The management library
+/// tries a symlink when it starts, which Landlock refuses.
+const FILES: [c_long; 43] = [
     SYS_openat,
     SYS_open,
     SYS_close,
@@ -76,6 +77,8 @@ const FILES: [c_long; 41] = [
     SYS_pipe2,
     SYS_getcwd,
     SYS_memfd_create,
+    SYS_symlink,
+    SYS_symlinkat,
 ];
 
 /// On sockets it already has: the viewer's and QEMU's.
@@ -113,7 +116,7 @@ const WAITING: [c_long; 18] = [
     SYS_restart_syscall,
 ];
 
-const PROCESS: [c_long; 31] = [
+const PROCESS: [c_long; 33] = [
     SYS_exit,
     SYS_exit_group,
     SYS_rt_sigaction,
@@ -145,6 +148,8 @@ const PROCESS: [c_long; 31] = [
     SYS_times,
     SYS_getrlimit,
     SYS_get_mempolicy,
+    SYS_sched_get_priority_max,
+    SYS_sched_get_priority_min,
 ];
 
 /// It reaches nothing new: what it serves on was made before the filter.
