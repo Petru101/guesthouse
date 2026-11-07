@@ -21,6 +21,8 @@ const UBUNTU_WITHOUT_GPU: &str =
     "Installs by itself, and boots with a plain screen. This QEMU has no GPU device for it.";
 /// What only the patched QEMU has.
 const PATCHED_QEMU_DEVICE: &str = "gpupv-render";
+/// The property a QEMU that can show Windows another PCI identity lists for that device.
+const IDENTITY_PROPERTY: &str = "vendor-id=";
 
 pub fn gpu_ready(context: &Context) -> bool {
     let paths = &context.paths;
@@ -36,6 +38,13 @@ fn qemu_is_patched(qemu: &Path) -> bool {
 fn qemu_lists_our_device(qemu: &Path) -> bool {
     let listing = Command::new(qemu).args(["-device", "help"]).output();
     listing.is_ok_and(|output| String::from_utf8_lossy(&output.stdout).contains(PATCHED_QEMU_DEVICE))
+}
+
+/// Whether this QEMU can show Windows another identity than the device's own. One from before the
+/// properties would refuse the line, so a machine on such a QEMU keeps the device's own.
+pub fn qemu_sets_identity(qemu: &Path) -> bool {
+    let listing = Command::new(qemu).args(["-device", &format!("{PATCHED_QEMU_DEVICE},help")]).output();
+    listing.is_ok_and(|output| String::from_utf8_lossy(&output.stdout).contains(IDENTITY_PROPERTY))
 }
 
 fn ubuntu_install_ready(context: &Context) -> bool {
@@ -100,6 +109,19 @@ mod tests {
         assert!(!qemu_lists_our_device(&plain));
         assert!(qemu_lists_our_device(&patched));
         assert!(!qemu_lists_our_device(&scratch.path("no-such-qemu")));
+    }
+
+    #[test]
+    fn only_a_qemu_with_the_properties_can_set_the_identity() {
+        let scratch = Scratch::new();
+        let old = scratch.write("old", "#!/bin/sh\necho 'channel=<str>'\n");
+        let new = scratch.write("new", "#!/bin/sh\necho 'channel=<str>'; echo 'vendor-id=<uint16>'\n");
+        for file in [&old, &new] {
+            fs::set_permissions(file, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        assert!(!qemu_sets_identity(&old));
+        assert!(qemu_sets_identity(&new));
+        assert!(!qemu_sets_identity(&scratch.path("no-such-qemu")));
     }
 
     #[test]

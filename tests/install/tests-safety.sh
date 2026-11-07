@@ -29,8 +29,10 @@ t_a_cut_off_download_does_nothing() {
 }
 
 t_there_is_nothing_to_install_before_a_release() {
+    sed -e 's/^RELEASE_VERSION=.*/RELEASE_VERSION=""/' -e 's/^PAYLOAD_SHA256=.*/PAYLOAD_SHA256=""/' \
+        -e 's/^SOURCE_SHA256=.*/SOURCE_SHA256=""/' "$REPO/install.sh" >"$T/unreleased.sh"
     snapshot >"$T/before"
-    answering 'yes\n' "$SHELL_UNDER_TEST" "$REPO/install.sh"
+    answering 'yes\n' "$SHELL_UNDER_TEST" "$T/unreleased.sh"
     check_exit 1
     check_said "there's no release yet"
     check_home_is "$T/before"

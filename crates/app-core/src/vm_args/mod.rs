@@ -12,6 +12,7 @@ pub use ubuntu::{FORWARDED_INPUT_SOCKET, FRAMES_PREFIX, INSTALL_LOG, ssh_port};
 
 use crate::context::Context;
 use crate::firmware::Firmware;
+use crate::gpu_identity::{PciIdentity, shown_identity};
 use crate::machine::Machine;
 use crate::network::{Forward, Mode};
 use guesthouse_daemon::slot::Slot;
@@ -108,6 +109,8 @@ pub struct VmPlan {
     pub vram: Option<String>,
     /// A relative USB mouse beside the tablet, for games.
     pub mouse: bool,
+    /// What the virtual render device shows Windows it is.
+    pub render_identity: PciIdentity,
     pub network: NetworkPlan,
     pub ram_file: PathBuf,
     pub io_file: PathBuf,
@@ -148,6 +151,7 @@ impl VmPlan {
             share_program: context.paths.binary(SHARE_PROGRAM),
             vram: (vram_gib > 0).then(|| format!("{vram_gib}G")),
             mouse: machine.has_gpu(),
+            render_identity: shown_identity(context, machine),
             network: NetworkPlan {
                 mode: machine.network_mode,
                 passt,

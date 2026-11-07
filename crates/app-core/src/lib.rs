@@ -16,6 +16,7 @@ pub mod display;
 pub mod failure;
 pub mod firmware;
 pub mod forwarded_input;
+pub mod gpu_identity;
 pub mod gpu_sample;
 pub mod gpu_support;
 pub mod guest_memory;

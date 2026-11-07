@@ -4,11 +4,10 @@
 use super::Task;
 use crate::daemon;
 use crate::failure::{Failure, Result};
+use crate::gpu_identity::{MICROSOFT_RENDER, NVIDIA_RENDER};
 use std::fs;
 use std::time::Duration;
 
-/// The virtual render device in the QEMU patch, as Windows names it.
-const RENDER_DEVICE: &str = r"PCI\VEN_1414&DEV_008E*";
 const WORKING_MARK: &str = "gpu working ";
 /// A device that's still starting gets a moment. One that has failed stays that way.
 const CHECK_ATTEMPTS: u32 = 10;
@@ -17,11 +16,18 @@ const CHECK_ANSWER_SECONDS: u64 = 15;
 const NO_GPU: &str = "Windows started without its GPU, so the VM was turned off.";
 const DAEMON_ERROR_MARK: &str = "ERROR ";
 
+/// The virtual render device, under either identity the QEMU patch can give it.
+fn is_render_device() -> String {
+    let patterns = [MICROSOFT_RENDER, NVIDIA_RENDER].map(|identity| identity.windows_pattern());
+    patterns.map(|pattern| format!("$_.PNPDeviceID -like '{pattern}'")).join(" -or ")
+}
+
 fn working_devices(task: &Task) -> Option<u32> {
     let script = format!(
         "$found = @(Get-CimInstance Win32_VideoController | \
-         Where-Object {{ $_.PNPDeviceID -like '{RENDER_DEVICE}' -and $_.ConfigManagerErrorCode -eq 0 }}); \
-         \"{WORKING_MARK}$($found.Count)\""
+         Where-Object {{ ({}) -and $_.ConfigManagerErrorCode -eq 0 }}); \
+         \"{WORKING_MARK}$($found.Count)\"",
+        is_render_device()
     );
     let said = task.ask_guest(&script, CHECK_ANSWER_SECONDS);
     said.split(WORKING_MARK).nth(1)?.trim().parse().ok()

@@ -84,6 +84,11 @@ fn serve_agent(port: u16) {
 }
 
 fn pretend_qemu(arguments: &[String]) {
+    // Asked what the render device takes, the real one lists its properties and exits.
+    if arguments.iter().any(|word| word == "gpupv-render,help") {
+        println!("gpupv-render options:\n  vendor-id=<uint16>\n  device-id=<uint16>");
+        return;
+    }
     for pair in arguments.windows(2) {
         if pair[0] == "-qmp" {
             let path = pair[1].strip_prefix("unix:").unwrap().split(',').next().unwrap();
