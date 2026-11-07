@@ -355,7 +355,9 @@ fn class_engine_id<R: Rm>(device: &mut Device<R>, channel: Handle, object: Handl
     let mut params = [0; CLASS_ENGINE_PARAMS];
     put32(&mut params, CLASS_ENGINE_PARAM_OBJECT, object);
     match device.control(channel, CONTROL_GET_CLASS_ENGINE, &mut params) {
-        Ok(()) => Some(u32::from_le_bytes(params[CLASS_ENGINE_PARAM_ID..CLASS_ENGINE_PARAM_ID + 4].try_into().ok()?)),
+        Ok(()) => Some(u32::from_le_bytes(
+            params[CLASS_ENGINE_PARAM_ID..CLASS_ENGINE_PARAM_ID + 4].try_into().ok()?,
+        )),
         Err(error) => {
             log::debug!("an object binds by its class, as the RM gave no number: {error}");
             None

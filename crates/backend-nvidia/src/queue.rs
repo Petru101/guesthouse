@@ -4,8 +4,9 @@ use crate::channel::{AREA_SIZE, Channel, ChannelPlace, Engine, LIST_AREA, ListCh
 use crate::list_repair;
 use crate::pushbuffer::{ENTRY_SIZE, Header, RingEntry};
 use crate::ring_position::has_ring_position_flag;
+use crate::ring_request::RingMove;
 use crate::rm::Rm;
-use crate::{NvidiaBackend, memory_error};
+use crate::{NvidiaBackend, UNFINISHED_ENTRIES_LIMIT, memory_error};
 use guesthouse_backend::{HostServices, SpaceId, Work, WorkSource, WorkStart};
 
 // The fields of a submission's private data.
@@ -15,10 +16,16 @@ const CONTEXT_LIST_ENTRIES: usize = 0x18;
 const LIST_ADDRESS: usize = 0x1C;
 const RING_END: usize = 0x78;
 const RING_ADDRESS: usize = 0x7C;
+/// The handle of the ring the queue moves to, in the submission that ends on the old ring.
+const MOVE_HANDLE: usize = 0x84;
 const SMALLEST_PRIVATE_DATA: usize = 0x84;
 
 /// How much of a guest's ring is read when standing in for the GPU.
 const RING_BYTES: usize = 0x10000;
+
+/// A new ring starts with one entry, the rest of the commands the move was among, and the guest's
+/// driver counts on from there.
+const FIRST_POSITION_ON_NEW_RING: u32 = 1;
 
 /// The guest writes this method to end a copy, which a channel here is refused. The launch method
 /// does the same in the same two words.
@@ -57,6 +64,13 @@ impl QueueChannel {
     }
 }
 
+/// A ring the GPU moves to once it has run what the old ring holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PendingMove {
+    ring_address: u64,
+    ring_entries: u32,
+}
+
 /// A queue, as far as the GPU goes.
 #[derive(Debug)]
 pub(crate) struct LiveQueue {
@@ -68,11 +82,20 @@ pub(crate) struct LiveQueue {
     position: Option<u32>,
     /// The GPU address just past the commands of the last list.
     list_end: Option<u64>,
+    /// A move registered with the GPU, which goes with the next doorbell.
+    pending_move: Option<PendingMove>,
 }
 
 impl LiveQueue {
     fn new(space: SpaceId) -> Self {
-        Self { space, channel: QueueChannel::Unusable, channel_tried: false, position: None, list_end: None }
+        Self {
+            space,
+            channel: QueueChannel::Unusable,
+            channel_tried: false,
+            position: None,
+            list_end: None,
+            pending_move: None,
+        }
     }
 }
 
@@ -292,15 +315,14 @@ impl<R: Rm> NvidiaBackend<R> {
     ) -> Result<u32, WorkStart> {
         let first = end.saturating_sub(entries);
         self.ring_channel(host, work, ring_address, first);
+        if let Some(old_ring) = self.queue_ring(work.queue).filter(|known| *known != ring_address) {
+            // This submission still ends on the old ring. The move goes with its doorbell.
+            self.begin_ring_move(host, work, old_ring, ring_address, entries, end)?;
+        }
         let queue = self.queues.get_mut(&work.queue).ok_or(WorkStart::Finished)?;
-        let QueueChannel::Ring { channel, ring_address: known } = &queue.channel else {
+        let QueueChannel::Ring { channel, .. } = &queue.channel else {
             return Err(WorkStart::Finished);
         };
-        if *known != ring_address {
-            // The driver can build a bigger ring, and this channel can't follow it.
-            log::warn!("queue {:#x} moved to ring {ring_address:#x}, so it stops", work.queue);
-            return Err(WorkStart::QueueFailed);
-        }
         let mut invalidated = true;
         if let Some(previous) = queue.position {
             let start = end.wrapping_sub(entries);
@@ -317,6 +339,77 @@ impl<R: Rm> NvidiaBackend<R> {
             self.invalidate_and_wait();
         }
         Ok(end)
+    }
+
+    /// The ring a queue's channel runs, if it has one.
+    fn queue_ring(&self, queue: u32) -> Option<u64> {
+        match self.queues.get(&queue)?.channel {
+            QueueChannel::Ring { ring_address, .. } => Some(ring_address),
+            _ => None,
+        }
+    }
+
+    /// The submission that names a new ring. The guest's driver asked for the ring and got a handle,
+    /// which this submission carries, and put a method naming the handle at the end of its commands.
+    /// The entries are still on the old ring, so they run as usual, and the GPU makes the move when
+    /// it reaches the method. The new ring's first entry holds the commands that followed it.
+    fn begin_ring_move(
+        &mut self,
+        host: &mut dyn HostServices,
+        work: &Work<'_>,
+        old_ring: u64,
+        ring_address: u64,
+        entries: u32,
+        end: u32,
+    ) -> Result<(), WorkStart> {
+        let stop = |why: &str| {
+            log::warn!("queue {:#x} moved to ring {ring_address:#x} and stops: {why}", work.queue);
+            WorkStart::QueueFailed
+        };
+        let Some(RingMove { handle, entries: ring_entries }) = self.ring_moves.take(ring_address) else {
+            return Err(stop("no ring was asked for there"));
+        };
+        if word(work.private, MOVE_HANDLE) != handle {
+            return Err(stop("the submission names another move"));
+        }
+        let queue = self.queues.get_mut(&work.queue).ok_or(WorkStart::Finished)?;
+        let QueueChannel::Ring { channel, .. } = &queue.channel else {
+            return Err(WorkStart::Finished);
+        };
+        if let Err(error) = channel.register_move(&mut self.device, handle, ring_address, ring_entries) {
+            return Err(stop(&format!("the move can't be registered: {error}")));
+        }
+        queue.pending_move = Some(PendingMove { ring_address, ring_entries });
+        // The doorbell for the new ring can come before the GPU has moved, and the GPU takes a
+        // position below its own as the ring wrapping. What it would run past the move is the old
+        // ring's stale entries, so those go, all but the ones a submission can still be waiting on.
+        let old_entries = channel.ring_entries();
+        let stale = old_entries.saturating_sub(UNFINISHED_ENTRIES_LIMIT as u32);
+        Self::clear_entries(host, work.space, old_ring, old_entries, end, stale);
+        log::info!(
+            "queue {:#x} moves to ring {ring_address:#x} of {ring_entries:#x} entries after {entries} entries ending at {end:#x}",
+            work.queue
+        );
+        Ok(())
+    }
+
+    /// Zeroes `count` entries of a ring from `from`, which makes them do nothing.
+    fn clear_entries(
+        host: &mut dyn HostServices,
+        space: SpaceId,
+        ring: u64,
+        size: u32,
+        from: u32,
+        count: u32,
+    ) {
+        let Some(span) = host.shared_span(space, ring) else { return };
+        for index in 0..count {
+            let at = span.guest_address + u64::from(from.wrapping_add(index) % size) * ENTRY_SIZE as u64;
+            if let Err(error) = host.write_u64(at, 0) {
+                log::warn!("a stale ring entry can't be cleared: {error}");
+                return;
+            }
+        }
     }
 
     fn list_channel(&mut self, host: &mut dyn HostServices, work: &Work<'_>) -> bool {
@@ -486,13 +579,37 @@ impl<R: Rm> NvidiaBackend<R> {
     }
 
     pub(crate) fn ring(&mut self, handle: u32, position: u64) {
-        let Some(queue) = self.queues.get(&handle) else { return };
+        let Some(queue) = self.queues.get_mut(&handle) else { return };
         let position = position as u32;
-        match &queue.channel {
-            QueueChannel::Ring { channel, .. } => channel.advance(&mut self.device, position),
+        match &mut queue.channel {
+            QueueChannel::Ring { channel, ring_address } => {
+                channel.advance(&mut self.device, position);
+                if let Some(pending) = queue.pending_move.take() {
+                    Self::finish_ring_move(channel, ring_address, &mut queue.position, pending);
+                }
+            }
             QueueChannel::List(list) => list.channel.advance(&mut self.device, position),
             QueueChannel::Unusable => {}
         }
+    }
+
+    /// The GPU runs out the old ring and moves on its own, and the control block says nothing of
+    /// it: GP_GET there never changes. From here the channel counts on the new ring, from the entry
+    /// the guest's driver left at its start, and the next doorbell runs that entry with its own.
+    fn finish_ring_move(
+        channel: &mut Channel,
+        ring_address: &mut u64,
+        position: &mut Option<u32>,
+        pending: PendingMove,
+    ) {
+        channel.follow_ring(pending.ring_entries);
+        *ring_address = pending.ring_address;
+        *position = Some(FIRST_POSITION_ON_NEW_RING);
+        log::info!(
+            "a channel moved to ring {:#x} of {:#x} entries",
+            pending.ring_address,
+            pending.ring_entries
+        );
     }
 
     /// What a list queue has put on its ring, for tests that play the GPU.
