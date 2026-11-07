@@ -148,6 +148,8 @@ pub struct Session<B, M> {
     pub(crate) context_hints: HashMap<u32, u32>,
     /// The process each context was made for, as the one that destroys it may be another.
     pub(crate) context_processes: HashMap<u32, u32>,
+    /// Each device's limit on queued presents, once it has set one.
+    pub(crate) present_limits: HashMap<u32, u32>,
     pub(crate) gates: HashMap<u32, Gate>,
     /// The number of the next wait to join a line.
     pub(crate) next_wait: u64,
@@ -218,6 +220,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             context_nodes: HashMap::new(),
             context_hints: HashMap::new(),
             context_processes: HashMap::new(),
+            present_limits: HashMap::new(),
             next_wait: 0,
             first_locks_waited: HashSet::new(),
             display_driver_seen: false,
@@ -390,15 +393,15 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             Some(C::DestroyHardwareQueue) => self.destroy_hardware_queue(message, out)?,
             Some(C::SubmitToHardwareQueue) => self.submit_to_hardware_queue(message, out)?,
             Some(C::SubmitToContext) => self.submit_to_context(message, out)?,
-            Some(C::SetQueuedLimit) => guesthouse_messages::queue::queued_limit_answer(message, out),
+            Some(C::SetQueuedLimit) => self.queued_limit(message, out)?,
             Some(C::PresentToken) => self.present_token(message, out)?,
             Some(C::CopyToStaging) => self.copy_to_staging(message, out)?,
 
             Some(C::FreeGpuAddresses) => self.free_gpu_addresses(message, out)?,
 
+            Some(C::DestroyDevice) => self.destroy_device(message, out),
             Some(
-                C::DestroyDevice
-                | C::CloseAdapter
+                C::CloseAdapter
                 | C::StopAdapter
                 | C::FlushAdapter
                 | C::FlushDevice

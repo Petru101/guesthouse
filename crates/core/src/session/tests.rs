@@ -220,6 +220,41 @@ mod dispatch {
     }
 
     #[test]
+    fn a_device_answers_the_queued_limit_it_was_given() {
+        use guesthouse_messages::queue::{
+            DEFAULT_QUEUED_PRESENT_LIMIT, GET_QUEUED_PRESENT_LIMIT, SET_QUEUED_PRESENT_LIMIT,
+        };
+        const DEVICE: usize = HEADER_SIZE;
+        const KIND: usize = HEADER_SIZE + 4;
+        const LIMIT: usize = HEADER_SIZE + 8;
+        let mut session = session();
+        let device = status_of(&send(&mut session, &message(Command::CreateDevice, HEADER_SIZE)));
+        let mut read = message(Command::SetQueuedLimit, HEADER_SIZE + 0x10);
+        set_u32(&mut read, DEVICE, device);
+        set_u32(&mut read, KIND, GET_QUEUED_PRESENT_LIMIT);
+        set_u32(&mut read, LIMIT, 0xDEAD_BEEF);
+        let answer = send(&mut session, &read);
+        assert_eq!(
+            u32_at(&answer, LIMIT - DEVICE),
+            Ok(DEFAULT_QUEUED_PRESENT_LIMIT),
+            "not the guest's field"
+        );
+        assert_eq!(u32_at(&answer, 0x10), Ok(SUCCESS));
+        let mut set = read.clone();
+        set_u32(&mut set, KIND, SET_QUEUED_PRESENT_LIMIT);
+        set_u32(&mut set, LIMIT, 1);
+        assert_eq!(send(&mut session, &set)[..0x10], set[DEVICE..DEVICE + 0x10]);
+        assert_eq!(u32_at(&send(&mut session, &read), LIMIT - DEVICE), Ok(1));
+        let mut other = read.clone();
+        set_u32(&mut other, DEVICE, device + 1);
+        assert_eq!(u32_at(&send(&mut session, &other), LIMIT - DEVICE), Ok(DEFAULT_QUEUED_PRESENT_LIMIT));
+        let mut destroy = message(Command::DestroyDevice, HEADER_SIZE + 4);
+        set_u32(&mut destroy, DEVICE, device);
+        assert_eq!(status_of(&send(&mut session, &destroy)), SUCCESS);
+        assert_eq!(u32_at(&send(&mut session, &read), LIMIT - DEVICE), Ok(DEFAULT_QUEUED_PRESENT_LIMIT));
+    }
+
+    #[test]
     fn a_32_bit_process_is_remembered_for_the_vendor() {
         let mut session = session();
         let mut request = message(Command::CreateProcess, 0x233);
