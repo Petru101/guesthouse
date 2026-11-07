@@ -118,6 +118,17 @@ fn registered() -> (TestSession, u32) {
 }
 
 #[test]
+fn no_surface_is_a_primary_once_the_display_driver_has_a_ring() {
+    let (mut session, _) = registered();
+    let reply = send(&mut session, &primary_request(surface_private(1920, 1080)));
+    assert_eq!(status_of(&reply), SUCCESS);
+    assert_eq!(u32_at(&reply, 0x18), Ok(CACHED_FOR_CPU));
+    session.guest_reset();
+    let reply = send(&mut session, &primary_request(surface_private(1920, 1080)));
+    assert_eq!(u32_at(&reply, 0x18), Ok(PRIMARY | CACHED_FOR_CPU));
+}
+
+#[test]
 fn the_stamps_say_which_buffer_is_which_slot() {
     let (mut session, buffers) = stamped(1);
     let (status, first) = register(&mut session, &ring(Look::SDR));

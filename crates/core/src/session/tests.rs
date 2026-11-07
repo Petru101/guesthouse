@@ -4,6 +4,7 @@ use super::*;
 use crate::{FENCE_AREA, MemoryLimits, Waiting};
 use guesthouse_backend_standin::{REGISTRY_NAME, SparseMemory, StandIn, VENDOR_ANSWER, VENDOR_ONLY_QUERY};
 use guesthouse_messages::adapter::AdapterQuery;
+use guesthouse_messages::allocation::{CACHED_FOR_CPU, PRIMARY};
 use guesthouse_messages::notice::Notice;
 use guesthouse_messages::wire::{put_utf16_terminated, set_u32, set_u64, u32_at, u64_at};
 use guesthouse_messages::{HEADER_SIZE, standard};
@@ -77,6 +78,13 @@ fn create_message(flags: u32, blocks: &[Vec<u8>]) -> Vec<u8> {
         request.extend_from_slice(&[0; 4]);
     }
     blocks.iter().for_each(|block| request.extend_from_slice(block));
+    request
+}
+
+/// A request whose one entry claims to be a screen's primary surface.
+fn primary_request(block: Vec<u8>) -> Vec<u8> {
+    let mut request = create_message(0, &[block]);
+    set_u32(&mut request, 0x40, PRIMARY);
     request
 }
 
@@ -404,6 +412,13 @@ mod allocations {
         assert_eq!(u64_at(&reply, 0x20), Ok(0x10000));
         assert_eq!(&reply[0x58..0x58 + 32], record);
         assert_eq!(standard::StandardRecord::parse(&record).unwrap().pitch, 512);
+    }
+
+    #[test]
+    fn a_primary_stays_one_on_the_basic_display() {
+        let reply = send(&mut session(), &primary_request(surface_private(1920, 1080)));
+        assert_eq!(status_of(&reply), SUCCESS);
+        assert_eq!(u32_at(&reply, 0x18), Ok(PRIMARY | CACHED_FOR_CPU));
     }
 
     #[test]

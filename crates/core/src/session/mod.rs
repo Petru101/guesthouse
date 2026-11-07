@@ -151,6 +151,9 @@ pub struct Session<B, M> {
     pub(crate) next_wait: u64,
     /// Allocations whose first lock has waited for the GPU once, and goes ahead when it comes back.
     pub(crate) first_locks_waited: HashSet<u32>,
+    /// The display driver has registered a ring since the guest last started, so its process holds
+    /// the screen and no allocation is a primary from here on.
+    pub(crate) display_driver_seen: bool,
     pub(crate) queues_made: u32,
     /// Statistics have been refused once, which is worth saying once.
     pub(crate) statistics_refused: bool,
@@ -214,6 +217,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             context_processes: HashMap::new(),
             next_wait: 0,
             first_locks_waited: HashSet::new(),
+            display_driver_seen: false,
             gates: HashMap::new(),
             queues_made: 0,
             statistics_refused: false,

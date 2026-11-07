@@ -115,7 +115,13 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
                 allocation.size = size;
             }
             log::debug!("allocation {handle:#x}: {:#x} bytes, guest backed {guest_backed}", allocation.size);
-            let flags = (entry.flags & PRIMARY) | CACHED_FOR_CPU;
+            // On the basic display the guest's kernel copies DWM's primaries to the staging surface,
+            // and that path needs the flag back. Once our display driver has a ring, the screen is a
+            // surface in its process and nothing scans out, so no surface is a primary any more:
+            // the guest's kernel would otherwise look for a display adapter behind each one, and a
+            // render-only adapter has none.
+            let primary = if self.display_driver_seen { 0 } else { entry.flags & PRIMARY };
+            let flags = primary | CACHED_FOR_CPU;
             CreateAllocationAnswer::set_entry(index, handle, entry.private_size, flags, allocation.size, out);
             if let Some(surface) = shape.surface {
                 let fields = [
