@@ -13,7 +13,7 @@ use guesthouse_app_core::library::{
 };
 use guesthouse_app_core::machine::{Kind, MIN_CORES, MIN_RAM_GIB};
 use guesthouse_app_core::settings::driver_folder;
-use guesthouse_app_core::setup::checks::driver_warning;
+use guesthouse_app_core::setup::checks::gpu_warning;
 use guesthouse_app_core::tasks::no_slot_text;
 use std::cell::{Cell, RefCell};
 use std::path::Path;
@@ -245,7 +245,7 @@ impl NewMachineDialog {
         if self.0.no_driver.get() {
             self.show_verdict(&iso.title, NO_DRIVER_FILES);
         } else if windows {
-            let warning = driver_warning(&context).map_or_else(String::new, |text| format!(" {text}"));
+            let warning = gpu_warning(&context).map_or_else(String::new, |text| format!(" {text}"));
             // A build from source has no driver to add, so it says nothing about one.
             let display = DriverPackage::find(&context).map_or("", |_| DISPLAY_DRIVER_NOTE);
             let said = format!("Installs by itself and starts with GPU-PV. {display}{warning}");

@@ -2,7 +2,7 @@
 
 use super::caps::{CAPS_SIZE, caps_answer};
 use super::guid::name_based_guid;
-use super::nodes::{ENGINE_3D, ENGINE_COPY, ENGINE_VIDEO_DECODE, ENGINE_VIDEO_ENCODE, Node, node_metadata};
+use super::nodes::{ENGINE_3D, ENGINE_COPY, ENGINE_VIDEO_ENCODE, Node, node_metadata};
 use super::queries::fixed_answers;
 use super::registry::{AdapterRegistry, DRIVER_STORE};
 use crate::profile::RecordLayout;
@@ -55,6 +55,8 @@ pub struct AdapterAnswers {
     fixed: HashMap<u32, Vec<u8>>,
     nodes: Vec<Vec<u8>>,
     engines: Vec<u32>,
+    /// Which nodes can run video.
+    video_nodes: Vec<bool>,
     registry: AdapterRegistry,
 }
 
@@ -71,8 +73,19 @@ impl AdapterAnswers {
             fixed: fixed.into_iter().collect(),
             nodes: numbered.map(|(ordinal, node)| node_metadata(ordinal, node)).collect(),
             engines: inputs.nodes.iter().map(|node| node.engine).collect(),
+            video_nodes: inputs.nodes.iter().map(|node| node.video.is_some()).collect(),
             registry: inputs.registry,
         }
+    }
+
+    /// The record as built, before anything a query adds.
+    pub fn record(&self) -> &[u8] {
+        &self.record
+    }
+
+    /// The RM's engine numbers on this card.
+    pub fn rm_engines(&self) -> &[u32] {
+        &self.rm_engines
     }
 
     pub fn registry(&self) -> &AdapterRegistry {
@@ -95,10 +108,9 @@ impl AdapterAnswers {
         self.engines.get(node as usize) == Some(&ENGINE_VIDEO_ENCODE)
     }
 
-    /// Whether a node is one of the card's video decoders or encoders.
+    /// Whether a node is one of the card's video decoders or encoders that can run.
     pub fn node_is_video(&self, node: u32) -> bool {
-        let engine = self.engines.get(node as usize);
-        engine.is_some_and(|&engine| engine == ENGINE_VIDEO_DECODE || engine == ENGINE_VIDEO_ENCODE)
+        self.video_nodes.get(node as usize) == Some(&true)
     }
 
     fn record_answer(&self, size: usize, out: &mut Vec<u8>) {
@@ -169,13 +181,13 @@ impl AdapterAnswers {
 mod tests {
     use super::*;
     use crate::answers::nodes::node_list;
-    use crate::profile::GUEST_617;
+    use crate::profile::{BLACKWELL, GUEST_617};
 
     fn answers() -> AdapterAnswers {
         let inputs = Inputs {
             record: vec![7; 16],
             engines: Vec::new(),
-            nodes: node_list(&[0x01, 0x09, 0x0D, 0x13], None),
+            nodes: node_list(&[0x01, 0x09, 0x0D, 0x13], None, &BLACKWELL.nodes),
             registry: AdapterRegistry::default(),
             guid_seed: "seed".into(),
             graphics_hertz: 1_000,

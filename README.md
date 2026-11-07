@@ -171,7 +171,7 @@ What's still coming:
 
 I'd rather you hear this from me:
 
-- **It has only ever run on my PC, on an RTX 5090.** A clean clone does set itself up and pass its tests now, but that's still my machine and my card.
+- **It has only ever run on my PC, on an RTX 5090.** A clean clone does set itself up and pass its tests now, but that's still my machine and my card. The code on `main` also has experimental support for the 40, 20 and 16 series, with video off, and none of those has run on a real card yet. The 30 series is refused until someone sends a report. See #9.
 - **Drivers are tied together.** Linux and Windows have to come from the same NVIDIA branch, and a new branch means new work.
 - **`nvidia-smi` shows a nonsense number for memory in Windows.** The last time I looked, Task Manager didn't show the GPU either.
 - **Sunshine mostly doesn't work in a guest yet.** With the display driver in, it works through Windows Graphics Capture with software encoding, in a test with my own small receiver. Its default capture, Desktop Duplication, is unreliable here: Windows keeps losing it, and I don't know why yet. NVENC through Sunshine doesn't work, as it looks for NVIDIA's vendor ID and Windows reports Microsoft's. I haven't tried it with Moonlight. For now, don't do a default Sunshine install in a guest.

@@ -6,7 +6,7 @@ use crate::profile::{GUEST_617, HOST_615};
 use crate::record::HostFacts;
 use crate::rm::device::Device;
 use crate::rm::fake::FakeRm;
-use crate::rm::fake_card::{FAKE_DEVICE, install};
+use crate::rm::fake_card::{FAKE_BLACKWELL, FakeCard, install_card};
 use guesthouse_backend::{DriverVersion, PciCard, Refusal, Setup};
 use guesthouse_messages::wire::{set_u32, set_u64, u32_at};
 use guesthouse_messages::{Command, HEADER_SIZE};
@@ -19,7 +19,7 @@ const REPLY_HANDLE_STEP: usize = 0x48;
 /// Any length with room for every field does.
 const REQUEST_LENGTH: usize = 0x200;
 
-fn inf() -> String {
+fn inf(device: u32) -> String {
     let names = [
         "DXCoreAttributes",
         "VulkanDriverName",
@@ -36,7 +36,7 @@ fn inf() -> String {
         "OpenCLDriverNameWow",
     ];
     let mut text = format!(
-        "[NVIDIA_Devices.NTamd64.10.0]\n%A% = Sec, PCI\\VEN_10DE&DEV_{FAKE_DEVICE:04X}\n[sec]\nAddReg = vals\n[vals]\n"
+        "[NVIDIA_Devices.NTamd64.10.0]\n%A% = Sec, PCI\\VEN_10DE&DEV_{device:04X}\n[sec]\nAddReg = vals\n[vals]\n"
     );
     for name in names {
         text.push_str(&format!("HKR,,{name},%REG_SZ%,\"%13%\\file\"\n"));
@@ -47,13 +47,18 @@ fn inf() -> String {
 
 /// A started backend on a pretend card.
 pub fn fake_backend(rm: FakeRm) -> NvidiaBackend<FakeRm> {
-    let started = start_on_fake_card(rm, FAKE_DEVICE as u16);
+    let started = start_on_fake_card(rm, FAKE_BLACKWELL.device as u16);
     started.map_err(|refusal| refusal.0).expect("the pretend card passes")
 }
 
 /// Starts a backend with setup having chosen this card, which may not be the pretend one.
-pub fn start_on_fake_card(mut rm: FakeRm, chosen: u16) -> Result<NvidiaBackend<FakeRm>, Refusal> {
-    install(&mut rm);
+pub fn start_on_fake_card(rm: FakeRm, chosen: u16) -> Result<NvidiaBackend<FakeRm>, Refusal> {
+    start_on_card(rm, &FAKE_BLACKWELL, chosen)
+}
+
+/// Starts a backend on this pretend card, with setup having chosen `chosen`.
+pub fn start_on_card(mut rm: FakeRm, card: &FakeCard, chosen: u16) -> Result<NvidiaBackend<FakeRm>, Refusal> {
+    install_card(&mut rm, card);
     let device = Device::open(rm, &HOST_615).expect("the pretend RM opens");
     let setup = Setup {
         guest_driver_version: DriverVersion::parse("32.0.16.1742").expect("a version"),
@@ -67,7 +72,7 @@ pub fn start_on_fake_card(mut rm: FakeRm, chosen: u16) -> Result<NvidiaBackend<F
         cpu_megahertz: 4300,
         rated_clocks: (3_000_000_000, 14_000_000_000),
     };
-    NvidiaBackend::start(device, &HOST_615, &GUEST_617, &setup, &host, inf().as_bytes())
+    NvidiaBackend::start(device, &HOST_615, &GUEST_617, &setup, &host, inf(card.device).as_bytes())
 }
 
 /// A message with room for `size` bytes, and its command and process filled in.

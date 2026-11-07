@@ -36,6 +36,7 @@ pub struct FakeRm {
     /// Sizes of video memory round up to this, as a real one rounds to its pages.
     pub round_memory_to: u64,
     pub refuse_class: Option<u32>,
+    pub refuse_control: Option<u32>,
     pub refuse_exports: bool,
     /// A GPU address no mapping may start at.
     pub refuse_map_at: Option<u64>,
@@ -68,6 +69,7 @@ impl FakeRm {
             calls: Vec::new(),
             round_memory_to: 1,
             refuse_class: None,
+            refuse_control: None,
             refuse_exports: false,
             refuse_map_at: None,
             exports: HashMap::new(),
@@ -201,6 +203,9 @@ impl Rm for FakeRm {
 
     fn control(&mut self, object: Handle, command: u32, params: &mut [u8]) -> Result<u32, RmError> {
         self.calls.push(Call::Control { object, command, params: params.to_vec() });
+        if self.refuse_control == Some(command) {
+            return Ok(STATUS_NOT_SUPPORTED);
+        }
         if command == super::classes::CONTROL_GET_WORK_SUBMIT_TOKEN {
             self.next_token += 1;
             params[..4].copy_from_slice(&self.next_token.to_le_bytes());

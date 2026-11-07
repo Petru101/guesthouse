@@ -1,6 +1,7 @@
 //! `card_check OUTPUT_FOLDER`: opens the real card, reads it, and writes what the guest would be told,
 //! to compare with the prototype's answers. Every control it runs only reads. `GUESTHOUSE_DRIVER_FOLDER`
-//! and `GUESTHOUSE_DEVICE` say what setup would.
+//! and `GUESTHOUSE_DEVICE` say what setup would. `summary.txt` is the file to post: the rest holds the
+//! card's UUID and ECID.
 
 use guesthouse_backend::{
     Backend, DriverVersion, PciCard, Setup, StartDecision, Status, VendorQuery, decide_start,
@@ -45,6 +46,7 @@ fn main() {
     println!("{:?}", backend.facts());
 
     fs::create_dir_all(&output).unwrap();
+    fs::write(output.join("summary.txt"), backend.card_summary()).unwrap();
     let answer = |kind, size, data: &[u8]| {
         let mut out = Vec::new();
         let query = VendorQuery { kind, size, data, process_is_32_bit: false };

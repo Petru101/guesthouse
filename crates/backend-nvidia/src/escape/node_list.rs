@@ -32,13 +32,14 @@ mod tests {
     use super::super::get;
     use super::*;
     use crate::answers::nodes::node_list;
+    use crate::profile::BLACKWELL;
 
     /// The size the runtime really asks with.
     const WHOLE_ANSWER: usize = 0x31C;
 
     #[test]
     fn every_node_is_listed_by_its_kind_in_order() {
-        let nodes = node_list(&[0x01, 0x09, 0x0D, 0x13, 0x1B], None);
+        let nodes = node_list(&[0x01, 0x09, 0x0D, 0x13, 0x1B], None, &BLACKWELL.nodes);
         let mut data = vec![0; WHOLE_ANSWER];
         answer(&nodes, &mut data);
         assert_eq!(get(&data, COUNT), Some(nodes.len() as u32));
@@ -49,7 +50,7 @@ mod tests {
 
     #[test]
     fn a_short_buffer_gets_what_fits() {
-        let nodes = node_list(&[0x01, 0x09], None);
+        let nodes = node_list(&[0x01, 0x09], None, &BLACKWELL.nodes);
         let mut data = vec![0; ENTRIES + 4];
         answer(&nodes, &mut data);
         assert_eq!(get(&data, ENTRIES), Some(nodes[0].kind));

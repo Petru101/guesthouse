@@ -44,7 +44,7 @@ use profile::{
     Generation, GuestBranch, HostBranch, generation_for, guest_branch, guest_channel_classes, host_branch,
 };
 use queue::LiveQueue;
-use record::{CardReader, HostFacts, build, read_host_facts};
+use record::{CardReader, HostFacts, SummaryFacts, build, read_host_facts, summary};
 use ring_position::GuestRing;
 use rm::device::{AddressSpace, Device};
 use rm::linux::LinuxRm;
@@ -81,6 +81,15 @@ pub(crate) fn memory_error(error: RmError) -> BackendError {
 
 fn handle_of(memory: MemoryId) -> Handle {
     memory.0 as Handle
+}
+
+/// The profile for the card's architecture, or a refusal that names it. Only reads.
+pub fn card_generation<R: Rm>(card: &mut CardReader<'_, R>) -> Result<&'static Generation, Refusal> {
+    let architecture = card.read(record::ARCHITECTURE, &[]);
+    let architecture = architecture.map_err(|error| Refusal(format!("Reading the card failed: {error}")))?;
+    let architecture = u32::from_le_bytes(architecture[..4].try_into().expect("four bytes"));
+    generation_for(architecture)
+        .ok_or_else(|| Refusal(format!("This build has no profile for GPU architecture {architecture:#x}.")))
 }
 
 /// How an RM comes to be, which tests don't use.
@@ -143,14 +152,17 @@ impl<R: Rm> NvidiaBackend<R> {
     ) -> Result<Self, Refusal> {
         let failed = |error: RmError| Refusal(format!("Reading the card failed: {error}"));
         let mut card = CardReader::new(&mut device);
-        let architecture = card.read(record::ARCHITECTURE, &[]).map_err(failed)?;
-        let architecture = u32::from_le_bytes(architecture[..4].try_into().expect("four bytes"));
-        let generation = generation_for(architecture).ok_or_else(|| {
-            Refusal(format!("This build has no profile for GPU architecture {architecture:#x}."))
-        })?;
+        let generation = card_generation(&mut card)?;
+        if !generation.run_on_guest_branches.contains(&guest.name) {
+            log::warn!(
+                "{} cards have not been run with guest driver branch {}. This is a try, and it may fail.",
+                generation.name,
+                guest.name
+            );
+        }
         let engines = card.engines().map_err(failed)?;
         let graphics_copy = card.graphics_copy().map_err(failed)?;
-        let nodes = node_list(&engines, graphics_copy);
+        let nodes = node_list(&engines, graphics_copy, &generation.nodes);
         let record = build(&guest.record, generation, &mut card, host, &nodes)?;
         let node_count = nodes.len() as u32;
 
@@ -232,6 +244,19 @@ impl<R: Rm> NvidiaBackend<R> {
         let generation = self.generation;
         let class = if encodes { generation.video_encode_class } else { generation.video_decode_class };
         Some(VideoEngine { rm_engine, class, instance })
+    }
+
+    /// What a person trying a card can post: what the backend found and will tell the guest, with
+    /// nothing in it that identifies the card or the PC.
+    pub fn card_summary(&self) -> String {
+        summary(&SummaryFacts {
+            record: self.answers.record(),
+            layout: &self.guest.record,
+            generation: self.generation,
+            guest_branch: self.guest.name,
+            engines: self.answers.rm_engines(),
+            nodes: &self.nodes,
+        })
     }
 
     pub fn answers(&self) -> &AdapterAnswers {

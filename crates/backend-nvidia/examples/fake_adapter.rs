@@ -1,5 +1,6 @@
-//! `fake_adapter DRIVER_FOLDER OUTPUT_FOLDER`: writes what the backend works out for the pretend card,
-//! to compare with another implementation of the same rules. It never touches a real card.
+//! `fake_adapter DRIVER_FOLDER OUTPUT_FOLDER [ada|turing]`: writes what the backend works out for a
+//! pretend card, to compare with another implementation of the same rules. It never touches a real
+//! card. The driver's INF has to list the pretend card's device.
 
 use guesthouse_backend::{DriverVersion, PciCard, Setup, Status, VendorQuery};
 use guesthouse_backend_nvidia::NvidiaBackend;
@@ -8,7 +9,9 @@ use guesthouse_backend_nvidia::profile::{GUEST_617, HOST_615};
 use guesthouse_backend_nvidia::record::read_host_facts_with_clocks;
 use guesthouse_backend_nvidia::rm::device::Device;
 use guesthouse_backend_nvidia::rm::fake::FakeRm;
-use guesthouse_backend_nvidia::rm::fake_card::{FAKE_DEVICE, install};
+use guesthouse_backend_nvidia::rm::fake_card::{
+    FAKE_ADA, FAKE_BLACKWELL, FAKE_TURING, FakeCard, install_card,
+};
 use std::path::PathBuf;
 use std::{env, fs};
 
@@ -19,17 +22,27 @@ const QUERIES: [(u32, usize); 11] =
     [(11, 4), (15, 4), (17, 12), (22, 4), (24, 4), (55, 4), (60, 80), (61, 56), (62, 64), (75, 4), (76, 4)];
 const MOST_NODES: u32 = 40;
 
+fn card_named(name: Option<PathBuf>) -> FakeCard {
+    match name.as_ref().and_then(|name| name.to_str()) {
+        None => FAKE_BLACKWELL,
+        Some("ada") => FAKE_ADA,
+        Some("turing") => FAKE_TURING,
+        Some(other) => panic!("no pretend card called {other}"),
+    }
+}
+
 fn main() {
     let mut arguments = env::args_os().skip(1).map(PathBuf::from);
     let (folder, output) = (arguments.next().expect("driver folder"), arguments.next().expect("output"));
+    let card = card_named(arguments.next());
     let mut rm = FakeRm::new();
-    install(&mut rm);
+    install_card(&mut rm, &card);
     let device = Device::open(rm, &HOST_615).unwrap();
     let setup = Setup {
         guest_driver_version: DriverVersion::parse("32.0.16.1742").unwrap(),
         guest_branch: "617".into(),
         driver_folder: folder.clone(),
-        card: Some(PciCard { vendor: 0x10DE, device: FAKE_DEVICE as u16, revision: 0xA1 }),
+        card: Some(PciCard { vendor: 0x10DE, device: card.device as u16, revision: 0xA1 }),
     };
     let host = read_host_facts_with_clocks(RATED_CLOCKS).unwrap();
     let inf = fs::read(folder.join(INF_NAME)).unwrap();
