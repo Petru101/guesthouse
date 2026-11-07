@@ -19,8 +19,6 @@ $hardwareId = "PCI\VEN_$vendor&DEV_$device"
 # The inbox INF's model line, which is the only line that changes. Anything else there is kept as it is.
 $modelLine = '^(\s*%VirtualRender\.DeviceDesc%\s*=\s*VirtualRender_Inst\s*,\s*)PCI\\VEN_1414&DEV_008E\s*$'
 
-function Stay($why) { "stay: $why"; exit }
-
 function Remove-OurCertificates {
     foreach ($store in 'Root', 'TrustedPublisher') {
         Get-ChildItem "Cert:\LocalMachine\$store" | Where-Object Subject -like $ourCertificates | Remove-Item
@@ -29,59 +27,63 @@ function Remove-OurCertificates {
         ForEach-Object { Remove-Item "Cert:\LocalMachine\My\$($_.Thumbprint)" -DeleteKey }
 }
 
-$already = Get-WindowsDriver -Online -ea 0 | Where-Object OriginalFileName -like "*\$infName"
-if ($already) {
-    "package in: $($already.Driver)"
-    'identity staged'
-    exit
+# Everything that can refuse returns from here, as the agent's shell must go on to send the answer.
+function Stage-Package {
+    $already = Get-WindowsDriver -Online -ea 0 | Where-Object OriginalFileName -like "*\$infName"
+    if ($already) {
+        "package in: $($already.Driver)"
+        return 'identity staged'
+    }
+
+    if (-not (Test-Path -LiteralPath $inboxInf)) { return "stay: Windows has no virtual render driver INF at $inboxInf." }
+    $lines = Get-Content -LiteralPath $inboxInf
+    $models = @($lines | Where-Object { $_ -match $modelLine })
+    if ($models.Count -ne 1) { return "stay: Windows' virtual render driver INF isn't shaped as expected, so no package was made from it." }
+    if (-not ($lines -match '^\s*\[Version\]\s*$')) { return "stay: Windows' virtual render driver INF has no [Version] section." }
+    if ($lines -match '^\s*CatalogFile\s*=') { return "stay: Windows' virtual render driver INF names a catalog of its own, which wasn't expected." }
+    $source = Get-ChildItem $driverStore -Directory -Filter 'vrd.inf_*' -ea 0 |
+        Where-Object { Test-Path -LiteralPath "$($_.FullName)\vrd.sys" } | Select-Object -First 1
+    if (-not $source) { return "stay: Windows' driver store has no copy of vrd.sys." }
+    $signature = Get-AuthenticodeSignature -LiteralPath "$($source.FullName)\vrd.sys"
+    if ($signature.Status -ne 'Valid') { return "stay: The copy of vrd.sys in Windows' driver store isn't validly signed: $($signature.Status)." }
+
+    New-Item -ItemType Directory -Force $package | Out-Null
+    Remove-Item "$package\*" -Force -ea 0
+    Copy-Item -LiteralPath "$($source.FullName)\vrd.sys" "$package\vrd.sys"
+    $made = foreach ($line in $lines) {
+        if ($line -match $modelLine) { $Matches[1] + $hardwareId }
+        elseif ($line -match '^\s*\[Version\]\s*$') { $line; "CatalogFile = $catalogName" }
+        elseif ($line -match '^\s*Provider\s*=') { 'Provider = %Guesthouse%' }
+        elseif ($line -match '^\s*\[Strings\]\s*$') { $line; 'Guesthouse = "Guesthouse"' }
+        else { $line }
+    }
+    Set-Content -LiteralPath "$package\$infName" -Value $made -Encoding ASCII
+
+    # Only the newest certificate is ever needed, and a run that died part way could have left a key behind.
+    Remove-OurCertificates
+    $catalog = "$folder\$catalogName"
+    Remove-Item -LiteralPath $catalog -ea 0
+    New-FileCatalog -Path $package -CatalogFilePath $catalog -CatalogVersion 2.0 | Out-Null
+    Move-Item -LiteralPath $catalog "$package\$catalogName" -Force
+    $certificate = New-SelfSignedCertificate -Type CodeSigningCert -Subject $subject -CertStoreLocation Cert:\LocalMachine\My `
+        -KeyExportPolicy NonExportable -NotAfter (Get-Date).AddYears($yearsValid)
+    $public = New-Object Security.Cryptography.X509Certificates.X509Certificate2 (, $certificate.Export('Cert'))
+    foreach ($name in 'Root', 'TrustedPublisher') {
+        $store = New-Object Security.Cryptography.X509Certificates.X509Store $name, 'LocalMachine'
+        $store.Open('ReadWrite')
+        $store.Add($public)
+        $store.Close()
+    }
+    $signed = Set-AuthenticodeSignature -FilePath "$package\$catalogName" -Certificate $certificate -HashAlgorithm SHA256
+    "signing: $($signed.Status) $($signed.StatusMessage)"
+    Remove-Item "Cert:\LocalMachine\My\$($certificate.Thumbprint)" -DeleteKey
+    if ($signed.Status -ne 'Valid') { Remove-OurCertificates; return 'stay: The package could not be signed here.' }
+
+    pnputil /add-driver "$package\$infName" 2>&1
+    $added = Get-WindowsDriver -Online -ea 0 | Where-Object OriginalFileName -like "*\$infName"
+    if (-not $added) { Remove-OurCertificates; return 'stay: Windows did not take the package.' }
+    "package in: $($added.Driver)"
+    return 'identity staged'
 }
 
-if (-not (Test-Path -LiteralPath $inboxInf)) { Stay "Windows has no virtual render driver INF at $inboxInf." }
-$lines = Get-Content -LiteralPath $inboxInf
-$models = @($lines | Where-Object { $_ -match $modelLine })
-if ($models.Count -ne 1) { Stay "Windows' virtual render driver INF isn't shaped as expected, so no package was made from it." }
-if (-not ($lines -match '^\s*\[Version\]\s*$')) { Stay "Windows' virtual render driver INF has no [Version] section." }
-if ($lines -match '^\s*CatalogFile\s*=') { Stay "Windows' virtual render driver INF names a catalog of its own, which wasn't expected." }
-$source = Get-ChildItem $driverStore -Directory -Filter 'vrd.inf_*' -ea 0 |
-    Where-Object { Test-Path -LiteralPath "$($_.FullName)\vrd.sys" } | Select-Object -First 1
-if (-not $source) { Stay "Windows' driver store has no copy of vrd.sys." }
-$signature = Get-AuthenticodeSignature -LiteralPath "$($source.FullName)\vrd.sys"
-if ($signature.Status -ne 'Valid') { Stay "The copy of vrd.sys in Windows' driver store isn't validly signed: $($signature.Status)." }
-
-New-Item -ItemType Directory -Force $package | Out-Null
-Remove-Item "$package\*" -Force -ea 0
-Copy-Item -LiteralPath "$($source.FullName)\vrd.sys" "$package\vrd.sys"
-$made = foreach ($line in $lines) {
-    if ($line -match $modelLine) { $Matches[1] + $hardwareId }
-    elseif ($line -match '^\s*\[Version\]\s*$') { $line; "CatalogFile = $catalogName" }
-    elseif ($line -match '^\s*Provider\s*=') { 'Provider = %Guesthouse%' }
-    elseif ($line -match '^\s*\[Strings\]\s*$') { $line; 'Guesthouse = "Guesthouse"' }
-    else { $line }
-}
-Set-Content -LiteralPath "$package\$infName" -Value $made -Encoding ASCII
-
-# Only the newest certificate is ever needed, and a run that died part way could have left a key behind.
-Remove-OurCertificates
-$catalog = "$folder\$catalogName"
-Remove-Item -LiteralPath $catalog -ea 0
-New-FileCatalog -Path $package -CatalogFilePath $catalog -CatalogVersion 2.0 | Out-Null
-Move-Item -LiteralPath $catalog "$package\$catalogName" -Force
-$certificate = New-SelfSignedCertificate -Type CodeSigningCert -Subject $subject -CertStoreLocation Cert:\LocalMachine\My `
-    -KeyExportPolicy NonExportable -NotAfter (Get-Date).AddYears($yearsValid)
-$public = New-Object Security.Cryptography.X509Certificates.X509Certificate2 (, $certificate.Export('Cert'))
-foreach ($name in 'Root', 'TrustedPublisher') {
-    $store = New-Object Security.Cryptography.X509Certificates.X509Store $name, 'LocalMachine'
-    $store.Open('ReadWrite')
-    $store.Add($public)
-    $store.Close()
-}
-$signed = Set-AuthenticodeSignature -FilePath "$package\$catalogName" -Certificate $certificate -HashAlgorithm SHA256
-"signing: $($signed.Status) $($signed.StatusMessage)"
-Remove-Item "Cert:\LocalMachine\My\$($certificate.Thumbprint)" -DeleteKey
-if ($signed.Status -ne 'Valid') { Remove-OurCertificates; Stay 'The package could not be signed here.' }
-
-pnputil /add-driver "$package\$infName" 2>&1
-$added = Get-WindowsDriver -Online -ea 0 | Where-Object OriginalFileName -like "*\$infName"
-if (-not $added) { Remove-OurCertificates; Stay 'Windows did not take the package.' }
-"package in: $($added.Driver)"
-'identity staged'
+Stage-Package
