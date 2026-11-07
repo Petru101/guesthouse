@@ -6,7 +6,7 @@
 
 That's Godot's full Forward+ renderer on Vulkan, in Windows, in a VM on Fedora. Nothing is passed through. The host never gives up the card, so my GNOME desktop keeps running on it the whole time.
 
-> **Status:** early. The first release is out, and everything's here, the Windows GPU part included. All of it has only run on my PC, on one RTX 5090. See [where this is at](#where-this-is-at).
+> **Status:** early. The first release is out, and everything's here, the Windows GPU part included. All of it has only run on my PC, on one RTX 5090. What works, what doesn't and what's next is in the [roadmap](https://github.com/xnixy/guesthouse/issues/2), which I keep up to date.
 
 ## Install
 
@@ -14,7 +14,7 @@ That's Godot's full Forward+ renderer on Vulkan, in Windows, in a VM on Fedora. 
 curl -fsSL https://raw.githubusercontent.com/xnixy/guesthouse/main/install.sh | sh
 ```
 
-It needs x86_64 Linux. For a GPU in a VM you need an NVIDIA card with the open kernel modules, and so far only the RTX 5090 has run this. On anything else it installs with plain VMs only, and says why. [What the installer does](#what-the-installer-does) has the details.
+It needs x86_64 Linux. For a GPU in a VM you need an NVIDIA card with the open kernel modules, and so far only the RTX 5090 has run this. The 40, 20 and 16 series get experimental support. On anything else it installs with plain VMs only, and says why. [What the installer does](#what-the-installer-does) has the details.
 
 ## Why I'm building this
 
@@ -179,29 +179,7 @@ What's still coming:
 
 ## What doesn't work yet
 
-I'd rather you hear this from me:
-
-- **It has only ever run on my PC, on an RTX 5090.** A clean clone does set itself up and pass its tests now, but that's still my machine and my card. The code on `main` also has experimental support for the 40, 20 and 16 series, with video off, and none of those has run on a real card yet. The 30 series is refused until someone sends a report. See #9.
-- **Drivers are tied together.** Linux and Windows have to come from the same NVIDIA branch, and a new branch means new work.
-- **`nvidia-smi` shows a nonsense number for memory in Windows.** The last time I looked, Task Manager didn't show the GPU either.
-- **Sunshine mostly doesn't work in a guest yet.** With the display driver in, it works through Windows Graphics Capture with software encoding, in a test with my own small receiver. Its default capture, Desktop Duplication, is unreliable here: Windows keeps losing it, and I don't know why yet. NVENC through Sunshine doesn't work, as it looks for NVIDIA's vendor ID and Windows reports Microsoft's. I haven't tried it with Moonlight. For now, don't do a default Sunshine install in a guest.
-- **I'm not sure about HDR yet.** It's a must for me. The app turns it on in Windows through the display driver, and in tests known colours arrive exact at up to 4K 240 Hz, with no frame lost. On my own monitors the colours aren't washed out, but I can't tell if it's as bright as it should be. The performance overlay will show that once #24 is fixed.
-- **OpenCL isn't set up in guests yet, and Direct3D 9 doesn't start.** The first needs a registry entry the guest scripts don't add yet. The second fails on any display in a guest.
-- **The first start can flash.** For a few seconds while the display driver goes in, the screen changes and nothing responds. Later starts don't do it.
-- **The viewer drops frames.** With the old viewer, at 144 Hz about 116 frames a second reached it, and about 90 at 4K. I haven't measured the new one yet. It also costs speed: Superposition scored 16,240 with it open, in one run.
-- **Several GPU VMs at once is early.** I've tested three Windows VMs together on one card, started by the app's own task program. Each one needs a video memory cap, and each sees only its own cap. They all stayed exact with Direct3D 12, Vulkan and OpenGL running at once, and when I killed one VM's QEMU, the others carried on and its memory came back. They share the card's speed fairly: a long test ran at about 4,000 frames a second alone and about 1,500 each with three. I haven't tested what a GPU fault in one VM does to the others, and I haven't tried it from the app's window.
-- **OpenGL can go wrong on very long lists.** Superposition in OpenGL now scores about 11,800, with the right picture, but OpenGL lists past 2,048 entries lose their oldest entries. I can bring them back when a list follows on from the one before it. When it doesn't, the queue stops rather than fault the GPU, so Godot's OpenGL renderer doesn't get through its heavy scene. See #6.
-- **A Windows password stops a start.** The app waits for the desktop, so if Windows asks for a password at logon, the start fails after about four minutes and the VM turns off. A machine the app installed logs on by itself.
-- **A build from source stays at about 64 Hz.** The display driver gets built in Windows, so a plain `cargo build` has none to install, and Windows stays on its basic display. A release carries the driver. To build it yourself, see `drivers/windows-display/BUILDING.md`.
-
-## What's next
-
-The full list, with what's already done, is in the [roadmap](https://github.com/xnixy/guesthouse/issues/2). The short version:
-
-1. Find the missing third of the speed
-2. Other NVIDIA cards. See #9
-3. Lock down Linux guests, and put jails around the daemon and QEMU
-4. Several GPU VMs at once from the app itself
+Quite a lot, and I'd rather you hear it from me. The list is in the [roadmap](https://github.com/xnixy/guesthouse/issues/2), under known problems, so it stays current without this page going stale. The biggest one: it has only ever run on my PC, on an RTX 5090. See [#9](https://github.com/xnixy/guesthouse/issues/9) if you'd like to help with other cards.
 
 ## Trying the code
 
