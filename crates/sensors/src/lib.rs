@@ -14,6 +14,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// A snapshot this old means the reading thread has stopped, so it is not used.
 pub const OLDEST_USABLE: Duration = Duration::from_secs(5);
+/// The file's layout. It is in the file's name, so a daemon and an app of different builds never
+/// read each other's fields as something else: each layout has a file, a lock and a reader of its own.
+pub const LAYOUT: u32 = 2;
 
 /// What was last read from the card. `None` is a value that couldn't be read.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -50,9 +53,20 @@ pub fn is_fresh(snapshot: &Snapshot, now: u64) -> bool {
     now.saturating_sub(snapshot.taken_at) <= OLDEST_USABLE.as_millis() as u64
 }
 
-/// The file for this user's readings.
+/// The file for this user's readings, in this layout.
 pub fn snapshot_path() -> PathBuf {
     // SAFETY: this asks for a number and can't fail.
     let user = unsafe { libc::getuid() };
-    PathBuf::from(format!("/dev/shm/gpupv-sensors-{user}"))
+    PathBuf::from(format!("/dev/shm/gpupv-sensors-{user}-{LAYOUT}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_layout_is_in_the_files_name() {
+        let name = snapshot_path().file_name().unwrap().to_string_lossy().into_owned();
+        assert!(name.ends_with(&format!("-{LAYOUT}")), "{name}");
+    }
 }
