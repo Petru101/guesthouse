@@ -8,6 +8,14 @@ That's Godot's full Forward+ renderer on Vulkan, in Windows, in a VM on Fedora. 
 
 > **Status:** early. The first release is out, and everything's here, the Windows GPU part included. All of it has only run on my PC, on one RTX 5090. See [where this is at](#where-this-is-at).
 
+## Install
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/xnixy/guesthouse/main/install.sh | sh
+```
+
+It needs x86_64 Linux. For a GPU in a VM you need an NVIDIA card with the open kernel modules, and so far only the RTX 5090 has run this. On anything else it installs with plain VMs only, and says why. [What the installer does](#what-the-installer-does) has the details.
+
 ## Why I'm building this
 
 If you want a proper GPU in a Windows VM on Linux, you normally get two options. You pass the whole card through with VFIO and the host loses it, or you buy a datacenter card and a vGPU licence.
@@ -200,11 +208,7 @@ With GTK 4.14, add `--no-default-features`: that leaves out HDR and nothing else
 
 [ARCHITECTURE.md](ARCHITECTURE.md) explains how the pieces fit, and [CONTRIBUTING.md](CONTRIBUTING.md) how to work on them.
 
-## Installing
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/xnixy/guesthouse/main/install.sh | sh
-```
+## What the installer does
 
 `install.sh` and `uninstall.sh` are at the top of this repo. They're plain `sh`, and they're meant to be read before you run them. Nothing runs until the last line, so a download that gets cut off does nothing. To read it first, download it, read it, and run it with `sh install.sh --dry-run`, which checks everything, shows the plan and stops.
 
