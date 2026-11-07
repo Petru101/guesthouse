@@ -12,7 +12,7 @@ mod ubuntu;
 pub use desktop::{apply_share, boots, rebooted};
 use desktop::{note_boot, set_up_desktop, wait_for_desktop};
 use gpu_check::check_gpu;
-use guest_files::place_driver_files;
+use guest_files::{place_driver_files, place_profile_store};
 use identity::{after_failed_gpu, set_up_identity};
 pub use install::{
     INSTALL_STEPS, answer_disc_path, answer_file, install, install_step, make_answer_disc, wait_for_setup,
@@ -177,6 +177,7 @@ fn get_ready(task: &mut Task) -> Result<()> {
     check_gpu(task).map_err(|failure| after_failed_gpu(task, failure))?;
     set_up_desktop(task)?;
     place_driver_files(task)?;
+    place_profile_store(task)?;
     set_up_identity(task);
     Ok(())
 }
