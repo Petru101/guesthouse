@@ -212,7 +212,18 @@ impl Rm for FakeRm {
             self.note_channel(object, self.next_token);
             return Ok(STATUS_OK);
         }
-        if command == super::classes::CONTROL_SCHEDULE_CHANNEL_GROUP {
+        if command == super::classes::CONTROL_SCHEDULE_CHANNEL_GROUP
+            || command == super::classes::CONTROL_DEFERRED_API
+        {
+            return Ok(STATUS_OK);
+        }
+        if command == super::classes::CONTROL_GET_CLASS_ENGINE {
+            let asked = u32::from_le_bytes(params[..4].try_into().expect("four bytes"));
+            let class = self.calls.iter().find_map(|call| match call {
+                Call::Alloc { handle, class, .. } if *handle == asked => Some(*class),
+                _ => None,
+            });
+            params[4..8].copy_from_slice(&class.unwrap_or(0).to_le_bytes());
             return Ok(STATUS_OK);
         }
         Ok(self.answers.get(&command).map_or(STATUS_NOT_SUPPORTED, |answer| answer(params)))

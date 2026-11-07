@@ -16,8 +16,9 @@ pub use list::{LIST_AREA, ListChannel, ListFull};
 use crate::profile::{Generation, HostBranch};
 use crate::pushbuffer::{increasing, ring_entry};
 use crate::rm::classes::{
-    CHANNEL_GROUP, CONTEXT_SHARE, CONTROL_GET_WORK_SUBMIT_TOKEN, CONTROL_SCHEDULE_CHANNEL_GROUP,
-    CONTROL_SET_TIMESLICE, ENGINE_COPY_0, ENGINE_GRAPHICS,
+    CHANNEL_GROUP, CONTEXT_SHARE, CONTROL_DEFERRED_API, CONTROL_GET_CLASS_ENGINE,
+    CONTROL_GET_WORK_SUBMIT_TOKEN, CONTROL_SCHEDULE_CHANNEL_GROUP, CONTROL_SET_TIMESLICE,
+    CONTROL_UPDATE_CHANNEL_INFO, DEFERRED_API, ENGINE_COPY_0, ENGINE_GRAPHICS,
 };
 use crate::rm::device::{AddressSpace, Device, Mapping};
 use crate::rm::{Handle, Rm, RmError};
@@ -46,6 +47,25 @@ const CHANNEL_PARAM_SHARE: usize = 0x18;
 pub(crate) const CHANNEL_PARAM_CONTROL_MEMORY: usize = 0x24;
 const CHANNEL_PARAM_CONTROL_OFFSET: usize = 0x48;
 pub(crate) const CHANNEL_PARAM_ENGINE: usize = 0x88;
+
+/// What a channel binds a software class with is not its class number but a number the RM gives
+/// the object, which this control tells.
+const CLASS_ENGINE_PARAMS: usize = 0x10;
+const CLASS_ENGINE_PARAM_OBJECT: usize = 0x00;
+const CLASS_ENGINE_PARAM_ID: usize = 0x04;
+
+/// A deferred control, with a channel move inside it.
+const DEFERRED_PARAMS: usize = 0x248;
+const DEFERRED_PARAM_HANDLE: usize = 0x00;
+const DEFERRED_PARAM_CONTROL: usize = 0x04;
+const DEFERRED_PARAM_CLIENT: usize = 0x0C;
+const DEFERRED_PARAM_DEVICE: usize = 0x10;
+const MOVE_PARAM_CLIENT: usize = 0x18;
+const MOVE_PARAM_CHANNEL: usize = 0x1C;
+const MOVE_PARAM_CONTROL_MEMORY: usize = 0x20;
+const MOVE_PARAM_RING_ENTRIES: usize = 0x24;
+const MOVE_PARAM_RING: usize = 0x28;
+const MOVE_PARAM_CONTROL_OFFSET: usize = 0x30;
 
 /// The subchannel the host's own methods use, with no object bound, as they are the channel's.
 pub(crate) const HOST_SUBCHANNEL: u32 = 6;
@@ -115,6 +135,9 @@ pub struct Channel {
     area_address: u64,
     memory: Handle,
     group: Handle,
+    channel: Handle,
+    /// The object that runs deferred controls, which graphics channels have.
+    deferred_api: Option<Handle>,
     token: u32,
     ring_entries: u32,
     /// The prelude's words that bind classes, which the invalidate follows.
@@ -196,8 +219,16 @@ impl Channel {
         put32(&mut params, CHANNEL_PARAM_ENGINE, engine_number);
         let channel = device.alloc(group, generation.channel_class, &mut params)?;
 
+        let mut deferred_api = None;
+        let mut bind_with = Vec::with_capacity(classes.len());
         for (class, params) in &mut classes {
-            device.alloc(channel, *class, params)?;
+            let object = device.alloc(channel, *class, params)?;
+            let mut binding = *class;
+            if *class == DEFERRED_API {
+                deferred_api = Some(object);
+                binding = class_engine_id(device, channel, object).unwrap_or(*class);
+            }
+            bind_with.push(binding);
         }
         let mut token = [0; 4];
         device.control(channel, CONTROL_GET_WORK_SUBMIT_TOKEN, &mut token)?;
@@ -213,8 +244,8 @@ impl Channel {
             Engine::Video(_) => VIDEO_SUBCHANNEL,
         };
         let mut words = Vec::with_capacity(classes.len() * 2);
-        for (subchannel, (class, _)) in (first..).zip(&classes) {
-            words.extend([increasing(subchannel, SET_OBJECT, 1), *class]);
+        for (subchannel, binding) in (first..).zip(bind_with) {
+            words.extend([increasing(subchannel, SET_OBJECT, 1), binding]);
         }
         let bind_words = words.len() as u32;
         // Last in the prelude, so that a channel's first submission has it as well.
@@ -226,6 +257,8 @@ impl Channel {
             area_address: place.area_address,
             memory,
             group,
+            channel,
+            deferred_api,
             token: u32::from_le_bytes(token),
             ring_entries: place.ring_entries,
             bind_words,
@@ -269,6 +302,38 @@ impl Channel {
         ring_entry(address, self.prelude_words - self.bind_words)
     }
 
+    /// Keeps a move to another ring for the GPU to make when this channel reaches the method
+    /// that names it, which the guest's driver puts at the end of the old ring. `handle` is what the
+    /// driver was given for the new ring, and the move goes once it has run.
+    pub fn register_move<R: Rm>(
+        &self,
+        device: &mut Device<R>,
+        handle: Handle,
+        ring_address: u64,
+        ring_entries: u32,
+    ) -> Result<(), RmError> {
+        let Some(deferred_api) = self.deferred_api else {
+            return Err(RmError::System("this channel runs no deferred controls".into()));
+        };
+        let mut params = vec![0; DEFERRED_PARAMS];
+        put32(&mut params, DEFERRED_PARAM_HANDLE, handle);
+        put32(&mut params, DEFERRED_PARAM_CONTROL, CONTROL_UPDATE_CHANNEL_INFO);
+        put32(&mut params, DEFERRED_PARAM_CLIENT, device.client);
+        put32(&mut params, DEFERRED_PARAM_DEVICE, device.device);
+        put32(&mut params, MOVE_PARAM_CLIENT, device.client);
+        put32(&mut params, MOVE_PARAM_CHANNEL, self.channel);
+        put32(&mut params, MOVE_PARAM_CONTROL_MEMORY, self.memory);
+        put32(&mut params, MOVE_PARAM_RING_ENTRIES, ring_entries);
+        put64(&mut params, MOVE_PARAM_RING, ring_address);
+        put64(&mut params, MOVE_PARAM_CONTROL_OFFSET, CONTROL_BLOCK as u64);
+        device.control(deferred_api, CONTROL_DEFERRED_API, &mut params)
+    }
+
+    /// Positions count on the new ring from now on.
+    pub fn follow_ring(&mut self, ring_entries: u32) {
+        self.ring_entries = ring_entries;
+    }
+
     /// Tells the GPU the ring is filled up to `position`. This is what starts commands.
     pub fn advance<R: Rm>(&self, device: &mut Device<R>, position: u32) {
         // One store. If the GPU read a half-written field it could take the ring as wrapped, and
@@ -282,6 +347,19 @@ impl Channel {
         device.free(self.group)?;
         device.unmap(space, self.memory, self.area_address, self.area.size() as u64)?;
         device.free(self.memory)
+    }
+}
+
+/// What binds an object to a subchannel.
+fn class_engine_id<R: Rm>(device: &mut Device<R>, channel: Handle, object: Handle) -> Option<u32> {
+    let mut params = [0; CLASS_ENGINE_PARAMS];
+    put32(&mut params, CLASS_ENGINE_PARAM_OBJECT, object);
+    match device.control(channel, CONTROL_GET_CLASS_ENGINE, &mut params) {
+        Ok(()) => Some(u32::from_le_bytes(params[CLASS_ENGINE_PARAM_ID..CLASS_ENGINE_PARAM_ID + 4].try_into().ok()?)),
+        Err(error) => {
+            log::debug!("an object binds by its class, as the RM gave no number: {error}");
+            None
+        }
     }
 }
 
@@ -320,6 +398,35 @@ mod tests {
 
     fn channel(device: &mut Device<FakeRm>, space: &AddressSpace, engine: Engine) -> Channel {
         Channel::new(device, &BLACKWELL, &HOST_615, space, place(), engine).unwrap()
+    }
+
+    #[test]
+    fn a_move_is_a_deferred_control_naming_the_handle_and_the_new_ring() {
+        let (mut device, space) = device();
+        let channel = channel(&mut device, &space, Engine::Graphics);
+        channel.register_move(&mut device, 0xC1D0_0042, 0xA00_0000, 0x1_0000).unwrap();
+        let Some(Call::Control { object, command, params }) = device.rm.calls.last() else {
+            panic!("no control was sent");
+        };
+        assert_eq!(*object, channel.deferred_api.unwrap());
+        assert_eq!(*command, CONTROL_DEFERRED_API);
+        assert_eq!(params.len(), DEFERRED_PARAMS);
+        let word = |at: usize| u32::from_le_bytes(params[at..at + 4].try_into().unwrap());
+        let long = |at: usize| u64::from_le_bytes(params[at..at + 8].try_into().unwrap());
+        assert_eq!(word(DEFERRED_PARAM_HANDLE), 0xC1D0_0042);
+        assert_eq!(word(DEFERRED_PARAM_CONTROL), CONTROL_UPDATE_CHANNEL_INFO);
+        assert_eq!(word(MOVE_PARAM_CHANNEL), channel.channel);
+        assert_eq!(word(MOVE_PARAM_CONTROL_MEMORY), channel.memory);
+        assert_eq!(word(MOVE_PARAM_RING_ENTRIES), 0x1_0000);
+        assert_eq!(long(MOVE_PARAM_RING), 0xA00_0000);
+        assert_eq!(long(MOVE_PARAM_CONTROL_OFFSET), CONTROL_BLOCK as u64);
+    }
+
+    #[test]
+    fn a_copy_channel_has_no_move_to_offer() {
+        let (mut device, space) = device();
+        let channel = channel(&mut device, &space, Engine::Copy);
+        assert!(channel.register_move(&mut device, 1, 0xA00_0000, 0x1_0000).is_err());
     }
 
     #[test]
