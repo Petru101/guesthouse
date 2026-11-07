@@ -225,7 +225,8 @@ fn task_with_room(arguments: &[String]) {
     context.meminfo = env::var_os(MEMINFO_VARIABLE).unwrap().into();
     context.ram_limit = Some(PLENTY_OF_GIB);
     context.reserve_memory = |_, _| Ok(());
-    run_task(&context, &LocalHost { context: &context }, action, machine, rest);
+    // The flow reads each task's file, as the app does, so the exit code is left to the real task.
+    let _ = run_task(&context, &LocalHost { context: &context }, action, machine, rest);
 }
 
 fn main() {

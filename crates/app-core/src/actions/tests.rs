@@ -295,7 +295,8 @@ fn a_task_that_cannot_load_its_machine_says_so() {
     let context = scratch_context(&scratch);
     fs::create_dir_all(context.run_folder(None)).unwrap();
     let host = RecordingHost::default();
-    run_task(&context, &host, "start", "no-such-machine", &[]);
+    let result = run_task(&context, &host, "start", "no-such-machine", &[]);
+    assert!(result.is_err_and(|error| error.0.contains("Could not read")));
     let found = status(&context, &Machine::new("no-such-machine", "x", "/d", "/v"));
     assert!(found.error.contains("Could not read") && !found.busy, "{found:?}");
 }
@@ -307,7 +308,8 @@ fn a_task_leaves_its_error_and_clears_its_pid() {
     fs::create_dir_all(context.run_folder(None)).unwrap();
     let vm = machine(&context);
     let host = RecordingHost::default();
-    run_task(&context, &host, "no-such-action", &vm.id, &[]);
+    let result = run_task(&context, &host, "no-such-action", &vm.id, &[]);
+    assert!(result.is_err_and(|error| error.0.contains("no action")));
     let record = read_task(&context, None);
     assert_eq!(record.pid, 0);
     assert!(record.error.contains("no action"));
