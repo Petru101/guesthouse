@@ -1,21 +1,14 @@
-//! Whether this PC's screen can show HDR. A task has no display, so the app finds out and leaves the
-//! answer in its settings. GDK can't say whether a monitor is in HDR, so this asks Mutter. On a desktop
-//! with no Mutter nobody can say, and that means SDR.
+//! Asking Mutter over D-Bus, for a GNOME whose Mutter doesn't offer the colour management protocol.
 
 use super::Window;
-use crate::viewer::takes_hdr_frames;
-use adw::prelude::*;
 use gtk::{gio, glib};
-use guesthouse_app_core::display::{SCREEN_HDR_PREF, ScreenHdr};
-use serde_json::json;
+use guesthouse_app_core::display::ScreenHdr;
 
 const BUS_NAME: &str = "org.gnome.Mutter.DisplayConfig";
 const OBJECT_PATH: &str = "/org/gnome/Mutter/DisplayConfig";
 const CALL_MILLISECONDS: i32 = 2000;
 const COLOUR_MODE: &str = "color-mode";
 const COLOUR_MODE_BT2100: u32 = 1;
-/// Says yes or no for a compositor that can't, such as a headless one.
-const OVERRIDE_VARIABLE: &str = "GUESTHOUSE_SCREEN_HDR";
 /// Where the monitors are in Mutter's reply, and where each one's properties are.
 const MONITORS_AT: usize = 1;
 const PROPERTIES_AT: usize = 2;
@@ -53,44 +46,31 @@ fn answer_from(reply: Option<&glib::Variant>) -> ScreenHdr {
     }
 }
 
-impl Window {
-    fn remember_screen_hdr(&self, answer: ScreenHdr) {
-        self.remember(json!({SCREEN_HDR_PREF: answer.word()}));
-    }
-
-    /// Finds out, and leaves the answer for the next task.
-    pub fn note_screen_hdr(&self) {
-        if let Ok(said) = std::env::var(OVERRIDE_VARIABLE) {
-            self.remember_screen_hdr(if said == "1" { ScreenHdr::Shows } else { ScreenHdr::Cannot });
-            return;
-        }
-        if !takes_hdr_frames(&WidgetExt::display(self.widget())) {
-            self.remember_screen_hdr(ScreenHdr::Cannot);
-            return;
-        }
-        let Ok(bus) = gio::bus_get_sync(gio::BusType::Session, gio::Cancellable::NONE) else {
-            self.remember_screen_hdr(ScreenHdr::CantTell);
-            return;
-        };
-        let this = self.clone();
-        bus.call(
-            Some(BUS_NAME),
-            OBJECT_PATH,
-            BUS_NAME,
-            "GetCurrentState",
-            None,
-            None,
-            gio::DBusCallFlags::NONE,
-            CALL_MILLISECONDS,
-            gio::Cancellable::NONE,
-            move |reply| this.remember_screen_hdr(answer_from(reply.ok().as_ref())),
-        );
-    }
+/// Asks, and leaves the answer when it comes. Without Mutter nobody can say, and that means SDR.
+pub fn ask(window: &Window) {
+    let Ok(bus) = gio::bus_get_sync(gio::BusType::Session, gio::Cancellable::NONE) else {
+        window.remember_screen_hdr(ScreenHdr::CantTell);
+        return;
+    };
+    let window = window.clone();
+    bus.call(
+        Some(BUS_NAME),
+        OBJECT_PATH,
+        BUS_NAME,
+        "GetCurrentState",
+        None,
+        None,
+        gio::DBusCallFlags::NONE,
+        CALL_MILLISECONDS,
+        gio::Cancellable::NONE,
+        move |reply| window.remember_screen_hdr(answer_from(reply.ok().as_ref())),
+    );
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gtk::prelude::*;
     use std::collections::HashMap;
 
     fn monitor(colour_mode: Option<u32>) -> glib::Variant {

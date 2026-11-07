@@ -28,11 +28,11 @@ async-channel = "2"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 # The slot type that names a VM.
 guesthouse-daemon.workspace = true
-# Locking the pointer: GTK has no API for the two Wayland protocols it takes, so they're used directly,
-# on GTK's own connection.
+# Locking the pointer, and asking whether a monitor is in HDR: GTK has no API for the Wayland
+# protocols these take, so they're used directly, on GTK's own connection.
 gdk-wayland = { package = "gdk4-wayland", version = "0.11", features = ["wayland_crate"] }
 wayland-client = "0.31"
-wayland-protocols = { version = "0.32", features = ["client", "unstable"] }
+wayland-protocols = { version = "0.32", features = ["client", "staging", "unstable"] }
 # How frames arrive.
 guesthouse-frame-socket.workspace = true
 # Reading a shared buffer and passing QEMU a socket, without `unsafe`.
