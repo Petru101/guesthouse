@@ -1,6 +1,10 @@
 //! The guest's processes on the card, for the vendor's own tools. Two controls ask: one for the
 //! PIDs, one for what each holds. Both are answered from the core's books and never reach the RM,
 //! so a guest hears of its own processes and no other's. The layouts are the public headers'.
+//!
+//! The PIDs are asked for by class, to sort processes into compute and graphics. The books don't
+//! say which objects a process holds, only its memory, so the list is the same whatever class is
+//! asked about, and a tool marks every process as both.
 
 use super::{get, put};
 use guesthouse_backend::ProcessMemory;
