@@ -254,7 +254,7 @@ fn copy_program(from: &Path, to: PathBuf) {
 /// Where this test's own tasks read the host's memory figures. Only this program knows it.
 const MEMINFO_VARIABLE: &str = "FLOW_MEMINFO";
 /// Enough for the test's machine however busy the PC is.
-const PLENTY_OF_MEMORY: &str = "MemAvailable: 67108864 kB\n";
+const PLENTY_OF_MEMORY: &str = "MemTotal: 67108864 kB\nMemAvailable: 67108864 kB\n";
 const PLENTY_OF_GIB: u64 = 64;
 
 fn outer() {

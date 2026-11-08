@@ -71,7 +71,7 @@ pub fn shared_problems(machine: &Machine, others: &[Machine], facts: &SharedFact
     }
     let mut found = Vec::new();
     // RAM they haven't touched yet will still come out of the same tmpfs. Their IO windows count as
-    // far as they have gone: reserving 8 GiB each would stop two 16 GiB guests on a 46 GiB tmpfs.
+    // far as they have gone.
     let reserved: u64 =
         others.iter().filter(|other| other.has_gpu()).map(|other| u64::from(other.ram_gib)).sum();
     let untouched = reserved.saturating_sub(facts.touched_gib);
@@ -287,7 +287,8 @@ mod tests {
     fn startable(scratch: &Scratch) -> (Context, Machine) {
         let mut context = scratch_context(scratch);
         context.cpus = fake_cpus(scratch, "cpus", &[32768; 16]);
-        context.meminfo = scratch.write("meminfo", "MemAvailable:   100000000 kB\n");
+        context.meminfo =
+            scratch.write("meminfo", "MemTotal:       100000000 kB\nMemAvailable:   100000000 kB\n");
         let disk = scratch.write("disk", "").display().to_string();
         let vars = scratch.write("vars", "").display().to_string();
         let machine = Machine { kind: Kind::Plain, ..Machine::new("vm", "VM", &disk, &vars) };

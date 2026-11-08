@@ -294,7 +294,8 @@ mod tests {
         let scratch = Scratch::new();
         let mut context = scratch_context(&scratch);
         context.cpus = crate::host::stand_in::fake_cpus(&scratch, "cpus", &[32768; 8]);
-        context.meminfo = scratch.write("meminfo", "MemAvailable:   100000000 kB\n");
+        context.meminfo =
+            scratch.write("meminfo", "MemTotal:       100000000 kB\nMemAvailable:   100000000 kB\n");
         let listener = std::net::TcpListener::bind(("127.0.0.1", ssh_port(context.slot)));
         let host = RecordingHost::default();
         let mut task = Task::new(&context, &host, "start", ubuntu(&context));
@@ -379,7 +380,8 @@ mod tests {
         let scratch = Scratch::new();
         let mut context = scratch_context(&scratch);
         context.cpus = crate::host::stand_in::fake_cpus(&scratch, "cpus", &[32768; 8]);
-        context.meminfo = scratch.write("meminfo", "MemAvailable:   100000000 kB\n");
+        context.meminfo =
+            scratch.write("meminfo", "MemTotal:       100000000 kB\nMemAvailable:   100000000 kB\n");
         let iso = crate::iso::stand_in::make_iso(&scratch, "other", &[("boot/grub.cfg", b"linux")]);
         let vm = Machine { installing: true, iso, ..ubuntu(&context) };
         let host = RecordingHost::default();

@@ -80,7 +80,8 @@ pub(super) fn with_vm_running(context: &Context) {
 pub(super) fn plain_task_context(scratch: &Scratch) -> Context {
     let mut context = scratch_context(scratch);
     context.cpus = crate::host::stand_in::fake_cpus(scratch, "cpus", &[32768; 16]);
-    context.meminfo = scratch.write("meminfo", "MemAvailable:   100000000 kB\n");
+    context.meminfo =
+        scratch.write("meminfo", "MemTotal:       100000000 kB\nMemAvailable:   100000000 kB\n");
     context.clock = Arc::new(FakeClock::default());
     context
 }
