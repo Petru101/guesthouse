@@ -7,9 +7,9 @@ use guesthouse_backend::{
     Backend, BackendError, GuestBooks, GuestMemory, ProcessMemory, RegistryName, VendorQuery, VideoMemoryUse,
 };
 use guesthouse_messages::adapter::{
-    ASYNC_MESSAGES, AdapterQuery, CapsQuery, DRIVER_MODEL_NUMBER, DisplayMode, IdentityAnswer, SetIoSpace,
-    adapter_identity, description_answer, driver_caps, node_description, node_of, physical_adapter_ids,
-    segment_sizes,
+    ASYNC_MESSAGES, AdapterQuery, CapsQuery, DRIVER_MODEL_NUMBER, DisplayMode, FLIP_QUEUE_ANSWER_SIZE,
+    IdentityAnswer, SetIoSpace, adapter_identity, description_answer, driver_caps, flip_queue,
+    node_description, node_of, physical_adapter_ids, segment_sizes,
 };
 use guesthouse_messages::address::{memory_answer, memory_group};
 use guesthouse_messages::indirect;
@@ -180,6 +180,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
                 let dedicated = limits.video_cap.unwrap_or(facts.video_memory);
                 segment_sizes(dedicated, limits.system_budget, out);
             }
+            AdapterQuery::FLIP_QUEUE if query.size == FLIP_QUEUE_ANSWER_SIZE => flip_queue(out),
             AdapterQuery::DRIVER_MODEL | AdapterQuery::DRIVER_MODEL_FOR_RENDER => {
                 put_u32(out, DRIVER_MODEL_NUMBER)
             }

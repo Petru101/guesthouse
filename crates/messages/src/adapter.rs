@@ -195,6 +195,7 @@ pub struct AdapterQuery<'a> {
 
 impl<'a> AdapterQuery<'a> {
     pub const SEGMENT_SIZES: u32 = 3;
+    pub const FLIP_QUEUE: u32 = 5;
     pub const CURRENT_DISPLAY_MODE: u32 = 9;
     pub const DRIVER_MODEL: u32 = 13;
     pub const DIRECT_FLIP: u32 = 19;
@@ -266,6 +267,19 @@ pub fn physical_adapter_ids(vendor: u16, device: u16, revision: u8, out: &mut Ve
     }
 }
 
+/// The flip queue answer's size: hardware queue length, software queue length and flags.
+pub const FLIP_QUEUE_ANSWER_SIZE: usize = 3 * size_of::<u32>();
+/// The longest software flip queue Windows allows.
+const SOFTWARE_FLIP_QUEUE: u32 = 31;
+
+/// What Windows answers for an adapter whose caps claim no flip features, as the caps above don't.
+/// Direct3D 9 refuses the adapter without it.
+pub fn flip_queue(out: &mut Vec<u8>) {
+    for field in [0, SOFTWARE_FLIP_QUEUE, 0] {
+        put_u32(out, field);
+    }
+}
+
 pub fn segment_sizes(dedicated: u64, shared: u64, out: &mut Vec<u8>) {
     put_u64(out, dedicated);
     put_u64(out, 0);
@@ -315,6 +329,14 @@ mod tests {
         assert_eq!(out.len(), 16 + 8 + 160 + 520 + 8);
         let id = crate::wire::utf16_until_zero(&out[184..]);
         assert_eq!(id, "PCI\\VEN_1234&DEV_ABCD");
+    }
+
+    #[test]
+    fn the_flip_queue_is_software_only() {
+        let mut out = Vec::new();
+        flip_queue(&mut out);
+        assert_eq!(out.len(), FLIP_QUEUE_ANSWER_SIZE);
+        assert_eq!((u32_at(&out, 0), u32_at(&out, 4), u32_at(&out, 8)), (Ok(0), Ok(31), Ok(0)));
     }
 
     #[test]
