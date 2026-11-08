@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 /* The one device, its one virtual monitor, and what nvidia-drm reads about them. */
+#include "kernel_compat.h"
 #include "standin.h"
 
 const struct NvKmsKapiCallbacks *callbacks;
