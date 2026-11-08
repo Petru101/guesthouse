@@ -12,7 +12,7 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 
 const PRIVATE_FILE: u32 = 0o600;
-const NO_ROOM_WORDS: &str = "GiB is free";
+pub const NO_ROOM_WORDS: &str = "GiB is free";
 
 /// Whether a failed start was only for want of memory.
 pub fn is_no_room(failure: &Failure) -> bool {

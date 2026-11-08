@@ -27,7 +27,7 @@ use crate::disk_image::disk_size_gib;
 use crate::failure::{Failure, Result};
 use crate::gpu_identity::{PciIdentity, read_state};
 use crate::guest_memory::is_no_room;
-use crate::host::{cpu_list, host_ram_limit, ram_limit_for, vcache_cpus};
+use crate::host::{GIB, cpu_list, fits_now, ram_limit_for, vcache_cpus};
 use crate::library::MAX_DISK_GIB;
 use crate::log::{clock_text, write_log};
 use crate::machine::{Kind, Machine, load};
@@ -125,12 +125,12 @@ pub fn plan_for(context: &Context, machine: &Machine, boot: Boot) -> VmPlan {
     plan
 }
 
-/// A VM's memory comes back a few seconds after it stops, once the daemon has really gone.
+/// A VM's memory comes back a few seconds after it stops, once the daemon has really gone. If it's
+/// still short after that, the start says so.
 fn wait_for_memory(task: &Task) {
     let end = task.now() + MEMORY_WAIT;
-    while host_ram_limit(task.context).is_ok_and(|limit| u64::from(task.machine.ram_gib) > limit)
-        && task.now() < end
-    {
+    let ram = u64::from(task.machine.ram_gib) * GIB;
+    while fits_now(task.context, ram).is_some() && task.now() < end {
         task.sleep(KEY_POLL);
     }
 }
@@ -145,6 +145,11 @@ pub fn start(task: &mut Task) -> Result<()> {
     }
     if let Some(problem) = start_problems(task.context, &machine)?.into_iter().next() {
         return Err(Failure(problem));
+    }
+    if machine.has_gpu()
+        && let Some(short) = fits_now(task.context, u64::from(machine.ram_gib) * GIB)
+    {
+        return Err(Failure(short));
     }
     if !machine.has_gpu() {
         task.step("Starting the VM");

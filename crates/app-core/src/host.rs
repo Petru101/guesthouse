@@ -2,6 +2,7 @@
 
 use crate::context::Context;
 use crate::failure::Result;
+use crate::guest_memory::NO_ROOM_WORDS;
 use crate::machine::{Machine, sorted_names};
 use crate::slots;
 use guesthouse_daemon::slot::Slot;
@@ -25,6 +26,9 @@ const HOST_SHARE_DIVISOR: u64 = 4;
 pub const HOST_KEEPS_LEAST_GIB: u64 = 6;
 /// What the host always kept, which on a large PC is plenty.
 pub const HOST_KEEPS_MOST_GIB: u64 = 16;
+/// What has to stay free when a GPU machine starts, beside its RAM and IO space, so the host isn't left
+/// with nothing the moment the guest's RAM is claimed.
+pub const FREE_AT_START_GIB: u64 = 2;
 const KIB: u64 = 1024;
 /// The files QEMU keeps in shared memory.
 pub const QEMU_FILES: [&str; 2] = ["ram", "iomem"];
@@ -149,6 +153,29 @@ pub fn ram_offer(context: &Context, slot: Slot) -> Result<RamOffer> {
     Ok(RamOffer::new(size, size - free, ours, total_ram(context), others))
 }
 
+/// Whether `ram_bytes` of guest RAM fits in what's really free now. The page cache and the programs
+/// open move that from one moment to the next, so it's only asked at a start. `None` is yes, and
+/// otherwise it says what's short and what to do.
+pub fn fits_now(context: &Context, ram_bytes: u64) -> Option<String> {
+    if context.ram_limit.is_some_and(|limit| ram_bytes <= limit * GIB) {
+        return None;
+    }
+    let available = available_ram(context);
+    let needed = ram_bytes + (IO_SPACE_GIB + FREE_AT_START_GIB) * GIB;
+    (needed > available).then(|| short_now(ram_bytes, available))
+}
+
+fn short_now(ram_bytes: u64, available: u64) -> String {
+    format!(
+        "This machine needs {} GiB of RAM, and {} {NO_ROOM_WORDS} right now, with {} GiB of that kept for the \
+         GPU and the PC. Close some programs, like a browser or a game, or stop another VM, and start it \
+         again. Or give it less RAM.",
+        ram_bytes.div_ceil(GIB),
+        available / GIB,
+        IO_SPACE_GIB + FREE_AT_START_GIB,
+    )
+}
+
 /// The most RAM a GPU machine can have.
 pub fn host_ram_limit(context: &Context) -> Result<u64> {
     match context.ram_limit {
@@ -254,6 +281,23 @@ mod tests {
         );
         assert_eq!(RamOffer::new(46 * GIB, 0, 0, 40 * GIB, 0).limit_gib(), 28, "the host keeps its share");
         assert_eq!(usual(sold_with(8)).limit_gib(), 0);
+    }
+
+    #[test]
+    fn a_start_is_checked_against_what_is_free_then() {
+        let scratch = Scratch::new();
+        let mut context = crate::testing::scratch_context(&scratch);
+        context.ram_limit = None;
+        context.meminfo = scratch.write("meminfo", "MemTotal: 31457280 kB\nMemAvailable: 26214400 kB\n");
+        assert_eq!(fits_now(&context, 12 * GIB), None);
+        assert_eq!(fits_now(&context, 21 * GIB), None, "25 GiB free holds 21 with 4 to spare");
+        let short = fits_now(&context, 22 * GIB).unwrap();
+        assert!(
+            short.starts_with("This machine needs 22 GiB of RAM, and 25 GiB is free right now"),
+            "{short}"
+        );
+        assert!(short.contains("Close some programs"), "{short}");
+        assert!(crate::guest_memory::is_no_room(&crate::Failure(short)));
     }
 
     #[test]
