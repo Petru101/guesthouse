@@ -205,7 +205,7 @@ fn machine(scratch: &Scratch, id: &str) -> Machine {
 }
 
 fn pid_in(file: &Path) -> Option<u32> {
-    fs::read_to_string(file).ok()?.trim().parse().ok()
+    fs::read_to_string(file).ok()?.split_whitespace().next()?.parse().ok()
 }
 
 /// passt quits once its one client, QEMU, has gone.

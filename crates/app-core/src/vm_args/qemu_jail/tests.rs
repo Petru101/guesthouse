@@ -136,11 +136,11 @@ fn passt_is_started_by_the_launcher_and_qemu_gets_its_end() {
     let passt = command.iter().position(|word| word == "--passt").unwrap();
     assert!(command[passt + 1].ends_with("passt"));
     assert_eq!(command[passt + 2], PASST_FD.to_string());
+    assert_eq!(command[passt + 3], plan.run_folder.join(PASST_PID_FILE).display().to_string());
     let passt_words: Vec<&str> =
         command.windows(2).filter(|two| two[0] == "--passt-word").map(|two| two[1].as_str()).collect();
     assert_eq!(passt_words[..3], ["--quiet", "--mtu", "1500"]);
-    let pid_file = plan.run_folder.join(PASST_PID_FILE).display().to_string();
-    assert!(passt_words.windows(2).any(|two| two == ["--pid", pid_file.as_str()]), "{passt_words:?}");
+    assert!(!passt_words.contains(&"--pid"), "passt may not write in the run folder: {passt_words:?}");
     let arguments = plan.qemu_arguments();
     assert!(arguments.iter().any(|word| *word == format!("socket,model=e1000e,fd={PASST_FD}")));
     assert!(arguments.ends_with(&["-sandbox".to_owned(), QEMU_SANDBOX.to_owned()]), "its own filter too");

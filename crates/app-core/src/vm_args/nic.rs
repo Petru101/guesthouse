@@ -19,8 +19,8 @@ const PASST_NETWORK: [(&str, &str); 7] = [
 ];
 /// passt tells nothing but what goes wrong.
 const PASST_QUIET: &str = "--quiet";
-const PASST_PID_WORD: &str = "--pid";
-/// Where passt writes its pid, in the run folder, so it can be found like QEMU.
+/// Where the jail's launcher notes passt's pid and start time, in the run folder, so it can be found
+/// like QEMU.
 pub const PASST_PID_FILE: &str = "passt.pid";
 
 impl VmPlan {
@@ -39,8 +39,6 @@ impl VmPlan {
         for (name, value) in self.passt_settings() {
             words.extend([format!("--{name}"), value]);
         }
-        let pid_file = self.run_folder.join(PASST_PID_FILE);
-        words.extend([PASST_PID_WORD.to_owned(), pid_file.display().to_string()]);
         words
     }
 

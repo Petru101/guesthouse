@@ -138,26 +138,22 @@ fn bridged_device() {
 const PASST_VARIABLE: &str = "JAIL_TEST_PASST";
 const PASST_AT: i32 = 11;
 
-/// Stands in for passt: checks its words, then leaves a copy of itself in the background that
-/// answers one message on the socket it was given, as passt does once it's ready.
+/// Stands in for passt: checks its words, then answers one message on the socket it was given.
 fn pretend_passt() {
     let arguments: Vec<String> = env::args().skip(1).collect();
-    assert_eq!(arguments[..2], ["--quiet", "--one"]);
-    assert_eq!(arguments[2], "--fd");
-    let socket: i32 = arguments[3].parse().unwrap();
-    // SAFETY: one thread, and the child only reads, writes and exits.
-    if unsafe { libc::fork() } == 0 {
-        let mut message = [0u8; 4];
-        let read = unsafe { libc::read(socket, message.as_mut_ptr().cast(), message.len()) };
-        unsafe { libc::write(socket, message.as_ptr().cast(), read as usize) };
-        unsafe { libc::_exit(0) };
-    }
+    assert_eq!(arguments[..4], ["--quiet", "--one", "--foreground", "--fd"]);
+    let socket: i32 = arguments[4].parse().unwrap();
+    let mut message = [0u8; 4];
+    let read = unsafe { libc::read(socket, message.as_mut_ptr().cast(), message.len()) };
+    unsafe { libc::write(socket, message.as_ptr().cast(), read as usize) };
 }
 
 fn passt_connection() {
+    let pid_file = folder().join("passt.pid");
     let passt = Passt {
         program: env::current_exe().unwrap(),
         fd: PASST_AT,
+        pid_file: pid_file.clone(),
         words: vec!["--quiet".into(), "--one".into()],
     };
     // SAFETY: the variable is set before any thread exists.
@@ -170,6 +166,11 @@ fn passt_connection() {
     let mut answer = [0u8; 4];
     let read = unsafe { libc::read(PASST_AT, answer.as_mut_ptr().cast(), 4) };
     assert_eq!((read, &answer), (4, b"ping"), "passt's end is the other end of QEMU's");
+    let noted = fs::read_to_string(pid_file).unwrap();
+    let (pid, started) = noted.trim().split_once(' ').unwrap();
+    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default();
+    let still = guesthouse_jail::launch::start_time(&stat).map(|time| time.to_string());
+    assert!(still.is_none() || still.as_deref() == Some(started), "{noted} is passt's");
 }
 
 fn qemu_with_no_new_unix_sockets() {

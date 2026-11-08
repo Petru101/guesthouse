@@ -1,10 +1,11 @@
-//! `guesthouse-jail PLAN [--passt PROGRAM FD [--passt-word WORD]...] [--tap HELPER BRIDGE FD]
-//! -- PROGRAM ARGUMENTS`: puts itself in the jail the plan describes, with
+//! `guesthouse-jail PLAN [--passt PROGRAM FD PID_FILE [--passt-word WORD]...]
+//! [--tap HELPER BRIDGE FD] -- PROGRAM ARGUMENTS`: puts itself in the jail the plan describes, with
 //! QEMU's filter, and becomes the program. The jail carries across the exec, so the program can't
 //! leave it.
 //!
 //! `--passt` starts passt first, outside the jail, as it builds a sandbox of its own that can't be
-//! made inside one, and leaves the other end of its connection open at `FD`. `--tap` gets a bridged
+//! made inside one, and leaves the other end of its connection open at `FD`. Its pid and start time
+//! go in `PID_FILE`. `--tap` gets a bridged
 //! network's device from QEMU's setuid helper first, as a helper can't gain its privileges once the
 //! jail is on. The device is left open at `FD` for the program.
 //!
@@ -16,7 +17,7 @@ mod handover;
 mod passt;
 mod tap;
 
-pub use passt::start as start_passt;
+pub use passt::{start as start_passt, start_time};
 pub use tap::open as open_tap;
 
 use crate::seccomp::{self, Threads};
@@ -58,6 +59,7 @@ pub struct Tap {
 pub struct Passt {
     pub program: PathBuf,
     pub fd: i32,
+    pub pid_file: PathBuf,
     pub words: Vec<String>,
 }
 
@@ -82,7 +84,12 @@ impl Launch {
             None => vec![OPEN_ONLY.to_owned()],
         };
         if let Some(passt) = &self.passt {
-            words.extend([PASST.to_owned(), passt.program.display().to_string(), passt.fd.to_string()]);
+            words.extend([
+                PASST.to_owned(),
+                passt.program.display().to_string(),
+                passt.fd.to_string(),
+                passt.pid_file.display().to_string(),
+            ]);
             for word in &passt.words {
                 words.extend([PASST_WORD.to_owned(), word.clone()]);
             }
@@ -126,10 +133,11 @@ impl Launch {
                 END_OF_PLAN => break,
                 OPEN_ONLY => launch.plan = None,
                 PASST => {
-                    let (program, fd) = (next(PASST)?, next(PASST)?);
+                    let (program, fd, pid_file) = (next(PASST)?, next(PASST)?, next(PASST)?);
                     let fd =
                         fd.parse().map_err(|_| format!("{PASST} needs a descriptor number, not {fd:?}"))?;
-                    launch.passt = Some(Passt { program: program.into(), fd, words: Vec::new() });
+                    let pid_file = pid_file.into();
+                    launch.passt = Some(Passt { program: program.into(), fd, pid_file, words: Vec::new() });
                 }
                 PASST_WORD => {
                     let word = next(PASST_WORD)?;
@@ -227,7 +235,8 @@ mod tests {
             passt: Some(Passt {
                 program: "/usr/bin/passt".into(),
                 fd: 11,
-                words: ["--quiet", "--pid", "/r/passt.pid"].map(str::to_owned).to_vec(),
+                pid_file: "/r/passt.pid".into(),
+                words: ["--quiet", "--mtu", "1500"].map(str::to_owned).to_vec(),
             }),
             tap: Some(Tap { helper: "/usr/libexec/qemu-bridge-helper".into(), bridge: "br0".into(), fd: 3 }),
             unix_sockets: vec![UnixSocket { path: "/r/qmp.sock".into(), fd: 20, listen: true }],

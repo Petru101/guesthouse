@@ -235,7 +235,8 @@ fn inner() {
         on_passt.save(&context).unwrap();
         start_and_stop(&context, &on_passt);
         let pid_file = context.run_folder(None).join(PASST_PID_FILE);
-        let passt: u32 = fs::read_to_string(pid_file).unwrap().trim().parse().unwrap();
+        let noted = fs::read_to_string(pid_file).unwrap();
+        let passt: u32 = noted.split_whitespace().next().unwrap().parse().unwrap();
         assert!(!Path::new(&format!("/proc/{passt}")).exists(), "passt went with QEMU");
         println!("passt went with QEMU");
     }

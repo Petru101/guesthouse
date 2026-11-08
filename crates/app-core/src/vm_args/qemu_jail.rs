@@ -184,6 +184,7 @@ impl VmPlan {
         (self.network.mode == Mode::Nat && self.network.passt).then(|| Passt {
             program: super::program_on_path(PASST).unwrap_or_else(|| PASST.into()),
             fd: PASST_FD,
+            pid_file: self.run_folder.join(super::PASST_PID_FILE),
             words: self.passt_words(),
         })
     }
