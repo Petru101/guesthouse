@@ -2,14 +2,14 @@
 
 use super::cards::{Card, Support, card_in_use, find_cards};
 use crate::context::Context;
-use crate::host::{GIB, IO_SPACE_GIB, TMPFS_SPARE_GIB, free_gib};
+use crate::host::{RamOffer, free_gib, total_ram};
 use crate::iso::any_iso_maker;
 use crate::library::INSTALL_ROOM_GIB;
 use crate::linux::driver_versions::{branch_refusal, untested_warning};
 use crate::machine::MIN_RAM_GIB;
 use crate::usb::sysfs_text;
 use crate::vm_args::on_path;
-use rustix::fs::{Access, access, statvfs};
+use rustix::fs::{Access, access};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -37,7 +37,7 @@ pub const TESTED_DRIVER: &str = "615.78.08";
 /// What setup keeps of the installer, and room to swap it for a new copy.
 pub const DRIVER_ROOM_GIB: u64 = 4;
 /// What a new Windows machine gets by default.
-pub const WANTED_SHM_GIB: u64 = 16;
+pub const WANTED_RAM_GIB: u64 = 16;
 const QEMU_CHECK_SECONDS: &str = "10";
 const MOST_QEMU_WORDS: usize = 200;
 
@@ -235,28 +235,26 @@ fn check_ubuntu(context: &Context, tools: &[&str]) -> Check {
     }
 }
 
-/// Judges shared memory of this size in GiB. It counts the whole size, as a running VM has some in
-/// use and gives it back.
-fn judge_shared_memory(size: f64) -> Check {
-    const TITLE: &str = "Shared memory";
-    let room = size as i64 - (IO_SPACE_GIB + TMPFS_SPARE_GIB) as i64;
-    let text =
-        format!("/dev/shm holds {size:.0} GiB, so a Windows guest can have up to {} GiB.", room.max(0));
-    let need = WANTED_SHM_GIB + IO_SPACE_GIB + TMPFS_SPARE_GIB;
-    let fix = format!("Make it larger: sudo mount -o remount,size={need}G /dev/shm");
-    if room < i64::from(MIN_RAM_GIB) {
-        Check::new(TITLE, CheckState::Failed, text, fix)
-    } else if room < WANTED_SHM_GIB as i64 {
+/// Judges what this PC's RAM leaves a GPU machine, with no other VM running.
+fn judge_ram(offer: &RamOffer) -> Check {
+    const TITLE: &str = "Memory";
+    let least = u64::from(MIN_RAM_GIB);
+    let text = offer.explanation(least);
+    if offer.limit_gib() < least {
+        Check::new(TITLE, CheckState::Failed, text, "A GPU machine can't start on this PC.")
+    } else if offer.limit_gib() < WANTED_RAM_GIB {
+        let fix = format!(
+            "A new Windows machine gets {WANTED_RAM_GIB} GiB unless it's given less, so give it {} GiB or less.",
+            offer.limit_gib()
+        );
         Check::new(TITLE, CheckState::Warning, text, fix)
     } else {
         Check::ok(TITLE, text)
     }
 }
 
-fn check_shared_memory(context: &Context) -> Check {
-    let size = statvfs(&context.paths.shared_memory)
-        .map_or(0.0, |disk| (disk.f_blocks * disk.f_frsize) as f64 / GIB as f64);
-    judge_shared_memory(size)
+fn check_ram(context: &Context) -> Check {
+    judge_ram(&RamOffer::new(total_ram(context), 0))
 }
 
 /// The nearest folder that exists.
@@ -299,7 +297,7 @@ pub fn check_pc(context: &Context) -> Vec<Check> {
         check_qemu(context),
         check_tools(context, &TOOLS),
         check_ubuntu(context, &UBUNTU_TOOLS),
-        check_shared_memory(context),
+        check_ram(context),
         check_disk(context),
     ]
 }
@@ -325,7 +323,7 @@ pub fn check_host(context: &Context) -> HostReport {
     let mut deciding = vec![check_card(context), check_host_driver(context), check_kvm(context)];
     deciding.extend(check_driver_branch(context));
     let gpu = deciding.iter().all(|check| check.state != CheckState::Failed);
-    deciding.extend([check_shared_memory(context), check_disk(context)]);
+    deciding.extend([check_ram(context), check_disk(context)]);
     HostReport { checks: deciding, gpu }
 }
 
@@ -487,17 +485,12 @@ mod tests {
     }
 
     #[test]
-    fn shared_memory_is_judged_by_what_a_guest_could_have() {
-        let room = IO_SPACE_GIB + TMPFS_SPARE_GIB;
-        let min = u64::from(MIN_RAM_GIB);
-        for (gib, state) in [
-            (room + min - 1, CheckState::Failed),
-            (room + min, CheckState::Warning),
-            (room + WANTED_SHM_GIB, CheckState::Ok),
-        ] {
-            let found = judge_shared_memory(gib as f64);
-            assert_eq!(found.state, state, "{gib}");
-            assert!(state == CheckState::Ok || found.fix.contains("remount"));
+    fn the_ram_is_judged_by_what_a_gpu_machine_could_have() {
+        for (total_gib, state) in [(8, CheckState::Failed), (16, CheckState::Warning), (32, CheckState::Ok)] {
+            let found = judge_ram(&RamOffer::new(total_gib * crate::host::GIB, 0));
+            assert_eq!(found.state, state, "{total_gib}");
+            assert!(found.text.contains(&format!("This PC has {total_gib} GiB of RAM")), "{}", found.text);
+            assert!(!found.fix.contains("/dev/shm") && !found.text.contains("/dev/shm"));
         }
     }
 

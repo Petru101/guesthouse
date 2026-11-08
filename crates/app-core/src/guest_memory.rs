@@ -8,7 +8,7 @@
 
 use crate::context::Context;
 use crate::failure::{Failure, Result};
-use crate::host::{GIB, available_ram};
+use crate::host::{GIB, available_ram, fits_now, short_now};
 use guesthouse_daemon::handover::{self, Part};
 use guesthouse_daemon::slot::Slot;
 use rustix::fs::{
@@ -33,15 +33,6 @@ pub fn is_no_room(failure: &Failure) -> bool {
     failure.0.contains(NO_ROOM_WORDS)
 }
 
-fn no_room(bytes: u64, available: u64) -> Failure {
-    Failure(format!(
-        "This machine needs {} GiB of RAM, and {} {NO_ROOM_WORDS}. Stop another VM, close some programs, or give \
-         this one less RAM.",
-        bytes.div_ceil(GIB),
-        available / GIB,
-    ))
-}
-
 /// The two memfds, which close here once QEMU and the daemon have their own.
 #[derive(Debug)]
 pub struct GuestMemory {
@@ -53,13 +44,12 @@ impl GuestMemory {
     /// Makes both and claims all of the RAM. A failure leaves nothing behind.
     pub fn claim(context: &Context, slot: Slot, ram_bytes: u64) -> Result<Self> {
         // The kernel would take what it can't have from everything else on the PC, a page at a time.
-        let available = available_ram(context);
-        if ram_bytes > available {
-            return Err(no_room(ram_bytes, available));
+        if let Some(short) = fits_now(context, ram_bytes) {
+            return Err(Failure(short));
         }
         let memory = Self::sized(context, slot, ram_bytes)?;
         fallocate(&memory.ram, FallocateFlags::empty(), 0, ram_bytes).map_err(|error| match error {
-            Errno::NOMEM | Errno::NOSPC => no_room(ram_bytes, available_ram(context)),
+            Errno::NOMEM | Errno::NOSPC => Failure(short_now(ram_bytes, available_ram(context))),
             other => Failure(format!("The VM's memory could not be reserved: {other}")),
         })?;
         memory.seal()?;
@@ -107,6 +97,7 @@ mod tests {
 
     fn context_with_free(scratch: &Scratch, kib: u64) -> Context {
         let mut context = scratch_context(scratch);
+        context.ram_limit = None;
         context.meminfo = scratch.write("meminfo", format!("MemTotal: {kib} kB\nMemAvailable: {kib} kB\n"));
         context
     }
@@ -144,7 +135,7 @@ mod tests {
         let context = context_with_free(&scratch, 4 * KIB * KIB);
         let error = GuestMemory::claim(&context, slots::first(), 16 * GIB).unwrap_err();
         assert!(is_no_room(&error), "{error}");
-        assert!(error.0.contains("needs 16 GiB of RAM, and 4 GiB is free"), "{error}");
+        assert!(error.0.contains("needs 16 GiB of RAM, and 4 GiB is free right now"), "{error}");
     }
 
     #[test]

@@ -4,15 +4,15 @@
 use crate::context::Context;
 use crate::failure::Result;
 use crate::gpu_support::{NO_GPU_PART, gpu_ready};
-use crate::host::{self, GIB, QEMU_FILES, physical_cores, ram_limit_for, shared_memory_used, vcache_cpus};
+use crate::held_memory::used_by_others;
+use crate::host::{self, GIB, physical_cores, ram_limit_for, vcache_cpus};
 use crate::machine::{Kind, Machine};
 use crate::network_settings::{network_start_problems, other_machines};
-use crate::processes::{memory_taken, qemu_pid, running_slots};
+use crate::processes::{memory_taken, qemu_pid};
 use crate::settings::max_vram_gib;
 use crate::setup::amd::amd_start_problems;
 use crate::setup::cards::card_problem;
 use crate::setup::setup_done;
-use crate::slots;
 use crate::tasks::no_slot_text;
 use std::path::Path;
 
@@ -20,7 +20,7 @@ pub const SHARE_REFUSAL: &str = "This folder can't be shared. Choose a folder in
                              isn't one Guesthouse keeps its own files in.";
 const ALREADY_RUNNING: &str = "This machine is running.";
 pub const MEMORY_TAKEN: &str =
-    "Another VM on this PC has just taken this slot's shared memory. Start the machine again.";
+    "Another VM on this PC has just taken this slot's memory. Start the machine again.";
 pub const SECOND_INSTANCE_REFUSAL: &str = "A second instance leaves GPU-PV alone.";
 /// The daemon can't start a GPU machine without what setup takes from NVIDIA's installer.
 pub const NO_SETUP: &str =
@@ -36,7 +36,7 @@ pub const NO_TOKEN: &str = "This machine has no guest token, so the app can't re
 pub struct SharedFacts {
     /// The most RAM this machine can have on this PC now.
     pub ram_limit: u64,
-    /// How much of the other VMs' RAM is already in shared memory, in GiB.
+    /// How much of the PC's RAM the other VMs' memory already takes, in GiB.
     pub touched_gib: u64,
     pub max_vram_gib: u32,
     pub vcache_cpus: u32,
@@ -44,13 +44,9 @@ pub struct SharedFacts {
 
 impl SharedFacts {
     pub fn read(context: &Context, machine: &Machine) -> Result<Self> {
-        let running = running_slots(context);
-        let others = running.keys().filter(|slot| **slot != context.slot.number());
-        let touched: u64 =
-            others.map(|slot| shared_memory_used(context, slots::number(*slot), &QEMU_FILES[..1])).sum();
         Ok(Self {
             ram_limit: ram_limit_for(context, machine)?,
-            touched_gib: touched / GIB,
+            touched_gib: used_by_others(context, context.slot) / GIB,
             max_vram_gib: max_vram_gib(context),
             vcache_cpus: vcache_cpus(&context.cpus).len() as u32,
         })
@@ -71,13 +67,13 @@ pub fn shared_problems(machine: &Machine, others: &[Machine], facts: &SharedFact
         return Vec::new();
     }
     let mut found = Vec::new();
-    // RAM they haven't touched yet will still come out of the same tmpfs. Their IO windows count as
-    // far as they have gone.
+    // The limit already leaves out what they hold, which is all of their RAM once claimed. A machine
+    // still starting may not have claimed its own yet, and that will come out of the same RAM.
     let reserved: u64 =
         others.iter().filter(|other| other.has_gpu()).map(|other| u64::from(other.ram_gib)).sum();
     let untouched = reserved.saturating_sub(facts.touched_gib);
     if machine.has_gpu() && u64::from(machine.ram_gib) + untouched > facts.ram_limit {
-        found.push("This PC's shared memory cannot hold this machine beside the ones running.".to_owned());
+        found.push("This PC's RAM cannot hold this machine beside the ones running.".to_owned());
     }
     if machine.has_gpu() {
         let left = video_memory_left(others, facts.max_vram_gib);
@@ -192,6 +188,7 @@ mod tests {
     use crate::host::stand_in::fake_cpus;
     use crate::machine::Kind;
     use crate::processes::stand_in::fake_process;
+    use crate::slots;
     use crate::testing::{Scratch, scratch_context};
     use std::fs;
 
@@ -261,10 +258,10 @@ mod tests {
     }
 
     #[test]
-    fn each_machine_counts_in_full_against_shared_memory() {
+    fn each_machine_counts_in_full_against_the_pcs_ram() {
         let others = [Machine { vram_gib: 10, ..machine("first") }];
         let small = SharedFacts { ram_limit: 30, ..facts() };
-        assert!(says(&shared_problems(&machine("second"), &others, &small), "shared memory"));
+        assert!(says(&shared_problems(&machine("second"), &others, &small), "PC's RAM cannot hold"));
         assert!(shared_problems(&machine("second"), &others, &facts()).is_empty());
         let touched = SharedFacts { touched_gib: 16, ..small };
         assert!(
