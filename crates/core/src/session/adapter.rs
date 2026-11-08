@@ -7,9 +7,9 @@ use guesthouse_backend::{
     Backend, BackendError, GuestBooks, GuestMemory, ProcessMemory, RegistryName, VendorQuery, VideoMemoryUse,
 };
 use guesthouse_messages::adapter::{
-    ASYNC_MESSAGES, AdapterQuery, CapsQuery, DRIVER_MODEL_NUMBER, DisplayMode, IdentityAnswer, SetIoSpace,
-    adapter_identity, description_answer, driver_caps, node_description, node_of, physical_adapter_ids,
-    segment_sizes,
+    ASYNC_MESSAGES, AdapterQuery, CapsQuery, DRIVER_MODEL_NUMBER, DisplayMode, FLIP_QUEUE_ANSWER_SIZE,
+    IdentityAnswer, SetIoSpace, adapter_identity, description_answer, driver_caps, flip_queue,
+    node_description, node_of, physical_adapter_ids, segment_sizes,
 };
 use guesthouse_messages::address::{memory_answer, memory_group};
 use guesthouse_messages::indirect;
@@ -180,6 +180,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
                 let dedicated = limits.video_cap.unwrap_or(facts.video_memory);
                 segment_sizes(dedicated, limits.system_budget, out);
             }
+            AdapterQuery::FLIP_QUEUE if query.size == FLIP_QUEUE_ANSWER_SIZE => flip_queue(out),
             AdapterQuery::DRIVER_MODEL | AdapterQuery::DRIVER_MODEL_FOR_RENDER => {
                 put_u32(out, DRIVER_MODEL_NUMBER)
             }
@@ -220,10 +221,12 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             RegistryName::Value(name) => RegistryName::Value(name.to_lowercase()),
             path => path.clone(),
         };
+        // Windows fails the lookup of a value that isn't there. A success with the buffer as it came
+        // reads as a value found, which is how Direct3D 9 took it.
         let Some(value) = self.backend.registry_value(&lookup) else {
             log::debug!("no registry value for {:?}", query.name);
             query.unchanged(out);
-            return Ok(Status::SUCCESS);
+            return Ok(Status::NOT_FOUND);
         };
         // A loader that asks for the wrong type tries the other when this fails.
         if value.value_type.is_some_and(|value_type| value_type != query.value_type) {

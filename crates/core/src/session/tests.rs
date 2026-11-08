@@ -358,10 +358,10 @@ mod adapter {
     }
 
     #[test]
-    fn an_unknown_value_comes_back_unchanged() {
+    fn an_unknown_value_is_not_found_and_comes_back_unchanged() {
         let buffer = registry_buffer("nothing", 1);
         let reply = query(&mut session(), AdapterQuery::REGISTRY, buffer.len() as u32, &buffer);
-        assert_eq!(status_of(&reply), SUCCESS);
+        assert_eq!(status_of(&reply), Status::NOT_FOUND.0);
         assert_eq!(&reply[4..], &buffer);
     }
 
