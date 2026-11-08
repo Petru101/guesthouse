@@ -153,8 +153,10 @@ static uint8_t reading(Sensors *s)
 
 static Sensors *sensors_with(const char *path, const char *mode, FILE *log)
 {
+    static const RusdCard card = { .minor = 1, .gpu_id = 0x300, .instance = 1 };
+
     setenv("FAKE_SENSORD", mode, 1);
-    return sensors_new(log, path);
+    return sensors_new(log, path, &card);
 }
 
 /* Everything a guest does with the object, ending with a page that has no readings. */

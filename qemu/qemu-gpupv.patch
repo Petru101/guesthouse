@@ -7998,3 +7998,259 @@ index cbc008e..a92c67a 100644
 -- 
 2.56.0
 
+From f1f4d509a073a9e2d5269dd0f958c47a4d897d93 Mon Sep 17 00:00:00 2001
+From: xnixy <x@ruxn.com>
+Date: Sat, 7 Nov 2026 23:13:39 -0800
+Subject: [PATCH 28/28] hw/misc/nvfwd: start the sensor daemon for the device's
+ card
+
+nvfwd-sensord opened /dev/nvidia0, attached the first GPU the RM listed and
+made device instance 0, which on a host with two cards needn't be the VM's.
+It now takes the card's device file minor, GPU id and device instance as its
+arguments, as the device looked them up, and has no page without them.
+---
+ hw/misc/nvfwd/nvfwd.c   |  5 ++++-
+ hw/misc/nvfwd/rusd.c    | 42 +++++++++++++++++++++++++++++------------
+ hw/misc/nvfwd/rusd.h    | 15 ++++++++++++++-
+ hw/misc/nvfwd/sensord.c |  8 +++++---
+ hw/misc/nvfwd/sensors.c |  9 +++++++--
+ hw/misc/nvfwd/sensors.h |  8 ++++++--
+ 6 files changed, 66 insertions(+), 21 deletions(-)
+
+diff --git a/hw/misc/nvfwd/nvfwd.c b/hw/misc/nvfwd/nvfwd.c
+index 9d5d4dd..e596b97 100644
+--- a/hw/misc/nvfwd/nvfwd.c
++++ b/hw/misc/nvfwd/nvfwd.c
+@@ -165,10 +165,13 @@ static void nvfwd_realize(PCIDevice *pdev, Error **errp)
+     callrate_init(&s->rate, s->max_call_rate, s->max_call_burst);
+     s->card_fd = -1;
+     if (!s->no_gpu) {
++        RusdCard sensor_card;
++
+         if (!host_card_open(s, errp)) {
+             return;
+         }
+-        s->sensors = sensors_new(s->log, s->sensord_path);
++        sensor_card = (RusdCard) { s->card_minor, s->card.gpu_id, s->card.instance };
++        s->sensors = sensors_new(s->log, s->sensord_path, &sensor_card);
+     }
+     s->win_size = 64 * GiB;
+     window_init(s);
+diff --git a/hw/misc/nvfwd/rusd.c b/hw/misc/nvfwd/rusd.c
+index 0aa3ef7..d4bf6df 100644
+--- a/hw/misc/nvfwd/rusd.c
++++ b/hw/misc/nvfwd/rusd.c
+@@ -7,6 +7,7 @@
+ #endif
+ #include "rusd.h"
+ 
++#include <errno.h>
+ #include <fcntl.h>
+ #include <stdio.h>
+ #include <stdlib.h>
+@@ -32,7 +33,6 @@
+ #define CLASS_SUBDEVICE 0x2080
+ #define CLASS_SHARED_DATA 0xde
+ 
+-#define CTRL_GET_PROBED_IDS 0x214
+ #define CTRL_ATTACH_IDS 0x215
+ #define CTRL_REQUEST_DATA_POLL 0xde0001
+ 
+@@ -166,20 +166,36 @@ static bool driver_matches(void)
+     return !strcmp(version, DRIVER_VERSION);
+ }
+ 
+-static int attach_first_gpu(Rusd *r)
++static int attach_card(Rusd *r, const RusdCard *card)
+ {
+-    uint32_t probed[MAX_GPUS * 3] = { 0 };
+     uint32_t attach[MAX_GPUS + 1];
+ 
+-    if (rm_control(r, r->client, CTRL_GET_PROBED_IDS, probed, sizeof(probed))) {
+-        return -1;
+-    }
+     memset(attach, 0xff, sizeof(attach));
+-    attach[0] = probed[0];
++    attach[0] = card->gpu_id;
+     if (rm_control(r, r->client, CTRL_ATTACH_IDS, attach, sizeof(attach))) {
+         return -1;
+     }
+-    return rm_call(r->control_fd, ESC_ATTACH_GPUS_TO_FD, probed, sizeof(probed[0]));
++    return rm_call(r->control_fd, ESC_ATTACH_GPUS_TO_FD, &attach[0], sizeof(attach[0]));
++}
++
++static bool parse_number(const char *text, uint32_t *value)
++{
++    char *end;
++    unsigned long n;
++
++    errno = 0;
++    n = strtoul(text, &end, 0);
++    if (errno || end == text || *end || n > UINT32_MAX) {
++        return false;
++    }
++    *value = n;
++    return true;
++}
++
++bool rusd_card_parse(int argc, char *const argv[], RusdCard *card)
++{
++    return argc == RUSD_CARD_ARGUMENTS + 1 && parse_number(argv[1], &card->minor) &&
++           parse_number(argv[2], &card->gpu_id) && parse_number(argv[3], &card->instance);
+ }
+ 
+ static int map_shared_data(Rusd *r)
+@@ -214,10 +230,11 @@ static int map_filtered_page(Rusd *r, int page_fd)
+     return 0;
+ }
+ 
+-Rusd *rusd_open(int page_fd)
++Rusd *rusd_open(int page_fd, const RusdCard *card)
+ {
++    char card_path[32];
+     struct client_params client = { 0 };
+-    struct device_params device = { 0 };
++    struct device_params device = { .device_id = card->instance };
+     uint32_t subdevice = 0;
+     uint64_t no_polling = 0;
+     Rusd *r;
+@@ -231,11 +248,12 @@ Rusd *rusd_open(int page_fd)
+         return NULL;
+     }
+     r->control_fd = open("/dev/nvidiactl", O_RDWR | O_CLOEXEC);
+-    r->gpu_fd = open("/dev/nvidia0", O_RDWR | O_CLOEXEC);
++    snprintf(card_path, sizeof(card_path), "/dev/nvidia%u", card->minor);
++    r->gpu_fd = open(card_path, O_RDWR | O_CLOEXEC);
+     if (r->control_fd < 0 || r->gpu_fd < 0 ||
+         rm_call(r->gpu_fd, ESC_REGISTER_FD, &r->control_fd, sizeof(r->control_fd)) ||
+         rm_alloc(r, 0, 0, CLASS_ROOT_CLIENT, &client, sizeof(client)) ||
+-        attach_first_gpu(r) ||
++        attach_card(r, card) ||
+         rm_alloc(r, r->client, HANDLE_DEVICE, CLASS_DEVICE, &device, sizeof(device)) ||
+         rm_alloc(r, HANDLE_DEVICE, HANDLE_SUBDEVICE, CLASS_SUBDEVICE, &subdevice, sizeof(subdevice)) ||
+         rm_alloc(r, HANDLE_SUBDEVICE, HANDLE_SHARED_DATA, CLASS_SHARED_DATA, &no_polling,
+diff --git a/hw/misc/nvfwd/rusd.h b/hw/misc/nvfwd/rusd.h
+index 6648b24..608281b 100644
+--- a/hw/misc/nvfwd/rusd.h
++++ b/hw/misc/nvfwd/rusd.h
+@@ -39,11 +39,24 @@
+ 
+ typedef struct Rusd Rusd;
+ 
++/*
++ * The card the VM was given, as the device looked it up: its device file's minor, the RM's GPU id
++ * and the RM's device instance. QEMU passes them to the daemon as its three arguments.
++ */
++typedef struct RusdCard {
++    uint32_t minor, gpu_id, instance;
++} RusdCard;
++
++#define RUSD_CARD_ARGUMENTS 3
++
++/* Reads the daemon's arguments, as decimal or 0x hex. */
++bool rusd_card_parse(int argc, char *const argv[], RusdCard *card);
++
+ /*
+  * page_fd is the file the filtered page goes in, RUSD_MAP_BYTES long. NULL when the host driver is
+  * not the one the page layout was read from, or has no such page.
+  */
+-Rusd *rusd_open(int page_fd);
++Rusd *rusd_open(int page_fd, const RusdCard *card);
+ void rusd_close(Rusd *r);
+ 
+ /* Tells the host which data to keep fresh. Zero stops the polling, which costs the whole card. */
+diff --git a/hw/misc/nvfwd/sensord.c b/hw/misc/nvfwd/sensord.c
+index 85c12ed..75ccb9d 100644
+--- a/hw/misc/nvfwd/sensord.c
++++ b/hw/misc/nvfwd/sensord.c
+@@ -6,7 +6,8 @@
+  * runs inside it and the driver treats one process's clients as one owner. QEMU gets only the
+  * filtered page and this socket.
+  *
+- * Started by sensors.c, with SENSORD_SOCKET_FD and SENSORD_PAGE_FD open. Exits with the VM.
++ * Started by sensors.c, with SENSORD_SOCKET_FD and SENSORD_PAGE_FD open and the VM's card as its
++ * arguments: see RusdCard. Exits with the VM.
+  */
+ #include "rusd.h"
+ 
+@@ -15,9 +16,10 @@
+ 
+ #define REFRESH_MILLISECONDS 100
+ 
+-int main(void)
++int main(int argc, char *argv[])
+ {
+-    Rusd *rusd = rusd_open(SENSORD_PAGE_FD);
++    RusdCard card;
++    Rusd *rusd = rusd_card_parse(argc, argv, &card) ? rusd_open(SENSORD_PAGE_FD, &card) : NULL;
+     uint32_t client = rusd ? rusd_client(rusd) : 0;
+     uint64_t polling = 0;
+ 
+diff --git a/hw/misc/nvfwd/sensors.c b/hw/misc/nvfwd/sensors.c
+index 003a812..a8ad41b 100644
+--- a/hw/misc/nvfwd/sensors.c
++++ b/hw/misc/nvfwd/sensors.c
+@@ -74,6 +74,7 @@ typedef struct {
+ struct Sensors {
+     FILE *log;
+     const char *daemon_path;
++    char card_arguments[RUSD_CARD_ARGUMENTS][16];
+     QemuMutex lock;
+     int daemon, page_fd;
+     uint64_t polling;
+@@ -120,7 +121,8 @@ static uint8_t *params_in_call(const SensorCall *call, uint64_t pointer, uint32_
+ 
+ static bool spawn_daemon(Sensors *s, int socket_end, int page_fd)
+ {
+-    char *const argv[] = { (char *)s->daemon_path, NULL };
++    char *const argv[] = { (char *)s->daemon_path, s->card_arguments[0], s->card_arguments[1],
++                           s->card_arguments[2], NULL };
+     posix_spawn_file_actions_t actions;
+     posix_spawnattr_t attributes;
+     sigset_t none;
+@@ -444,12 +446,15 @@ static bool answer_free(Sensors *s, const SensorCall *call)
+     return true;
+ }
+ 
+-Sensors *sensors_new(FILE *log, const char *daemon_path)
++Sensors *sensors_new(FILE *log, const char *daemon_path, const RusdCard *card)
+ {
+     Sensors *s = g_new0(Sensors, 1);
+ 
+     s->log = log;
+     s->daemon_path = daemon_path;
++    snprintf(s->card_arguments[0], sizeof(s->card_arguments[0]), "%u", card->minor);
++    snprintf(s->card_arguments[1], sizeof(s->card_arguments[1]), "%#x", card->gpu_id);
++    snprintf(s->card_arguments[2], sizeof(s->card_arguments[2]), "%u", card->instance);
+     s->daemon = -1;
+     s->page_fd = -1;
+     qemu_mutex_init(&s->lock);
+diff --git a/hw/misc/nvfwd/sensors.h b/hw/misc/nvfwd/sensors.h
+index 982e31c..dac3812 100644
+--- a/hw/misc/nvfwd/sensors.h
++++ b/hw/misc/nvfwd/sensors.h
+@@ -10,6 +10,7 @@
+ #include <stdbool.h>
+ #include <stdint.h>
+ #include <stdio.h>
++#include "rusd.h"
+ 
+ typedef struct Sensors Sensors;
+ 
+@@ -24,8 +25,11 @@ typedef struct SensorCall {
+     uint32_t data_size;
+ } SensorCall;
+ 
+-/* daemon_path is the nvfwd-sensord program. Without one, guests get a page with no readings. */
+-Sensors *sensors_new(FILE *log, const char *daemon_path);
++/*
++ * daemon_path is the nvfwd-sensord program, started for the card given. Without one, guests get a
++ * page with no readings.
++ */
++Sensors *sensors_new(FILE *log, const char *daemon_path, const RusdCard *card);
+ 
+ /* True when the call was answered here, with its status written, and must not be forwarded. */
+ bool sensors_answer(Sensors *s, const SensorCall *call);
+-- 
+2.56.0
+

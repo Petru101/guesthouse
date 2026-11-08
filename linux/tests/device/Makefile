@@ -51,6 +51,6 @@ $(BUILD)/test_sensors: test_sensors.c
 	$(CC) $(CFLAGS) -Istand-in -I$(DEVICE) $(GLIB) -o $@ $< $(DEVICE)/sensors.c $(GLIB)
 $(BUILD)/fake_sensord: fake_sensord.c
 	@mkdir -p $(BUILD)
-	$(CC) $(CFLAGS) -I$(DEVICE) -o $@ $<
+	$(CC) $(CFLAGS) -I$(DEVICE) -o $@ $< $(DEVICE)/rusd.c
 
 .PHONY: all
