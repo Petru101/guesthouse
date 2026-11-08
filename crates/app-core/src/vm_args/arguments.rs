@@ -235,8 +235,7 @@ impl VmPlan {
     /// The words to run, with `taskset` first if the VM is pinned.
     pub fn qemu_command(&self) -> Vec<String> {
         let qemu = self.qemu.to_string_lossy().into_owned();
-        let mut command = self.ubuntu_launcher();
-        command.extend(self.jail_words());
+        let mut command = self.jail_words(&self.address_layout());
         if let Some(cpus) = &self.pin {
             command.extend(words(&["taskset", "-c", cpus]));
         }

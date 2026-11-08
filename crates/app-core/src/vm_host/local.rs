@@ -121,6 +121,8 @@ impl LocalHost<'_> {
     /// QEMU with no daemon and no shared memory. Returns once its monitor answers.
     fn start_plain(&self, plan: &VmPlan) -> Result<()> {
         let _ = fs::remove_file(self.run_file(BOOTS_FILE));
+        // Whatever an earlier machine in this slot had to say about its jail isn't this one's.
+        jailing::write_note(&plan.run_folder, &plan.jail_note)?;
         if !plan.qemu.exists() {
             return Err(Failure::new(NO_QEMU_HELP));
         }
@@ -236,7 +238,7 @@ impl LocalHost<'_> {
         let plan = VmPlan { sound, ..plan.clone() };
         let choice = jailing::choose(self.context, machine, &plan, &(self.context.jail_offer)(&plan))?;
         let jail = choice.qemu.clone().map(|jail| plan.with_backing_files(jail)).transpose()?;
-        let plan = VmPlan { jail, ..plan };
+        let plan = VmPlan { jail, jail_note: choice.note.clone(), ..plan };
         self.stop(machine, LEFT_OVER_STOP_SECONDS)?;
         if qemu_pid(self.context, None).is_some()
             || !self.daemons().is_empty()
@@ -248,7 +250,7 @@ impl LocalHost<'_> {
         self.remove_shared_memory();
         let ram_file = self.context.paths.shared_file(RAM_FILE, plan.slot);
         (self.context.reserve_memory)(&ram_file, u64::from(machine.ram_gib) * GIB)?;
-        jailing::write_note(&plan.run_folder, &choice.note)?;
+        jailing::write_note(&plan.run_folder, &plan.jail_note)?;
         let mut start = DaemonStart::new(self.context, plan.slot, &plan.ram, plan.vram.as_deref());
         if !choice.daemon_jailed {
             start = start.without_jail();

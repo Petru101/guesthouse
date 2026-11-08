@@ -86,8 +86,8 @@ pub struct Choice {
 fn without_namespaces(plan: &VmPlan, landlock_abi: u32) -> String {
     let mut note = "Jailed, without namespaces: bubblewrap can't make them on this PC.".to_owned();
     // Namespaces hide the session bus and the rest. Without them, only a newer Landlock can, or
-    // QEMU getting its sockets from the launcher, which it can't with sound.
-    if landlock_abi < SOCKETS_BY_PATH_ABI && plan.sound.is_some() {
+    // QEMU getting its sockets from the launcher, which it can't with sound or the forwarded GPU.
+    if landlock_abi < SOCKETS_BY_PATH_ABI && !plan.can_pass_unix_sockets() {
         note += " This kernel can't keep QEMU from your desktop's sockets without them.";
     }
     note
@@ -95,11 +95,29 @@ fn without_namespaces(plan: &VmPlan, landlock_abi: u32) -> String {
 
 /// Decides, or refuses the start with the reason and what to do about it.
 pub fn choose(context: &Context, machine: &Machine, plan: &VmPlan, offer: &Offer) -> Result<Choice> {
+    decide(context, machine, plan, offer).map_err(|reason| {
+        Failure(format!("The VM did not start, as it can't be jailed: {reason} {ALLOW_HINT}"))
+    })
+}
+
+/// What the forwarded GPU's start says when there's no jail to be had. The VM still starts.
+pub fn gpu_refusal(reason: &str) -> String {
+    format!(
+        "QEMU can't be jailed here, and the GPU only goes to a jailed QEMU: {reason} To have the GPU \
+         anyway, turn on \"Start without a jail\" in the machine's settings, and it will say so while it runs."
+    )
+}
+
+/// Decides, or says why a jail can't be had.
+pub fn decide(
+    context: &Context,
+    machine: &Machine,
+    plan: &VmPlan,
+    offer: &Offer,
+) -> std::result::Result<Choice, &'static str> {
     if let Some(reason) = offer.support.refusal() {
         if !machine.start_without_jail {
-            return Err(Failure(format!(
-                "The VM did not start, as it can't be jailed: {reason} {ALLOW_HINT}"
-            )));
+            return Err(reason);
         }
         return Ok(Choice { qemu: None, daemon_jailed: false, note: format!("Not jailed: {reason}") });
     }

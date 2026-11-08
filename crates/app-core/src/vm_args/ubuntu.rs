@@ -6,7 +6,6 @@ use super::arguments::words;
 use super::{Boot, DISPLAY_SOCKET, UbuntuBoot, UbuntuInstall, VmPlan};
 use crate::text::qemu_value;
 use guesthouse_daemon::slot::Slot;
-use std::path::Path;
 
 /// The installer asks for a confirmation unless this is on its command line, and the ISO's own menu
 /// doesn't put it there, which is why the kernel is booted directly.
@@ -27,7 +26,6 @@ pub const FRAMES_PREFIX: &str = "show";
 pub const FORWARDED_INPUT_SOCKET: &str = "forwarded-input.sock";
 pub const INSTALL_LOG: &str = "install-serial.log";
 const SERIAL_LOG: &str = "serial.log";
-const DEVICES: &str = "/dev";
 
 /// The host's port for a guest's SSH: `SSH_PORT`, or the first one for this slot.
 pub fn ssh_port(slot: Slot) -> u16 {
@@ -36,7 +34,7 @@ pub fn ssh_port(slot: Slot) -> u16 {
 }
 
 impl VmPlan {
-    fn ssh_port(&self) -> u16 {
+    pub(super) fn ssh_port(&self) -> u16 {
         ssh_port(self.slot)
     }
 
@@ -163,6 +161,7 @@ impl VmPlan {
         ]));
         arguments.extend(self.monitors());
         arguments.extend(self.with_gpu_arguments(boot));
+        arguments.extend(self.qemu_sandbox_arguments());
         arguments
     }
 
@@ -174,15 +173,11 @@ impl VmPlan {
         }
     }
 
-    /// What goes before QEMU. The guest's address space must stay out of the way of the addresses the
-    /// forwarding maps at the guest's own values.
-    pub(super) fn ubuntu_launcher(&self) -> Vec<String> {
+    /// What goes before QEMU, and before its jail, whose filter keeps QEMU from changing it. The
+    /// guest's address space must stay out of the way of the addresses the forwarding maps at the
+    /// guest's own values.
+    pub(super) fn address_layout(&self) -> Vec<String> {
         match self.boot {
-            Boot::Ubuntu(UbuntuBoot::WithGpu { .. }) => {
-                let mut launcher = self.jail(Path::new(DEVICES));
-                launcher.extend(words(&["setarch", "x86_64", "-L"]));
-                launcher
-            }
             Boot::Ubuntu(_) => words(&["setarch", "x86_64", "-L"]),
             _ => Vec::new(),
         }

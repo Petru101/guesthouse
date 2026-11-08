@@ -1,12 +1,13 @@
-//! The jail around a GPU machine's QEMU: what `guesthouse-jail` lets it reach, and bubblewrap's
-//! namespaces around that where the PC allows them.
+//! The jail around a GPU machine's QEMU, for Windows and for the forwarded GPU alike: what
+//! `guesthouse-jail` lets it reach, and bubblewrap's namespaces around that where the PC allows them.
 //!
 //! The plan names this VM's files one by one, so the machine's folder, with its token and settings,
 //! stays out, and so does every other VM. What the network may do follows the machine's mode: NAT
 //! is the internet for the guest, so only binds are held to the forwarded ports.
 
 use super::arguments::{MONITOR_SOCKETS, words};
-use super::{QemuJail, VmPlan};
+use super::forwarding_jail::DEVICES as CARD_NODES;
+use super::{Boot, QemuJail, VmPlan};
 use crate::disk_image::backing::backing_files;
 use crate::failure::{Failure, Result};
 use crate::network::{Mode, Protocol, bridge_helper};
@@ -74,12 +75,22 @@ impl VmPlan {
         forwards.filter_map(|forward| u16::try_from(forward.host).ok()).collect()
     }
 
+    /// What QEMU's user network listens on: the agent and the forwards, or for Ubuntu its SSH.
+    fn listened_ports(&self) -> Vec<u16> {
+        if matches!(self.boot, Boot::Ubuntu(_)) {
+            return vec![self.ssh_port()];
+        }
+        let mut ports = vec![self.agent_port];
+        ports.extend(self.forwarded_ports(Protocol::Tcp));
+        ports
+    }
+
     /// passt does the NAT for a machine on it, outside the jail, so QEMU's own network is the
-    /// restricted private link, as for a bridged or restricted machine.
+    /// restricted private link, as for a bridged or restricted machine. Ubuntu's line is NAT.
     fn jail_network(&self) -> Network {
-        let nat = self.network.mode == Mode::Nat && !self.network.passt;
-        let mut tcp_bind = vec![self.agent_port];
-        tcp_bind.extend(self.forwarded_ports(Protocol::Tcp));
+        let nat =
+            matches!(self.boot, Boot::Ubuntu(_)) || (self.network.mode == Mode::Nat && !self.network.passt);
+        let mut tcp_bind = self.listened_ports();
         // The user network reaches the shared folder's program through a pair of loopback TCP
         // sockets it makes for each connection, on a port it can't know beforehand.
         if self.share.is_some() {
@@ -105,8 +116,19 @@ impl VmPlan {
         if self.tpm.is_some() { &self.firmware.code_secure } else { &self.firmware.code }
     }
 
+    /// Ubuntu boots SeaBIOS from QEMU's own files, and the rest boot OVMF, which keeps its settings
+    /// in a file of the machine's.
+    fn boots_ovmf(&self) -> bool {
+        !matches!(self.boot, Boot::Ubuntu(_) | Boot::UbuntuInstall(_))
+    }
+
     /// Every path QEMU may reach, and its network.
     pub fn qemu_jail_plan(&self, jail: &QemuJail) -> Plan {
+        self.qemu_jail_plan_under(jail, Path::new(CARD_NODES))
+    }
+
+    /// The same, with the card's nodes looked for under `devices`.
+    pub(super) fn qemu_jail_plan_under(&self, jail: &QemuJail, devices: &Path) -> Plan {
         let mut plan = Plan { network: self.jail_network(), ..Plan::default() };
         for (grant, path) in SYSTEM {
             plan.grant(grant, path);
@@ -115,16 +137,20 @@ impl VmPlan {
         if let Some(folder) = &self.qemu_files {
             plan.grant(Grant::Read, folder);
         }
-        plan.grant(Grant::Read, self.firmware_code());
-        if let Some(disc) = &self.tools_disc {
-            plan.grant(Grant::Read, disc);
+        if self.boots_ovmf() {
+            plan.grant(Grant::Read, self.firmware_code()).grant(Grant::Write, &self.vars);
         }
         for device in DEVICES {
             plan.grant(Grant::Device, device);
         }
-        for file in [Path::new(&self.disk), Path::new(&self.vars), &self.ram_file, &self.io_file] {
-            plan.grant(Grant::Write, file);
+        plan.grant(Grant::Write, &self.disk);
+        if self.is_gpu() {
+            if let Some(disc) = &self.tools_disc {
+                plan.grant(Grant::Read, disc);
+            }
+            plan.grant(Grant::Write, &self.ram_file).grant(Grant::Write, &self.io_file);
         }
+        self.grant_forwarding(&mut plan, devices);
         if let Some(folder) = &self.share {
             plan.grant(Grant::Run, &self.share_program).grant(Grant::Own, folder);
         }
@@ -198,12 +224,13 @@ impl VmPlan {
         words
     }
 
-    /// What goes in front of QEMU for a jailed GPU machine, up to the program's own words. In
-    /// namespaces, passt and a bridged network's helper go before bubblewrap: passt has a sandbox of
-    /// its own, and the helper has to gain its privileges, which it can't inside. So the launcher
-    /// runs twice, once to start those and once inside to jail QEMU.
-    pub(super) fn jail_words(&self) -> Vec<String> {
-        let Some(jail) = &self.jail else { return Vec::new() };
+    /// What goes in front of QEMU for a jailed GPU machine, up to the program's own words, with
+    /// `before_jail` right before the launcher that jails it. In namespaces, passt and a bridged
+    /// network's helper go before bubblewrap: passt has a sandbox of its own, and the helper has to
+    /// gain its privileges, which it can't inside. So the launcher runs twice, once to start those
+    /// and once inside to jail QEMU.
+    pub(super) fn jail_words(&self, before_jail: &[String]) -> Vec<String> {
+        let Some(jail) = &self.jail else { return before_jail.to_vec() };
         let plan = self.qemu_jail_plan(jail);
         let mut jailing = Launch {
             plan: Some(plan.clone()),
@@ -230,6 +257,7 @@ impl VmPlan {
             }
             words.extend(Self::namespace_words(&plan, &jail.launcher));
         }
+        words.extend(before_jail.iter().cloned());
         words.push(launcher);
         words.extend(jailing.words());
         words
@@ -238,9 +266,15 @@ impl VmPlan {
     /// The launcher opens every unix socket QEMU needs, and QEMU may make none, so a QEMU that's been
     /// taken over can't reach the session bus or any other socket of the desktop's, whatever the
     /// kernel's Landlock and with or without namespaces. Only with no sound, as PipeWire's client
-    /// makes its own socket.
+    /// makes its own socket, and only for Windows: the forwarded GPU's device makes the socket its
+    /// frames are offered on.
     pub(super) fn passes_unix_sockets(&self) -> bool {
-        self.jail.as_ref().is_some() && self.sound.is_none()
+        self.jail.as_ref().is_some() && self.can_pass_unix_sockets()
+    }
+
+    /// Whether a jail would hand this QEMU its unix sockets.
+    pub fn can_pass_unix_sockets(&self) -> bool {
+        self.sound.is_none() && self.is_gpu()
     }
 
     fn client_names(&self) -> impl Iterator<Item = (usize, &'static str, &'static str)> + '_ {

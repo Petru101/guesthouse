@@ -4,15 +4,16 @@
 //! launcher opens QEMU's unix sockets and QEMU may make none. Its disk is a qcow2 on a base outside
 //! its folder, as a disk made by hand can be. On passt, the launcher starts the real passt and the
 //! stand-in asks it for the gateway's address through the socket it was handed. Bridged, this program
-//! also stands in for the bridge helper, and hands back an open file for the device.
+//! also stands in for the bridge helper, and hands back an open file for the device. With the
+//! forwarded GPU, it's an Ubuntu guest's QEMU, which makes its own frames socket.
 
 use guesthouse_app_core::linux::forwarding::sandbox_runs;
-use guesthouse_app_core::machine::Machine;
+use guesthouse_app_core::machine::{Kind, Machine};
 use guesthouse_app_core::network::Mode;
 use guesthouse_app_core::slots;
 use guesthouse_app_core::testing::{Scratch, scratch_context};
 use guesthouse_app_core::vm_args::{
-    Boot, NetworkPlan, PASST_FD, PASST_PID_FILE, QemuJail, TAP_FD, VmPlan, passt_installed,
+    Boot, NetworkPlan, PASST_FD, PASST_PID_FILE, QemuJail, TAP_FD, UbuntuBoot, VmPlan, passt_installed,
 };
 use guesthouse_jail::Support;
 use std::env;
@@ -20,7 +21,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::os::fd::FromRawFd;
-use std::os::unix::net::UnixListener;
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::process::{self, Command};
 use std::thread;
@@ -32,10 +33,19 @@ const HELPER_VARIABLE: &str = "JAIL_PROBE_HELPER";
 const PRETEND_DEVICE: &str = "/dev/null";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Network {
+enum Case {
     Nat,
     Passt,
     Bridged,
+    ForwardedGpu,
+}
+
+/// The kernel's flag for the old address layout, which `setarch -L` sets.
+const ADDR_COMPAT_LAYOUT: u32 = 0x0200000;
+
+fn personality() -> u32 {
+    let text = fs::read_to_string("/proc/self/personality").unwrap_or_default();
+    u32::from_str_radix(text.trim(), 16).unwrap_or(0)
 }
 
 /// Stands in for QEMU's bridge helper: sends an open file back through the descriptor it's told of.
@@ -127,6 +137,7 @@ fn passt_answers() -> bool {
 /// path that was never bound isn't there at all.
 fn probe() {
     let (own, other) = (variable("PROBE_OWN"), variable("PROBE_OTHER"));
+    let forwarded = env::var_os("PROBE_FORWARDED").is_some();
     let checks = [
         ("its own disk", fs::read(own.join("disk.qcow2")).is_ok()),
         ("its disk's base", fs::read(variable("PROBE_BASE")).is_ok()),
@@ -139,8 +150,15 @@ fn probe() {
         ("not the home folder", fs::read_dir(variable("PROBE_HOME")).is_err()),
         ("its agent port", TcpListener::bind(("127.0.0.1", port("PROBE_AGENT_PORT"))).is_ok()),
         ("not another port", TcpListener::bind(("127.0.0.1", port("PROBE_OTHER_PORT"))).is_err()),
-        ("no new unix socket", unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0) } == -1),
-        ("its own unix sockets", (20..26).all(|fd| fs::read_link(format!("/proc/self/fd/{fd}")).is_ok())),
+        (
+            "no new unix socket",
+            forwarded || unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0) } == -1,
+        ),
+        (
+            "its own unix sockets",
+            forwarded || (20..26).all(|fd| fs::read_link(format!("/proc/self/fd/{fd}")).is_ok()),
+        ),
+        ("not another device", OpenOptions::new().read(true).write(true).open("/dev/fuse").is_err()),
         ("no ptrace", unsafe { libc::ptrace(libc::PTRACE_ATTACH, libc::getppid(), 0, 0) } == -1),
         ("no new privileges", status_says(["NoNewPrivs:", "1"])),
         ("a filter", status_says(["Seccomp:", "2"])),
@@ -148,6 +166,13 @@ fn probe() {
     let mut checks = checks.to_vec();
     if env::var_os("PROBE_PASST").is_some() {
         checks.push(("passt through its socket", passt_answers()));
+    }
+    if forwarded {
+        let frames = UnixListener::bind(variable("PROBE_RUN").join("show.sock"));
+        checks.push(("its frames socket", frames.is_ok()));
+        checks.push(("not the session bus", UnixStream::connect(variable("PROBE_BUS")).is_err()));
+        checks.push(("the driver image", fs::read(variable("PROBE_IMAGE")).is_ok()));
+        checks.push(("the old address layout", personality() & ADDR_COMPAT_LAYOUT != 0));
     }
     if env::var_os("PROBE_BRIDGED").is_some() {
         let device = fs::read_link(format!("/proc/self/fd/{TAP_FD}"));
@@ -196,7 +221,7 @@ fn ends_with_qemu(pid: u32) -> bool {
 }
 
 /// Runs the plan's words with this program as QEMU, in namespaces or not.
-fn run_jailed(namespaces: bool, on: Network) -> bool {
+fn run_jailed(namespaces: bool, on: Case) -> bool {
     let scratch = Scratch::new();
     let context = scratch_context(&scratch);
     let (own, other) = (machine(&scratch, "own"), machine(&scratch, "other"));
@@ -209,7 +234,18 @@ fn run_jailed(namespaces: bool, on: Network) -> bool {
     let qemu = scratch.path("qemu/build/qemu-system-x86_64");
     fs::create_dir_all(qemu.parent().unwrap()).unwrap();
     fs::copy(env::current_exe().unwrap(), &qemu).unwrap();
-    let plan = VmPlan::new(&context, &own, Boot::Gpu, slots::number(3), 0);
+    let forwarded = on == Case::ForwardedGpu;
+    let (own, boot) = if forwarded {
+        let gpu = UbuntuBoot::WithGpu {
+            image: scratch.write("store/linux-driver/driver.iso", "the driver"),
+            allow_list: scratch.write("program/linux/allow.txt", ""),
+            sensor_daemon: scratch.write("qemu/build/nvfwd-sensord", ""),
+        };
+        (Machine { kind: Kind::Linux, vars: String::new(), ..own }, Boot::Ubuntu(gpu))
+    } else {
+        (own, Boot::Gpu)
+    };
+    let plan = VmPlan::new(&context, &own, boot, slots::number(3), 0);
     fs::create_dir_all(&plan.run_folder).unwrap();
     // The daemon's sockets, which the launcher connects to for a QEMU with no sound.
     let _daemon =
@@ -224,7 +260,7 @@ fn run_jailed(namespaces: bool, on: Network) -> bool {
     let jail = plan.with_backing_files(jail).unwrap();
     let granted_base = jail.backing_files[0].clone();
     // A real VM may hold the slot's own port.
-    let (passt, bridged) = (on == Network::Passt, on == Network::Bridged);
+    let (passt, bridged) = (on == Case::Passt, on == Case::Bridged);
     let mode = if bridged { Mode::Bridged } else { Mode::Nat };
     let network = NetworkPlan { passt, mode, bridge: "br7".into(), ..plan.network.clone() };
     let plan = VmPlan { qemu, qemu_files: None, jail: Some(jail), agent_port: free_port(), network, ..plan };
@@ -241,6 +277,12 @@ fn run_jailed(namespaces: bool, on: Network) -> bool {
     if bridged {
         run.env("PROBE_BRIDGED", "1").env(HELPER_VARIABLE, "1");
     }
+    if forwarded {
+        let bus = Path::new(&env::var_os("XDG_RUNTIME_DIR").unwrap_or_default()).join("bus");
+        run.env("PROBE_FORWARDED", "1")
+            .env("PROBE_BUS", bus)
+            .env("PROBE_IMAGE", scratch.path("store/linux-driver/driver.iso"));
+    }
     let done = run
         .env(PROBE_VARIABLE, "1")
         .env("PROBE_OWN", folder_of(&own))
@@ -248,7 +290,10 @@ fn run_jailed(namespaces: bool, on: Network) -> bool {
         .env("PROBE_BASE", &granted_base)
         .env("PROBE_RUN", &plan.run_folder)
         .env("PROBE_HOME", env::var_os("HOME").unwrap())
-        .env("PROBE_AGENT_PORT", plan.agent_port.to_string())
+        .env(
+            "PROBE_AGENT_PORT",
+            if forwarded { env::var("SSH_PORT").unwrap() } else { plan.agent_port.to_string() },
+        )
         .env("PROBE_OTHER_PORT", free_port().to_string())
         .status()
         .unwrap();
@@ -278,13 +323,15 @@ fn main() {
         println!("skipped: {refusal}");
         return;
     }
-    let mut networks = vec![Network::Nat, Network::Bridged];
+    // SAFETY: no thread exists yet. Ubuntu's SSH port, which a real VM may hold.
+    unsafe { env::set_var("SSH_PORT", free_port().to_string()) };
+    let mut cases = vec![Case::Nat, Case::Bridged, Case::ForwardedGpu];
     if passt_installed() {
-        networks.push(Network::Passt);
+        cases.push(Case::Passt);
     } else {
         println!("on passt ... skipped, as passt isn't installed");
     }
-    for on in networks {
+    for on in cases {
         assert!(run_jailed(false, on), "jailed, without namespaces, {on:?}");
         println!("without namespaces, {on:?} ... ok");
         if sandbox_runs() {

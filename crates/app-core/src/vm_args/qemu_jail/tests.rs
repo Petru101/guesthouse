@@ -279,3 +279,62 @@ fn a_backing_file_in_the_shared_folder_is_refused() {
     let refused = plan.with_backing_files(jail(true)).unwrap_err();
     assert!(refused.0.contains("in the shared folder"), "{}", refused.0);
 }
+
+fn ubuntu_with_gpu(namespaces: bool) -> (Scratch, VmPlan) {
+    let scratch = Scratch::new();
+    let context = scratch_context(&scratch);
+    let machine = Machine {
+        kind: crate::machine::Kind::Linux,
+        ..Machine::new("ubuntu", "Ubuntu", "/m/ubuntu/disk.qcow2", "")
+    };
+    let boot = Boot::Ubuntu(crate::vm_args::UbuntuBoot::WithGpu {
+        image: "/store/linux-driver/driver.iso".into(),
+        allow_list: "/p/linux/allow.txt".into(),
+        sensor_daemon: "/p/qemu/build/nvfwd-sensord".into(),
+    });
+    let plan = VmPlan::new(&context, &machine, boot, slots::number(2), 0);
+    let jail = QemuJail { sound_socket: None, ..jail(namespaces) };
+    (scratch, VmPlan { jail: Some(jail), qemu: "/p/qemu/build/qemu-system-x86_64".into(), ..plan })
+}
+
+#[test]
+fn the_forwarded_gpu_gets_its_device_files_and_not_windows_ones() {
+    let (scratch, plan) = ubuntu_with_gpu(true);
+    for node in ["dev/nvidia0", "dev/nvidiactl", "dev/nvidia-modeset", "dev/dri/renderD128"] {
+        scratch.write(node, "");
+    }
+    let rules = plan.qemu_jail_plan_under(plan.jail.as_ref().unwrap(), &scratch.path("dev"));
+    let devices = granted(&rules, Grant::Device);
+    assert!(devices.contains(&scratch.path("dev/nvidia0").display().to_string()));
+    assert!(!devices.contains(&scratch.path("dev/nvidia-modeset").display().to_string()));
+    assert!(devices.contains(&"/dev/kvm".to_owned()));
+    assert_eq!(granted(&rules, Grant::Write), ["/m/ubuntu/disk.qcow2"], "no firmware file, no shared memory");
+    let read = granted(&rules, Grant::Read);
+    assert!(read.contains(&"/store/linux-driver/driver.iso".to_owned()));
+    assert!(read.contains(&"/p/linux/allow.txt".to_owned()));
+    assert!(granted(&rules, Grant::Run).contains(&"/p/qemu/build/nvfwd-sensord".to_owned()));
+    assert!(!rules.paths.iter().any(|(_, path)| path == Path::new("/m/ubuntu")), "its folder holds its key");
+    assert_eq!(rules.network.tcp_bind, Ports::Only(vec![plan.ssh_port()]));
+    assert_eq!(rules.network.tcp_connect, Ports::Any, "Ubuntu's own line is NAT");
+}
+
+#[test]
+fn the_forwarded_gpu_keeps_its_address_layout_and_the_viewers_pid() {
+    let (_scratch, plan) = ubuntu_with_gpu(true);
+    let command = plan.qemu_command();
+    assert_eq!(command[0], "bwrap");
+    assert!(!command.iter().any(|word| word == "--unshare-pid"), "the D-Bus display needs the viewer's pid");
+    // The last time each word comes: bubblewrap binds the launcher before it runs it.
+    let at = |word: &str| command.iter().rposition(|found| found == word).unwrap();
+    // The filter refuses changing it, so it's set before the launcher.
+    assert!(at("bwrap") < at("setarch") && at("setarch") < at("/p/guesthouse-jail"));
+    assert_eq!(command[at("setarch")..at("setarch") + 3], ["setarch", "x86_64", "-L"]);
+    assert!(at("/p/guesthouse-jail") < at("/p/qemu/build/qemu-system-x86_64"));
+    assert!(
+        !command.iter().any(|word| word == "--no-new-unix-sockets"),
+        "the device makes the socket its frames are offered on"
+    );
+    assert!(plan.qemu_arguments().ends_with(&["-sandbox".to_owned(), QEMU_SANDBOX.to_owned()]));
+    let (_scratch, plain) = ubuntu_with_gpu(false);
+    assert_eq!(plain.qemu_command()[..4], ["setarch", "x86_64", "-L", "/p/guesthouse-jail"]);
+}

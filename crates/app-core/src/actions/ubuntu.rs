@@ -5,17 +5,18 @@ use super::{KEY_POLL, Task, plan_for, start_if_there_is_room};
 use crate::disk_image::disk_size_gib;
 use crate::failure::{Failure, Result};
 use crate::iso::kernel_package;
+use crate::jailing::{decide, gpu_refusal};
 use crate::library::make_disk;
 use crate::linux::driver_host::LoaderHost;
 use crate::linux::driver_image::{Outcome, prepare};
 use crate::linux::forwarding::forwarding_problem;
-use crate::linux::gpu_off::{GUEST_NO_IMAGE, GUEST_TURNED_OFF, GpuOff};
+use crate::linux::gpu_off::{GUEST_NO_IMAGE, GUEST_NO_JAIL, GUEST_TURNED_OFF, GpuOff};
 use crate::linux::layout::ALLOW_LIST;
 use crate::linux::seed::make_seed;
 use crate::linux::{guest_sources, sensor_daemon};
 use crate::network::{Protocol, port_taken};
 use crate::start_checks::start_problems;
-use crate::vm_args::{Boot, INSTALL_LOG, UbuntuBoot, UbuntuInstall, ssh_port};
+use crate::vm_args::{Boot, INSTALL_LOG, UbuntuBoot, UbuntuInstall, VmPlan, ssh_port};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -108,14 +109,17 @@ fn wait_for_poweroff(task: &Task) -> Result<()> {
     Ok(())
 }
 
+/// A boot with no GPU, whose reason reaches the guest.
+fn refused(task: &Task, off: &GpuOff) -> Result<UbuntuBoot> {
+    let reason_file = task.run_file(REASON_FILE);
+    task.context.make_run_folder(None)?;
+    fs::write(&reason_file, off.guest_text())?;
+    Ok(UbuntuBoot::NoGpu { reason_file })
+}
+
 fn gpu_boot(task: &mut Task) -> Result<UbuntuBoot> {
     let context = task.context;
-    let reason_file = task.run_file(REASON_FILE);
-    let refused = |task: &mut Task, off: GpuOff| -> Result<UbuntuBoot> {
-        task.context.make_run_folder(None)?;
-        fs::write(&reason_file, off.guest_text())?;
-        Ok(UbuntuBoot::NoGpu { reason_file: reason_file.clone() })
-    };
+    let refused = |task: &mut Task, off: GpuOff| refused(task, &off);
     if !task.machine.gpu_preview {
         return refused(task, GpuOff::new(GUEST_TURNED_OFF, GUEST_TURNED_OFF));
     }
@@ -168,9 +172,29 @@ pub fn start(task: &mut Task) -> Result<()> {
         )));
     }
     let boot = gpu_boot(task)?;
+    let plan = jailed(task, plan_for(task.context, &task.machine, Boot::Ubuntu(boot)))?;
     task.step("Starting the VM");
-    let plan = plan_for(task.context, &task.machine, Boot::Ubuntu(boot));
     task.host.start(&plan, &task.machine)
+}
+
+/// The forwarded GPU only goes to a jailed QEMU, as on Windows. A PC that can't jail it starts the
+/// guest without the GPU and says why, unless the machine may start without a jail.
+pub(super) fn jailed(task: &mut Task, plan: VmPlan) -> Result<VmPlan> {
+    if !plan.has_forwarded_gpu() {
+        return Ok(plan);
+    }
+    match decide(task.context, &task.machine, &plan, &(task.context.jail_offer)(&plan)) {
+        Ok(choice) => {
+            let jail = choice.qemu.map(|jail| plan.with_backing_files(jail)).transpose()?;
+            Ok(VmPlan { jail, jail_note: choice.note, ..plan })
+        }
+        Err(reason) => {
+            let detail = gpu_refusal(reason);
+            task.error = format!("Starting without the GPU: {detail}");
+            let boot = refused(task, &GpuOff::new(GUEST_NO_JAIL, detail))?;
+            Ok(VmPlan { boot: Boot::Ubuntu(boot), ..plan })
+        }
+    }
 }
 
 #[cfg(test)]
@@ -280,6 +304,74 @@ mod tests {
         if listener.is_ok() || found.is_err() {
             assert!(found.unwrap_err().0.contains("Set SSH_PORT"));
         }
+    }
+
+    fn with_the_gpu(task: &Task) -> VmPlan {
+        let boot = UbuntuBoot::WithGpu {
+            image: "/store/driver.iso".into(),
+            allow_list: "/p/allow.txt".into(),
+            sensor_daemon: "/p/nvfwd-sensord".into(),
+        };
+        plan_for(task.context, &task.machine, Boot::Ubuntu(boot))
+    }
+
+    fn a_kernel_with_landlock(_: &VmPlan) -> crate::jailing::Offer {
+        crate::jailing::Offer {
+            support: guesthouse_jail::Support { landlock_abi: 10, seccomp: true },
+            ..crate::jailing::Offer::nothing()
+        }
+    }
+
+    #[test]
+    fn the_gpu_goes_to_a_jailed_qemu() {
+        let scratch = Scratch::new();
+        let mut context = scratch_context(&scratch);
+        context.jail_offer = a_kernel_with_landlock;
+        let host = RecordingHost::default();
+        let mut task = Task::new(&context, &host, "start", ubuntu(&context));
+        let wanted = with_the_gpu(&task);
+        let plan = jailed(&mut task, wanted).unwrap();
+        assert!(plan.has_forwarded_gpu());
+        let jail = plan.jail.as_ref().unwrap();
+        assert!(!jail.namespaces && jail.launcher.ends_with("guesthouse-jail"));
+        assert!(plan.jail_note.starts_with("Jailed, without namespaces"), "{}", plan.jail_note);
+        assert_eq!(task.error, "");
+    }
+
+    #[test]
+    fn a_pc_that_cant_jail_qemu_only_costs_the_gpu_unless_allowed() {
+        let scratch = Scratch::new();
+        let context = scratch_context(&scratch);
+        let host = RecordingHost::default();
+        let mut task = Task::new(&context, &host, "start", ubuntu(&context));
+        let wanted = with_the_gpu(&task);
+        let plan = jailed(&mut task, wanted).unwrap();
+        let Boot::Ubuntu(UbuntuBoot::NoGpu { reason_file }) = &plan.boot else { panic!("{:?}", plan.boot) };
+        assert!(fs::read_to_string(reason_file).unwrap().starts_with(GUEST_NO_JAIL));
+        assert!(plan.jail.is_none());
+        assert!(
+            task.error.contains("Landlock") && task.error.contains("Start without a jail"),
+            "{}",
+            task.error
+        );
+        let allowed = Machine { start_without_jail: true, ..ubuntu(&context) };
+        let mut task = Task::new(&context, &host, "start", allowed);
+        let wanted = with_the_gpu(&task);
+        let plan = jailed(&mut task, wanted).unwrap();
+        assert!(plan.has_forwarded_gpu() && plan.jail.is_none());
+        assert!(plan.jail_note.starts_with("Not jailed: "), "{}", plan.jail_note);
+    }
+
+    #[test]
+    fn a_guest_with_no_gpu_needs_no_jail() {
+        let scratch = Scratch::new();
+        let context = scratch_context(&scratch);
+        let host = RecordingHost::default();
+        let mut task = Task::new(&context, &host, "start", ubuntu(&context));
+        let boot = Boot::Ubuntu(UbuntuBoot::NoGpu { reason_file: "/r/reason".into() });
+        let wanted = plan_for(&context, &task.machine, boot.clone());
+        let plan = jailed(&mut task, wanted).unwrap();
+        assert_eq!((plan.boot, plan.jail, plan.jail_note), (boot, None, String::new()));
     }
 
     #[test]
