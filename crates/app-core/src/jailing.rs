@@ -10,7 +10,6 @@ use crate::context::Context;
 use crate::failure::{Failure, Result};
 use crate::linux::forwarding::sandbox_runs;
 use crate::machine::Machine;
-use crate::network::Mode;
 use crate::vm_args::{QemuJail, VmPlan};
 use guesthouse_jail::Support;
 use std::fs;
@@ -85,12 +84,7 @@ pub struct Choice {
 }
 
 fn without_namespaces(plan: &VmPlan, landlock_abi: u32) -> String {
-    let why = if plan.network.mode == Mode::Bridged {
-        "a bridged network's helper can't work inside them"
-    } else {
-        "bubblewrap can't make them on this PC"
-    };
-    let mut note = format!("Jailed, without namespaces: {why}.");
+    let mut note = "Jailed, without namespaces: bubblewrap can't make them on this PC.".to_owned();
     // Namespaces hide the session bus and the rest. Without them, only a newer Landlock can, or
     // QEMU getting its sockets from the launcher, which it can't with sound.
     if landlock_abi < SOCKETS_BY_PATH_ABI && plan.sound.is_some() {
@@ -137,6 +131,7 @@ pub fn read_note(run_folder: &Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::network::Mode;
     use crate::slots;
     use crate::testing::{Scratch, scratch_context};
     use crate::vm_args::Boot;
@@ -203,10 +198,11 @@ mod tests {
     }
 
     #[test]
-    fn a_bridged_machine_says_why_it_has_no_namespaces() {
+    fn a_bridged_machine_has_the_whole_jail() {
         let bridged = Machine { network_mode: Mode::Bridged, ..windows() };
         let choice = choose_for(&bridged, &offer(10, true)).unwrap();
-        assert!(choice.note.contains("bridged"), "{}", choice.note);
+        assert!(choice.qemu.unwrap().namespaces);
+        assert_eq!(choice.note, "");
     }
 
     #[test]

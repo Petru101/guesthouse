@@ -3,14 +3,16 @@
 //! that had taken QEMU over would, and says how that went with its exit code. It has no sound, so the
 //! launcher opens QEMU's unix sockets and QEMU may make none. Its disk is a qcow2 on a base outside
 //! its folder, as a disk made by hand can be. On passt, the launcher starts the real passt and the
-//! stand-in asks it for the gateway's address through the socket it was handed.
+//! stand-in asks it for the gateway's address through the socket it was handed. Bridged, this program
+//! also stands in for the bridge helper, and hands back an open file for the device.
 
 use guesthouse_app_core::linux::forwarding::sandbox_runs;
 use guesthouse_app_core::machine::Machine;
+use guesthouse_app_core::network::Mode;
 use guesthouse_app_core::slots;
 use guesthouse_app_core::testing::{Scratch, scratch_context};
 use guesthouse_app_core::vm_args::{
-    Boot, NetworkPlan, PASST_FD, PASST_PID_FILE, QemuJail, VmPlan, passt_installed,
+    Boot, NetworkPlan, PASST_FD, PASST_PID_FILE, QemuJail, TAP_FD, VmPlan, passt_installed,
 };
 use guesthouse_jail::Support;
 use std::env;
@@ -25,6 +27,42 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 const PROBE_VARIABLE: &str = "JAIL_PROBE";
+const HELPER_VARIABLE: &str = "JAIL_PROBE_HELPER";
+/// What the pretend bridge helper hands back for the device.
+const PRETEND_DEVICE: &str = "/dev/null";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Network {
+    Nat,
+    Passt,
+    Bridged,
+}
+
+/// Stands in for QEMU's bridge helper: sends an open file back through the descriptor it's told of.
+fn pretend_bridge_helper() {
+    let socket: i32 = env::args().find_map(|word| word.strip_prefix("--fd=")?.parse().ok()).unwrap();
+    let device = File::open(PRETEND_DEVICE).unwrap();
+    let fd = std::os::fd::AsRawFd::as_raw_fd(&device);
+    let space = unsafe { libc::CMSG_SPACE(size_of::<i32>() as u32) } as usize;
+    let mut control = vec![0u8; space];
+    let mut byte = [0u8; 1];
+    let mut part = libc::iovec { iov_base: byte.as_mut_ptr().cast(), iov_len: 1 };
+    // SAFETY: a zeroed msghdr is an empty one, and every pointer set here lives across the call.
+    let mut message: libc::msghdr = unsafe { std::mem::zeroed() };
+    message.msg_iov = &raw mut part;
+    message.msg_iovlen = 1;
+    message.msg_control = control.as_mut_ptr().cast();
+    message.msg_controllen = space;
+    // SAFETY: the control buffer has room for one descriptor's header, filled in before the send.
+    unsafe {
+        let header = libc::CMSG_FIRSTHDR(&raw const message);
+        (*header).cmsg_level = libc::SOL_SOCKET;
+        (*header).cmsg_type = libc::SCM_RIGHTS;
+        (*header).cmsg_len = libc::CMSG_LEN(size_of::<i32>() as u32) as usize;
+        libc::CMSG_DATA(header).cast::<i32>().write_unaligned(fd);
+        assert_eq!(libc::sendmsg(socket, &raw const message, 0), 1);
+    }
+}
 
 fn variable(name: &str) -> PathBuf {
     env::var_os(name).map(PathBuf::from).unwrap()
@@ -111,6 +149,10 @@ fn probe() {
     if env::var_os("PROBE_PASST").is_some() {
         checks.push(("passt through its socket", passt_answers()));
     }
+    if env::var_os("PROBE_BRIDGED").is_some() {
+        let device = fs::read_link(format!("/proc/self/fd/{TAP_FD}"));
+        checks.push(("the bridge's device", device.is_ok_and(|path| path == Path::new(PRETEND_DEVICE))));
+    }
     let failed: Vec<&str> = checks.iter().filter(|(_, held)| !held).map(|(name, _)| *name).collect();
     if !failed.is_empty() {
         eprintln!("not as it should be: {failed:?}");
@@ -154,7 +196,7 @@ fn ends_with_qemu(pid: u32) -> bool {
 }
 
 /// Runs the plan's words with this program as QEMU, in namespaces or not.
-fn run_jailed(namespaces: bool, passt: bool) -> bool {
+fn run_jailed(namespaces: bool, on: Network) -> bool {
     let scratch = Scratch::new();
     let context = scratch_context(&scratch);
     let (own, other) = (machine(&scratch, "own"), machine(&scratch, "other"));
@@ -182,18 +224,24 @@ fn run_jailed(namespaces: bool, passt: bool) -> bool {
     let jail = plan.with_backing_files(jail).unwrap();
     let granted_base = jail.backing_files[0].clone();
     // A real VM may hold the slot's own port.
-    let network = NetworkPlan { passt, ..plan.network.clone() };
+    let (passt, bridged) = (on == Network::Passt, on == Network::Bridged);
+    let mode = if bridged { Mode::Bridged } else { Mode::Nat };
+    let network = NetworkPlan { passt, mode, bridge: "br7".into(), ..plan.network.clone() };
     let plan = VmPlan { qemu, qemu_files: None, jail: Some(jail), agent_port: free_port(), network, ..plan };
-    let command = plan.qemu_command();
+    let mut command = plan.qemu_command();
+    if let Some(at) = command.iter().position(|word| word == "--tap") {
+        command[at + 1] = env::current_exe().unwrap().display().to_string();
+    }
     let folder_of = |machine: &Machine| Path::new(&machine.disk).parent().unwrap().to_owned();
     let mut run = Command::new(&command[0]);
+    run.args(&command[1..]).env_clear().envs(plan.qemu_environment());
     if passt {
         run.env("PROBE_PASST", "1");
     }
+    if bridged {
+        run.env("PROBE_BRIDGED", "1").env(HELPER_VARIABLE, "1");
+    }
     let done = run
-        .args(&command[1..])
-        .env_clear()
-        .envs(plan.qemu_environment())
         .env(PROBE_VARIABLE, "1")
         .env("PROBE_OWN", folder_of(&own))
         .env("PROBE_OTHER", folder_of(&other))
@@ -218,6 +266,10 @@ fn run_jailed(namespaces: bool, passt: bool) -> bool {
 }
 
 fn main() {
+    if env::var_os(HELPER_VARIABLE).is_some() && env::args().any(|word| word.starts_with("--fd=")) {
+        pretend_bridge_helper();
+        return;
+    }
     if env::var_os(PROBE_VARIABLE).is_some() {
         probe();
         return;
@@ -226,19 +278,20 @@ fn main() {
         println!("skipped: {refusal}");
         return;
     }
-    let networks: &[bool] = if passt_installed() { &[false, true] } else { &[false] };
-    if !passt_installed() {
+    let mut networks = vec![Network::Nat, Network::Bridged];
+    if passt_installed() {
+        networks.push(Network::Passt);
+    } else {
         println!("on passt ... skipped, as passt isn't installed");
     }
-    for &passt in networks {
-        let on = if passt { ", on passt" } else { "" };
-        assert!(run_jailed(false, passt), "jailed, without namespaces{on}");
-        println!("without namespaces{on} ... ok");
+    for on in networks {
+        assert!(run_jailed(false, on), "jailed, without namespaces, {on:?}");
+        println!("without namespaces, {on:?} ... ok");
         if sandbox_runs() {
-            assert!(run_jailed(true, passt), "jailed, in namespaces{on}");
-            println!("in namespaces{on} ... ok");
+            assert!(run_jailed(true, on), "jailed, in namespaces, {on:?}");
+            println!("in namespaces, {on:?} ... ok");
         } else {
-            println!("in namespaces{on} ... skipped, as bubblewrap can't make them here");
+            println!("in namespaces, {on:?} ... skipped, as bubblewrap can't make them here");
         }
     }
 }

@@ -170,10 +170,9 @@ impl VmPlan {
         })
     }
 
-    /// Whether this QEMU runs in bubblewrap's namespaces as well. A bridged network's helper has to
-    /// gain its privileges, and inside bubblewrap it can't.
+    /// Whether this QEMU runs in bubblewrap's namespaces as well.
     pub fn in_namespaces(&self, jail: &QemuJail) -> bool {
-        jail.namespaces && self.tap().is_none()
+        jail.namespaces
     }
 
     /// bubblewrap's words, with each path of the plan bound at its own place, so the plan means the
@@ -200,8 +199,9 @@ impl VmPlan {
     }
 
     /// What goes in front of QEMU for a jailed GPU machine, up to the program's own words. In
-    /// namespaces, passt starts before bubblewrap, as nothing of its should be inside, and the
-    /// launcher runs twice: once to start it, and once inside to jail QEMU.
+    /// namespaces, passt and a bridged network's helper go before bubblewrap: passt has a sandbox of
+    /// its own, and the helper has to gain its privileges, which it can't inside. So the launcher
+    /// runs twice, once to start those and once inside to jail QEMU.
     pub(super) fn jail_words(&self) -> Vec<String> {
         let Some(jail) = &self.jail else { return Vec::new() };
         let plan = self.qemu_jail_plan(jail);
@@ -216,11 +216,11 @@ impl VmPlan {
         let launcher = jail.launcher.display().to_string();
         let mut words = Vec::new();
         if self.in_namespaces(jail) {
-            if jailing.passt.is_some() {
+            if jailing.passt.is_some() || jailing.tap.is_some() {
                 let opening = Launch {
                     plan: None,
                     passt: jailing.passt.take(),
-                    tap: None,
+                    tap: jailing.tap.take(),
                     unix_sockets: Vec::new(),
                     no_new_unix_sockets: false,
                     program: Vec::new(),

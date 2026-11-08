@@ -99,14 +99,21 @@ fn bubblewrap_comes_first_and_binds_each_file_where_it_is() {
 fn without_namespaces_the_launcher_comes_first() {
     let (_scratch, plan) = jailed(windows(), false);
     assert_eq!(plan.qemu_command()[0], "/p/guesthouse-jail");
+    let (_scratch, bridged) = jailed(Machine { network_mode: Mode::Bridged, ..windows() }, false);
+    let command = bridged.qemu_command();
+    assert_eq!(command[0], "/p/guesthouse-jail");
+    assert!(!command.iter().any(|word| word == "--open-only" || word == "bwrap"), "one launcher does it all");
+    assert!(command.iter().any(|word| word == "--tap"));
 }
 
 #[test]
-fn a_bridged_machine_gets_its_device_from_the_launcher_and_no_namespaces() {
+fn a_bridged_machine_gets_its_device_from_the_launcher_before_bubblewrap() {
     let (_scratch, plan) = jailed(Machine { network_mode: Mode::Bridged, ..windows() }, true);
     let command = plan.qemu_command();
-    assert_eq!(command[0], "/p/guesthouse-jail");
+    assert_eq!(command[..2], ["/p/guesthouse-jail".to_owned(), "--open-only".to_owned()]);
     let tap = command.iter().position(|word| word == "--tap").unwrap();
+    assert!(tap < command.iter().position(|word| word == "bwrap").unwrap());
+    assert_eq!(command.iter().filter(|word| *word == "--tap").count(), 1);
     assert_eq!(command[tap + 2..tap + 4], ["br0".to_owned(), TAP_FD.to_string()]);
     assert!(
         plan.qemu_arguments()
