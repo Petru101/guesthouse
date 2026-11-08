@@ -99,6 +99,19 @@ fn a_plain_machine_starts_through_the_host_with_its_iso() {
 }
 
 #[test]
+fn a_gpu_machine_with_no_setup_is_refused_before_anything_starts() {
+    let scratch = Scratch::new();
+    let context = plain_task_context(&scratch);
+    let vm = machine(&context);
+    crate::agent::make_token(&context, &vm).unwrap();
+    let host = RecordingHost::default();
+    let mut task = Task::new(&context, &host, "start", vm);
+    let refused = start(&mut task).unwrap_err();
+    assert_eq!(refused.0, crate::start_checks::NO_SETUP);
+    assert!(host.said().is_empty(), "nothing was started");
+}
+
+#[test]
 fn a_gpu_machine_starts_through_the_same_host_and_sets_up_its_desktop() {
     let scratch = Scratch::new();
     let mut context = plain_task_context(&scratch);
