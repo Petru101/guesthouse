@@ -221,10 +221,12 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             RegistryName::Value(name) => RegistryName::Value(name.to_lowercase()),
             path => path.clone(),
         };
+        // Windows fails the lookup of a value that isn't there. A success with the buffer as it came
+        // reads as a value found, which is how Direct3D 9 took it.
         let Some(value) = self.backend.registry_value(&lookup) else {
             log::debug!("no registry value for {:?}", query.name);
             query.unchanged(out);
-            return Ok(Status::SUCCESS);
+            return Ok(Status::NOT_FOUND);
         };
         // A loader that asks for the wrong type tries the other when this fails.
         if value.value_type.is_some_and(|value_type| value_type != query.value_type) {
