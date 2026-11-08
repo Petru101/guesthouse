@@ -23,6 +23,11 @@ pub const SECOND_INSTANCE_REFUSAL: &str = "A second instance leaves GPU-PV alone
 /// The daemon can't start a GPU machine without what setup takes from NVIDIA's installer.
 pub const NO_SETUP: &str =
     "A GPU machine needs setup first, and it hasn't been run. Run Setup Again from the menu.";
+/// Without it the app can't reach the guest's agent, so the display driver and the rest of what a
+/// start does in Windows would never happen. Only an install makes one, so a machine from before
+/// each had its own must be given the old one.
+pub const NO_TOKEN: &str = "This machine has no guest token, so the app can't reach Windows to finish starting it. \
+                            Choose the token file it was installed with in its settings, under Guest Token.";
 
 /// What several machines share, read once from the PC.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -130,8 +135,13 @@ pub fn start_problems(context: &Context, machine: &Machine) -> Result<Vec<String
     found.extend(share_problem(context, &machine.share));
     if machine.kind == Kind::Windows && !gpu_ready(context) {
         found.push(NO_GPU_PART.to_owned());
-    } else if machine.has_gpu() && !setup_done(context) {
-        found.push(NO_SETUP.to_owned());
+    } else if machine.has_gpu() {
+        if !setup_done(context) {
+            found.push(NO_SETUP.to_owned());
+        }
+        if !machine.token_file(context).exists() {
+            found.push(NO_TOKEN.to_owned());
+        }
     }
     if machine.has_gpu() && context.second_instance() {
         found.push(SECOND_INSTANCE_REFUSAL.to_owned());
@@ -349,6 +359,29 @@ mod tests {
         assert!(!says(&start_problems(&context, &machine).unwrap(), NO_SETUP), "a plain VM");
         let installing = Machine { kind: Kind::Windows, installing: true, ..machine };
         assert!(!says(&start_problems(&context, &installing).unwrap(), NO_SETUP), "an install");
+    }
+
+    #[test]
+    fn a_gpu_machine_with_no_token_says_where_to_give_it_one() {
+        let scratch = Scratch::new();
+        let (context, machine) = startable(&scratch);
+        finish_setup(&context);
+        let gpu = Machine { kind: Kind::Windows, ..machine };
+        fs::create_dir_all(gpu.folder(&context)).unwrap();
+        assert_eq!(start_problems(&context, &gpu).unwrap(), [NO_TOKEN]);
+        assert!(NO_TOKEN.contains("Guest Token"), "the settings group the Token row is in");
+        crate::agent::make_token(&context, &gpu).unwrap();
+        assert!(start_problems(&context, &gpu).unwrap().is_empty());
+    }
+
+    #[test]
+    fn only_a_gpu_machine_needs_a_token_to_start() {
+        let scratch = Scratch::new();
+        let (context, machine) = startable(&scratch);
+        finish_setup(&context);
+        assert!(!says(&start_problems(&context, &machine).unwrap(), NO_TOKEN), "a plain VM");
+        let installing = Machine { kind: Kind::Windows, installing: true, ..machine };
+        assert!(!says(&start_problems(&context, &installing).unwrap(), NO_TOKEN), "an install makes it");
     }
 
     #[test]
