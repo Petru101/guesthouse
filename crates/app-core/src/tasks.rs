@@ -7,6 +7,7 @@ use crate::display::{read_state, ring_in, screen_text};
 use crate::failure::{Failure, Result};
 use crate::gpu_identity::read_state as read_identity;
 use crate::jailing;
+use crate::linux::guest_says;
 use crate::log::open_for_appending;
 use crate::machine::Machine;
 use crate::processes::{leftovers, memory_taken, running_slots, uses_disk};
@@ -104,6 +105,8 @@ pub struct Status {
     pub jail_note: String,
     /// Which card a GPU machine runs on, on a PC with more than one NVIDIA card.
     pub card_note: String,
+    /// What a running Linux guest last said about its GPU.
+    pub guest_gpu: String,
 }
 
 pub fn task_path(context: &Context, slot: Option<Slot>) -> PathBuf {
@@ -171,6 +174,10 @@ pub fn status(context: &Context, machine: &Machine) -> Status {
         && let Some(note) = folder.as_ref().and_then(|folder| read_note(folder))
     {
         found.error = note;
+    }
+    if found.state == State::Running && (machine.own_linux_gpu() || machine.wants_forwarded_gpu()) {
+        let said = folder.as_deref().and_then(guest_says::read);
+        found.guest_gpu = said.map(|said| said.text()).unwrap_or_default();
     }
     if machine.has_gpu() {
         let shown = read_state(context, machine);
