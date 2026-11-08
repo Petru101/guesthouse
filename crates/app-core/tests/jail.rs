@@ -87,6 +87,7 @@ fn run_jailed(namespaces: bool) -> bool {
         namespaces,
         qemu_sandbox: false,
         sound_socket: None,
+        backing_files: Vec::new(),
     };
     // A real VM may hold the slot's own port.
     let plan = VmPlan { qemu, qemu_files: None, jail: Some(jail), agent_port: free_port(), ..plan };

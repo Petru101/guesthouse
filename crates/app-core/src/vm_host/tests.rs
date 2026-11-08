@@ -277,6 +277,28 @@ fn a_kernel_with_landlock(_: &VmPlan) -> crate::jailing::Offer {
 }
 
 #[test]
+fn a_jailed_start_with_a_missing_backing_file_says_so_and_starts_nothing() {
+    let scratch = Scratch::new();
+    let mut context = scratch_context(&scratch);
+    let (daemon, qemu) = pretend_programs(&scratch, &mut context);
+    scratch.program("bin/guesthouse-jail", PRETEND_LAUNCHER);
+    context.jail_offer = a_kernel_with_landlock;
+    let (base, disk) = (scratch.path("base.qcow2"), scratch.path("disk.qcow2"));
+    let create = |words: &[&str]| assert!(Command::new("qemu-img").args(words).status().unwrap().success());
+    create(&["create", "-q", "-f", "qcow2", base.to_str().unwrap(), "1G"]);
+    create(&["create", "-q", "-f", "qcow2", "-b", "base.qcow2", "-F", "qcow2", disk.to_str().unwrap()]);
+    fs::remove_file(&base).unwrap();
+    let machine = Machine::new("vm", "VM", disk.to_str().unwrap(), "/v");
+    let plan = VmPlan::new(&context, &machine, Boot::Gpu, slots::first(), 0);
+    let refused = LocalHost { context: &context }.start(&plan, &machine).unwrap_err();
+    assert_eq!(
+        refused.0,
+        format!("The VM did not start, as its disk is built on {}, which is missing.", base.display())
+    );
+    assert_eq!((read_pid(&daemon), read_pid(&qemu)), (None, None));
+}
+
+#[test]
 fn a_jailed_start_runs_qemu_through_the_launcher_with_a_clean_environment() {
     let scratch = Scratch::new();
     let mut context = scratch_context(&scratch);
