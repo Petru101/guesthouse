@@ -14,6 +14,7 @@ pub mod fake_card;
 #[cfg(any(test, feature = "fake-rm"))]
 pub mod fake_engine;
 pub mod linux;
+pub mod listing;
 
 use std::fmt;
 use std::os::fd::OwnedFd;
