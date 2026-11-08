@@ -3,6 +3,7 @@ use crate::machine::Machine;
 use crate::network::Forward;
 use crate::slots;
 use crate::testing::{Scratch, scratch_context};
+use crate::vm_args::PASST_PID_FILE;
 use crate::vm_args::{Boot, NetworkPlan};
 
 fn jail(namespaces: bool) -> QemuJail {
@@ -98,14 +99,21 @@ fn bubblewrap_comes_first_and_binds_each_file_where_it_is() {
 fn without_namespaces_the_launcher_comes_first() {
     let (_scratch, plan) = jailed(windows(), false);
     assert_eq!(plan.qemu_command()[0], "/p/guesthouse-jail");
+    let (_scratch, bridged) = jailed(Machine { network_mode: Mode::Bridged, ..windows() }, false);
+    let command = bridged.qemu_command();
+    assert_eq!(command[0], "/p/guesthouse-jail");
+    assert!(!command.iter().any(|word| word == "--open-only" || word == "bwrap"), "one launcher does it all");
+    assert!(command.iter().any(|word| word == "--tap"));
 }
 
 #[test]
-fn a_bridged_machine_gets_its_device_from_the_launcher_and_no_namespaces() {
+fn a_bridged_machine_gets_its_device_from_the_launcher_before_bubblewrap() {
     let (_scratch, plan) = jailed(Machine { network_mode: Mode::Bridged, ..windows() }, true);
     let command = plan.qemu_command();
-    assert_eq!(command[0], "/p/guesthouse-jail");
+    assert_eq!(command[..2], ["/p/guesthouse-jail".to_owned(), "--open-only".to_owned()]);
     let tap = command.iter().position(|word| word == "--tap").unwrap();
+    assert!(tap < command.iter().position(|word| word == "bwrap").unwrap());
+    assert_eq!(command.iter().filter(|word| *word == "--tap").count(), 1);
     assert_eq!(command[tap + 2..tap + 4], ["br0".to_owned(), TAP_FD.to_string()]);
     assert!(
         plan.qemu_arguments()
@@ -114,13 +122,49 @@ fn a_bridged_machine_gets_its_device_from_the_launcher_and_no_namespaces() {
     );
 }
 
-#[test]
-fn passt_keeps_its_own_sandbox() {
-    let (_scratch, plan) = jailed(windows(), true);
+fn on_passt(machine: Machine, namespaces: bool) -> (Scratch, VmPlan) {
+    let (scratch, plan) = jailed(machine, namespaces);
     let plan = VmPlan { network: NetworkPlan { passt: true, ..plan.network.clone() }, ..plan };
-    assert!(plan.qemu_command().iter().any(|word| word == "--own-sandboxes"));
-    assert!(!plan.qemu_arguments().iter().any(|word| word == "-sandbox"));
-    assert_eq!(plan.qemu_jail_plan(&jail(true)).network.tcp_connect, Ports::Any);
+    (scratch, plan)
+}
+
+#[test]
+fn passt_is_started_by_the_launcher_and_qemu_gets_its_end() {
+    let (_scratch, plan) = on_passt(windows(), false);
+    let command = plan.qemu_command();
+    assert_eq!(command[0], "/p/guesthouse-jail");
+    let passt = command.iter().position(|word| word == "--passt").unwrap();
+    assert!(command[passt + 1].ends_with("passt"));
+    assert_eq!(command[passt + 2], PASST_FD.to_string());
+    assert_eq!(command[passt + 3], plan.run_folder.join(PASST_PID_FILE).display().to_string());
+    let passt_words: Vec<&str> =
+        command.windows(2).filter(|two| two[0] == "--passt-word").map(|two| two[1].as_str()).collect();
+    assert_eq!(passt_words[..3], ["--quiet", "--mtu", "1500"]);
+    assert!(!passt_words.contains(&"--pid"), "passt may not write in the run folder: {passt_words:?}");
+    let arguments = plan.qemu_arguments();
+    assert!(arguments.iter().any(|word| *word == format!("socket,model=e1000e,fd={PASST_FD}")));
+    assert!(arguments.ends_with(&["-sandbox".to_owned(), QEMU_SANDBOX.to_owned()]), "its own filter too");
+}
+
+#[test]
+fn in_namespaces_passt_starts_before_bubblewrap() {
+    let (_scratch, plan) = on_passt(windows(), true);
+    let command = plan.qemu_command();
+    assert_eq!(command[..2], ["/p/guesthouse-jail".to_owned(), "--open-only".to_owned()]);
+    let at = |word: &str| command.iter().position(|found| found == word).unwrap();
+    assert!(at("--passt") < at("bwrap"));
+    assert_eq!(command.iter().filter(|word| *word == "--passt").count(), 1);
+    let inner = command.iter().rposition(|word| word == "/p/guesthouse-jail").unwrap();
+    assert!(inner > at("bwrap") && command[inner + 1] != "--open-only");
+}
+
+#[test]
+fn on_passt_qemu_only_has_the_private_link() {
+    let (_scratch, plan) = on_passt(windows(), true);
+    let network = plan.qemu_jail_plan(&jail(true)).network;
+    assert_eq!(network.tcp_connect, Ports::none());
+    assert_eq!(network.udp_send, Ports::Only(vec![DNS_PORT]));
+    assert_eq!(network.tcp_bind, Ports::Only(vec![plan.agent_port, 8080]));
 }
 
 #[test]
@@ -234,4 +278,78 @@ fn a_backing_file_in_the_shared_folder_is_refused() {
     let (_plan_scratch, plan) = jailed(machine, true);
     let refused = plan.with_backing_files(jail(true)).unwrap_err();
     assert!(refused.0.contains("in the shared folder"), "{}", refused.0);
+}
+
+fn ubuntu_with_gpu(namespaces: bool) -> (Scratch, VmPlan) {
+    let scratch = Scratch::new();
+    let context = scratch_context(&scratch);
+    let machine = Machine {
+        kind: crate::machine::Kind::Linux,
+        ..Machine::new("ubuntu", "Ubuntu", "/m/ubuntu/disk.qcow2", "")
+    };
+    let boot = Boot::Ubuntu(crate::vm_args::UbuntuBoot::WithGpu {
+        image: "/store/linux-driver/driver.iso".into(),
+        allow_list: "/p/linux/allow.txt".into(),
+        sensor_daemon: "/p/qemu/build/nvfwd-sensord".into(),
+    });
+    let plan = VmPlan::new(&context, &machine, boot, slots::number(2), 0);
+    let jail = QemuJail { sound_socket: None, ..jail(namespaces) };
+    (scratch, VmPlan { jail: Some(jail), qemu: "/p/qemu/build/qemu-system-x86_64".into(), ..plan })
+}
+
+#[test]
+fn the_forwarded_gpu_gets_its_device_files_and_not_windows_ones() {
+    let (scratch, plan) = ubuntu_with_gpu(true);
+    for node in ["dev/nvidia0", "dev/nvidiactl", "dev/nvidia-modeset", "dev/dri/renderD128"] {
+        scratch.write(node, "");
+    }
+    let rules = plan.qemu_jail_plan_under(plan.jail.as_ref().unwrap(), &scratch.path("dev"));
+    let devices = granted(&rules, Grant::Device);
+    assert!(devices.contains(&scratch.path("dev/nvidia0").display().to_string()));
+    assert!(!devices.contains(&scratch.path("dev/nvidia-modeset").display().to_string()));
+    assert!(devices.contains(&"/dev/kvm".to_owned()));
+    assert_eq!(granted(&rules, Grant::Write), ["/m/ubuntu/disk.qcow2"], "no firmware file, no shared memory");
+    let read = granted(&rules, Grant::Read);
+    assert!(read.contains(&"/store/linux-driver/driver.iso".to_owned()));
+    assert!(read.contains(&"/p/linux/allow.txt".to_owned()));
+    assert!(granted(&rules, Grant::Run).contains(&"/p/qemu/build/nvfwd-sensord".to_owned()));
+    assert!(!rules.paths.iter().any(|(_, path)| path == Path::new("/m/ubuntu")), "its folder holds its key");
+    assert_eq!(rules.network.tcp_bind, Ports::Only(vec![plan.ssh_port()]));
+    assert_eq!(rules.network.tcp_connect, Ports::Any, "Ubuntu's own line is NAT");
+}
+
+#[test]
+fn the_forwarded_gpu_keeps_its_address_layout_and_the_viewers_pid() {
+    let (_scratch, plan) = ubuntu_with_gpu(true);
+    let command = plan.qemu_command();
+    assert_eq!(command[0], "bwrap");
+    assert!(!command.iter().any(|word| word == "--unshare-pid"), "the D-Bus display needs the viewer's pid");
+    // The last time each word comes: bubblewrap binds the launcher before it runs it.
+    let at = |word: &str| command.iter().rposition(|found| found == word).unwrap();
+    // The filter refuses changing it, so it's set before the launcher.
+    assert!(at("bwrap") < at("setarch") && at("setarch") < at("/p/guesthouse-jail"));
+    assert_eq!(command[at("setarch")..at("setarch") + 3], ["setarch", "x86_64", "-L"]);
+    assert!(at("/p/guesthouse-jail") < at("/p/qemu/build/qemu-system-x86_64"));
+    assert!(
+        !command.iter().any(|word| word == "--no-new-unix-sockets"),
+        "the device makes the socket its frames are offered on"
+    );
+    assert!(plan.qemu_arguments().ends_with(&["-sandbox".to_owned(), QEMU_SANDBOX.to_owned()]));
+    let (_scratch, plain) = ubuntu_with_gpu(false);
+    assert_eq!(plain.qemu_command()[..4], ["setarch", "x86_64", "-L", "/p/guesthouse-jail"]);
+}
+
+#[test]
+fn ubuntus_own_line_gets_none_of_the_machines_network_or_share() {
+    let (_scratch, plan) = ubuntu_with_gpu(true);
+    let settings = NetworkPlan { passt: true, ..plan.network.clone() };
+    let on_passt = VmPlan { network: settings, share: Some("/home/me/Shared".into()), ..plan.clone() };
+    let bridged = VmPlan { network: NetworkPlan { mode: Mode::Bridged, ..plan.network.clone() }, ..plan };
+    for plan in [on_passt, bridged] {
+        let command = plan.qemu_command();
+        assert!(!command.iter().any(|word| ["--passt", "--tap", "--open-only"].contains(&word.as_str())));
+        let rules = plan.qemu_jail_plan(plan.jail.as_ref().unwrap());
+        assert!(!rules.paths.iter().any(|(_, path)| path == Path::new("/home/me/Shared")));
+        assert_eq!(rules.network.tcp_bind, Ports::Only(vec![plan.ssh_port()]));
+    }
 }

@@ -217,6 +217,31 @@ fn release_frees_memory_only_when_no_other_vm_has_it() {
 }
 
 #[test]
+fn a_passt_left_running_is_ended_at_a_stop() {
+    let scratch = Scratch::new();
+    let mut context = scratch_context(&scratch);
+    context.processes = "/proc".into();
+    context.clock = Arc::new(QuickClock::default());
+    context.make_run_folder(None).unwrap();
+    let pid_file = context.run_folder(None).join(crate::vm_args::PASST_PID_FILE);
+    let mut passt = Command::new("sleep").arg(PRETEND_LIFE_SECONDS.to_string()).spawn().unwrap();
+    let stat = fs::read_to_string(format!("/proc/{}/stat", passt.id())).unwrap();
+    let started = guesthouse_jail::launch::start_time(&stat).unwrap();
+    fs::write(&pid_file, format!("{} {started}\n", passt.id())).unwrap();
+    let host = LocalHost { context: &context };
+    let plain = Machine { kind: Kind::Plain, ..Machine::new("vm", "VM", "/d", "/v") };
+    host.stop(&plain, 1).unwrap();
+    let ended = passt.try_wait().unwrap().is_some() || {
+        thread::sleep(NOTICE_WITHIN);
+        passt.try_wait().unwrap().is_some()
+    };
+    if !ended {
+        let _ = passt.kill();
+    }
+    assert!(ended, "the stop ended it");
+}
+
+#[test]
 fn last_words_are_the_end_of_the_output() {
     let scratch = Scratch::new();
     let context = scratch_context(&scratch);

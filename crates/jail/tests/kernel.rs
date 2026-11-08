@@ -1,7 +1,7 @@
 //! The jail on this PC's kernel. Each case runs in a child of its own, as a jail can't be undone,
 //! and the child's exit says whether everything it tried went as it should.
 
-use guesthouse_jail::launch::{Tap, open_tap};
+use guesthouse_jail::launch::{Passt, Tap, open_tap, start_passt};
 use guesthouse_jail::seccomp::{self, Threads, trap};
 use guesthouse_jail::{Grant, Plan, Ports, Support, filters, landlock};
 use std::env;
@@ -83,7 +83,7 @@ fn daemon_calls() {
 }
 
 fn qemu_calls() {
-    seccomp::install(&filters::qemu(false, false), Threads::This).unwrap();
+    seccomp::install(&filters::qemu(false), Threads::This).unwrap();
     let traced = unsafe { libc::ptrace(libc::PTRACE_ATTACH, libc::getppid(), 0, 0) };
     assert_eq!((traced, std::io::Error::last_os_error().raw_os_error()), (-1, Some(libc::EPERM)));
     assert_eq!(unsafe { libc::unshare(libc::CLONE_NEWUSER) }, -1);
@@ -135,8 +135,46 @@ fn bridged_device() {
     assert_eq!(flags & libc::FD_CLOEXEC, 0, "it stays open for QEMU");
 }
 
+const PASST_VARIABLE: &str = "JAIL_TEST_PASST";
+const PASST_AT: i32 = 11;
+
+/// Stands in for passt: checks its words, then answers one message on the socket it was given.
+fn pretend_passt() {
+    let arguments: Vec<String> = env::args().skip(1).collect();
+    assert_eq!(arguments[..4], ["--quiet", "--one", "--foreground", "--fd"]);
+    let socket: i32 = arguments[4].parse().unwrap();
+    let mut message = [0u8; 4];
+    let read = unsafe { libc::read(socket, message.as_mut_ptr().cast(), message.len()) };
+    unsafe { libc::write(socket, message.as_ptr().cast(), read as usize) };
+}
+
+fn passt_connection() {
+    let pid_file = folder().join("passt.pid");
+    let passt = Passt {
+        program: env::current_exe().unwrap(),
+        fd: PASST_AT,
+        pid_file: pid_file.clone(),
+        words: vec!["--quiet".into(), "--one".into()],
+    };
+    // SAFETY: the variable is set before any thread exists.
+    unsafe { env::set_var(PASST_VARIABLE, "1") };
+    start_passt(&passt).unwrap();
+    let flags = unsafe { libc::fcntl(PASST_AT, libc::F_GETFD) };
+    assert_eq!(flags & libc::FD_CLOEXEC, 0, "it stays open for QEMU");
+    let sent = unsafe { libc::write(PASST_AT, b"ping".as_ptr().cast(), 4) };
+    assert_eq!(sent, 4);
+    let mut answer = [0u8; 4];
+    let read = unsafe { libc::read(PASST_AT, answer.as_mut_ptr().cast(), 4) };
+    assert_eq!((read, &answer), (4, b"ping"), "passt's end is the other end of QEMU's");
+    let noted = fs::read_to_string(pid_file).unwrap();
+    let (pid, started) = noted.trim().split_once(' ').unwrap();
+    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default();
+    let still = guesthouse_jail::launch::start_time(&stat).map(|time| time.to_string());
+    assert!(still.is_none() || still.as_deref() == Some(started), "{noted} is passt's");
+}
+
 fn qemu_with_no_new_unix_sockets() {
-    seccomp::install(&filters::qemu(false, true), Threads::This).unwrap();
+    seccomp::install(&filters::qemu(true), Threads::This).unwrap();
     assert!(
         refused(UnixStream::connect("/run/user/1000/bus"))
             || unsafe { *libc::__errno_location() } == libc::EPERM
@@ -147,8 +185,9 @@ fn qemu_with_no_new_unix_sockets() {
     assert!(TcpListener::bind(("127.0.0.1", 0)).is_ok(), "the user network stays");
 }
 
-const CASES: [(&str, fn()); 7] = [
+const CASES: [(&str, fn()); 8] = [
     ("qemu_with_no_new_unix_sockets", qemu_with_no_new_unix_sockets),
+    ("passt_connection", passt_connection),
     ("bridged_device", bridged_device),
     ("files_and_ports", files_and_ports),
     ("devices", devices),
@@ -167,6 +206,10 @@ fn set_up(folder: &Path) {
 fn main() {
     if env::var_os(HELPER_VARIABLE).is_some() {
         pretend_bridge_helper();
+        return;
+    }
+    if env::var_os(PASST_VARIABLE).is_some() {
+        pretend_passt();
         return;
     }
     if let Ok(case) = env::var(CASE_VARIABLE) {

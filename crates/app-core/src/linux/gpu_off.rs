@@ -4,7 +4,7 @@
 pub const GUEST_TURNED_OFF: &str = "The GPU is turned off in this machine's settings.";
 pub const GUEST_NO_DEVICE: &str = "This QEMU has no nvfwd device.";
 pub const GUEST_NO_ALLOW_LIST: &str = "The host has no allow list for this guest's calls.";
-pub const GUEST_NO_SANDBOX: &str = "The host can't run QEMU's sandbox.";
+pub const GUEST_NO_JAIL: &str = "The host can't jail QEMU.";
 pub const GUEST_UNKNOWN_DRIVER: &str = "The host's NVIDIA driver is one this version doesn't know.";
 pub const GUEST_NO_SOURCE: &str = "The host doesn't have NVIDIA's source for its driver.";
 pub const GUEST_DRIVER_FILES: &str = "The host's NVIDIA driver files can't be used right now.";

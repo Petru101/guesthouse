@@ -12,6 +12,7 @@ use guesthouse_app_core::processes::qemu_pid;
 use guesthouse_app_core::settings::{driver_folder, write_setup};
 use guesthouse_app_core::tasks::{State, Status, launch, status};
 use guesthouse_app_core::text::base64_decode;
+use guesthouse_app_core::vm_args::{PASST_PID_FILE, passt_installed};
 use guesthouse_app_core::vm_host::LocalHost;
 use serde_json::{Value, json};
 use std::env;
@@ -30,6 +31,8 @@ const REAL_DAEMON_VARIABLE: &str = "GUESTHOUSE_TEST_DAEMON";
 const MOST_WAIT: Duration = Duration::from_secs(90);
 const POLL: Duration = Duration::from_millis(200);
 const PRETEND_LIFE: Duration = Duration::from_secs(120);
+/// The first forward on QEMU's user network is the agent's.
+const AGENT_FORWARD: &str = "hostfwd=tcp:127.0.0.1:";
 
 fn serve_monitor(mut stream: UnixStream) {
     let _ = stream.write_all(b"{\"QMP\": {}}\n");
@@ -115,8 +118,14 @@ fn pretend_qemu(arguments: &[String]) {
             let path = pair[1].strip_prefix("unix:").unwrap().split(',').next().unwrap();
             listen_on(path);
         }
-        if pair[0] == "-nic" {
-            let port = pair[1].split("hostfwd=tcp:127.0.0.1:").nth(1).unwrap().split('-').next().unwrap();
+        if pair[0] == "-nic" && pair[1].starts_with("socket,") {
+            // passt, started by the jail's launcher, is on the other end.
+            let fd = pair[1].split(',').find_map(|part| part.strip_prefix("fd=")).unwrap();
+            let target = fs::read_link(format!("/proc/self/fd/{fd}")).unwrap_or_default();
+            assert!(target.to_string_lossy().starts_with("socket:"), "passt's end is a socket: {target:?}");
+        }
+        if (pair[0] == "-nic" || pair[0] == "-netdev") && pair[1].contains(AGENT_FORWARD) {
+            let port = pair[1].split(AGENT_FORWARD).nth(1).unwrap().split('-').next().unwrap();
             serve_agent(port.parse().unwrap());
         }
     }
@@ -221,6 +230,16 @@ fn inner() {
     start_and_stop(&context, &windows);
     let daemons = context.paths.shared_file("ram", context.slot);
     assert!(!daemons.exists(), "the shared memory has been given back");
+    if passt_installed() {
+        let on_passt = Machine { passt: true, ..windows };
+        on_passt.save(&context).unwrap();
+        start_and_stop(&context, &on_passt);
+        let pid_file = context.run_folder(None).join(PASST_PID_FILE);
+        let noted = fs::read_to_string(pid_file).unwrap();
+        let passt: u32 = noted.split_whitespace().next().unwrap().parse().unwrap();
+        assert!(!Path::new(&format!("/proc/{passt}")).exists(), "passt went with QEMU");
+        println!("passt went with QEMU");
+    }
 }
 
 /// A port nothing has now. The real one could be held by a real VM.

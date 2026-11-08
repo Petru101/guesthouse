@@ -10,7 +10,6 @@ use crate::context::Context;
 use crate::failure::{Failure, Result};
 use crate::linux::forwarding::sandbox_runs;
 use crate::machine::Machine;
-use crate::network::Mode;
 use crate::vm_args::{QemuJail, VmPlan};
 use guesthouse_jail::Support;
 use std::fs;
@@ -27,9 +26,6 @@ const SOUND_SOCKET: &str = "pipewire-0";
 const SOUND_FOLDER_VARIABLES: [&str; 2] = ["PIPEWIRE_RUNTIME_DIR", "XDG_RUNTIME_DIR"];
 /// Landlock's ABI that can hold pathname sockets, such as the session bus, out of reach.
 const SOCKETS_BY_PATH_ABI: u32 = 9;
-/// passt builds its own sandbox with mounts, and Landlock refuses mounts to anything in a jail.
-const PASST_REASON: &str = "passt makes a sandbox of its own, and that can't be made inside the \
-                            jail. Turn passt off in the machine's network settings to have the jail.";
 const ALLOW_HINT: &str = "To start this machine anyway, turn on \"Start without a jail\" in its \
                           settings, and it will say so while it runs.";
 
@@ -88,15 +84,10 @@ pub struct Choice {
 }
 
 fn without_namespaces(plan: &VmPlan, landlock_abi: u32) -> String {
-    let why = if plan.network.mode == Mode::Bridged {
-        "a bridged network's helper can't work inside them"
-    } else {
-        "bubblewrap can't make them on this PC"
-    };
-    let mut note = format!("Jailed, without namespaces: {why}.");
+    let mut note = "Jailed, without namespaces: bubblewrap can't make them on this PC.".to_owned();
     // Namespaces hide the session bus and the rest. Without them, only a newer Landlock can, or
-    // QEMU getting its sockets from the launcher, which it can't with sound.
-    if landlock_abi < SOCKETS_BY_PATH_ABI && plan.sound.is_some() {
+    // QEMU getting its sockets from the launcher, which it can't with sound or the forwarded GPU.
+    if landlock_abi < SOCKETS_BY_PATH_ABI && !plan.can_pass_unix_sockets() {
         note += " This kernel can't keep QEMU from your desktop's sockets without them.";
     }
     note
@@ -104,25 +95,31 @@ fn without_namespaces(plan: &VmPlan, landlock_abi: u32) -> String {
 
 /// Decides, or refuses the start with the reason and what to do about it.
 pub fn choose(context: &Context, machine: &Machine, plan: &VmPlan, offer: &Offer) -> Result<Choice> {
+    decide(context, machine, plan, offer).map_err(|reason| {
+        Failure(format!("The VM did not start, as it can't be jailed: {reason} {ALLOW_HINT}"))
+    })
+}
+
+/// What the forwarded GPU's start says when there's no jail to be had. The VM still starts.
+pub fn gpu_refusal(reason: &str) -> String {
+    format!(
+        "QEMU can't be jailed here, and the GPU only goes to a jailed QEMU: {reason} To have the GPU \
+         anyway, turn on \"Start without a jail\" in the machine's settings, and it will say so while it runs."
+    )
+}
+
+/// Decides, or says why a jail can't be had.
+pub fn decide(
+    context: &Context,
+    machine: &Machine,
+    plan: &VmPlan,
+    offer: &Offer,
+) -> std::result::Result<Choice, &'static str> {
     if let Some(reason) = offer.support.refusal() {
         if !machine.start_without_jail {
-            return Err(Failure(format!(
-                "The VM did not start, as it can't be jailed: {reason} {ALLOW_HINT}"
-            )));
+            return Err(reason);
         }
         return Ok(Choice { qemu: None, daemon_jailed: false, note: format!("Not jailed: {reason}") });
-    }
-    if plan.network.passt {
-        if !machine.start_without_jail {
-            return Err(Failure(format!(
-                "The VM did not start, as its QEMU can't be jailed: {PASST_REASON} {ALLOW_HINT}"
-            )));
-        }
-        return Ok(Choice {
-            qemu: None,
-            daemon_jailed: true,
-            note: format!("QEMU not jailed: {PASST_REASON}"),
-        });
     }
     let jail = QemuJail {
         launcher: context.paths.binary(LAUNCHER),
@@ -152,6 +149,7 @@ pub fn read_note(run_folder: &Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::network::Mode;
     use crate::slots;
     use crate::testing::{Scratch, scratch_context};
     use crate::vm_args::Boot;
@@ -218,26 +216,24 @@ mod tests {
     }
 
     #[test]
-    fn a_bridged_machine_says_why_it_has_no_namespaces() {
+    fn a_bridged_machine_has_the_whole_jail() {
         let bridged = Machine { network_mode: Mode::Bridged, ..windows() };
         let choice = choose_for(&bridged, &offer(10, true)).unwrap();
-        assert!(choice.note.contains("bridged"), "{}", choice.note);
+        assert!(choice.qemu.unwrap().namespaces);
+        assert_eq!(choice.note, "");
     }
 
     #[test]
-    fn passt_keeps_the_daemon_jailed_and_qemu_only_when_allowed() {
+    fn passt_has_the_whole_jail() {
         let scratch = Scratch::new();
         let context = scratch_context(&scratch);
         let machine = windows();
         let plan = VmPlan::new(&context, &machine, Boot::Gpu, slots::first(), 0);
         let plan =
             VmPlan { network: crate::vm_args::NetworkPlan { passt: true, ..plan.network.clone() }, ..plan };
-        let refused = choose(&context, &machine, &plan, &offer(10, true)).unwrap_err();
-        assert!(refused.0.contains("passt") && refused.0.contains("Start without a jail"), "{}", refused.0);
-        let allowed = Machine { start_without_jail: true, ..windows() };
-        let choice = choose(&context, &allowed, &plan, &offer(10, true)).unwrap();
-        assert_eq!((choice.qemu, choice.daemon_jailed), (None, true));
-        assert!(choice.note.starts_with("QEMU not jailed: passt"), "{}", choice.note);
+        let choice = choose(&context, &machine, &plan, &offer(10, true)).unwrap();
+        assert!(choice.daemon_jailed && choice.qemu.unwrap().namespaces);
+        assert_eq!(choice.note, "");
     }
 
     #[test]

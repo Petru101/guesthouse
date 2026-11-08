@@ -8,12 +8,17 @@ use crate::tasks::{State, slot_of, status};
 use rustix::fs::{Access, access};
 use serde_json::json;
 use std::collections::BTreeSet;
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::os::fd::AsFd;
 use std::path::{Path, PathBuf};
 
 const HUB_CLASS: &str = "09";
 const QEMU_USB_TYPE: &str = "child<usb-host>";
 const QEMU_USB_BUS: &str = "xhci.0";
+/// How QEMU opens a file it was handed, from the set it was put in.
+const HANDED_FILE: &str = "/dev/fdset/";
+/// A set of its own for each device, by bus and address, so two at once don't meet.
+const SET_PER_BUS: u32 = 1000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UsbDevice {
@@ -34,6 +39,10 @@ impl UsbDevice {
 
     pub fn qemu_id(&self) -> String {
         format!("usb-{}-{}", self.bus, self.address)
+    }
+
+    fn file_set(&self) -> u32 {
+        self.bus * SET_PER_BUS + self.address
     }
 
     /// QEMU runs as this user. It would only say it failed to open the device.
@@ -120,22 +129,35 @@ pub fn attached_usb(context: &Context, machine: &Machine) -> BTreeSet<String> {
     wanted.filter_map(|child| Some(child["name"].as_str()?.to_owned())).collect()
 }
 
+/// The app opens the device and hands it to QEMU, as a jailed QEMU can't open one itself. The bus and
+/// address stay, so a QEMU that can't take a handed device still opens this one and no other.
 pub fn attach_usb(context: &Context, machine: &Machine, device: &UsbDevice) -> Result<()> {
     if status(context, machine).state != State::Running {
         return Err(Failure::new("The VM must be running."));
     }
-    if !device.can_open(context) {
+    let opened = device
+        .can_open(context)
+        .then(|| OpenOptions::new().read(true).write(true).open(device.node(context)));
+    let Some(Ok(node)) = opened else {
         return Err(Failure(format!("This user cannot open {}.", device.name)));
-    }
-    let command = Command::new(
-        "device_add",
-        json!({"driver": "usb-host", "id": device.qemu_id(), "bus": QEMU_USB_BUS,
-               "hostbus": device.bus, "hostaddr": device.address}),
-    );
-    let answer = context.ask_monitor(slot_of(context, machine), &command);
-    if failed(&answer) {
-        let reason = answer.as_ref().and_then(|found| found["error"]["desc"].as_str());
-        let reason = reason.unwrap_or("QEMU did not answer.");
+    };
+    let set = device.file_set();
+    let commands = [
+        Command::new("add-fd", json!({"fdset-id": set})),
+        Command::new(
+            "device_add",
+            json!({"driver": "usb-host", "id": device.qemu_id(), "bus": QEMU_USB_BUS,
+                   "hostdevice": format!("{HANDED_FILE}{set}"),
+                   "hostbus": device.bus, "hostaddr": device.address}),
+        ),
+        // The device holds its own copy now, and the set's goes.
+        Command::new("remove-fd", json!({"fdset-id": set})),
+    ];
+    let answers = context.ask_monitor_handing(slot_of(context, machine), node.as_fd(), &commands);
+    let added = answers.get(1).cloned();
+    if failed(&added) {
+        let refusal = answers.iter().find_map(|answer| answer["error"]["desc"].as_str());
+        let reason = refusal.unwrap_or("QEMU did not answer.");
         return Err(Failure(format!("Could not attach {}: {reason}", device.name)));
     }
     Ok(())
@@ -269,11 +291,14 @@ mod tests {
         );
         mode(0o666);
         attach_usb(&context, &machine, &device).unwrap();
-        let expected =
-            json!({"driver": "usb-host", "id": "usb-2-9", "bus": "xhci.0", "hostbus": 2, "hostaddr": 9});
-        assert_eq!(monitor.asked()[0], Command::new("device_add", expected));
+        let expected = json!({"driver": "usb-host", "id": "usb-2-9", "bus": "xhci.0",
+                              "hostdevice": "/dev/fdset/2009", "hostbus": 2, "hostaddr": 9});
+        let names: Vec<String> = monitor.asked().iter().map(|command| command.name.clone()).collect();
+        assert_eq!(names, ["add-fd", "device_add", "remove-fd"], "the device goes to QEMU open");
+        assert_eq!(monitor.asked()[0], Command::new("add-fd", json!({"fdset-id": 2009})));
+        assert_eq!(monitor.asked()[1], Command::new("device_add", expected));
         detach_usb(&context, &machine, &device).unwrap();
-        assert_eq!(monitor.asked()[1], Command::new("device_del", json!({"id": "usb-2-9"})));
+        assert_eq!(monitor.asked()[3], Command::new("device_del", json!({"id": "usb-2-9"})));
         monitor.set_answer(Some(json!({"error": {"desc": "no such device"}})));
         assert!(attach_usb(&context, &machine, &device).unwrap_err().0.contains("no such device"));
         assert!(detach_usb(&context, &machine, &device).unwrap_err().0.contains("Could not detach"));

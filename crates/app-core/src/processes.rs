@@ -9,6 +9,7 @@ use crate::slots;
 use crate::tasks::{read_task, task_alive, task_path};
 use crate::text::qemu_value;
 use guesthouse_daemon::slot::Slot;
+use guesthouse_jail::launch::start_time;
 use std::collections::BTreeMap;
 use std::fs;
 use std::os::unix::fs::MetadataExt;
@@ -50,6 +51,18 @@ pub fn qemu_pid(context: &Context, slot: Option<Slot>) -> Option<u32> {
         .into_iter()
         .find(|(_, words)| names_slot(context, words, slot))
         .map(|found| found.0)
+}
+
+/// The passt a jailed QEMU of this slot was started with, by the pid and start time the launcher
+/// noted, so a pid the system has given to something else since isn't taken for it.
+pub fn passt_pid(context: &Context, slot: Option<Slot>) -> Option<u32> {
+    let pid_file = context.run_folder(slot).join(crate::vm_args::PASST_PID_FILE);
+    let noted = fs::read_to_string(&pid_file).ok()?;
+    let (pid, started) = noted.trim().split_once(' ')?;
+    let pid: u32 = pid.parse().ok()?;
+    let stat = fs::read_to_string(context.processes.join(pid.to_string()).join("stat")).ok()?;
+    let same = start_time(&stat).is_some_and(|time| time.to_string() == started);
+    same.then_some(pid)
 }
 
 /// Each running VM, by slot number.
@@ -154,6 +167,27 @@ mod tests {
     fn fake_daemon(context: &Context, pid: u32, slot: u8, mapped: &str) {
         let [program, base] = daemon_words(context);
         fake_process(context, pid, &[&program, &base], &[&format!("GUESTHOUSE_SLOT={slot}")], mapped);
+    }
+
+    #[test]
+    fn passt_is_found_by_its_pid_and_only_if_it_started_when_noted() {
+        let scratch = Scratch::new();
+        let context = scratch_context(&scratch);
+        let folder = context.run_folder(None);
+        fs::create_dir_all(&folder).unwrap();
+        assert_eq!(passt_pid(&context, None), None);
+        fs::write(folder.join(crate::vm_args::PASST_PID_FILE), "4242 987654\n").unwrap();
+        assert_eq!(passt_pid(&context, None), None, "no such process");
+        fake_process(&context, 4242, &["/usr/bin/passt", "--quiet"], &[], "");
+        let stat = |started: u32| {
+            format!("4242 (passt.avx2) S 1 4242 4242 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 {started} 1 2")
+        };
+        let stat_file = context.processes.join("4242/stat");
+        fs::write(&stat_file, stat(1_000_000)).unwrap();
+        assert_eq!(passt_pid(&context, None), None, "a pid given to something else since");
+        fs::write(&stat_file, stat(987_654)).unwrap();
+        assert_eq!(passt_pid(&context, None), Some(4242));
+        assert_eq!(passt_pid(&context, Some(slots::number(1))), None);
     }
 
     #[test]

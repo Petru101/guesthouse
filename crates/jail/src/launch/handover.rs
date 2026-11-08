@@ -1,13 +1,27 @@
 //! What the launcher opens for the program and leaves at a number the program is told: the
-//! bridge helper's device, and the unix sockets QEMU would otherwise make itself.
+//! bridge helper's device, passt's end of the network, and the unix sockets QEMU would otherwise make
+//! itself.
 
 use super::UnixSocket;
 use std::io;
-use std::os::fd::{AsRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::net::{UnixListener, UnixStream};
 
-fn checked(result: libc::c_int) -> io::Result<libc::c_int> {
+pub(super) fn checked(result: libc::c_int) -> io::Result<libc::c_int> {
     if result < 0 { Err(io::Error::last_os_error()) } else { Ok(result) }
+}
+
+/// A connected pair. Our end closes on exec and the other doesn't, as it's for the program the
+/// launcher runs before the jail, the bridge helper or passt.
+pub(super) fn socket_pair() -> io::Result<(OwnedFd, OwnedFd)> {
+    let mut ends = [0; 2];
+    // SAFETY: the kernel writes two descriptors into an array of two.
+    checked(unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, ends.as_mut_ptr()) })?;
+    // SAFETY: both were just made for us, and nothing else holds them.
+    let (ours, theirs) = unsafe { (OwnedFd::from_raw_fd(ends[0]), OwnedFd::from_raw_fd(ends[1])) };
+    // SAFETY: a flag on a descriptor this owns.
+    checked(unsafe { libc::fcntl(ours.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) })?;
+    Ok((ours, theirs))
 }
 
 /// Puts `opened` at the number the program was told, open across the exec.

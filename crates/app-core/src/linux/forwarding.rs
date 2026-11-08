@@ -1,7 +1,8 @@
 //! What has to be true of this PC for QEMU to start with the forwarded GPU. Each of these would stop
-//! QEMU or its sandbox dead, and that would cost the VM, so they're asked first and cost only the GPU.
+//! QEMU dead, and that would cost the VM, so they're asked first and cost only the GPU. Its jail is
+//! asked about with the rest of the start, as for Windows: see `jailing`.
 
-use super::gpu_off::{GUEST_NO_ALLOW_LIST, GUEST_NO_DEVICE, GUEST_NO_SANDBOX, GpuOff};
+use super::gpu_off::{GUEST_NO_ALLOW_LIST, GUEST_NO_DEVICE, GpuOff};
 use std::path::Path;
 use std::process::{Command, Stdio};
 
@@ -9,10 +10,11 @@ const CHECK_SECONDS: &str = "10";
 /// QEMU exits with 0 either way. It only lists options on stdout for a device it knows.
 const DEVICE_QUESTION: &str = "nvfwd,help";
 const DEVICE_ANSWER: &str = "nvfwd options:";
-/// The parts of the jail that a PC can refuse, with nothing else in the way.
-const SANDBOX_QUESTION: [&str; 10] = [
+/// The namespaces the jail uses, which a PC can refuse, with nothing else in the way.
+const SANDBOX_QUESTION: [&str; 11] = [
     "--unshare-user",
-    "--unshare-pid",
+    "--unshare-ipc",
+    "--unshare-uts",
     "--ro-bind",
     "/usr",
     "/usr",
@@ -47,16 +49,9 @@ pub fn forwarding_problem(qemu: &Path, allow_list: &Path) -> Option<GpuOff> {
             format!("{} has no nvfwd device. It needs a build with the device added.", qemu.display());
         return Some(GpuOff::new(GUEST_NO_DEVICE, detail));
     }
-    if !allow_list.exists() {
+    (!allow_list.exists()).then(|| {
         let detail = format!("{} is missing, so no call could reach the host.", allow_list.display());
-        return Some(GpuOff::new(GUEST_NO_ALLOW_LIST, detail));
-    }
-    (!sandbox_runs()).then(|| {
-        GpuOff::new(
-            GUEST_NO_SANDBOX,
-            "bubblewrap won't run here, and QEMU doesn't get the GPU without its sandbox. Install bubblewrap, \
-             and check that this PC allows user namespaces.",
-        )
+        GpuOff::new(GUEST_NO_ALLOW_LIST, detail)
     })
 }
 

@@ -49,7 +49,7 @@ Another point release of the same branch gets a warning and a try. In order, you
 
 ## How far to trust a guest
 
-A Linux guest gets the GPU the way a program of yours does. It can do what your user can do to the card, it sees whole-card sensor and memory readings, and it can slow or crash your GPU session, which takes your desktop with it. It only gets calls on the list, it can only name its own GPU clients, and QEMU runs in a sandbox with no root. As far as I could test, it can't reach QEMU's memory or anyone else's GPU work. There's no full jail yet, so a bug in NVIDIA's driver or in this device is still a bug in your user account. Treat a guest as being as trusted as you, and don't run one you don't trust.
+A Linux guest gets the GPU the way a program of yours does. It can do what your user can do to the card, it sees whole-card sensor and memory readings, and it can slow or crash your GPU session, which takes your desktop with it. It only gets calls on the list, it can only name its own GPU clients, and QEMU runs jailed with no root. As far as I could test, it can't reach QEMU's memory or anyone else's GPU work. A bug in this device only gets QEMU's jail, but a bug in NVIDIA's driver is a bug in your kernel. Treat a guest as being as trusted as you, and don't run one you don't trust.
 
 ## Limits
 
@@ -71,9 +71,9 @@ Vulkan needs more than a 2 GiB `max-vram`: at that value pipelines fail to creat
 
 ## The jail
 
-QEMU runs in a bubblewrap sandbox when a guest has the forwarded GPU: `crates/app-core/src/vm_args/jail.rs`. It sees the system's programs read-only, the GPU's device nodes, KVM, the VM's disk and sockets, and it needs no root. The device won't run as root at all.
+QEMU runs in the same jail as a Windows guest's: `guesthouse-jail`, with the plan from `crates/app-core/src/vm_args/qemu_jail.rs`, and bubblewrap's namespaces around it where the PC allows them. On top of what any QEMU there gets, it can open the card's device nodes, read the driver image and the allow list, and run the sensor daemon (`vm_args/forwarding_jail.rs`). It doesn't get a pid namespace, as in one QEMU's D-Bus display can't let the viewer in, and Landlock keeps it from tracing anything outside anyway. `setarch -L` goes on before the jail, whose filter won't let QEMU change its address layout. The device makes the socket its frames go out on, so it can make sockets of its own, which a Windows guest's QEMU can't with its sound off. A PC with no Landlock starts the guest without the GPU, unless the machine may start without a jail. The device won't run as root at all.
 
-This is the first step and no more. QEMU still opens `/dev/nvidia*` itself, with no syscall filter. The rest of the plan is a small proxy that owns those files and passes them to QEMU over a socket, then seccomp around QEMU. That proxy has to answer live, as a guest opens a new file for each mapping.
+QEMU still opens `/dev/nvidia*` itself, and its filter doesn't look at ioctl numbers. The rest of the plan is a small proxy that owns those files and passes them to QEMU over a socket. That proxy has to answer live, as a guest opens a new file for each mapping.
 
 ## Tests
 
