@@ -14,7 +14,11 @@ The app does the host's side of this: the install, the driver image, the QEMU ar
 - **`cast/`** carries the viewer's keys and pointer into the session, and has a GLX vendor and the Xwayland wrapper for X11 clients, and for a Linux installed by hand an EGL vendor that does the wrapper's job. `session_manager.c` answers for gnome-session, which Ubuntu's desktop here doesn't run, so the shell's menu has Power Off and Restart.
 - **`setup/`** is the guest's side of the install: the seed, first boot, and `gpu-up.sh`, which brings the GPU up on each boot or turns it off and says why.
 
-The card's sensor readings go through `nvfwd-sensord`, a separate program. It keeps the driver's sensor page and copies the parts a guest may see into a page of its own, so `nvidia-smi` shows real readings and QEMU holds no host client. If the daemon can't start, or doesn't know the driver, or dies, the guest keeps the GPU and `nvidia-smi` shows N/A. The VM's `calls.log` says why.
+The card's sensor readings go through `nvfwd-sensord`, a separate program. It keeps the driver's sensor page and copies the parts a guest may see into a page of its own, so `nvidia-smi` shows real readings and QEMU holds no host client while the guest runs. If the daemon can't start, or doesn't know the driver, or dies, the guest keeps the GPU and `nvidia-smi` shows N/A. The VM's `calls.log` says why.
+
+## Which card
+
+The device is told the card setup chose: `card=` is its PCI address and `card-minor=` its device file. Before the guest runs, it asks the RM which GPU and device instance are at that address, as the daemon does for Windows, and keeps the card's file open. Whichever GPU file the guest opens, it gets that card's. The answers that list GPUs and device numbers are cut down to that card, which the guest sees as its device 0, and a call naming any other GPU is refused. The sensor daemon is started for the same card. The jail lets QEMU open that card's file and render node, and no other card's. On a PC with one card that changes nothing. It has only been tried with pretend cards.
 
 ## Trying it
 
