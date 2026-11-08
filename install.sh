@@ -129,14 +129,6 @@ set_paths() {
     esac
     LAUNCHER=$DATA_HOME/applications/$APP_ID.desktop
     ICON_FOLDER=$DATA_HOME/icons
-    case ${XDG_STATE_HOME:-} in
-        /*) STATE_HOME=$XDG_STATE_HOME ;;
-        *) STATE_HOME=$HOME/.local/state ;;
-    esac
-    case ${XDG_RUNTIME_DIR:-} in
-        /*) RUN_BASE=$XDG_RUNTIME_DIR/guesthouse ;;
-        *) RUN_BASE=$STATE_HOME/guesthouse/runtime ;;
-    esac
 }
 
 os_release_field() {
@@ -240,24 +232,17 @@ real_folder() {
     (cd "$1" 2>/dev/null && pwd -P) || printf '%s' "$1"
 }
 
-# Processes of this install, and any QEMU with one of its sockets, as a VM may run on the system's QEMU.
+# Processes started from this install: their program is in its folder, which is also how the app tells
+# its own QEMU from another's. Every install of this user shares the runtime folder, so a socket there
+# doesn't say whose VM it is. A process that won't say what it runs is judged by its first word.
 list_running() {
     real_root=$(real_folder "$LIB_ROOT")
     for folder in /proc/[0-9]*; do
-        exe=$(readlink "$folder/exe" 2>/dev/null) || continue
-        case $exe in
-            "$real_root"/*)
-                say "${folder#/proc/} ${exe##*/}"
-                continue
-                ;;
+        program=$(readlink "$folder/exe" 2>/dev/null) ||
+            program=$(tr '\0' '\n' 2>/dev/null <"$folder/cmdline" | head -n 1)
+        case $program in
+            "$real_root"/* | "$LIB_ROOT"/*) say "${folder#/proc/} ${program##*/}" ;;
         esac
-        case ${exe##*/} in
-            qemu-system-*) ;;
-            *) continue ;;
-        esac
-        if tr '\0' '\n' <"$folder/cmdline" 2>/dev/null | grep -qF "$RUN_BASE/"; then
-            say "${folder#/proc/} ${exe##*/}"
-        fi
     done
 }
 
@@ -967,8 +952,17 @@ install_files() {
     KEEP_CREATED_DIRS=yes
 }
 
+# Whether the manifest lists anything of a version other than this one. A first install has none.
+old_versions_listed() {
+    awk -F "$TAB" -v root="$LIB_ROOT/" -v keep="$LIB_ROOT/$RELEASE_VERSION/" '
+        ($1 == "file" || $1 == "dir" || $1 == "link") && index($3, root) == 1 &&
+        index($3 "/", keep) != 1 && $3 != root "current" { found = 1 }
+        END { exit !found }' "$MANIFEST"
+}
+
 # It can only fail to tidy up here, and then the new version still works and the old one is still listed.
 remove_old_versions() {
+    old_versions_listed || return 0
     sh "$CURRENT_LINK/uninstall.sh" --old-versions ||
         warn "the old version couldn't be removed. It's harmless, and uninstall.sh knows about it."
 }

@@ -105,6 +105,53 @@ t_update_waits_for_a_vm() {
     check_old_version_works
 }
 
+t_update_goes_on_beside_another_installs_vm() {
+    two_releases
+    another_installs_vm
+    answering 'yes\n' "$SHELL_UNDER_TEST" "$root/current/install.sh" --update
+    stop_process
+    check_exit 0
+    check_not_said "Guesthouse is running"
+    check_not_said "couldn't be removed"
+    [ "$(current_says)" = "guesthouse 2.0" ] || fail "version 2.0 doesn't run"
+    check_gone "$root/1.0"
+}
+
+t_a_first_install_beside_another_installs_vm_has_nothing_to_tidy() {
+    release 1.0
+    give_everything
+    another_installs_vm
+    install_version 1.0
+    stop_process
+    check_exit 0
+    check_not_said "Guesthouse is running"
+    check_not_said "old version"
+    [ "$(current_says)" = "guesthouse 1.0" ] || fail "version 1.0 doesn't run"
+}
+
+t_a_first_install_has_nothing_to_tidy() {
+    release 1.0
+    give_everything
+    printf '#!/bin/sh\necho "uninstall.sh ran" >>"$STAND_IN_LOG"\n' >"$T/releases/tree-1.0/guesthouse-1.0-x86_64/uninstall.sh"
+    tar -C "$T/releases/tree-1.0" -cJf "$T/releases/v1.0/guesthouse-1.0-x86_64.tar.xz" guesthouse-1.0-x86_64
+    payload=$(sha256sum "$T/releases/v1.0/guesthouse-1.0-x86_64.tar.xz" | cut -d ' ' -f 1)
+    sed -i "s/^PAYLOAD_SHA256=.*/PAYLOAD_SHA256=\"$payload\"/" "$(script_for 1.0)"
+    install_version 1.0
+    check_exit 0
+    check_not_log "uninstall.sh ran"
+}
+
+t_update_waits_for_a_vm_started_through_current() {
+    two_releases
+    start_process_as "$root/current/qemu/build/qemu-copy" "unix:$T/runtime/guesthouse/run/qmp.sock,server"
+    answering 'yes\n' "$SHELL_UNDER_TEST" "$root/current/install.sh" --update
+    stop_process
+    rm -f "$root/1.0/qemu/build/qemu-copy"
+    check_exit 1
+    check_said "Guesthouse is running"
+    check_old_version_works
+}
+
 t_a_bad_hash_leaves_the_old_version() {
     two_releases
     printf 'x' >>"$T/releases/v2.0/guesthouse-2.0-x86_64.tar.xz"
