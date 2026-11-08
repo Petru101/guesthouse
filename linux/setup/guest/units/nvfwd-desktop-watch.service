@@ -1,0 +1,11 @@
+[Unit]
+Description=Bring the desktop back to the plain screen if it doesn't come up on the GPU
+After=nvfwd-gpu.service display-manager.service
+
+[Service]
+Type=exec
+ExecStart=/usr/lib/nvfwd/desktop-watch.sh
+StandardOutput=journal+console
+
+[Install]
+WantedBy=graphical.target

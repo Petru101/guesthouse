@@ -8,21 +8,14 @@ kernel=$(uname -r)
 target=$root/lib/modules/$kernel/updates/nvfwd
 build_log=$log_folder/build.log
 first_check_seconds=60
-# The app on the host reads one line from here to say whether the guest has its GPU.
-serial=$root/dev/ttyS0
 selinux_label=system_u:object_r:lib_t:s0
 mkdir -p "$state_folder" "$log_folder" "$driver"
 
-# A guest with no serial port says nothing, and that's no reason to stop.
-tell_host() {
-    [ -w "$serial" ] && printf 'nvfwd-gpu %s\n' "$1" > "$serial" 2>/dev/null
-    return 0
-}
-
 gpu_off() {
     echo "GPU off: $1"
-    tell_host "off $1"
+    tell_host "nvfwd-gpu off $1"
     "$here/link-driver.sh" unlink
+    [ -z "${gdm_rules_override:-}" ] || rm -f "$gdm_rules_override"
     mountpoint -q "$driver" && umount "$driver"
     printf 'gpu=off\nreason=%s\n' "$1" > "$state_file"
     mkdir -p "$root/run/motd.d"
@@ -66,21 +59,6 @@ first_check() {
     fi
 }
 
-# Mutter would take the plain card as a second screen and drive both. It is only for a boot with no GPU.
-hide_plain_cards() {
-    local card rules=$root/run/udev/rules.d/71-nvfwd-plain-card.rules
-    mkdir -p "$(dirname "$rules")"
-    : > "$rules"
-    for card in "$root"/sys/class/drm/card[0-9]; do
-        [ -e "$card" ] || continue
-        [ "$(cat "$card/device/device" 2>/dev/null)" = "$nvfwd_device" ] && continue
-        echo "SUBSYSTEM==\"drm\", KERNEL==\"$(basename "$card")\", TAG+=\"mutter-device-ignore\"" >> "$rules"
-    done
-    udevadm control --reload
-    udevadm trigger --subsystem-match=drm --action=change
-    udevadm settle --timeout=10
-}
-
 # Mutter reads the cached mode list without probing, and with fbdev=0 nothing has probed yet.
 probe_connectors() {
     local status
@@ -109,6 +87,12 @@ if [ "$(cat "$target/built-for" 2>/dev/null)" != "$built_for" ]; then
     echo "$built_for" > "$target/built-for"
 fi
 
+# GDM's rules act as the nvidia module loads, so whether they're wanted is settled before that.
+if [ -n "$own_family" ]; then
+    . "$here/own-desktop.sh"
+    plain_reason=$(plain_desktop_reason "$built_for")
+    [ -n "$plain_reason" ] || hide_gdm_rules
+fi
 modprobe nvidia || gpu_off "the nvidia module would not load"
 host_version=$("$here/driver-version.py" 2>&1) || gpu_off "the host's driver did not answer: $host_version"
 # The module cannot unload, but with no user-mode files linked nothing in the guest will use it.
@@ -120,20 +104,43 @@ host_version=$("$here/driver-version.py" 2>&1) || gpu_off "the host's driver did
 first_check CUDA cudavec
 first_check Vulkan vkcompute
 
-# A desktop someone installed stays on the plain screen, and the GPU is for its programs.
-if [ -n "$own_family" ]; then
-    printf 'gpu=on\nversion=%s\ntested=%s\n' "$version" "$tested" > "$state_file"
-    tell_host "on $version"
-    echo "GPU on: driver $version, for programs. The desktop stays on the plain screen"
-    exit 0
-fi
-
 # What nvidia-drm leans on. nvidia-drm's options are in /etc/modprobe.d/nvfwd.conf.
-modprobe -a drm_kms_helper drm_ttm_helper video drm_display_helper
-modprobe nvidia-drm || gpu_off "nvidia-drm would not load"
+load_nvidia_drm() {
+    modprobe -a drm_kms_helper drm_ttm_helper video drm_display_helper
+    modprobe nvidia-drm
+}
 
-hide_plain_cards
+gpu_on() {
+    printf 'gpu=on\nversion=%s\ntested=%s\nbuilt_for=%s\n' "$version" "$tested" "$built_for" > "$state_file"
+    tell_host "nvfwd-gpu on $version"
+}
+
+# A desktop someone installed goes on the GPU where it can, and stays on the plain screen where it can't.
+# The GPU is on for programs either way.
+own_desktop() {
+    if [ -n "$plain_reason" ]; then
+        gpu_on
+        say_desktop plain "$plain_reason"
+        echo "GPU on: driver $version, for programs. The desktop stays on the plain screen: $plain_reason"
+    elif ! load_nvidia_drm; then
+        rm -f "$gdm_rules_override"
+        gpu_on
+        say_desktop plain "nvidia-drm would not load"
+        echo "GPU on: driver $version, for programs. nvidia-drm would not load, so the desktop stays on the plain screen"
+    else
+        write_session_settings
+        ignore_cards plain
+        probe_connectors
+        gpu_on
+        say_desktop gpu
+        echo "GPU on: driver $version, with the desktop on it"
+    fi
+    exit 0
+}
+
+[ -z "$own_family" ] || own_desktop
+load_nvidia_drm || gpu_off "nvidia-drm would not load"
+ignore_cards plain
 probe_connectors
-printf 'gpu=on\nversion=%s\ntested=%s\n' "$version" "$tested" > "$state_file"
-tell_host "on $version"
+gpu_on
 echo "GPU on: driver $version"

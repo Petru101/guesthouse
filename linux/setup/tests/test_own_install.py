@@ -262,7 +262,7 @@ class SetUp(unittest.TestCase):
         self.assertEqual(guest.read("etc/nvfwd/own-install.conf"), "family=fedora\nlibraries=/usr/lib64\n")
         self.assertEqual(guest.lines("build-parts"), [f"build-parts {guest.image}/sources.tar {V} {KERNEL}"])
         self.assertEqual(guest.read(f"lib/modules/{KERNEL}/updates/nvfwd/built-for").strip(), f"{V}-abc {KERNEL}")
-        self.assertIn("systemctl enable nvfwd-gpu.service", guest.lines("systemctl"))
+        self.assertIn("systemctl enable nvfwd-gpu.service nvfwd-desktop-watch.service", guest.lines("systemctl"))
         self.assertIn("ExecStart=/usr/lib/nvfwd/gpu-up.sh", guest.read("etc/systemd/system/nvfwd-gpu.service"))
         self.assertIn("blacklist nvidia", guest.read("etc/modprobe.d/nvfwd.conf"))
         self.assertNotIn("drm", guest.read("etc/udev/rules.d/70-nvfwd.rules").split("\n", 2)[-1])
@@ -351,13 +351,14 @@ class OwnGpuUp(unittest.TestCase):
         with open(self.serial) as f:
             return f.read()
 
-    def test_it_leaves_the_desktop_alone(self):
+    def test_with_no_display_manager_the_gpu_is_for_programs(self):
         result = self.guest.run()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.guest.state()["gpu"], "on")
+        self.assertEqual(self.guest.state()["desktop"], "plain")
         self.assertEqual(self.guest.called("modprobe nvidia-drm"), 0)
         self.assertEqual(self.guest.called("udevadm trigger"), 0)
-        self.assertEqual(self.said(), f"nvfwd-gpu on {V}\n")
+        self.assertEqual(self.said(), f"nvfwd-gpu on {V}\nnvfwd-desktop plain no display manager is enabled\n")
 
     def test_libraries_go_in_the_familys_folder(self):
         self.guest.run()

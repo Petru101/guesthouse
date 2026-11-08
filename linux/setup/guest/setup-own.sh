@@ -9,6 +9,7 @@ set -euo pipefail
 here=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 . "$here/common.sh"
 . "$here/distro.sh"
+. "$here/own-desktop.sh"
 image=$(dirname "$here")
 installed=$root/usr/lib/nvfwd
 units=$root/etc/systemd/system
@@ -71,10 +72,15 @@ install_packages() {
 }
 
 copy_scripts() {
+    local desktop
+    desktop=
+    [ ! -e "$own_install" ] || desktop=$(value_of "$own_install" desktop)
     rm -rf "$installed"
     mkdir -p "$installed" "$(dirname "$own_install")" "$log_folder" "$(dirname "$own_done_marker")"
     cp -R "$here/." "$installed/"
     printf 'family=%s\nlibraries=%s\n' "$family" "$(libraries_folder "$family")" > "$own_install"
+    # Someone who put their desktop back on the plain screen keeps it there.
+    [ -z "$desktop" ] || echo "desktop=$desktop" >> "$own_install"
 }
 
 install_hook() {
@@ -102,9 +108,27 @@ install_settings() {
     install -D -m 644 "$here/files/modprobe-nvfwd.conf" "$root/etc/modprobe.d/nvfwd.conf"
     install -D -m 644 "$here/files/70-nvfwd-own.rules" "$root/etc/udev/rules.d/70-nvfwd.rules"
     install -D -m 644 "$here/units/nvfwd-gpu.service" "$units/nvfwd-gpu.service"
+    install -D -m 644 "$here/units/nvfwd-desktop-watch.service" "$units/nvfwd-desktop-watch.service"
     mkdir -p "$root/usr/local/sbin"
     ln -sf /usr/lib/nvfwd/check.sh "$root/usr/local/sbin/nvfwd-check"
     install_hook
+    install_desktop
+}
+
+# GDM waits for the GPU step, which puts it on the GPU or leaves it on the plain screen. Any other
+# display manager is left as it is, on the plain screen.
+install_desktop() {
+    local manager
+    manager=$(display_manager)
+    rm -f "$units"/*.service.d/nvfwd.conf
+    if [ -z "$manager" ]; then
+        echo "There's no display manager enabled, so there's no desktop to put on the GPU."
+    elif is_gdm "$manager"; then
+        install -D -m 644 "$here/files/display-manager-nvfwd.conf" "$units/$manager.d/nvfwd.conf"
+        echo "GDM and your desktop go on the GPU at each boot that has it. If the login screen doesn't come up there, it comes back on the plain screen."
+    else
+        echo "Your display manager is ${manager%.service}. Only GDM is set up for the GPU so far, so your desktop stays on the plain screen."
+    fi
 }
 
 # Programs that systemd starts from /usr/lib/nvfwd must be labelled as programs, or it runs them
@@ -117,8 +141,9 @@ label_for_selinux() {
     fi
     semanage fcontext -a -t bin_t '/usr/lib/nvfwd(/.*)?' 2>/dev/null ||
         semanage fcontext -m -t bin_t '/usr/lib/nvfwd(/.*)?'
-    restorecon -R "$installed" "$units/nvfwd-gpu.service" "$root/etc/modprobe.d/nvfwd.conf" \
-        "$root/etc/udev/rules.d/70-nvfwd.rules" "$root/etc/kernel" "$root/lib/modules/$kernel/updates" 2>/dev/null || true
+    restorecon -R "$installed" "$units/nvfwd-gpu.service" "$units/nvfwd-desktop-watch.service" \
+        "$units"/*.service.d/nvfwd.conf "$root/etc/modprobe.d/nvfwd.conf" "$root/etc/udev/rules.d/70-nvfwd.rules" \
+        "$root/etc/kernel" "$root/lib/modules/$kernel/updates" 2>/dev/null || true
     echo "SELinux is on: the scripts are labelled as programs, and the driver image is mounted as libraries."
 }
 
@@ -143,8 +168,7 @@ install_settings
 build_now
 label_for_selinux
 systemctl daemon-reload
-systemctl enable nvfwd-gpu.service
+systemctl enable nvfwd-gpu.service nvfwd-desktop-watch.service
 touch "$own_done_marker"
 echo
 echo "Done. Reboot, and the GPU comes up during the boot. Then, as root, nvfwd-check says what works."
-echo "Your desktop stays on the plain screen. The GPU is for programs: CUDA, Vulkan, video, nvidia-smi."

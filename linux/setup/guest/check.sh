@@ -43,11 +43,12 @@ check_install() {
     check 'Firefox installed' test -x "$root/opt/ff/firefox/firefox"
 }
 
-# A guest installed by hand has no first boot of ours, no desktop of ours, and no package list in dpkg.
+# A guest installed by hand has no first boot of ours and no package list in dpkg. Its desktop is its own.
 check_own_install() {
     local label
     check 'setup finished' test -e "$own_done_marker"
     check 'GPU step enabled' systemctl is-enabled nvfwd-gpu.service
+    check 'desktop watch enabled' systemctl is-enabled nvfwd-desktop-watch.service
     check 'udev keeps its hands off nvidia.ko' grep -q '^blacklist nvidia$' "$root/etc/modprobe.d/nvfwd.conf"
     check 'headers for this kernel' test -e "$root/lib/modules/$(uname -r)/build/Makefile"
     if [ -e "$root/sys/fs/selinux/enforce" ]; then
@@ -59,6 +60,24 @@ check_own_install() {
             fail "SELinux labels the GPU step ${label:-nothing}, not a program"
         fi
     fi
+}
+
+# Its own login screen and desktop, on the GPU, or on the plain screen and why.
+check_own_desktop() {
+    local where pid on_gpu=
+    where=$(value_of "$state_file" desktop 2>/dev/null)
+    if [ "$where" != gpu ]; then
+        echo "---- desktop on the plain screen: $(value_of "$state_file" desktop_reason 2>/dev/null)"
+        return 0
+    fi
+    echo '---- desktop on the GPU, through Zink'
+    . "$here/own-desktop.sh"
+    check 'session settings for the GPU in place' grep -q '^GALLIUM_DRIVER=zink$' "$session_settings"
+    check 'the GPU screen is lit' gpu_screen_lit
+    for pid in $(pgrep -x gnome-shell); do
+        grep -q /dev/nvidia0 "$root/proc/$pid/maps" 2>/dev/null && on_gpu=1
+    done
+    if [ -n "$on_gpu" ]; then pass 'gnome-shell runs on the GPU'; else fail 'gnome-shell runs on the GPU'; fi
 }
 
 check_version() {
@@ -190,7 +209,6 @@ gpu_off_expected=
 [ "${1:-}" != --gpu-off-expected ] || gpu_off_expected=1
 modules='nvidia nvidia_modeset nvidia_drm'
 if [ -n "$own_family" ]; then
-    # Its desktop is its own, on the plain screen, and the GPU is for programs.
     modules=nvidia
     check_own_install
     gpu=$(value_of "$state_file" gpu 2>/dev/null)
@@ -198,8 +216,10 @@ if [ -n "$own_family" ]; then
         version=$(value_of "$state_file" version)
         echo "---- GPU is on, driver $version"
         [ "$(value_of "$state_file" tested)" = yes ] || warn "driver $version has never been tested with this project"
+        [ "$(value_of "$state_file" desktop)" != gpu ] || modules='nvidia nvidia_modeset nvidia_drm'
         check_version "$version"
         check_gpu
+        check_own_desktop
     else
         echo "---- GPU is off: $(value_of "$state_file" reason 2>/dev/null)"
         off 'nvidia-smi, CUDA and Vulkan are not checked'

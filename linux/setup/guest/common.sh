@@ -25,3 +25,32 @@ if [ -e "$own_install" ]; then
     own_family=$(value_of "$own_install" family)
     libraries=$root$(value_of "$own_install" libraries)
 fi
+
+# The app on the host reads lines from here to say whether the guest has its GPU, and its desktop.
+serial=$root/dev/ttyS0
+ignored_card_rules=$root/run/udev/rules.d/71-nvfwd-ignored-cards.rules
+
+# A guest with no serial port says nothing, and that's no reason to stop.
+tell_host() {
+    [ -w "$serial" ] && printf '%s\n' "$1" >> "$serial" 2>/dev/null
+    return 0
+}
+
+# Tells compositors to leave one kind of card alone: the plain one, on a boot whose desktop is on the
+# GPU, or ours, once a desktop has gone back to the plain screen. Mutter would drive both otherwise.
+# Usage: ignore_cards plain|ours
+ignore_cards() {
+    local card kind
+    mkdir -p "$(dirname "$ignored_card_rules")"
+    : > "$ignored_card_rules"
+    for card in "$root"/sys/class/drm/card[0-9]; do
+        [ -e "$card" ] || continue
+        kind=plain
+        [ "$(cat "$card/device/device" 2>/dev/null)" != "$nvfwd_device" ] || kind=ours
+        [ "$kind" = "$1" ] || continue
+        echo "SUBSYSTEM==\"drm\", KERNEL==\"$(basename "$card")\", TAG+=\"mutter-device-ignore\"" >> "$ignored_card_rules"
+    done
+    udevadm control --reload
+    udevadm trigger --subsystem-match=drm --action=change
+    udevadm settle --timeout=10
+}
