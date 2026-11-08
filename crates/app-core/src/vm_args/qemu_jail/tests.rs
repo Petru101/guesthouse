@@ -47,8 +47,8 @@ fn it_gets_this_vms_files_and_not_its_folder() {
         written.contains(&"/m/win/disk.qcow2".to_owned()) && written.contains(&"/m/win/vars.fd".to_owned())
     );
     assert!(
-        written.iter().any(|path| path.ends_with("gpupv-ram-2"))
-            && written.iter().any(|path| path.ends_with("gpupv-iomem-2"))
+        !rules.paths.iter().any(|(_, path)| path.starts_with("/dev/shm")),
+        "the guest's memory comes open, so no rule names it"
     );
     assert!(!rules.paths.iter().any(|(_, path)| path == Path::new("/m/win")), "the folder holds its token");
     assert_eq!(granted(&rules, Grant::Own), [plan.run_folder.display().to_string()]);

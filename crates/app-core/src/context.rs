@@ -3,6 +3,7 @@
 use crate::agent::{GuestAgent, TcpAgent};
 use crate::bridge::BridgeHost;
 use crate::clock::{Clock, RealClock};
+use crate::guest_memory::GuestMemory;
 use crate::jailing::Offer;
 use crate::monitor::{Monitor, QmpMonitor};
 use crate::paths::Paths;
@@ -42,8 +43,8 @@ pub struct Context {
     pub kvm: PathBuf,
     pub driver_version_file: PathBuf,
     pub meminfo: PathBuf,
-    /// Claims a guest's memory. A test has no gigabytes to spare.
-    pub reserve_memory: fn(&Path, u64) -> crate::Result<()>,
+    /// Makes a GPU guest's memory and claims its RAM. A test has no gigabytes to spare.
+    pub reserve_memory: fn(&Context, Slot, u64) -> crate::Result<GuestMemory>,
     /// What this PC offers a GPU machine's jail. A test's pretend programs can't be jailed.
     pub jail_offer: fn(&VmPlan) -> Offer,
     /// Stands in for what this PC can give a GPU machine, which depends on everything else running.
@@ -72,7 +73,7 @@ impl Context {
             kvm: "/dev/kvm".into(),
             driver_version_file: "/sys/module/nvidia/version".into(),
             meminfo: "/proc/meminfo".into(),
-            reserve_memory: crate::guest_memory::reserve,
+            reserve_memory: GuestMemory::claim,
             jail_offer: Offer::here,
             ram_limit: None,
             bridge: BridgeHost::default(),

@@ -4,7 +4,6 @@
 //! other slot adds its number. QEMU and the scripts name things the same way.
 
 use std::fmt;
-use std::fs;
 use std::path::{Path, PathBuf};
 
 /// The environment variable that names the slot.
@@ -15,7 +14,6 @@ pub const SLOTS: u8 = 4;
 const SHARED_MEMORY: &str = "/dev/shm";
 const RUN_FOLDER: &str = "run";
 const SHARED_FILE_PREFIX: &str = "gpupv";
-const SHARED_FILES: [&str; 3] = ["iomem", "ram", "display"];
 const AGENT_PORT: u16 = 18765;
 const DEBUG_PORT: u16 = 1234;
 const VNC_DISPLAY: u16 = 77;
@@ -65,17 +63,15 @@ impl Slot {
         project.join(format!("{RUN_FOLDER}{}", self.suffix()))
     }
 
-    /// A file in shared memory, like `ram` or `iomem`.
-    pub fn shared_file(self, name: &str) -> PathBuf {
-        Path::new(SHARED_MEMORY).join(format!("{SHARED_FILE_PREFIX}-{name}{}", self.suffix()))
+    /// The name of this slot's part of the guest's memory, like `ram` or `iomem`.
+    pub fn memory_name(self, word: &str) -> String {
+        format!("{SHARED_FILE_PREFIX}-{word}{}", self.suffix())
     }
 
-    /// Gives back what QEMU left in shared memory. A file some other process still has mapped stays
-    /// until that process lets go, as it would for any file.
-    pub fn remove_shared_files(self) {
-        for name in SHARED_FILES {
-            let _ = fs::remove_file(self.shared_file(name));
-        }
+    /// Where versions before the memfds kept that part, as a file in shared memory. Only the app
+    /// still looks there, for what one of them left behind.
+    pub fn shared_file(self, word: &str) -> PathBuf {
+        Path::new(SHARED_MEMORY).join(self.memory_name(word))
     }
 
     pub fn agent_port(self) -> u16 {

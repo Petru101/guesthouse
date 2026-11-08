@@ -71,7 +71,7 @@ hv-timesync
 -chardev
 socket,id=gpg,path=/x/run/global.sock,reconnect-ms=500
 -object
-memory-backend-file,id=gpio,size=64G,mem-path=/dev/shm/gpupv-iomem,share=on
+memory-backend-file,id=gpio,size=64G,mem-path=/proc/self/fd/12,share=on
 -device
 gpupv-global,chardev=gpg,instanceid=711dad3a-73ce-468b-90a9-ede6906841b2,iomem=gpio,iomem-base=0x10000000000
 -chardev
@@ -79,7 +79,7 @@ socket,id=gpv,path=/x/run/vgpu.sock,reconnect-ms=500
 -device
 gpupv-vgpu,chardev=gpv,instanceid=7a1e2f30-4c55-4d6e-9f10-0123456789ab
 -object
-memory-backend-file,id=ram0,size=16G,mem-path=/dev/shm/gpupv-ram,share=on
+memory-backend-file,id=ram0,size=16G,mem-path=/proc/self/fd/13,share=on
 -machine
 memory-backend=ram0
 -device

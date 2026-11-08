@@ -4,6 +4,7 @@ use super::{Stopped, VmHost};
 use crate::context::Context;
 use crate::daemon::{self, DaemonStart, detached, is_own_daemon};
 use crate::failure::{Failure, Result};
+use crate::guest_memory::GuestMemory;
 use crate::host::GIB;
 use crate::jailing;
 use crate::machine::{Machine, sorted_names};
@@ -11,7 +12,6 @@ use crate::monitor::Command as Qmp;
 use crate::processes::{memory_taken, passt_pid, qemu_pid};
 use crate::start_checks::SECOND_INSTANCE_REFUSAL;
 use crate::vm_args::{OUTPUT_FILE, PASST_PID_FILE, Sound, VmPlan};
-use guesthouse_daemon::jail::make_if_missing;
 use rustix::process::{Pid, Signal, kill_process, kill_process_group};
 use std::fs::{self, File};
 use std::process::{Child, Command, Stdio};
@@ -35,8 +35,8 @@ const AGENT_RETRY: Duration = Duration::from_secs(3);
 const DAEMON_STOP_ATTEMPTS: u32 = 100;
 const DAEMON_STOP_POLL: Duration = Duration::from_millis(100);
 const SOUND_CHECK_SECONDS: &str = "3";
-const RAM_FILE: &str = "ram";
-const SHARED_FILES: [&str; 3] = ["iomem", RAM_FILE, "display"];
+/// What versions before the memfds left in shared memory, which goes once nothing holds it.
+const OLD_SHARED_FILES: [&str; 3] = ["iomem", "ram", "display"];
 /// These can only be left by an earlier run, and a stale socket would pass for a ready daemon.
 const STALE_FILES: [&str; 4] = ["vgpu.sock", "global.sock", "screen.sock", PASST_PID_FILE];
 /// The last run's logs are the only evidence of whatever made someone restart.
@@ -100,7 +100,7 @@ impl LocalHost<'_> {
         Ok(())
     }
 
-    fn spawn_qemu(&self, plan: &VmPlan) -> Result<Child> {
+    fn spawn_qemu(&self, plan: &VmPlan, memory: Option<&GuestMemory>) -> Result<Child> {
         self.spawn_tpm(plan)?;
         let output = File::create(self.run_file(OUTPUT_FILE))?;
         let command = plan.qemu_command();
@@ -108,6 +108,9 @@ impl LocalHost<'_> {
         let mut qemu = Command::new(program);
         if plan.clears_environment() {
             qemu.env_clear();
+        }
+        if let Some(memory) = memory {
+            memory.hand_to(&mut qemu);
         }
         let spawned = detached(qemu.args(arguments))
             .envs(plan.qemu_environment())
@@ -129,7 +132,7 @@ impl LocalHost<'_> {
         if !plan.qemu.exists() {
             return Err(Failure::new(NO_QEMU_HELP));
         }
-        let mut qemu = self.spawn_qemu(plan)?;
+        let mut qemu = self.spawn_qemu(plan, None)?;
         let answered = self.wait_for_monitor(&mut qemu);
         if answered.is_err() {
             self.end_qemu(&mut qemu);
@@ -185,8 +188,8 @@ impl LocalHost<'_> {
         Ok(())
     }
 
-    fn remove_shared_memory(&self) {
-        for name in SHARED_FILES {
+    fn remove_old_shared_files(&self) {
+        for name in OLD_SHARED_FILES {
             let _ = fs::remove_file(self.context.paths.shared_file(name, self.context.slot));
         }
     }
@@ -250,9 +253,10 @@ impl LocalHost<'_> {
             return Err(Failure::new("The VM did not start: something is still running."));
         }
         self.clear_run_folder()?;
-        self.remove_shared_memory();
-        let ram_file = self.context.paths.shared_file(RAM_FILE, plan.slot);
-        (self.context.reserve_memory)(&ram_file, u64::from(machine.ram_gib) * GIB)?;
+        self.remove_old_shared_files();
+        // The app's own copies close when this returns, and the memory goes back once both have gone.
+        let memory =
+            (self.context.reserve_memory)(self.context, plan.slot, u64::from(machine.ram_gib) * GIB)?;
         jailing::write_note(&plan.run_folder, &plan.jail_note)?;
         let mut start = DaemonStart::new(self.context, plan.slot, &plan.ram, plan.vram.as_deref());
         if !choice.daemon_jailed {
@@ -261,13 +265,9 @@ impl LocalHost<'_> {
         if let Some(pci) = machine.windows_amd_card() {
             start = start.on_amd_card(pci);
         }
-        let mut daemon = start.spawn(&plan.run_folder)?;
+        let mut daemon = start.spawn(&plan.run_folder, &memory)?;
         self.wait_for_daemon(&mut daemon)?;
-        if plan.jail.is_some() {
-            // The jail names QEMU's files one by one, so the window's has to be there for QEMU to take.
-            make_if_missing(&plan.io_file)?;
-        }
-        let mut qemu = self.spawn_qemu(&plan)?;
+        let mut qemu = self.spawn_qemu(&plan, Some(&memory))?;
         let answered = self.wait_for_agent(machine, &mut qemu, &mut daemon);
         if answered.is_err() {
             self.end_qemu(&mut qemu);
@@ -332,7 +332,7 @@ impl VmHost for LocalHost<'_> {
             self.context.clock.sleep(DAEMON_STOP_POLL);
         }
         if !memory_taken(self.context, None) {
-            self.remove_shared_memory();
+            self.remove_old_shared_files();
         }
         Ok(())
     }

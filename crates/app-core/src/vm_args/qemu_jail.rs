@@ -157,11 +157,10 @@ impl VmPlan {
             plan.grant(Grant::Device, device);
         }
         plan.grant(Grant::Write, &self.disk);
-        if self.is_gpu() {
-            if let Some(disc) = &self.tools_disc {
-                plan.grant(Grant::Read, disc);
-            }
-            plan.grant(Grant::Write, &self.ram_file).grant(Grant::Write, &self.io_file);
+        if self.is_gpu()
+            && let Some(disc) = &self.tools_disc
+        {
+            plan.grant(Grant::Read, disc);
         }
         self.grant_forwarding(&mut plan, devices);
         self.grant_amd(&mut plan);
