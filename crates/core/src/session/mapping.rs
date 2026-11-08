@@ -52,7 +52,16 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             return Ok(());
         };
         let mut memory = memory;
-        if needed > allocation.size && allocation.guest_address.is_none() && allocation.mappings.is_empty() {
+        // Guest pages already hold what the guest wrote. Replacing them with fresh video memory
+        // leaves this address pointing at bytes the guest never filled, which is what made the
+        // encoder reject its picture setup: the setup is 0x2800 bytes, and the guest maps it in
+        // whole pages, which is more than that.
+        let guest_pages = allocation.view.is_some();
+        if needed > allocation.size
+            && allocation.guest_address.is_none()
+            && allocation.mappings.is_empty()
+            && !guest_pages
+        {
             // A vendor's size can be too small, and nothing is stored here yet.
             self.backend.release_memory(memory);
             let allocation = self.allocations.get_mut(&handle).expect("read above");
@@ -85,20 +94,19 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         // Mapping is only possible in whole pages of the size in use, and the guest asks for single
         // small ones. So each allocation is mapped whole, once, and addresses come from inside that.
         let size = allocation.size;
+        // The adopted guest pages cover whole 4 KiB pages, which is more than the exact size and
+        // less than a big page. Map those pages, not a new allocation.
+        let (mapped, small_pages) = match allocation.view {
+            Some(view) => (align_up(size, PAGE_SIZE).min(view.size), true),
+            None => (size, false),
+        };
         let align = if size >= LARGE_PAGES_FROM { LARGE_ALIGN } else { ALLOCATION_ALIGN };
         let whole = align_up(size, ALLOCATION_ALIGN);
         let base = self.gpu_addresses.take(whole, align, AddressUse::Mapped)?;
-        log::debug!("map {handle:#x} at {base:#x}, chosen here, for {size:#x}");
+        log::debug!("map {handle:#x} at {base:#x}, chosen here, for {mapped:#x}");
         let gpu_cached = allocation.gpu_cached;
-        let map = MapRequest {
-            space,
-            memory,
-            offset: 0,
-            length: size,
-            address: base,
-            small_pages: false,
-            gpu_cached,
-        };
+        let map =
+            MapRequest { space, memory, offset: 0, length: mapped, address: base, small_pages, gpu_cached };
         if let Err(error) = self.backend.map(&map) {
             log::warn!("mapping {handle:#x}: {error}");
             self.gpu_addresses.give_back(base, whole, align, AddressUse::Mapped);
@@ -106,7 +114,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             return Ok(());
         }
         self.mapped_addresses.insert(base, (whole, align));
-        self.add_mapping(handle, Mapping { address: base, first: 0, length: size, space });
+        self.add_mapping(handle, Mapping { address: base, first: 0, length: mapped, space });
         map_answer(base + first, Status::SUCCESS, out);
         Ok(())
     }

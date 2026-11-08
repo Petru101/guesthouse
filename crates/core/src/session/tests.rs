@@ -611,6 +611,34 @@ mod allocations {
         assert!(session.memory().views.is_empty());
     }
 
+    /// A picture setup is 0x2800 bytes, and the guest maps it in whole pages, which is more. Those
+    /// pages already hold what the guest wrote, so the map must keep them.
+    #[test]
+    fn guest_pages_stay_when_the_map_is_larger_than_the_size() {
+        let mut session = session();
+        let reply = send(&mut session, &create_message(0x20, &[private(0x2800)]));
+        assert_eq!(status_of(&reply), SUCCESS);
+        let handle = u32_at(&reply, 0x10).unwrap();
+        let mut request = message(Command::SetGuestPages, 0x28);
+        set_u32(&mut request, 0x1C, handle);
+        set_u32(&mut request, 0x20, 3);
+        set_u32(&mut request, 0x24, 0);
+        for page in [7u64, 8, 9] {
+            request.extend_from_slice(&page.to_le_bytes());
+        }
+        assert_eq!(status_of(&send(&mut session, &request)), SUCCESS);
+        let memory = session.allocations[&handle].memory;
+        assert!(memory.is_some());
+
+        let (address, status) = map(&mut session, handle, 0, 0, 16);
+        assert_eq!(status, SUCCESS);
+        assert_ne!(address, 0);
+        let allocation = &session.allocations[&handle];
+        assert_eq!(allocation.memory, memory);
+        assert_eq!(allocation.size, 0x2800);
+        assert_eq!(allocation.mappings[0].length, 0x3000);
+    }
+
     #[test]
     fn pages_for_an_unknown_allocation_are_refused() {
         let mut request = message(Command::SetGuestPages, 0x28);
