@@ -71,6 +71,19 @@ class Units(unittest.TestCase):
             self.assertTrue(os.access(path, os.X_OK), path)
 
 
+class SessionSettings(unittest.TestCase):
+    def test_they_are_lines_a_shell_and_environment_d_both_read(self):
+        with open(os.path.join(GUEST, "files/gpu-session.env")) as f:
+            lines = [line.strip() for line in f if line.strip() and not line.startswith("#")]
+        names = [line.split("=", 1)[0] for line in lines]
+        for line in lines:
+            self.assertRegex(line, r"^[A-Z_]+=[^ '\"$]+$")
+        self.assertIn("GALLIUM_DRIVER", names)
+        output = subprocess.run(["bash", "-c", f'set -a; . {GUEST}/files/gpu-session.env; echo "$ZINK_DEBUG"'],
+                                capture_output=True, text=True, check=True).stdout
+        self.assertEqual(output.strip(), "noshobj")
+
+
 class FirstBoot(unittest.TestCase):
     def test_it_never_unloads_itself_while_it_runs(self):
         with open(os.path.join(GUEST, "first-boot.sh")) as f:
