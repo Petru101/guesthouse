@@ -1,6 +1,6 @@
 # Linux guests
 
-A Linux guest doesn't use the Windows route. It runs NVIDIA's own Linux user-mode driver, the same files as the host, and a QEMU device forwards its kernel calls to the host's `/dev/nvidia*`. So far that's Ubuntu 26.04.
+A Linux guest doesn't use the Windows route. It runs NVIDIA's own Linux user-mode driver, the same files as the host, and a QEMU device forwards its kernel calls to the host's `/dev/nvidia*`. Ubuntu 26.04 installs by itself, and a Linux you install by hand can have it too.
 
 The app does the host's side of this: the install, the driver image, the QEMU arguments and the viewer. This folder is what goes into a guest, and the device itself is in `qemu/qemu-gpupv.patch`.
 
@@ -26,6 +26,23 @@ You need an NVIDIA card with the open kernel modules loaded, and the driver vers
 4. Set `GUESTHOUSE_PROGRAM` to this repository and `QEMU` to your build, and make an Ubuntu machine from Ubuntu's server ISO.
 
 The install needs no hands, and the first boot builds everything. If anything about the driver is in doubt the GPU stays off and the VM still boots. The guest gets one plain sentence and the app has the details, as those can hold your paths. As root in the guest, `nvfwd-check` says which parts work.
+
+## A Linux you installed yourself
+
+Any ISO the app doesn't install by itself makes a plain machine, which you install by hand in the viewer. If it's a Linux, its settings have a Linux GPU switch. With it on, the machine starts with the same device, driver image and jail as Ubuntu's, on its own firmware and disk, and with the GPU off it boots as it always did.
+
+Once, as root in the guest:
+
+    mount -o ro LABEL=NVFWD_DRIVER /mnt
+    bash /mnt/setup/setup-own.sh
+
+then reboot. `setup-own.sh` reads `/etc/os-release` and uses dnf, apt, pacman or zypper, so Fedora, Debian, Ubuntu, Arch, openSUSE and the distributions built on them. It refuses anything else, an image-based system like Silverblue, and Secure Boot. It installs the running kernel's headers, a compiler and what our programs need, builds our module and the stand-in for nvidia-modeset, and installs `nvfwd-gpu.service`, which brings the GPU up at each boot as in Ubuntu. With SELinux on, the scripts are labelled as programs and the image is mounted as libraries. It never turns SELinux off. Run it again after updating the app.
+
+A new kernel needs a new build. Each boot builds for its kernel if it has to, and a hook builds as the kernel arrives, so the first boot doesn't wait: kernel-install on Fedora, the kernel's postinst and header_postinst hooks on Debian and Ubuntu, a pacman hook on Arch. openSUSE has no hook yet, so its first boot on a new kernel takes a minute or two longer. There's no DKMS: what's built depends on the host's driver as much as on the kernel, and the boot already rebuilds for either.
+
+Your desktop stays your own, on the plain screen through QEMU's display. The GPU is for programs: CUDA, Vulkan, NVENC and NVDEC, `nvidia-smi`. `nvfwd-check` says which parts work, and while the VM runs its row in the app says whether the guest brought its GPU up. The GPU's jail only has QEMU's own NAT, so a bridged network, passt or a shared folder start the machine without the GPU, and say so. A disc you put in the drive while it runs can't be read in the jail.
+
+What's tested: the setup's choices and each step with fake commands, and the build in Fedora 45, Debian 13 and Arch containers against their kernel headers. A real guest on each is still to do.
 
 ## Video
 
