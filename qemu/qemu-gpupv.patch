@@ -7089,3 +7089,912 @@ index 6a3bfbd..28a31f0 100644
 -- 
 2.56.0
 
+From a4e9c8029193760d65c1885585871dfa54a13faa Mon Sep 17 00:00:00 2001
+From: xnixy <x@ruxn.com>
+Date: Sat, 7 Nov 2026 23:13:31 -0800
+Subject: [PATCH 27/27] hw/misc/nvfwd: forward to the card it is given
+
+On a host with more than one NVIDIA card the device opened /dev/nvidia0 and
+left the guest's device instance as it was, so a guest could get another card
+than the one asked for. Give the device card= (the card's PCI address) and
+card-minor= (its device file). Before the guest runs it asks the RM which GPU
+and device instance are at that address, and keeps the card's file open.
+
+Whichever GPU file the guest opens, it gets that card's. The guest's device 0
+is made on the card's instance, and any other device instance is refused. The
+answers that list GPUs and device numbers are cut down to the card, which the
+guest sees as its device 0, and a call naming another GPU is refused. The
+render node is the one at the card's address.
+
+With no card= the host's only card is used, as before, and a host with two
+refuses to start the device.
+---
+ hw/misc/nvfwd/card.c      | 435 ++++++++++++++++++++++++++++++++++++++
+ hw/misc/nvfwd/card.h      |  66 ++++++
+ hw/misc/nvfwd/fds.c       |   3 +-
+ hw/misc/nvfwd/forward.c   |  23 ++
+ hw/misc/nvfwd/host_card.c | 152 +++++++++++++
+ hw/misc/nvfwd/meson.build |   2 +
+ hw/misc/nvfwd/nvfwd.c     |   6 +
+ hw/misc/nvfwd/nvfwd.h     |  13 +-
+ hw/misc/nvfwd/rm_layout.h |   1 +
+ hw/misc/nvfwd/show.c      |  12 +-
+ 10 files changed, 707 insertions(+), 6 deletions(-)
+ create mode 100644 hw/misc/nvfwd/card.c
+ create mode 100644 hw/misc/nvfwd/card.h
+ create mode 100644 hw/misc/nvfwd/host_card.c
+
+diff --git a/hw/misc/nvfwd/card.c b/hw/misc/nvfwd/card.c
+new file mode 100644
+index 0000000..706d9b4
+--- /dev/null
++++ b/hw/misc/nvfwd/card.c
+@@ -0,0 +1,435 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++/* The one card a guest gets. See card.h. Layouts are from NVIDIA's ctrl0000gpu.h and nv-ioctl.h. */
++#include "card.h"
++
++#include <stdio.h>
++#include <string.h>
++#include "rm_layout.h"
++
++#define CLASS_DEVICE 0x80             /* NV01_DEVICE_0 */
++#define DEVICE_PARAMS_ID 0            /* NV0080_ALLOC_PARAMETERS.deviceId */
++#define GUEST_INSTANCE 0              /* the guest's one device */
++
++#define CTRL_GET_ATTACHED_IDS 0x201
++#define CTRL_GET_ID_INFO 0x202
++#define CTRL_GET_DEVICE_IDS 0x204
++#define CTRL_GET_ID_INFO_V2 0x205
++#define CTRL_GET_PROBED_IDS 0x214
++#define CTRL_ATTACH_IDS 0x215
++#define CTRL_DETACH_IDS 0x216
++#define CTRL_GET_PCI_INFO 0x21b
++#define CTRL_GET_UUID_FROM_GPU_ID 0x275
++#define CTRL_QUERY_DRAIN_STATE 0x279
++#define CTRL_GET_MEMOP_ENABLE 0x27b
++#define CTRL_GET_ACTIVE_DEVICE_IDS 0x288
++#define CTRL_ASYNC_ATTACH_ID 0x289
++#define CTRL_WAIT_ATTACH_ID 0x28a
++#define CTRL_GET_P2P_CAPS_MATRIX 0x13a
++#define CTRL_GPU_INTERFACE 0x200      /* NV0000 controls 0x2xx are about GPUs */
++#define CTRL_INTERFACE_MASK 0xffffff00u
++
++#define MAX_GPUS 32                   /* NV0000_CTRL_GPU_MAX_ATTACHED_GPUS and _MAX_PROBED_GPUS */
++#define LIST_BYTES (MAX_GPUS * 4)
++#define NO_GPU 0xffffffffu            /* NV0000_CTRL_GPU_INVALID_ID, after the last of a list */
++#define ALL_GPUS 0x0000ffffu          /* ATTACH_ALL_PROBED_IDS and DETACH_ALL_ATTACHED_IDS */
++#define PROBED_EXCLUDED LIST_BYTES
++#define PROBED_FLAGS (2 * LIST_BYTES)
++#define PROBED_BYTES (3 * LIST_BYTES)
++#define ID_INFO_DEVICE_INSTANCE 8     /* the same place in GET_ID_INFO and its V2 */
++#define PCI_INFO_BYTES 12
++#define PCI_INFO_DOMAIN 4
++#define PCI_INFO_BUS 8
++#define PCI_INFO_SLOT 10
++#define ID_INFO_V2_BYTES 32
++#define ACTIVE_COUNT 0
++#define ACTIVE_FIRST 4
++#define ACTIVE_BYTES 12               /* gpuId, gpuInstanceId, computeInstanceId */
++#define ACTIVE_MAX 256
++#define P2P_GROUP_A_COUNT 0
++#define P2P_GROUP_B_COUNT 4
++#define P2P_GROUP_A 8
++#define P2P_GROUP_MAX 8
++#define P2P_GROUP_B (P2P_GROUP_A + P2P_GROUP_MAX * 4)
++
++#define ESC_CARD_INFO 0xc8
++#define ESC_ATTACH_GPUS_TO_FD 0xd4
++#define FD_LIST_EMPTY 0               /* a place in ATTACH_GPUS_TO_FD's list with no GPU */
++#define CARD_INFO_BYTES 72            /* nv_ioctl_card_info_t */
++#define CARD_INFO_GPU_ID 16
++#define CARD_INFO_MINOR 56
++#define GUEST_MINOR 0                 /* the guest's own device file is /dev/nvidia0 */
++
++static uint32_t read32(const uint8_t *at)
++{
++    uint32_t v;
++    memcpy(&v, at, sizeof(v));
++    return v;
++}
++
++static void write32(uint8_t *at, uint32_t v)
++{
++    memcpy(at, &v, sizeof(v));
++}
++
++static uint16_t read16(const uint8_t *at)
++{
++    uint16_t v;
++    memcpy(&v, at, sizeof(v));
++    return v;
++}
++
++bool card_parse_address(const char *text, CardAddress *address)
++{
++    unsigned domain, bus, device, function;
++    int end = 0;
++
++    if (!text || sscanf(text, "%x:%x:%x.%x%n", &domain, &bus, &device, &function, &end) != 4 ||
++        text[end] || bus > 0xff || device > 0x1f || function > 7) {
++        return false;
++    }
++    *address = (CardAddress) { domain, bus, device, function };
++    return true;
++}
++
++void card_print_address(const CardAddress *address, char *text, size_t size)
++{
++    snprintf(text, size, "%04x:%02x:%02x.%x", address->domain, address->bus, address->device,
++             address->function);
++}
++
++/* ---- finding the card ---- */
++
++static bool is_at(CardControl control, void *opaque, uint32_t gpu, const CardAddress *address)
++{
++    uint8_t info[PCI_INFO_BYTES] = { 0 };
++
++    write32(info, gpu);
++    /* The RM gives no function number. A GPU is always function 0. */
++    return control(opaque, CTRL_GET_PCI_INFO, info, sizeof(info)) == STATUS_OK &&
++           read32(info + PCI_INFO_DOMAIN) == address->domain && read16(info + PCI_INFO_BUS) == address->bus &&
++           read16(info + PCI_INFO_SLOT) == address->device && address->function == 0;
++}
++
++const char *card_find(CardControl control, void *opaque, const CardAddress *address, NvfwdCard *card)
++{
++    uint8_t ids[LIST_BYTES], info[ID_INFO_V2_BYTES] = { 0 };
++    uint32_t count, found = NO_GPU;
++
++    memset(ids, 0xff, sizeof(ids));
++    if (control(opaque, CTRL_GET_ATTACHED_IDS, ids, sizeof(ids)) != STATUS_OK) {
++        return "the driver would not list its GPUs";
++    }
++    for (count = 0; count < MAX_GPUS && read32(ids + count * 4) != NO_GPU; count++) {
++        if (address && is_at(control, opaque, read32(ids + count * 4), address)) {
++            found = read32(ids + count * 4);
++        }
++    }
++    if (!address) {
++        if (count != 1) {
++            return count ? "the host has more than one NVIDIA card, and card= doesn't say which" :
++                           "the driver has no GPU set up";
++        }
++        found = read32(ids);
++    }
++    if (found == NO_GPU) {
++        return "the driver has no GPU set up at that address";
++    }
++    write32(info, found);
++    if (control(opaque, CTRL_GET_ID_INFO_V2, info, sizeof(info)) != STATUS_OK) {
++        return "the driver would not give the GPU's device number";
++    }
++    card->gpu_id = found;
++    card->instance = read32(info + ID_INFO_DEVICE_INSTANCE);
++    return NULL;
++}
++
++/* ---- the guest's calls ---- */
++
++/* A control's or allocation's parameters, when they are at least `need` bytes. */
++static uint8_t *params_of(const uint8_t *arg, uint32_t pointer_at, uint32_t size_at, uint32_t need)
++{
++    uint64_t pointer;
++
++    memcpy(&pointer, arg + pointer_at, sizeof(pointer));
++    if (!pointer || read32(arg + size_at) < need) {
++        return NULL;
++    }
++    return (uint8_t *)(uintptr_t)pointer;
++}
++
++static uint8_t *control_params(const uint8_t *arg, uint32_t size, uint32_t need)
++{
++    return size >= RM_CONTROL_BYTES ? params_of(arg, RM_CONTROL_PARAMS, RM_CONTROL_PARAMS_SIZE, need) : NULL;
++}
++
++/* A list of GPU ids that ends at NO_GPU or its room. Each one has to be the card. */
++static bool only_card_listed(const NvfwdCard *card, uint8_t *list, uint32_t room)
++{
++    uint32_t i;
++
++    if (read32(list) == ALL_GPUS) {
++        /* "Every GPU" means the guest's every GPU. */
++        write32(list, card->gpu_id);
++        if (room > 1) {
++            write32(list + 4, NO_GPU);
++        }
++        return true;
++    }
++    for (i = 0; i < room && read32(list + i * 4) != NO_GPU; i++) {
++        if (read32(list + i * 4) != card->gpu_id) {
++            return false;
++        }
++    }
++    return true;
++}
++
++/* The GPUs a control file is tied to. The kernel passes over a 0, and takes every other entry. */
++static bool fd_list_names_card_only(const NvfwdCard *card, const uint8_t *list, uint32_t count)
++{
++    uint32_t i;
++
++    for (i = 0; i < count; i++) {
++        if (read32(list + i * 4) != FD_LIST_EMPTY && read32(list + i * 4) != card->gpu_id) {
++            return false;
++        }
++    }
++    return true;
++}
++
++static bool p2p_names_card_only(const NvfwdCard *card, const uint8_t *params)
++{
++    uint32_t a = read32(params + P2P_GROUP_A_COUNT), b = read32(params + P2P_GROUP_B_COUNT), i;
++
++    if (a > P2P_GROUP_MAX || b > P2P_GROUP_MAX) {
++        return false;
++    }
++    for (i = 0; i < a; i++) {
++        if (read32(params + P2P_GROUP_A + i * 4) != card->gpu_id) {
++            return false;
++        }
++    }
++    for (i = 0; i < b; i++) {
++        if (read32(params + P2P_GROUP_B + i * 4) != card->gpu_id) {
++            return false;
++        }
++    }
++    return true;
++}
++
++static bool control_allowed(const NvfwdCard *card, uint8_t *arg, uint32_t size)
++{
++    uint32_t cmd = read32(arg + RM_CONTROL_CMD);
++    uint8_t *params;
++
++    switch (cmd) {
++    case CTRL_GET_ID_INFO:
++    case CTRL_GET_ID_INFO_V2:
++    case CTRL_GET_PCI_INFO:
++    case CTRL_GET_UUID_FROM_GPU_ID:
++    case CTRL_QUERY_DRAIN_STATE:
++    case CTRL_ASYNC_ATTACH_ID:
++    case CTRL_WAIT_ATTACH_ID:
++        params = control_params(arg, size, 4);
++        return params && read32(params) == card->gpu_id;
++    case CTRL_ATTACH_IDS:
++    case CTRL_DETACH_IDS:
++        params = control_params(arg, size, LIST_BYTES);
++        return params && only_card_listed(card, params, MAX_GPUS);
++    case CTRL_GET_P2P_CAPS_MATRIX:
++        params = control_params(arg, size, P2P_GROUP_B + P2P_GROUP_MAX * 4);
++        return params && p2p_names_card_only(card, params);
++    }
++    return true;
++}
++
++/*
++ * A device allocation's parameters. The RM goes by the class's own size and not the size field, which
++ * the driver leaves at 0, and rmargs.c has made the pointer one into this call that holds that much.
++ */
++static uint8_t *device_params(const uint8_t *arg, uint32_t size)
++{
++    uint64_t pointer;
++
++    if (size < RM_ALLOC_SHORT_BYTES || read32(arg + RM_ALLOC_CLASS) != CLASS_DEVICE) {
++        return NULL;
++    }
++    memcpy(&pointer, arg + RM_ALLOC_PARAMS, sizeof(pointer));
++    return (uint8_t *)(uintptr_t)pointer;
++}
++
++static bool device_allowed(const NvfwdCard *card, uint8_t *arg, uint32_t size)
++{
++    uint8_t *params;
++
++    if (size < RM_ALLOC_SHORT_BYTES || read32(arg + RM_ALLOC_CLASS) != CLASS_DEVICE) {
++        return true;
++    }
++    /* No parameters would mean the RM's first device, which needn't be this card. */
++    params = device_params(arg, size);
++    if (!params || read32(params + DEVICE_PARAMS_ID) != GUEST_INSTANCE) {
++        return false;
++    }
++    write32(params + DEVICE_PARAMS_ID, card->instance);
++    return true;
++}
++
++bool card_allows(const NvfwdCard *card, uint32_t nr, uint8_t *arg, uint32_t size)
++{
++    switch (nr) {
++    case ESC_RM_ALLOC:
++        return device_allowed(card, arg, size);
++    case ESC_RM_CONTROL:
++        return size >= RM_CONTROL_BYTES && control_allowed(card, arg, size);
++    case ESC_ATTACH_GPUS_TO_FD:
++        return size >= 4 && fd_list_names_card_only(card, arg, size / 4);
++    }
++    return true;
++}
++
++/* Keeps the card in a list of GPU ids, first, and ends the list after it. */
++static void keep_card(const NvfwdCard *card, uint8_t *list, uint32_t room)
++{
++    bool listed = false;
++    uint32_t i;
++
++    for (i = 0; i < room && read32(list + i * 4) != NO_GPU; i++) {
++        listed |= read32(list + i * 4) == card->gpu_id;
++    }
++    memset(list, 0xff, room * 4);
++    if (listed) {
++        write32(list, card->gpu_id);
++    }
++}
++
++static void keep_probed_card(const NvfwdCard *card, uint8_t *params)
++{
++    uint32_t flags = 0, i;
++    bool listed = false;
++
++    for (i = 0; i < MAX_GPUS && read32(params + i * 4) != NO_GPU; i++) {
++        if (read32(params + i * 4) == card->gpu_id) {
++            listed = true;
++            flags = read32(params + PROBED_FLAGS + i * 4);
++        }
++    }
++    memset(params, 0xff, 2 * LIST_BYTES); /* the excluded GPUs are other cards too */
++    memset(params + PROBED_FLAGS, 0, LIST_BYTES);
++    if (listed) {
++        write32(params, card->gpu_id);
++        write32(params + PROBED_FLAGS, flags);
++    }
++}
++
++static void keep_active_card(const NvfwdCard *card, uint8_t *params, uint32_t params_size)
++{
++    uint32_t count = read32(params + ACTIVE_COUNT), kept = 0, i;
++    uint32_t room = (params_size - ACTIVE_FIRST) / ACTIVE_BYTES;
++
++    count = count < room ? count : room;
++    count = count < ACTIVE_MAX ? count : ACTIVE_MAX;
++    for (i = 0; i < count; i++) {
++        uint8_t *device = params + ACTIVE_FIRST + i * ACTIVE_BYTES;
++        if (read32(device) == card->gpu_id) {
++            memmove(params + ACTIVE_FIRST + kept++ * ACTIVE_BYTES, device, ACTIVE_BYTES);
++        }
++    }
++    memset(params + ACTIVE_FIRST + kept * ACTIVE_BYTES, 0, (count - kept) * ACTIVE_BYTES);
++    write32(params + ACTIVE_COUNT, kept);
++}
++
++static void fix_control(const NvfwdCard *card, uint8_t *arg, uint32_t size)
++{
++    uint32_t cmd = read32(arg + RM_CONTROL_CMD);
++    uint8_t *params;
++
++    switch (cmd) {
++    case CTRL_GET_ATTACHED_IDS:
++        if ((params = control_params(arg, size, LIST_BYTES))) {
++            keep_card(card, params, MAX_GPUS);
++        }
++        break;
++    case CTRL_GET_PROBED_IDS:
++        if ((params = control_params(arg, size, PROBED_BYTES))) {
++            keep_probed_card(card, params);
++        }
++        break;
++    case CTRL_GET_DEVICE_IDS:
++        if ((params = control_params(arg, size, 4))) {
++            write32(params, card->instance < 32 && (read32(params) >> card->instance & 1) ? 1u << GUEST_INSTANCE : 0);
++        }
++        break;
++    case CTRL_GET_ID_INFO:
++    case CTRL_GET_ID_INFO_V2:
++        /* Only the card's own got this far. */
++        if ((params = control_params(arg, size, ID_INFO_DEVICE_INSTANCE + 4))) {
++            write32(params + ID_INFO_DEVICE_INSTANCE, GUEST_INSTANCE);
++        }
++        break;
++    case CTRL_GET_ACTIVE_DEVICE_IDS:
++        if ((params = control_params(arg, size, ACTIVE_FIRST))) {
++            keep_active_card(card, params, read32(arg + RM_CONTROL_PARAMS_SIZE));
++        }
++        break;
++    }
++}
++
++/* The cards the host's driver has, cut down to this one, which the guest has as /dev/nvidia0. */
++static void fix_card_info(const NvfwdCard *card, uint8_t *arg, uint32_t size)
++{
++    uint32_t count = size / CARD_INFO_BYTES, kept = 0, i;
++
++    for (i = 0; i < count; i++) {
++        uint8_t *info = arg + i * CARD_INFO_BYTES;
++        if (info[0] && read32(info + CARD_INFO_GPU_ID) == card->gpu_id) {
++            memmove(arg, info, CARD_INFO_BYTES);
++            write32(arg + CARD_INFO_MINOR, GUEST_MINOR);
++            kept = 1;
++            break;
++        }
++    }
++    memset(arg + kept * CARD_INFO_BYTES, 0, (count - kept) * CARD_INFO_BYTES);
++}
++
++/* The guest asked for its device 0, and reads back what it asked for. */
++static void fix_device(uint8_t *arg, uint32_t size)
++{
++    uint8_t *params = device_params(arg, size);
++
++    if (params) {
++        write32(params + DEVICE_PARAMS_ID, GUEST_INSTANCE);
++    }
++}
++
++void card_fix_answer(const NvfwdCard *card, uint32_t nr, uint8_t *arg, uint32_t size)
++{
++    if (nr == ESC_RM_ALLOC) {
++        fix_device(arg, size);
++    } else if (nr == ESC_RM_CONTROL && size >= RM_CONTROL_BYTES) {
++        fix_control(card, arg, size);
++    } else if (nr == ESC_CARD_INFO) {
++        fix_card_info(card, arg, size);
++    }
++}
++
++bool card_knows_control(uint32_t cmd)
++{
++    switch (cmd) {
++    case CTRL_GET_ATTACHED_IDS:
++    case CTRL_GET_ID_INFO:
++    case CTRL_GET_DEVICE_IDS:
++    case CTRL_GET_ID_INFO_V2:
++    case CTRL_GET_PROBED_IDS:
++    case CTRL_ATTACH_IDS:
++    case CTRL_DETACH_IDS:
++    case CTRL_GET_PCI_INFO:
++    case CTRL_GET_UUID_FROM_GPU_ID:
++    case CTRL_QUERY_DRAIN_STATE:
++    case CTRL_GET_ACTIVE_DEVICE_IDS:
++    case CTRL_ASYNC_ATTACH_ID:
++    case CTRL_WAIT_ATTACH_ID:
++    case CTRL_GET_P2P_CAPS_MATRIX:
++    case CTRL_GET_MEMOP_ENABLE: /* names no GPU */
++        return true;
++    }
++    return (cmd & CTRL_INTERFACE_MASK) != CTRL_GPU_INTERFACE;
++}
+diff --git a/hw/misc/nvfwd/card.h b/hw/misc/nvfwd/card.h
+new file mode 100644
+index 0000000..55c6979
+--- /dev/null
++++ b/hw/misc/nvfwd/card.h
+@@ -0,0 +1,66 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++/*
++ * The one card a guest gets.
++ *
++ * The host may have several NVIDIA cards, and a guest is given one of them by its PCI address. The
++ * RM names a card three ways: its device file's minor, its GPU id, and its device instance, and none
++ * of them follows from another. So the device looks the card up once, before the guest runs, and
++ * from then on shows the guest that card alone, as device instance 0, which is what a guest with one
++ * card expects. The guest's driver learns what cards there are from a few controls and one ioctl;
++ * their answers are cut down to this card here, and any call naming another GPU is refused.
++ *
++ * The wall is the host's own check, though: the RM makes a device only for a GPU whose device file
++ * the calling process has open, and QEMU opens this card's alone. This file is what keeps the guest's
++ * view of the host consistent with that.
++ */
++#ifndef NVFWD_CARD_H
++#define NVFWD_CARD_H
++
++#include <stdbool.h>
++#include <stddef.h>
++#include <stdint.h>
++
++typedef struct CardAddress {
++    uint32_t domain;
++    uint8_t bus, device, function;
++} CardAddress;
++
++typedef struct NvfwdCard {
++    uint32_t gpu_id;   /* the RM's id for the card's GPU, which the guest sees as it is */
++    uint32_t instance; /* the RM's device instance for it, which the guest sees as 0 */
++} NvfwdCard;
++
++/* The longest address card_print_address writes, with its end. */
++#define CARD_ADDRESS_TEXT 32
++
++/* domain:bus:device.function in hex, with a domain of any width. */
++bool card_parse_address(const char *text, CardAddress *address);
++
++/* As sysfs names a PCI device, a four-digit domain. */
++void card_print_address(const CardAddress *address, char *text, size_t size);
++
++/* An NV0000 control on a client of the host's: the RM status, or -1 if the call itself failed. */
++typedef int64_t (*CardControl)(void *opaque, uint32_t cmd, void *params, uint32_t size);
++
++/*
++ * Finds the card at the address, or with none, the host's only card. NULL when found, or why not.
++ * The card's device file has to be open already, as that is what sets its GPU up.
++ */
++const char *card_find(CardControl control, void *opaque, const CardAddress *address, NvfwdCard *card);
++
++/*
++ * Before a call goes to the host. False refuses it. A device allocation of the guest's instance 0
++ * is rewritten here to the card's own instance.
++ */
++bool card_allows(const NvfwdCard *card, uint32_t nr, uint8_t *arg, uint32_t size);
++
++/*
++ * After the host answered, whether or not it worked: lists of GPUs and device numbers cut down to
++ * the card, and a device allocation's instance put back as the guest gave it.
++ */
++void card_fix_answer(const NvfwdCard *card, uint32_t nr, uint8_t *arg, uint32_t size);
++
++/* Whether this file knows an NV0000 GPU control: it can't let a GPU control through blind. */
++bool card_knows_control(uint32_t cmd);
++
++#endif
+diff --git a/hw/misc/nvfwd/fds.c b/hw/misc/nvfwd/fds.c
+index 2433dda..dedd3b5 100644
+--- a/hw/misc/nvfwd/fds.c
++++ b/hw/misc/nvfwd/fds.c
+@@ -78,7 +78,8 @@ void throttle(NvfwdState *s)
+ 
+ void do_open(NvfwdState *s, struct nvfwd_req *r)
+ {
+-    static const char *const paths[] = { "/dev/nvidiactl", "/dev/nvidia0", "/dev/nvidia-uvm" };
++    /* Whichever GPU file the guest opens, it gets the card's. */
++    const char *const paths[] = { "/dev/nvidiactl", s->card_path, "/dev/nvidia-uvm" };
+     int fd, i;
+ 
+     if (r->a0 >= ARRAY_SIZE(paths)) {
+diff --git a/hw/misc/nvfwd/forward.c b/hw/misc/nvfwd/forward.c
+index 19e244b..17ae253 100644
+--- a/hw/misc/nvfwd/forward.c
++++ b/hw/misc/nvfwd/forward.c
+@@ -316,6 +316,21 @@ static void note_map_access(NvfwdState *s, const struct nvfwd_req *r, const uint
+     }
+ }
+ 
++/* A call naming a GPU or a device other than the guest's one card: see card.h. */
++static void refuse_other_card(NvfwdState *s, struct nvfwd_req *r, uint32_t nr, uint8_t *arg, uint32_t size)
++{
++    uint32_t status = nr == ESC_RM_ALLOC ? STATUS_INVALID_CLASS : STATUS_INVALID_ARGUMENT;
++    int status_at = nr == ESC_RM_CONTROL ? RM_CONTROL_STATUS : account_status_at(nr, size);
++
++    note_once(s, "REFUSED", "another card", KEY(K_CARD, nr), nr);
++    if (status_at < 0) {
++        r->ret = -EINVAL;
++        return;
++    }
++    memcpy(arg + status_at, &status, sizeof(status));
++    r->ret = 0;
++}
++
+ static bool client_known(void *opaque, uint32_t client)
+ {
+     NvfwdState *s = opaque;
+@@ -424,6 +439,10 @@ static void forward_ioctl(NvfwdState *s, Bounce *b, uint32_t *held, uint32_t *nh
+             }
+         }
+     }
++    if (!uvm && !card_allows(&s->card, nr, arg, size)) {
++        refuse_other_card(s, r, nr, arg, size);
++        return;
++    }
+     if (!uvm) {
+         uint32_t refused;
+ 
+@@ -433,6 +452,7 @@ static void forward_ioctl(NvfwdState *s, Bounce *b, uint32_t *held, uint32_t *nh
+         refused = account_before(s->objects, &account, &hold);
+         if (refused) {
+             undo_runs(&account);
++            card_fix_answer(&s->card, nr, arg, size);
+             memcpy(arg + account_status_at(nr, size), &refused, sizeof(refused));
+             note_once(s, "OVER", "limit", KEY(K_LIMIT, nr), nr);
+             r->ret = 0;
+@@ -447,6 +467,9 @@ static void forward_ioctl(NvfwdState *s, Bounce *b, uint32_t *held, uint32_t *nh
+     } while (rc < 0 && errno == EINTR);
+     r->ret = rc < 0 ? -errno : rc;
+     s->counters[0]++;
++    if (!uvm) {
++        card_fix_answer(&s->card, nr, arg, size);
++    }
+     if (!uvm && nr == ESC_RM_MAP_MEMORY && rc == 0) {
+         note_map_access(s, r, arg);
+     }
+diff --git a/hw/misc/nvfwd/host_card.c b/hw/misc/nvfwd/host_card.c
+new file mode 100644
+index 0000000..ad6797f
+--- /dev/null
++++ b/hw/misc/nvfwd/host_card.c
+@@ -0,0 +1,152 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++/*
++ * Looks up the card a guest gets, before the guest runs: see card.h. This is the only time QEMU has
++ * a client of its own on the host, and it is gone before the first guest call.
++ */
++#include "qemu/osdep.h"
++#include "qapi/error.h"
++#include <sys/ioctl.h>
++#include "nvfwd.h"
++#include "rm_layout.h"
++
++#define IOCTL_MAGIC 'F'
++#define CLASS_ROOT_CLIENT 0x41
++#define CLASS_DEVICE 0x80
++#define CHECK_DEVICE 0xca000001u
++#define CLIENT_PARAMS_BYTES 120 /* NV0000_ALLOC_PARAMETERS */
++#define DEVICE_PARAMS_BYTES 56  /* NV0080_ALLOC_PARAMETERS */
++#define STATUS_INSUFFICIENT_PERMISSIONS 0x1b
++
++typedef struct LookupClient {
++    int control_fd;
++    uint32_t client;
++} LookupClient;
++
++static int rm_call(int fd, unsigned nr, void *args, size_t size)
++{
++    int rc;
++
++    do {
++        rc = ioctl(fd, _IOC(_IOC_READ | _IOC_WRITE, IOCTL_MAGIC, nr, size), args);
++    } while (rc < 0 && errno == EINTR);
++    return rc;
++}
++
++/* An NVOS21 allocation. Returns the RM status, or -1. */
++static int64_t rm_alloc(LookupClient *c, uint32_t parent, uint32_t object, uint32_t class_id,
++                        void *params, uint32_t size)
++{
++    uint8_t a[RM_ALLOC_SHORT_BYTES] = { 0 };
++    uint64_t pointer = (uintptr_t)params;
++    uint32_t status;
++
++    memcpy(a + RM_ALLOC_ROOT, &c->client, 4);
++    memcpy(a + RM_ALLOC_PARENT, &parent, 4);
++    memcpy(a + RM_ALLOC_OBJECT, &object, 4);
++    memcpy(a + RM_ALLOC_CLASS, &class_id, 4);
++    memcpy(a + RM_ALLOC_PARAMS, &pointer, 8);
++    memcpy(a + RM_ALLOC_SHORT_PARAMS_SIZE, &size, 4);
++    if (rm_call(c->control_fd, ESC_RM_ALLOC, a, sizeof(a))) {
++        return -1;
++    }
++    memcpy(&status, a + RM_ALLOC_SHORT_STATUS, 4);
++    if (!status && !c->client) {
++        memcpy(&c->client, a + RM_ALLOC_OBJECT, 4);
++    }
++    return status;
++}
++
++static int64_t rm_control(void *opaque, uint32_t cmd, void *params, uint32_t size)
++{
++    LookupClient *c = opaque;
++    uint8_t a[RM_CONTROL_BYTES] = { 0 };
++    uint64_t pointer = (uintptr_t)params;
++    uint32_t status;
++
++    memcpy(a + RM_CONTROL_CLIENT, &c->client, 4);
++    memcpy(a + RM_CONTROL_OBJECT, &c->client, 4);
++    memcpy(a + RM_CONTROL_CMD, &cmd, 4);
++    memcpy(a + RM_CONTROL_PARAMS, &pointer, 8);
++    memcpy(a + RM_CONTROL_PARAMS_SIZE, &size, 4);
++    if (rm_call(c->control_fd, ESC_RM_CONTROL, a, sizeof(a))) {
++        return -1;
++    }
++    memcpy(&status, a + RM_CONTROL_STATUS, 4);
++    return status;
++}
++
++static void rm_free_client(LookupClient *c)
++{
++    uint8_t a[RM_FREE_BYTES] = { 0 };
++
++    memcpy(a + RM_FREE_ROOT, &c->client, 4);
++    memcpy(a + 4, &c->client, 4); /* its parent is itself */
++    memcpy(a + RM_FREE_OBJECT, &c->client, 4);
++    rm_call(c->control_fd, ESC_RM_FREE, a, sizeof(a));
++}
++
++/* The RM makes a device only for a GPU whose file this process has open: a wrong card-minor shows. */
++static const char *check_device(LookupClient *c, const NvfwdCard *card)
++{
++    uint8_t params[DEVICE_PARAMS_BYTES] = { 0 };
++    int64_t status;
++
++    memcpy(params, &card->instance, 4);
++    status = rm_alloc(c, c->client, CHECK_DEVICE, CLASS_DEVICE, params, sizeof(params));
++    if (status == STATUS_INSUFFICIENT_PERMISSIONS) {
++        return "card-minor names another card than card=";
++    }
++    return status ? "the driver would not open the card" : NULL;
++}
++
++static const char *look_up(NvfwdState *s, const CardAddress *address)
++{
++    uint8_t client_params[CLIENT_PARAMS_BYTES] = { 0 };
++    LookupClient c = { .control_fd = open("/dev/nvidiactl", O_RDWR | O_CLOEXEC) };
++    const char *why;
++
++    if (c.control_fd < 0) {
++        return "/dev/nvidiactl would not open";
++    }
++    if (rm_alloc(&c, 0, 0, CLASS_ROOT_CLIENT, client_params, sizeof(client_params))) {
++        close(c.control_fd);
++        return "the driver would not make a client";
++    }
++    why = card_find(rm_control, &c, address, &s->card);
++    if (!why) {
++        why = check_device(&c, &s->card);
++    }
++    rm_free_client(&c);
++    close(c.control_fd);
++    return why;
++}
++
++bool host_card_open(NvfwdState *s, Error **errp)
++{
++    CardAddress address;
++    const char *why;
++
++    snprintf(s->card_path, sizeof(s->card_path), "/dev/nvidia%u", s->card_minor);
++    if (s->card_text && !card_parse_address(s->card_text, &address)) {
++        error_setg(errp, "nvfwd: card=%s is not a PCI address", s->card_text);
++        return false;
++    }
++    if (s->card_text) {
++        card_print_address(&address, s->card_sysfs, sizeof(s->card_sysfs));
++    }
++    /* Held for the VM's life: the RM keeps a GPU set up, and its numbers as they are, while it's open. */
++    s->card_fd = open(s->card_path, O_RDWR | O_CLOEXEC);
++    if (s->card_fd < 0) {
++        error_setg_errno(errp, errno, "nvfwd: %s", s->card_path);
++        return false;
++    }
++    why = look_up(s, s->card_text ? &address : NULL);
++    if (why) {
++        error_setg(errp, "nvfwd: %s", why);
++        return false;
++    }
++    fprintf(s->log, "card %s, device file %s, GPU %#x, device instance %u\n",
++            s->card_text ? s->card_sysfs : "(the only one)", s->card_path, s->card.gpu_id, s->card.instance);
++    fflush(s->log);
++    return true;
++}
+diff --git a/hw/misc/nvfwd/meson.build b/hw/misc/nvfwd/meson.build
+index 8f1e692..ce35da7 100644
+--- a/hw/misc/nvfwd/meson.build
++++ b/hw/misc/nvfwd/meson.build
+@@ -8,6 +8,8 @@ nvfwd_ss = files(
+   'rmargs.c',
+   'clients.c',
+   'accounting.c',
++  'card.c',
++  'host_card.c',
+   'sensors.c',
+   'allow.c',
+   'fds.c',
+diff --git a/hw/misc/nvfwd/nvfwd.c b/hw/misc/nvfwd/nvfwd.c
+index 80376a3..9d5d4dd 100644
+--- a/hw/misc/nvfwd/nvfwd.c
++++ b/hw/misc/nvfwd/nvfwd.c
+@@ -163,7 +163,11 @@ static void nvfwd_realize(PCIDevice *pdev, Error **errp)
+     }, unmap_runs, s);
+     s->maps = maps_new(s->max_maps, s->max_uvm);
+     callrate_init(&s->rate, s->max_call_rate, s->max_call_burst);
++    s->card_fd = -1;
+     if (!s->no_gpu) {
++        if (!host_card_open(s, errp)) {
++            return;
++        }
+         s->sensors = sensors_new(s->log, s->sensord_path);
+     }
+     s->win_size = 64 * GiB;
+@@ -206,6 +210,8 @@ static const Property nvfwd_props[] = {
+     DEFINE_PROP_STRING("sensord", NvfwdState, sensord_path),
+     DEFINE_PROP_STRING("log", NvfwdState, log_path),
+     DEFINE_PROP_STRING("show", NvfwdState, show_path),
++    DEFINE_PROP_STRING("card", NvfwdState, card_text),
++    DEFINE_PROP_UINT32("card-minor", NvfwdState, card_minor, 0),
+     DEFINE_PROP_BOOL("trace", NvfwdState, trace, false),
+     DEFINE_PROP_BOOL("nogpu", NvfwdState, no_gpu, false),
+     DEFINE_PROP_UINT32("max-call-rate", NvfwdState, max_call_rate, DEFAULT_MAX_CALL_RATE),
+diff --git a/hw/misc/nvfwd/nvfwd.h b/hw/misc/nvfwd/nvfwd.h
+index 3d1d25f..678e234 100644
+--- a/hw/misc/nvfwd/nvfwd.h
++++ b/hw/misc/nvfwd/nvfwd.h
+@@ -16,6 +16,7 @@
+ #include "accounting.h"
+ #include "bounce.h"
+ #include "callrate.h"
++#include "card.h"
+ #include "maps.h"
+ #include "nvfwd_proto.h"
+ #include "objects.h"
+@@ -41,6 +42,12 @@ struct NvfwdState {
+     uint64_t win_size;
+     char *allow_path, *log_path, *sensord_path;
+     bool trace, no_gpu;
++    char *card_text;           /* the card's PCI address, or none on a host with one card */
++    uint32_t card_minor;       /* its device file is /dev/nvidia with this on the end */
++    char card_path[32];
++    char card_sysfs[CARD_ADDRESS_TEXT]; /* the address as sysfs writes it, or empty */
++    int card_fd;               /* the card's device file, open while the VM is */
++    NvfwdCard card;
+ 
+     QemuMutex lock;
+     int fds[MAX_FDS];
+@@ -85,7 +92,8 @@ struct NvfwdState {
+     uint64_t counters[8];
+ };
+ 
+-enum { K_IOCTL = 1, K_CTRL = 2, K_CLASS = 3, K_UVM = 4, K_MEMCLASS = 5, K_EMUCTRL = 6, K_LIMIT = 7, K_CLIENT = 8 };
++enum { K_IOCTL = 1, K_CTRL = 2, K_CLASS = 3, K_UVM = 4, K_MEMCLASS = 5, K_EMUCTRL = 6, K_LIMIT = 7, K_CLIENT = 8,
++       K_CARD = 9 };
+ 
+ #define KEY(kind, value) (((uint64_t)(kind) << 32) | (uint32_t)(value))
+ 
+@@ -105,6 +113,9 @@ void fd_release(NvfwdState *s, uint32_t id);
+ void fd_close(NvfwdState *s, uint32_t id);
+ void do_open(NvfwdState *s, struct nvfwd_req *r);
+ 
++/* host_card.c */
++bool host_card_open(NvfwdState *s, Error **errp);
++
+ /* forward.c */
+ void unmap_runs(void *opaque, void *range, uint64_t bytes);
+ void do_ioctl(NvfwdState *s, Bounce *b);
+diff --git a/hw/misc/nvfwd/rm_layout.h b/hw/misc/nvfwd/rm_layout.h
+index 447c443..4c00adf 100644
+--- a/hw/misc/nvfwd/rm_layout.h
++++ b/hw/misc/nvfwd/rm_layout.h
+@@ -105,6 +105,7 @@
+ #define STATUS_OK 0
+ #define STATUS_INSUFFICIENT_RESOURCES 0x1a
+ #define STATUS_INVALID_ARGUMENT 0x1f
++#define STATUS_INVALID_CLASS 0x22 /* what the RM says to a device instance it doesn't have */
+ #define STATUS_NO_MEMORY 0x51
+ #define STATUS_NOT_SUPPORTED 0x56
+ 
+diff --git a/hw/misc/nvfwd/show.c b/hw/misc/nvfwd/show.c
+index cbc008e..a92c67a 100644
+--- a/hw/misc/nvfwd/show.c
++++ b/hw/misc/nvfwd/show.c
+@@ -25,15 +25,19 @@
+ #define NVKMS_LAYOUT_PITCH 1
+ #define MODIFIER_NVIDIA_BLOCK_LINEAR 0x0300000000606010ull /* sector layout 1, generation 2, kind 6, as the guest driver offers; low bits are log2 height */
+ 
+-static int render_node(void)
++/* The card's render node: the one at its address, or with none given, the first NVIDIA drives. */
++static int render_node(const char *address)
+ {
+     char link[256], path[64], target[256];
+     for (int i = 128; i < 136; i++) {
+-        snprintf(link, sizeof(link), "/sys/class/drm/renderD%d/device/driver", i);
++        snprintf(link, sizeof(link), "/sys/class/drm/renderD%d/device%s", i, *address ? "" : "/driver");
+         ssize_t n = readlink(link, target, sizeof(target) - 1);
+         if (n > 0) {
++            g_autofree char *name = NULL;
++
+             target[n] = 0;
+-            if (!strcmp(g_path_get_basename(target), "nvidia")) {
++            name = g_path_get_basename(target);
++            if (!strcmp(name, *address ? address : "nvidia")) {
+                 snprintf(path, sizeof(path), "/dev/dri/renderD%d", i);
+                 return open(path, O_RDWR | O_CLOEXEC);
+             }
+@@ -54,7 +58,7 @@ static int import_dmabuf_laid_out(NvfwdState *s, int exported, uint64_t size, ui
+     struct { uint32_t handle, pad; } close_req = { 0, 0 };
+ 
+     if (s->render < 0) {
+-        s->render = render_node();
++        s->render = render_node(s->card_sysfs);
+     }
+     if (s->render < 0 || ioctl(s->render, DRM_IOCTL_NVIDIA_IMPORT_MEMORY, &req)) {
+         fprintf(s->log, "show: gem import of %#llx bytes failed: %s\n", (unsigned long long)size, strerror(errno));
+-- 
+2.56.0
+
