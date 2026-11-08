@@ -71,6 +71,7 @@ mod tests {
             guest_branch: guest_branch_of(guest_driver_version),
             driver_folder: PathBuf::new(),
             card: Some(PciCard { vendor: 0x10DE, device: 0x2B85, revision: 0xA1 }),
+            card_address: None,
         }
     }
 

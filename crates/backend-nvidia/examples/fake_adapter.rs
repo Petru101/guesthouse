@@ -43,6 +43,7 @@ fn main() {
         guest_branch: "617".into(),
         driver_folder: folder.clone(),
         card: Some(PciCard { vendor: 0x10DE, device: card.device as u16, revision: 0xA1 }),
+        card_address: None,
     };
     let host = read_host_facts_with_clocks(RATED_CLOCKS).unwrap();
     let inf = fs::read(folder.join(INF_NAME)).unwrap();

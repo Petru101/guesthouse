@@ -65,6 +65,7 @@ pub fn start_on_card(mut rm: FakeRm, card: &FakeCard, chosen: u16) -> Result<Nvi
         guest_branch: "617".into(),
         driver_folder: Default::default(),
         card: Some(PciCard { vendor: 0x10DE, device: chosen, revision: 0xA1 }),
+        card_address: None,
     };
     let host = HostFacts {
         total_ram_kib: 64 << 20,

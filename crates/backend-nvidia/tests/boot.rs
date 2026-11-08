@@ -919,6 +919,7 @@ fn nothing_in_the_backend_can_be_opened_with_a_fake() {
         guest_branch: "617".into(),
         driver_folder: "/nonexistent".into(),
         card: None,
+        card_address: None,
     };
     let survey = guesthouse_backend_nvidia::startup::survey_versions("615.78.08", &setup);
     assert!(NvidiaBackend::<FakeRm>::open(&setup, &survey).is_err());

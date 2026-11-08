@@ -4,7 +4,7 @@
 //! Those are separate things, each with its own profile inside a vendor backend, so a survey says
 //! which branches are known without saying anything about cards.
 
-use crate::PciCard;
+use crate::{PciAddress, PciCard};
 use std::fmt;
 use std::path::PathBuf;
 
@@ -61,6 +61,9 @@ pub struct Setup {
     pub driver_folder: PathBuf,
     /// The card setup chose, if it chose one.
     pub card: Option<PciCard>,
+    /// Where that card is. A setup from before this was written down has none, which a PC with one
+    /// card can do without.
+    pub card_address: Option<PciAddress>,
 }
 
 /// One driver's version and branch, in the vendor's own naming.
