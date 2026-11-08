@@ -23,6 +23,9 @@ fi
 
 install_headers() {
     if [ -n "$own_family" ]; then
+        # At boot this can run before the network is up. A kernel updated on its own, as Fedora's
+        # dnf upgrade kernel does, comes without its headers, and they have to be fetched.
+        ! command -v nm-online > /dev/null || nm-online -q -t 60 || true
         family_install "$own_family" "$headers"
     else
         apt-get install -y "$headers"
