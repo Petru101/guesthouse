@@ -338,3 +338,18 @@ fn the_forwarded_gpu_keeps_its_address_layout_and_the_viewers_pid() {
     let (_scratch, plain) = ubuntu_with_gpu(false);
     assert_eq!(plain.qemu_command()[..4], ["setarch", "x86_64", "-L", "/p/guesthouse-jail"]);
 }
+
+#[test]
+fn ubuntus_own_line_gets_none_of_the_machines_network_or_share() {
+    let (_scratch, plan) = ubuntu_with_gpu(true);
+    let settings = NetworkPlan { passt: true, ..plan.network.clone() };
+    let on_passt = VmPlan { network: settings, share: Some("/home/me/Shared".into()), ..plan.clone() };
+    let bridged = VmPlan { network: NetworkPlan { mode: Mode::Bridged, ..plan.network.clone() }, ..plan };
+    for plan in [on_passt, bridged] {
+        let command = plan.qemu_command();
+        assert!(!command.iter().any(|word| ["--passt", "--tap", "--open-only"].contains(&word.as_str())));
+        let rules = plan.qemu_jail_plan(plan.jail.as_ref().unwrap());
+        assert!(!rules.paths.iter().any(|(_, path)| path == Path::new("/home/me/Shared")));
+        assert_eq!(rules.network.tcp_bind, Ports::Only(vec![plan.ssh_port()]));
+    }
+}

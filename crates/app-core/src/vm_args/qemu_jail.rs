@@ -75,9 +75,16 @@ impl VmPlan {
         forwards.filter_map(|forward| u16::try_from(forward.host).ok()).collect()
     }
 
+    /// Ubuntu's line is its own: SeaBIOS from QEMU's files, NAT with its SSH forward, and none of the
+    /// machine's network or shared folder settings. Every other line has those, and boots OVMF, which
+    /// keeps its settings in a file of the machine's.
+    fn has_machine_line(&self) -> bool {
+        !matches!(self.boot, Boot::Ubuntu(_) | Boot::UbuntuInstall(_))
+    }
+
     /// What QEMU's user network listens on: the agent and the forwards, or for Ubuntu its SSH.
     fn listened_ports(&self) -> Vec<u16> {
-        if matches!(self.boot, Boot::Ubuntu(_)) {
+        if !self.has_machine_line() {
             return vec![self.ssh_port()];
         }
         let mut ports = vec![self.agent_port];
@@ -88,12 +95,11 @@ impl VmPlan {
     /// passt does the NAT for a machine on it, outside the jail, so QEMU's own network is the
     /// restricted private link, as for a bridged or restricted machine. Ubuntu's line is NAT.
     fn jail_network(&self) -> Network {
-        let nat =
-            matches!(self.boot, Boot::Ubuntu(_)) || (self.network.mode == Mode::Nat && !self.network.passt);
+        let nat = !self.has_machine_line() || (self.network.mode == Mode::Nat && !self.network.passt);
         let mut tcp_bind = self.listened_ports();
         // The user network reaches the shared folder's program through a pair of loopback TCP
         // sockets it makes for each connection, on a port it can't know beforehand.
-        if self.share.is_some() {
+        if self.shared_folder().is_some() {
             tcp_bind.push(EPHEMERAL_PORT);
         }
         let tcp_bind = Ports::Only(tcp_bind);
@@ -103,7 +109,7 @@ impl VmPlan {
         // A restricted user network only answers forwards, and asks the host's resolver for names.
         let mut udp_bind = vec![EPHEMERAL_PORT];
         udp_bind.extend(self.forwarded_ports(Protocol::Udp));
-        let tcp_connect = if self.share.is_some() { Ports::Any } else { Ports::none() };
+        let tcp_connect = if self.shared_folder().is_some() { Ports::Any } else { Ports::none() };
         Network {
             tcp_bind,
             tcp_connect,
@@ -116,10 +122,8 @@ impl VmPlan {
         if self.tpm.is_some() { &self.firmware.code_secure } else { &self.firmware.code }
     }
 
-    /// Ubuntu boots SeaBIOS from QEMU's own files, and the rest boot OVMF, which keeps its settings
-    /// in a file of the machine's.
-    fn boots_ovmf(&self) -> bool {
-        !matches!(self.boot, Boot::Ubuntu(_) | Boot::UbuntuInstall(_))
+    fn shared_folder(&self) -> Option<&String> {
+        self.share.as_ref().filter(|_| self.has_machine_line())
     }
 
     /// Every path QEMU may reach, and its network.
@@ -137,7 +141,7 @@ impl VmPlan {
         if let Some(folder) = &self.qemu_files {
             plan.grant(Grant::Read, folder);
         }
-        if self.boots_ovmf() {
+        if self.has_machine_line() {
             plan.grant(Grant::Read, self.firmware_code()).grant(Grant::Write, &self.vars);
         }
         for device in DEVICES {
@@ -151,7 +155,7 @@ impl VmPlan {
             plan.grant(Grant::Write, &self.ram_file).grant(Grant::Write, &self.io_file);
         }
         self.grant_forwarding(&mut plan, devices);
-        if let Some(folder) = &self.share {
+        if let Some(folder) = self.shared_folder() {
             plan.grant(Grant::Run, &self.share_program).grant(Grant::Own, folder);
         }
         if let Some(socket) = &jail.sound_socket {
@@ -169,7 +173,7 @@ impl VmPlan {
     /// backing file in the shared folder, where QEMU may write anything.
     pub fn with_backing_files(&self, jail: QemuJail) -> Result<QemuJail> {
         let backing_files = backing_files(Path::new(&self.disk))?;
-        let shared = |file: &&PathBuf| self.share.as_ref().is_some_and(|folder| file.starts_with(folder));
+        let shared = |file: &&PathBuf| self.shared_folder().is_some_and(|folder| file.starts_with(folder));
         if let Some(file) = backing_files.iter().find(shared) {
             return Err(Failure(format!(
                 "The VM did not start, as its disk is built on {}, which is in the shared folder. \
@@ -181,7 +185,8 @@ impl VmPlan {
     }
 
     fn passt(&self) -> Option<Passt> {
-        (self.network.mode == Mode::Nat && self.network.passt).then(|| Passt {
+        let wanted = self.has_machine_line() && self.network.mode == Mode::Nat && self.network.passt;
+        wanted.then(|| Passt {
             program: super::program_on_path(PASST).unwrap_or_else(|| PASST.into()),
             fd: PASST_FD,
             pid_file: self.run_folder.join(super::PASST_PID_FILE),
@@ -190,7 +195,7 @@ impl VmPlan {
     }
 
     fn tap(&self) -> Option<Tap> {
-        (self.network.mode == Mode::Bridged).then(|| Tap {
+        (self.has_machine_line() && self.network.mode == Mode::Bridged).then(|| Tap {
             helper: bridge_helper().into(),
             bridge: self.network.bridge.clone(),
             fd: TAP_FD,
