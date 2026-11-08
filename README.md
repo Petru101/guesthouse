@@ -6,7 +6,7 @@
 
 That's Godot's full Forward+ renderer on Vulkan, in Windows, in a VM on Fedora. Nothing is passed through. The host never gives up the card, so my GNOME desktop keeps running on it the whole time.
 
-> **Status:** early. Version 0.2.1 is out, and everything's here, the Windows GPU part included. All of it has only run on my PC, on one RTX 5090. What works, what doesn't and what's next is in the [roadmap](https://github.com/xnixy/guesthouse/issues/2), which I keep up to date.
+> **Status:** early. Version 0.2.2 is out, and everything's here, the Windows GPU part included. All of it has only run on my PC, on one RTX 5090. What works, what doesn't and what's next is in the [roadmap](https://github.com/xnixy/guesthouse/issues/2), which I keep up to date.
 
 ## Install
 
