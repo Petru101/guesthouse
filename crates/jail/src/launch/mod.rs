@@ -1,14 +1,23 @@
-//! `guesthouse-jail PLAN [--own-sandboxes] [--tap HELPER BRIDGE FD] -- PROGRAM ARGUMENTS`: puts itself
-//! in the jail the plan describes, with QEMU's filter, and becomes the program. The jail carries
-//! across the exec, so the program can't leave it.
+//! `guesthouse-jail PLAN [--own-sandboxes] [--passt PROGRAM FD [--passt-word WORD]...]
+//! [--tap HELPER BRIDGE FD] -- PROGRAM ARGUMENTS`: puts itself in the jail the plan describes, with
+//! QEMU's filter, and becomes the program. The jail carries across the exec, so the program can't
+//! leave it.
 //!
-//! `--own-sandboxes` is for a program that starts one that makes namespaces of its own, as passt does.
-//! `--tap` gets a bridged network's device from QEMU's setuid helper first, as a helper can't gain
-//! its privileges once the jail is on. The device is left open at `FD` for the program.
+//! `--own-sandboxes` is for a program that starts one that makes namespaces of its own.
+//! `--passt` starts passt first, outside the jail, as it builds a sandbox of its own that can't be
+//! made inside one, and leaves the other end of its connection open at `FD`. `--tap` gets a bridged
+//! network's device from QEMU's setuid helper first, as a helper can't gain its privileges once the
+//! jail is on. The device is left open at `FD` for the program.
+//!
+//! With `--open-only` instead of a plan, it opens those and runs the program as it is. That's the
+//! step before bubblewrap, whose namespaces a setuid helper can't work in, and which then runs this
+//! launcher again with the plan.
 
 mod handover;
+mod passt;
 mod tap;
 
+pub use passt::start as start_passt;
 pub use tap::open as open_tap;
 
 use crate::seccomp::{self, Threads};
@@ -22,6 +31,9 @@ use std::process::Command;
 const END_OF_PLAN: &str = "--";
 const OWN_SANDBOXES: &str = "--own-sandboxes";
 const TAP: &str = "--tap";
+const PASST: &str = "--passt";
+const PASST_WORD: &str = "--passt-word";
+const OPEN_ONLY: &str = "--open-only";
 const UNIX_LISTEN: &str = "--unix-listen";
 const UNIX_CONNECT: &str = "--unix-connect";
 const NO_NEW_UNIX_SOCKETS: &str = "--no-new-unix-sockets";
@@ -43,11 +55,21 @@ pub struct Tap {
     pub fd: i32,
 }
 
+/// passt, which the launcher starts with these words and connects to the program at `fd`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Passt {
+    pub program: PathBuf,
+    pub fd: i32,
+    pub words: Vec<String>,
+}
+
 /// Everything the launcher was told.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Launch {
-    pub plan: Plan,
+    /// The jail, or `None` to open what's asked for and run the program as it is.
+    pub plan: Option<Plan>,
     pub own_sandboxes: bool,
+    pub passt: Option<Passt>,
     pub tap: Option<Tap>,
     pub unix_sockets: Vec<UnixSocket>,
     /// Refuse the program any unix socket it would make, which leaves it the ones opened for it.
@@ -58,9 +80,18 @@ pub struct Launch {
 impl Launch {
     /// The words that tell the launcher this, up to the program's, which are the caller's to add.
     pub fn words(&self) -> Vec<String> {
-        let mut words = self.plan.words();
+        let mut words = match &self.plan {
+            Some(plan) => plan.words(),
+            None => vec![OPEN_ONLY.to_owned()],
+        };
         if self.own_sandboxes {
             words.push(OWN_SANDBOXES.to_owned());
+        }
+        if let Some(passt) = &self.passt {
+            words.extend([PASST.to_owned(), passt.program.display().to_string(), passt.fd.to_string()]);
+            for word in &passt.words {
+                words.extend([PASST_WORD.to_owned(), word.clone()]);
+            }
         }
         if let Some(tap) = &self.tap {
             words.extend([
@@ -83,8 +114,9 @@ impl Launch {
 
     pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<Self, String> {
         let mut launch = Self {
-            plan: Plan::default(),
+            plan: Some(Plan::default()),
             own_sandboxes: false,
+            passt: None,
             tap: None,
             unix_sockets: Vec::new(),
             no_new_unix_sockets: false,
@@ -99,7 +131,20 @@ impl Launch {
             let name = next("the plan")?;
             match name.as_str() {
                 END_OF_PLAN => break,
+                OPEN_ONLY => launch.plan = None,
                 OWN_SANDBOXES => launch.own_sandboxes = true,
+                PASST => {
+                    let (program, fd) = (next(PASST)?, next(PASST)?);
+                    let fd =
+                        fd.parse().map_err(|_| format!("{PASST} needs a descriptor number, not {fd:?}"))?;
+                    launch.passt = Some(Passt { program: program.into(), fd, words: Vec::new() });
+                }
+                PASST_WORD => {
+                    let word = next(PASST_WORD)?;
+                    let passt =
+                        launch.passt.as_mut().ok_or_else(|| format!("{PASST_WORD} comes after {PASST}"))?;
+                    passt.words.push(word);
+                }
                 NO_NEW_UNIX_SOCKETS => launch.no_new_unix_sockets = true,
                 UNIX_LISTEN | UNIX_CONNECT => {
                     let (path, fd) = (next(&name)?, next(&name)?);
@@ -119,7 +164,8 @@ impl Launch {
                 }
                 _ => {
                     let value = next(&name)?;
-                    if !launch.plan.take(&name, &value)? {
+                    let plan = launch.plan.as_mut().ok_or_else(|| format!("{OPEN_ONLY} takes no {name}"))?;
+                    if !plan.take(&name, &value)? {
                         return Err(format!("{name} isn't something the jail knows"));
                     }
                 }
@@ -132,8 +178,14 @@ impl Launch {
         Ok(launch)
     }
 
-    /// Jails this process and becomes the program. It only comes back if something failed.
+    /// Jails this process and becomes the program. It only comes back if something failed. passt goes
+    /// first, so nothing else opened for the program reaches it.
     pub fn run(self) -> io::Error {
+        if let Some(passt) = &self.passt
+            && let Err(error) = passt::start(passt)
+        {
+            return error;
+        }
         if let Some(tap) = &self.tap
             && let Err(error) = tap::open(tap)
         {
@@ -144,14 +196,19 @@ impl Launch {
                 return error;
             }
         }
-        let applied = match landlock::apply(&self.plan) {
-            Ok(applied) => applied,
-            Err(error) => return error,
-        };
-        let filter = filters::qemu(self.own_sandboxes, self.no_new_unix_sockets);
-        if let Err(error) = seccomp::install(&filter, Threads::This) {
+        if let Some(plan) = &self.plan
+            && let Err(error) = self.jail(plan)
+        {
             return error;
         }
+        let (program, arguments) = self.program.split_first().expect("parse makes sure there's a program");
+        Command::new(program).args(arguments).exec()
+    }
+
+    fn jail(&self, plan: &Plan) -> io::Result<()> {
+        let applied = landlock::apply(plan)?;
+        let filter = filters::qemu(self.own_sandboxes, self.no_new_unix_sockets);
+        seccomp::install(&filter, Threads::This)?;
         let missing = applied.missing();
         let leaves_out = if missing.is_empty() {
             String::new()
@@ -160,8 +217,7 @@ impl Launch {
         };
         let sockets = if self.no_new_unix_sockets { ", and no unix socket of its own" } else { "" };
         eprintln!("jailed, with Landlock {}{leaves_out}{sockets}", applied.landlock_abi);
-        let (program, arguments) = self.program.split_first().expect("parse makes sure there's a program");
-        Command::new(program).args(arguments).exec()
+        Ok(())
     }
 }
 
@@ -175,8 +231,13 @@ mod tests {
         plan.grant(Grant::Run, "/usr").grant(Grant::Write, "/m/a/disk.qcow2");
         plan.network.tcp_bind = Ports::Only(vec![18768]);
         Launch {
-            plan,
+            plan: Some(plan),
             own_sandboxes: true,
+            passt: Some(Passt {
+                program: "/usr/bin/passt".into(),
+                fd: 11,
+                words: ["--quiet", "--pid", "/r/passt.pid"].map(str::to_owned).to_vec(),
+            }),
             tap: Some(Tap { helper: "/usr/libexec/qemu-bridge-helper".into(), bridge: "br0".into(), fd: 3 }),
             unix_sockets: vec![UnixSocket { path: "/r/qmp.sock".into(), fd: 20, listen: true }],
             no_new_unix_sockets: true,
@@ -191,6 +252,18 @@ mod tests {
         words.extend(wanted.program.iter().cloned());
         let read = Launch::parse(words).unwrap();
         assert_eq!(read, wanted);
+    }
+
+    #[test]
+    fn open_only_has_no_plan_and_takes_none() {
+        let wanted = Launch { plan: None, own_sandboxes: false, unix_sockets: Vec::new(), ..launch() };
+        let mut words: Vec<OsString> = wanted.words().into_iter().map(OsString::from).collect();
+        assert_eq!(words[0], OPEN_ONLY);
+        words.extend(wanted.program.iter().cloned());
+        assert_eq!(Launch::parse(words).unwrap(), wanted);
+        let parse = |words: &[&str]| Launch::parse(words.iter().map(OsString::from));
+        assert!(parse(&["--open-only", "--read", "/usr", "--", "bwrap"]).unwrap_err().contains("--read"));
+        assert!(parse(&["--passt-word", "--quiet", "--", "qemu"]).unwrap_err().contains("--passt"));
     }
 
     #[test]

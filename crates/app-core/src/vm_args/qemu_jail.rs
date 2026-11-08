@@ -201,8 +201,9 @@ impl VmPlan {
         let mut words =
             if self.in_namespaces(jail) { Self::namespace_words(&plan, &jail.launcher) } else { Vec::new() };
         let launch = Launch {
-            plan,
+            plan: Some(plan),
             own_sandboxes: self.network.passt,
+            passt: None,
             tap: self.tap(),
             unix_sockets: self.unix_sockets(),
             no_new_unix_sockets: self.passes_unix_sockets(),

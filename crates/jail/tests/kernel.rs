@@ -1,7 +1,7 @@
 //! The jail on this PC's kernel. Each case runs in a child of its own, as a jail can't be undone,
 //! and the child's exit says whether everything it tried went as it should.
 
-use guesthouse_jail::launch::{Tap, open_tap};
+use guesthouse_jail::launch::{Passt, Tap, open_tap, start_passt};
 use guesthouse_jail::seccomp::{self, Threads, trap};
 use guesthouse_jail::{Grant, Plan, Ports, Support, filters, landlock};
 use std::env;
@@ -135,6 +135,43 @@ fn bridged_device() {
     assert_eq!(flags & libc::FD_CLOEXEC, 0, "it stays open for QEMU");
 }
 
+const PASST_VARIABLE: &str = "JAIL_TEST_PASST";
+const PASST_AT: i32 = 11;
+
+/// Stands in for passt: checks its words, then leaves a copy of itself in the background that
+/// answers one message on the socket it was given, as passt does once it's ready.
+fn pretend_passt() {
+    let arguments: Vec<String> = env::args().skip(1).collect();
+    assert_eq!(arguments[..2], ["--quiet", "--one"]);
+    assert_eq!(arguments[2], "--fd");
+    let socket: i32 = arguments[3].parse().unwrap();
+    // SAFETY: one thread, and the child only reads, writes and exits.
+    if unsafe { libc::fork() } == 0 {
+        let mut message = [0u8; 4];
+        let read = unsafe { libc::read(socket, message.as_mut_ptr().cast(), message.len()) };
+        unsafe { libc::write(socket, message.as_ptr().cast(), read as usize) };
+        unsafe { libc::_exit(0) };
+    }
+}
+
+fn passt_connection() {
+    let passt = Passt {
+        program: env::current_exe().unwrap(),
+        fd: PASST_AT,
+        words: vec!["--quiet".into(), "--one".into()],
+    };
+    // SAFETY: the variable is set before any thread exists.
+    unsafe { env::set_var(PASST_VARIABLE, "1") };
+    start_passt(&passt).unwrap();
+    let flags = unsafe { libc::fcntl(PASST_AT, libc::F_GETFD) };
+    assert_eq!(flags & libc::FD_CLOEXEC, 0, "it stays open for QEMU");
+    let sent = unsafe { libc::write(PASST_AT, b"ping".as_ptr().cast(), 4) };
+    assert_eq!(sent, 4);
+    let mut answer = [0u8; 4];
+    let read = unsafe { libc::read(PASST_AT, answer.as_mut_ptr().cast(), 4) };
+    assert_eq!((read, &answer), (4, b"ping"), "passt's end is the other end of QEMU's");
+}
+
 fn qemu_with_no_new_unix_sockets() {
     seccomp::install(&filters::qemu(false, true), Threads::This).unwrap();
     assert!(
@@ -147,8 +184,9 @@ fn qemu_with_no_new_unix_sockets() {
     assert!(TcpListener::bind(("127.0.0.1", 0)).is_ok(), "the user network stays");
 }
 
-const CASES: [(&str, fn()); 7] = [
+const CASES: [(&str, fn()); 8] = [
     ("qemu_with_no_new_unix_sockets", qemu_with_no_new_unix_sockets),
+    ("passt_connection", passt_connection),
     ("bridged_device", bridged_device),
     ("files_and_ports", files_and_ports),
     ("devices", devices),
@@ -167,6 +205,10 @@ fn set_up(folder: &Path) {
 fn main() {
     if env::var_os(HELPER_VARIABLE).is_some() {
         pretend_bridge_helper();
+        return;
+    }
+    if env::var_os(PASST_VARIABLE).is_some() {
+        pretend_passt();
         return;
     }
     if let Ok(case) = env::var(CASE_VARIABLE) {

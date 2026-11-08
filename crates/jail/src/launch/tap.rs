@@ -2,7 +2,7 @@
 //! gets one end of a socket pair, and sends the open device back through it.
 
 use super::Tap;
-use super::handover::place;
+use super::handover::{place, socket_pair};
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::process::Command;
@@ -11,22 +11,6 @@ use std::process::Command;
 const OFFLOADS: &str = "--use-vnet";
 /// One byte goes with the descriptor, as a message can't be empty.
 const MESSAGE_BYTES: usize = 1;
-
-fn checked(result: libc::c_int) -> io::Result<libc::c_int> {
-    if result < 0 { Err(io::Error::last_os_error()) } else { Ok(result) }
-}
-
-/// Our end closes on exec and the helper's doesn't, as it's the helper's to use.
-fn socket_pair() -> io::Result<(OwnedFd, OwnedFd)> {
-    let mut ends = [0; 2];
-    // SAFETY: the kernel writes two descriptors into an array of two.
-    checked(unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, ends.as_mut_ptr()) })?;
-    // SAFETY: both were just made for us, and nothing else holds them.
-    let (ours, theirs) = unsafe { (OwnedFd::from_raw_fd(ends[0]), OwnedFd::from_raw_fd(ends[1])) };
-    // SAFETY: a flag on a descriptor this owns.
-    checked(unsafe { libc::fcntl(ours.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) })?;
-    Ok((ours, theirs))
-}
 
 fn receive_descriptor(socket: &OwnedFd) -> io::Result<OwnedFd> {
     // SAFETY: this only asks for a size.
