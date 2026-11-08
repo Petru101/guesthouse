@@ -175,10 +175,18 @@ impl Screen {
             self.0.gpu.borrow_mut().take();
             self.0.qemu.borrow_mut().take();
             self.0.booting.set(true);
+            // A still screen sends nothing new, and the last one shown here was the other route's.
+            self.forget_picture();
             *self.0.input_socket.borrow_mut() = socket;
             self.close_guest();
             self.follow_guest();
         }
+    }
+
+    fn forget_picture(&self) {
+        self.0.latest.borrow_mut().take();
+        self.0.picture.set_paintable(None::<&gdk::Paintable>);
+        self.0.spinner.set_visible(true);
     }
 
     fn connect_life(&self) {
@@ -215,8 +223,7 @@ impl Screen {
         self.close_guest();
         self.0.gpu.borrow_mut().take();
         self.0.qemu.borrow_mut().take();
-        self.0.latest.borrow_mut().take();
-        self.0.picture.set_paintable(None::<&gdk::Paintable>);
+        self.forget_picture();
     }
 
     fn poll(&self) {
