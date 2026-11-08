@@ -50,7 +50,7 @@ The viewer shows the GPU's frames once there are some, and the plain screen unti
 
 `nvfwd-check` says which parts work, and while the VM runs its row in the app says whether the guest brought its GPU up, and where its desktop is. Every network mode and a shared folder work with the GPU, in the same jail as Ubuntu's. A disc you put in the drive while it runs can't be read in the jail.
 
-Like Ubuntu's, it uses the first NVIDIA card on a PC with more than one.
+Like Ubuntu's, it uses the card setup chose on a PC with more than one, and gets only that card's device files: see [Which card](#which-card).
 
 What's tested: Fedora 45 Workstation and Fedora 45 KDE Plasma, installed by hand, with SELinux enforcing. The setup, `nvfwd-check`, CUDA, Vulkan and `nvidia-smi` all passed. GDM and GNOME, and Plasma Login and Plasma, came up on the GPU in the viewer, with automatic login and without, a Vulkan window and an X11 GL window drew, and Shut Down worked. After `dnf upgrade kernel` the next boot fetched the new kernel's headers and built for it. The build also passed in Debian 13 and Arch containers against their kernel headers. Debian, Ubuntu, Arch and openSUSE haven't run in a real guest yet, and openSUSE not even in a container.
 

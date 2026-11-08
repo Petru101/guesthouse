@@ -167,7 +167,7 @@ What a guest can still do:
 What's still coming:
 
 - **Jails for the rest.** The virtual TPM and machines with no GPU aren't jailed yet.
-- **Trust a Linux guest like you trust yourself.** A Linux guest gets the GPU the way a program of yours does. It can do what your user can do to the card, it sees whole-card sensor and memory readings, and it can slow or crash your GPU session, which takes your desktop with it. It only gets calls on the list, it can only name its own GPU clients, and QEMU is in the same jail as a Windows guest's, plus the card's device files, as that's how the GPU gets to the guest. As far as I could test, it can't reach QEMU's memory or anyone else's GPU work. A bug in this device only gets a guest QEMU's jail, but a bug in NVIDIA's driver is a bug in your kernel. Treat a guest as being as trusted as you, and don't run one you don't trust.
+- **Trust a Linux guest like you trust yourself.** A Linux guest gets the GPU the way a program of yours does. It can do what your user can do to the card, it sees whole-card sensor and memory readings, and it can slow or crash your GPU session, which takes your desktop with it. It only gets calls on the list, it can only name its own GPU clients, and QEMU is in the same jail as a Windows guest's, plus the chosen card's device files, as that's how the GPU gets to the guest. As far as I could test, it can't reach QEMU's memory or anyone else's GPU work. A bug in this device only gets a guest QEMU's jail, but a bug in NVIDIA's driver is a bug in your kernel. Treat a guest as being as trusted as you, and don't run one you don't trust.
 
 ## My favourite bugs
 
