@@ -5,8 +5,10 @@
 //! branch come from [`HostBranch`].
 
 use super::classes::{CONTROL_EXPORT_OBJECT_TO_FD, ROOT_CLIENT};
+use super::listing::CardPlace;
 use super::{DmaMap, Handle, Rm, RmError, dmabuf};
 use crate::profile::HostBranch;
+use guesthouse_backend::PciAddress;
 use std::ffi::c_void;
 use std::fs::{File, OpenOptions};
 use std::io;
@@ -135,6 +137,8 @@ pub struct LinuxRm {
     control_file: File,
     gpu_file: File,
     gpu_path: String,
+    /// Where the card is, for finding its render node.
+    address: Option<PciAddress>,
     client: Handle,
     sizes: &'static HostBranch,
     doorbell: *mut u8,
@@ -143,10 +147,12 @@ pub struct LinuxRm {
 }
 
 impl LinuxRm {
-    /// Opens the device files of the first card, and tells the kernel module which version this
-    /// client was written for. Call this only once the start decision has passed.
-    pub fn open(version: &str, sizes: &'static HostBranch) -> Result<Self, RmError> {
-        Self::open_card(version, sizes, 0)
+    /// Opens the control device and the card's device file, and tells the kernel module which version
+    /// this client was written for. Call this only once the start decision has passed.
+    pub fn open(version: &str, sizes: &'static HostBranch, place: &CardPlace) -> Result<Self, RmError> {
+        let mut rm = Self::open_card(version, sizes, place.minor)?;
+        rm.address = place.address;
+        Ok(rm)
     }
 
     /// The same for the card with this device file number, which its information file in
@@ -169,6 +175,7 @@ impl LinuxRm {
             control_file,
             gpu_file,
             gpu_path,
+            address: None,
             client: 0,
             sizes,
             doorbell: ptr::null_mut(),
@@ -187,7 +194,7 @@ impl LinuxRm {
     fn open_render_node(&mut self) -> Result<&File, RmError> {
         if self.render_node.is_none() {
             let no_node = || RmError::System("this card has no render node".to_owned());
-            let path = dmabuf::render_node().ok_or_else(no_node)?;
+            let path = dmabuf::render_node(self.address.as_ref()).ok_or_else(no_node)?;
             let file = OpenOptions::new().read(true).write(true).open(&path);
             self.render_node = Some(file.map_err(|error| system("render node", error))?);
         }

@@ -79,6 +79,27 @@ pub fn listed_at(listing: &[ListedCard], address: &PciAddress) -> Option<ListedC
     listing.iter().find(|card| card.address == *address).cloned()
 }
 
+/// The card to open for a setup that chose the card at `wanted`, or chose before setups wrote that
+/// down. Without an address only a PC with one card can be sure which card it meant.
+pub fn place_for(listing: &[ListedCard], wanted: Option<&PciAddress>) -> Result<CardPlace, String> {
+    match (wanted, listing) {
+        (Some(address), _) => listed_at(listing, address).map(|card| CardPlace::from(&card)).ok_or_else(|| {
+            format!(
+                "Setup chose the NVIDIA card at {address}, and the driver has no card there now. Run Setup \
+                 Again from the menu."
+            )
+        }),
+        (None, [only]) => Ok(CardPlace::from(only)),
+        // The driver's list couldn't be read: the old guess, which a PC with one card was always right on.
+        (None, []) => Ok(CardPlace::FIRST_GUESSED),
+        (None, cards) => Err(format!(
+            "This PC has {} NVIDIA cards, and setup didn't write down which one to use. Run Setup Again \
+             from the menu.",
+            cards.len()
+        )),
+    }
+}
+
 #[cfg(test)]
 pub mod tests {
     use super::*;
@@ -116,5 +137,29 @@ pub mod tests {
         assert_eq!(listed_at(&cards, &wanted).map(|card| card.minor), Some(1));
         assert!(read_listing_from(&folder.join("nothing")).is_empty());
         fs::remove_dir_all(folder).unwrap();
+    }
+
+    fn card(address: &str, minor: u32) -> ListedCard {
+        ListedCard { address: PciAddress::parse(address).unwrap(), minor, model: "A card".to_owned() }
+    }
+
+    #[test]
+    fn one_card_is_used_with_or_without_an_address_as_before() {
+        let only = [card("0000:01:00.0", 0)];
+        let place = CardPlace { minor: 0, address: PciAddress::parse("0000:01:00.0") };
+        assert_eq!(place_for(&only, None), Ok(place));
+        assert_eq!(place_for(&only, place.address.as_ref()), Ok(place));
+        assert_eq!(place_for(&[], None), Ok(CardPlace::FIRST_GUESSED), "no list to read");
+    }
+
+    #[test]
+    fn of_two_cards_the_one_at_the_address_is_used_whatever_its_device_file() {
+        let two = [card("0000:02:00.0", 0), card("0000:01:00.0", 1)];
+        let wanted = PciAddress::parse("0000:01:00.0").unwrap();
+        assert_eq!(place_for(&two, Some(&wanted)), Ok(CardPlace { minor: 1, address: Some(wanted) }));
+        assert!(place_for(&two, None).unwrap_err().contains("2 NVIDIA cards"));
+        let gone = PciAddress::parse("0000:03:00.0").unwrap();
+        assert!(place_for(&two, Some(&gone)).unwrap_err().contains("no card there now"));
+        assert!(place_for(&[], Some(&gone)).is_err());
     }
 }
