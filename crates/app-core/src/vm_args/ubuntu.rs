@@ -2,7 +2,7 @@
 //! and the guest's disk and NIC are virtio. Its plain screen always comes through QEMU's D-Bus display,
 //! whether or not it gets the GPU.
 
-use super::arguments::words;
+use super::arguments::{RELATIVE_MOUSE, words};
 use super::{Boot, DISPLAY_SOCKET, UbuntuBoot, UbuntuInstall, VmPlan};
 use crate::text::qemu_value;
 use guesthouse_daemon::slot::Slot;
@@ -171,6 +171,9 @@ impl VmPlan {
             "qemu-xhci,id=xhci",
             "-device",
             "usb-tablet",
+            // For a captured mouse, which moves it with no position to keep.
+            "-device",
+            RELATIVE_MOUSE,
             "-vga",
             "std",
             "-display",
@@ -261,6 +264,15 @@ mod tests {
         assert!(arguments.iter().any(|word| word.contains("file=/images/driver.iso,format=raw,readonly=on")));
         assert!(arguments.iter().any(|word| word.contains("forwarded-input.sock")));
         assert!(!arguments.iter().any(|word| word == "-fw_cfg"));
+    }
+
+    #[test]
+    fn a_boot_has_the_mouse_capturing_needs_and_the_install_does_not() {
+        let scratch = Scratch::new();
+        for boot in [no_gpu(), with_gpu()] {
+            let arguments = plan(&scratch_context(&scratch), boot).qemu_arguments();
+            assert!(arguments.iter().any(|word| word == RELATIVE_MOUSE));
+        }
     }
 
     #[test]

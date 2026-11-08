@@ -1,8 +1,9 @@
 //! A plain machine holding a Linux the user installed, with the forwarded GPU. Its own line stays as
 //! it is, firmware and disk and all, since that's what the guest was installed on. The GPU adds what
-//! the Ubuntu route's device needs, and its desktop stays on QEMU's display.
+//! the Ubuntu route's device needs. Its desktop's frames come from the device when the guest puts it on
+//! the GPU, and its keyboard and pointer are QEMU's either way.
 
-use super::arguments::words;
+use super::arguments::{RELATIVE_MOUSE, words};
 use super::{Boot, UbuntuBoot, VmPlan};
 
 /// The memory the device maps for the GPU has to be shareable, as in Ubuntu's line.
@@ -14,6 +15,13 @@ impl VmPlan {
     /// What a Linux the user installed has beyond the plain line: the GPU, or the reason it has none.
     pub(super) fn own_linux_arguments(&self) -> Vec<String> {
         let Boot::OwnLinux { gpu, .. } = &self.boot else { return Vec::new() };
+        // For a captured mouse, on the GPU or not. A plain machine that isn't a Linux has none.
+        let mut arguments = words(&["-device", RELATIVE_MOUSE]);
+        arguments.extend(self.gpu_or_reason(gpu));
+        arguments
+    }
+
+    fn gpu_or_reason(&self, gpu: &UbuntuBoot) -> Vec<String> {
         match gpu {
             UbuntuBoot::NoGpu { reason_file } => Self::off_reason_arguments(reason_file),
             UbuntuBoot::WithGpu { image, allow_list, sensor_daemon } => {
@@ -76,7 +84,8 @@ mod tests {
         assert!(added.iter().any(|word| word == "memory-backend-memfd,id=ram0,size=16G,share=on"));
         assert!(added.iter().any(|word| word == "name=opt/ovmf/X-PciMmio64Mb,string=262144"));
         assert!(added.iter().any(|word| word.contains("file=/images/driver.iso,format=raw,readonly=on")));
-        assert!(!added.iter().any(|word| word.contains("forwarded-input")), "its desktop isn't ours");
+        assert!(!added.iter().any(|word| word.contains("forwarded-input")), "its input is QEMU's");
+        assert!(added.iter().any(|word| word == RELATIVE_MOUSE), "for a captured mouse");
     }
 
     #[test]
@@ -88,7 +97,7 @@ mod tests {
         let arguments = off.qemu_arguments();
         assert_eq!(
             &arguments[plain.len()..],
-            ["-fw_cfg", "name=opt/nvfwd/gpu-off-reason,file=/r/gpu-off-reason"]
+            ["-device", RELATIVE_MOUSE, "-fw_cfg", "name=opt/nvfwd/gpu-off-reason,file=/r/gpu-off-reason"]
         );
         assert_eq!(
             off.qemu_command()[0],

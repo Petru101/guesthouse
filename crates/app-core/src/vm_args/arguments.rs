@@ -20,6 +20,8 @@ const IO_MEMORY_SIZE: &str = "64G";
 const HOST_CAPABILITIES: u32 = 1;
 const MIB: u64 = 1 << 20;
 const BYTES_PER_PIXEL: u64 = 4;
+/// The relative mouse beside the tablet, which capturing the mouse moves.
+pub(super) const RELATIVE_MOUSE: &str = "usb-mouse,bus=xhci.0";
 pub(super) const MONITOR_SOCKETS: [&str; 4] = ["qmp.sock", "watch.sock", "input.sock", DISPLAY_SOCKET];
 
 impl VmPlan {
@@ -215,7 +217,7 @@ impl VmPlan {
         arguments.extend(self.common_arguments());
         arguments.extend(self.boot_arguments());
         if self.mouse {
-            arguments.extend(words(&["-device", "usb-mouse,bus=xhci.0"]));
+            arguments.extend(words(&["-device", RELATIVE_MOUSE]));
         }
         if self.tpm.is_some() {
             arguments.extend(words(&[
