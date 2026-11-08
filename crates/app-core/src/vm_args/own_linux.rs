@@ -24,7 +24,7 @@ impl VmPlan {
     fn gpu_or_reason(&self, gpu: &UbuntuBoot) -> Vec<String> {
         match gpu {
             UbuntuBoot::NoGpu { reason_file } => Self::off_reason_arguments(reason_file),
-            UbuntuBoot::WithGpu { image, allow_list, sensor_daemon } => {
+            UbuntuBoot::WithGpu { image, allow_list, sensor_daemon, card } => {
                 let mut arguments = words(&[
                     "-object",
                     &format!("memory-backend-memfd,id={MEMORY_BACKEND},size={},share=on", self.ram),
@@ -33,7 +33,7 @@ impl VmPlan {
                     "-fw_cfg",
                     &format!("name=opt/ovmf/X-PciMmio64Mb,string={OVMF_WINDOW_MIB}"),
                 ]);
-                arguments.extend(self.forwarding_arguments(image, allow_list, sensor_daemon));
+                arguments.extend(self.forwarding_arguments(image, allow_list, sensor_daemon, card));
                 arguments
             }
         }
@@ -44,6 +44,7 @@ impl VmPlan {
 mod tests {
     use super::*;
     use crate::context::Context;
+    use crate::linux::card::ForwardedCard;
     use crate::machine::{Kind, Machine};
     use crate::slots;
     use crate::testing::{Scratch, scratch_context};
@@ -63,6 +64,11 @@ mod tests {
             image: "/images/driver.iso".into(),
             allow_list: "/p/linux/allow.txt".into(),
             sensor_daemon: "/q/nvfwd-sensord".into(),
+            card: ForwardedCard {
+                pci: "0000:05:00.0".into(),
+                minor: 1,
+                render_node: Some("renderD130".into()),
+            },
         }
     }
 
@@ -86,6 +92,14 @@ mod tests {
         assert!(added.iter().any(|word| word.contains("file=/images/driver.iso,format=raw,readonly=on")));
         assert!(!added.iter().any(|word| word.contains("forwarded-input")), "its input is QEMU's");
         assert!(added.iter().any(|word| word == RELATIVE_MOUSE), "for a captured mouse");
+    }
+
+    #[test]
+    fn the_device_is_told_the_chosen_card_as_on_ubuntu() {
+        let scratch = Scratch::new();
+        let arguments = plan(&scratch_context(&scratch), own(with_gpu())).qemu_arguments();
+        let device = arguments.iter().find(|word| word.starts_with("nvfwd,")).unwrap();
+        assert!(device.contains(",card=0000:05:00.0,card-minor=1"), "{device}");
     }
 
     #[test]

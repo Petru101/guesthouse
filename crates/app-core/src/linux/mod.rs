@@ -2,6 +2,7 @@
 //! driver reaches the guest on a read-only image, with the calls forwarded through a QEMU device. If
 //! anything about that is in doubt, the GPU stays off and the VM still boots.
 
+pub mod card;
 pub mod driver_files;
 pub mod driver_host;
 pub mod driver_image;

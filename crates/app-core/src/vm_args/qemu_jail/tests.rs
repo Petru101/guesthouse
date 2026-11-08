@@ -291,6 +291,11 @@ fn ubuntu_with_gpu(namespaces: bool) -> (Scratch, VmPlan) {
         image: "/store/linux-driver/driver.iso".into(),
         allow_list: "/p/linux/allow.txt".into(),
         sensor_daemon: "/p/qemu/build/nvfwd-sensord".into(),
+        card: crate::linux::card::ForwardedCard {
+            pci: "0000:02:00.0".into(),
+            minor: 0,
+            render_node: Some("renderD128".into()),
+        },
     });
     let plan = VmPlan::new(&context, &machine, boot, slots::number(2), 0);
     let jail = QemuJail { sound_socket: None, ..jail(namespaces) };
@@ -300,13 +305,15 @@ fn ubuntu_with_gpu(namespaces: bool) -> (Scratch, VmPlan) {
 #[test]
 fn the_forwarded_gpu_gets_its_device_files_and_not_windows_ones() {
     let (scratch, plan) = ubuntu_with_gpu(true);
-    for node in ["dev/nvidia0", "dev/nvidiactl", "dev/nvidia-modeset", "dev/dri/renderD128"] {
+    for node in ["dev/nvidia0", "dev/nvidia1", "dev/nvidiactl", "dev/nvidia-modeset", "dev/dri/renderD128"] {
         scratch.write(node, "");
     }
     let rules = plan.qemu_jail_plan_under(plan.jail.as_ref().unwrap(), &scratch.path("dev"));
     let devices = granted(&rules, Grant::Device);
     assert!(devices.contains(&scratch.path("dev/nvidia0").display().to_string()));
+    assert!(devices.contains(&scratch.path("dev/dri/renderD128").display().to_string()));
     assert!(!devices.contains(&scratch.path("dev/nvidia-modeset").display().to_string()));
+    assert!(!devices.contains(&scratch.path("dev/nvidia1").display().to_string()), "another card's");
     assert!(devices.contains(&"/dev/kvm".to_owned()));
     assert_eq!(granted(&rules, Grant::Write), ["/m/ubuntu/disk.qcow2"], "no firmware file, no shared memory");
     let read = granted(&rules, Grant::Read);

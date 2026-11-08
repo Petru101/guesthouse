@@ -4,6 +4,7 @@
 
 use super::arguments::{RELATIVE_MOUSE, words};
 use super::{Boot, DISPLAY_SOCKET, UbuntuBoot, UbuntuInstall, VmPlan};
+use crate::linux::card::ForwardedCard;
 use crate::text::qemu_value;
 use guesthouse_daemon::slot::Slot;
 use std::path::Path;
@@ -90,8 +91,8 @@ impl VmPlan {
     fn with_gpu_arguments(&self, boot: &UbuntuBoot) -> Vec<String> {
         match boot {
             UbuntuBoot::NoGpu { reason_file } => Self::off_reason_arguments(reason_file),
-            UbuntuBoot::WithGpu { image, allow_list, sensor_daemon } => {
-                let mut arguments = self.forwarding_arguments(image, allow_list, sensor_daemon);
+            UbuntuBoot::WithGpu { image, allow_list, sensor_daemon, card } => {
+                let mut arguments = self.forwarding_arguments(image, allow_list, sensor_daemon, card);
                 arguments.extend(words(&[
                     "-device",
                     "virtio-serial-pci",
@@ -114,6 +115,7 @@ impl VmPlan {
         image: &Path,
         allow_list: &Path,
         sensor_daemon: &Path,
+        card: &ForwardedCard,
     ) -> Vec<String> {
         words(&[
             "-global",
@@ -127,11 +129,13 @@ impl VmPlan {
             "virtio-blk-pci,drive=nvdriver",
             "-device",
             &format!(
-                "nvfwd,allow={},sensord={},log={},trace=off,nogpu=off,show={}{}",
+                "nvfwd,allow={},sensord={},log={},trace=off,nogpu=off,show={},card={},card-minor={}{}",
                 allow_list.display(),
                 sensor_daemon.display(),
                 self.in_run_folder("calls.log"),
                 self.in_run_folder(FRAMES_PREFIX),
+                card.pci,
+                card.minor,
                 self.vram.as_ref().map_or_else(String::new, |cap| format!(",max-vram={cap}"))
             ),
         ])
@@ -213,6 +217,7 @@ impl VmPlan {
 mod tests {
     use super::*;
     use crate::context::Context;
+    use crate::linux::card::ForwardedCard;
     use crate::machine::{Kind, Machine};
     use crate::slots;
     use crate::testing::{Scratch, scratch_context};
@@ -228,10 +233,15 @@ mod tests {
     }
 
     fn with_gpu() -> Boot {
+        on_card("0000:02:00.0", 0)
+    }
+
+    fn on_card(pci: &str, minor: u32) -> Boot {
         Boot::Ubuntu(UbuntuBoot::WithGpu {
             image: "/images/driver.iso".into(),
             allow_list: "/p/allow.txt".into(),
             sensor_daemon: "/q/nvfwd-sensord".into(),
+            card: ForwardedCard { pci: pci.into(), minor, render_node: None },
         })
     }
 
@@ -273,6 +283,18 @@ mod tests {
             let arguments = plan(&scratch_context(&scratch), boot).qemu_arguments();
             assert!(arguments.iter().any(|word| word == RELATIVE_MOUSE));
         }
+    }
+
+    #[test]
+    fn the_device_is_told_the_chosen_card() {
+        let scratch = Scratch::new();
+        let device = |boot| {
+            let arguments = plan(&scratch_context(&scratch), boot).qemu_arguments();
+            arguments.into_iter().find(|word| word.starts_with("nvfwd,")).unwrap()
+        };
+        assert!(device(with_gpu()).contains(",card=0000:02:00.0,card-minor=0"));
+        // The tester's PC: the 1660 SUPER is the second device file.
+        assert!(device(on_card("0000:05:00.0", 1)).contains(",card=0000:05:00.0,card-minor=1"));
     }
 
     #[test]

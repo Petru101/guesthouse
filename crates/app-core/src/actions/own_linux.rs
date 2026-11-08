@@ -94,6 +94,11 @@ mod tests {
                 image: "/store/driver.iso".into(),
                 allow_list: "/p/allow.txt".into(),
                 sensor_daemon: "/p/nvfwd-sensord".into(),
+                card: crate::linux::card::ForwardedCard {
+                    pci: "0000:02:00.0".into(),
+                    minor: 0,
+                    render_node: None,
+                },
             };
             let boot = Boot::OwnLinux { iso: String::new(), gpu };
             let wanted = plan_for(&context, &task.machine, boot);
