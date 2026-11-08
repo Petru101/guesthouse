@@ -42,7 +42,7 @@ A new kernel needs a new build. Each boot builds for its kernel if it has to, an
 
 Your desktop stays your own, on the plain screen through QEMU's display. The GPU is for programs: CUDA, Vulkan, NVENC and NVDEC, `nvidia-smi`. `nvfwd-check` says which parts work, and while the VM runs its row in the app says whether the guest brought its GPU up. The GPU's jail only has QEMU's own NAT, so a bridged network, passt or a shared folder start the machine without the GPU, and say so. A disc you put in the drive while it runs can't be read in the jail.
 
-What's tested: the setup's choices and each step with fake commands, and the build in Fedora 45, Debian 13 and Arch containers against their kernel headers. A real guest on each is still to do.
+What's tested: Fedora 45 Workstation, installed by hand, with SELinux enforcing. The setup, `nvfwd-check`, CUDA, Vulkan and `nvidia-smi` all passed, the desktop came up as before, and after `dnf upgrade kernel` the next boot fetched the new kernel's headers and built for it. The build also passed in Debian 13 and Arch containers against their kernel headers. Debian, Ubuntu, Arch and openSUSE haven't run in a real guest yet, and openSUSE not even in a container.
 
 ## Video
 
