@@ -1,6 +1,6 @@
 //! Looks at this PC. Nothing here changes anything.
 
-use super::cards::{Support, find_cards};
+use super::cards::{Card, Support, card_in_use, find_cards};
 use crate::context::Context;
 use crate::host::{GIB, IO_SPACE_GIB, TMPFS_SPARE_GIB, free_gib};
 use crate::iso::any_iso_maker;
@@ -66,30 +66,40 @@ impl Check {
     }
 }
 
+/// The card GPU machines run on, or if setup's choice can't be told, the one it would choose now.
+/// Start checks say when setup's choice can't be told.
+fn card_judged(context: &Context) -> Option<Card> {
+    card_in_use(context).or_else(|| find_cards(context).into_iter().next())
+}
+
 fn check_card(context: &Context) -> Check {
     const TITLE: &str = "NVIDIA card";
-    let cards = find_cards(context);
-    let Some(card) = cards.first() else {
+    let Some(card) = card_judged(context) else {
         return Check::new(TITLE, CheckState::Failed, "No NVIDIA card was found.", CARD_FIX);
     };
+    // With one card the name says which. With more the address does.
+    let name = if find_cards(context).len() > 1 {
+        format!("{} at {}", card.name, card.pci)
+    } else {
+        card.name.clone()
+    };
     match card.support {
-        Support::Tested => Check::ok(TITLE, format!("{}. Tested.", card.name)),
+        Support::Tested => Check::ok(TITLE, format!("{name}. Tested.")),
         Support::Experimental => Check::new(
             TITLE,
             CheckState::Warning,
-            format!("{} ({}). Experimental.", card.name, card.chip),
+            format!("{name} ({}). Experimental.", card.chip),
             EXPERIMENTAL_FIX,
         ),
         Support::Unsupported => {
-            Check::new(TITLE, CheckState::Failed, format!("{}. Not supported.", card.name), CARD_FIX)
+            Check::new(TITLE, CheckState::Failed, format!("{name}. Not supported."), CARD_FIX)
         }
     }
 }
 
-/// Says if this PC's card is only experimental.
+/// Says if the card GPU machines run on is only experimental.
 pub fn card_warning(context: &Context) -> Option<String> {
-    let cards = find_cards(context);
-    let card = cards.first().filter(|card| card.support == Support::Experimental)?;
+    let card = card_judged(context).filter(|card| card.support == Support::Experimental)?;
     Some(format!("{} is experimental. {EXPERIMENTAL_FIX}", card.name))
 }
 

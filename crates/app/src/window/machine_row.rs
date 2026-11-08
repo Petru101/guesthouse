@@ -150,6 +150,9 @@ impl MachineRow {
         if machine.installing && status.state == State::Off {
             lines[0] = "The install did not finish. Start Over runs it again from the beginning.".to_owned();
         }
+        if !status.card_note.is_empty() {
+            lines.push(status.card_note.clone());
+        }
         if !status.error.is_empty() {
             lines.push(status.error.clone());
         }

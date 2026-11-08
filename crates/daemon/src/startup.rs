@@ -31,6 +31,7 @@ mod tests {
             guest_branch: "1".into(),
             driver_folder: Default::default(),
             card: None,
+            card_address: None,
         };
         let backend: StandIn = start_backend(&setup).unwrap();
         assert_eq!(backend.facts().guest_driver_version, 0x0001_0002_0003_0004);

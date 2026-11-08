@@ -9,6 +9,7 @@ use crate::machine::{Kind, Machine};
 use crate::network_settings::{network_start_problems, other_machines};
 use crate::processes::{memory_taken, qemu_pid, running_slots};
 use crate::settings::max_vram_gib;
+use crate::setup::cards::card_problem;
 use crate::setup::setup_done;
 use crate::slots;
 use crate::tasks::no_slot_text;
@@ -138,6 +139,8 @@ pub fn start_problems(context: &Context, machine: &Machine) -> Result<Vec<String
     } else if machine.has_gpu() {
         if !setup_done(context) {
             found.push(NO_SETUP.to_owned());
+        } else {
+            found.extend(card_problem(context));
         }
         if !machine.token_file(context).exists() {
             found.push(NO_TOKEN.to_owned());
@@ -350,6 +353,24 @@ mod tests {
         assert!(found[0].contains("Run Setup Again"), "it comes first, so it's what the row says");
         finish_setup(&context);
         assert!(!says(&start_problems(&context, &gpu).unwrap(), NO_SETUP));
+    }
+
+    #[test]
+    fn on_two_cards_a_gpu_machine_needs_setup_to_have_named_one() {
+        use crate::setup::cards::stand_in::{NAMES, fake_pci};
+        let scratch = Scratch::new();
+        let (mut context, machine) = startable(&scratch);
+        context.pci_devices = scratch.path("pci");
+        context.pci_names = scratch.write("pci.ids", NAMES);
+        fake_pci(&scratch, "0000:01:00.0", 0x2704, "0x10de", "0x030000");
+        let gpu = Machine { kind: Kind::Windows, ..machine };
+        finish_setup(&context);
+        assert!(!says(&start_problems(&context, &gpu).unwrap(), "Run Setup Again"), "one card, an old setup");
+        fake_pci(&scratch, "0000:02:00.0", 0x21C4, "0x10de", "0x030000");
+        assert!(says(&start_problems(&context, &gpu).unwrap(), "more than one NVIDIA card"));
+        let card = serde_json::json!({"card": {"device": 0x21C4, "pci": "0000:02:00.0"}});
+        crate::settings::write_setup(&context, card.as_object().cloned().unwrap()).unwrap();
+        assert!(!says(&start_problems(&context, &gpu).unwrap(), "Run Setup Again"));
     }
 
     #[test]

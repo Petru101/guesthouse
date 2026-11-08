@@ -50,6 +50,7 @@ use ring_position::GuestRing;
 use ring_request::RingMoves;
 use rm::device::{AddressSpace, Device};
 use rm::linux::LinuxRm;
+use rm::listing::{self, CardPlace};
 use rm::{Handle, Rm, RmError};
 use sensors::SnapshotReader;
 use staging::Copier;
@@ -94,20 +95,28 @@ pub fn card_generation<R: Rm>(card: &mut CardReader<'_, R>) -> Result<&'static G
         .ok_or_else(|| Refusal(format!("This build has no profile for GPU architecture {architecture:#x}.")))
 }
 
+/// The card's place for the log.
+fn place_text(place: &CardPlace) -> String {
+    match place.address {
+        Some(address) => format!("{address}, device file nvidia{}", place.minor),
+        None => format!("device file nvidia{}, guessed, as the driver's list couldn't be read", place.minor),
+    }
+}
+
 /// How an RM comes to be, which tests don't use.
 pub trait OpenRm: Rm + Sized {
-    fn open_rm(version: &str, sizes: &'static HostBranch) -> Result<Self, RmError>;
+    fn open_rm(version: &str, sizes: &'static HostBranch, place: &CardPlace) -> Result<Self, RmError>;
 }
 
 impl OpenRm for LinuxRm {
-    fn open_rm(version: &str, sizes: &'static HostBranch) -> Result<Self, RmError> {
-        Self::open(version, sizes)
+    fn open_rm(version: &str, sizes: &'static HostBranch, place: &CardPlace) -> Result<Self, RmError> {
+        Self::open(version, sizes, place)
     }
 }
 
 #[cfg(any(test, feature = "fake-rm"))]
 impl OpenRm for rm::fake::FakeRm {
-    fn open_rm(_version: &str, _sizes: &'static HostBranch) -> Result<Self, RmError> {
+    fn open_rm(_version: &str, _sizes: &'static HostBranch, _place: &CardPlace) -> Result<Self, RmError> {
         Err(RmError::System("a fake RM is built by hand".to_owned()))
     }
 }
@@ -299,10 +308,13 @@ impl<R: Rm + OpenRm> Backend for NvidiaBackend<R> {
         let guest_profile = guest_branch(&setup.guest_branch).ok_or_else(no_profile)?;
         let inf_path = setup.driver_folder.join(INF_NAME);
         let inf = fs::read(&inf_path).map_err(|error| Refusal(format!("{}: {error}", inf_path.display())))?;
-        let host = read_host_facts().map_err(Refusal)?;
+        let place =
+            listing::place_for(&listing::read_listing(), setup.card_address.as_ref()).map_err(Refusal)?;
+        let host = read_host_facts(place.address.as_ref()).map_err(Refusal)?;
         let opened = |error: RmError| Refusal(format!("Opening the card failed: {error}"));
-        let rm = R::open_rm(&survey.host.version, host_profile).map_err(opened)?;
-        let device = Device::open(rm, host_profile).map_err(opened)?;
+        let rm = R::open_rm(&survey.host.version, host_profile, &place).map_err(opened)?;
+        let device = Device::open_place(rm, host_profile, &place).map_err(opened)?;
+        log::info!("opened the card at {}, device instance {}", place_text(&place), device.instance);
         let mut backend = Self::start(device, host_profile, guest_profile, setup, &host, &inf)?;
         // Readings are a bonus, so a failure here only means going without.
         match sensors::start(&backend.card_uuid) {

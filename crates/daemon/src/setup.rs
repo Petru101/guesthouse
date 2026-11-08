@@ -1,6 +1,6 @@
 //! What the app's setup found, which it keeps as a JSON file in the data store.
 
-use guesthouse_backend::{DriverVersion, PciCard, Setup, driver_version_from_inf};
+use guesthouse_backend::{DriverVersion, PciAddress, PciCard, Setup, driver_version_from_inf};
 use guesthouse_backend_nvidia::inf::INF_NAME;
 use guesthouse_backend_nvidia::startup::guest_branch_of;
 use serde_json::Value;
@@ -46,11 +46,14 @@ fn parse_setup(text: &str) -> Result<Setup, String> {
         device: device as u16,
         revision: revision as u8,
     });
+    // Setup writes down where its card is, as `pci`. One from before that has none.
+    let card_address = setup["card"]["pci"].as_str().and_then(PciAddress::parse);
     Ok(Setup {
         guest_branch: guest_branch_of(guest_driver_version),
         guest_driver_version,
         driver_folder,
         card,
+        card_address,
     })
 }
 
@@ -80,6 +83,10 @@ mod tests {
         assert_eq!(setup.guest_driver_version.to_string(), "32.0.16.1742");
         assert_eq!(setup.guest_branch, "617");
         assert_eq!(setup.card, Some(PciCard { vendor: 0x10DE, device: 0x2B85, revision: 161 }));
+        assert_eq!(setup.card_address, None, "a setup from before the address was written down");
+        let text = text.replace("\"revision\": 161", "\"revision\": 161, \"pci\": \"0000:02:00.0\"");
+        let setup = parse_setup(&text).unwrap();
+        assert_eq!(setup.card_address.map(|address| address.to_string()).as_deref(), Some("0000:02:00.0"));
         fs::remove_dir_all(folder).unwrap();
     }
 

@@ -11,6 +11,7 @@ use crate::log::open_for_appending;
 use crate::machine::Machine;
 use crate::processes::{leftovers, memory_taken, running_slots, uses_disk};
 use crate::settings::write_json;
+use crate::setup::cards::card_in_use_note;
 use crate::slots;
 use guesthouse_daemon::gpu_note::read_note;
 use guesthouse_daemon::slot::{SLOTS, Slot};
@@ -101,6 +102,8 @@ pub struct Status {
     pub identity_note: String,
     /// What the running machine's jail is missing, if anything.
     pub jail_note: String,
+    /// Which card a GPU machine runs on, on a PC with more than one NVIDIA card.
+    pub card_note: String,
 }
 
 pub fn task_path(context: &Context, slot: Option<Slot>) -> PathBuf {
@@ -174,6 +177,7 @@ pub fn status(context: &Context, machine: &Machine) -> Status {
         found.display_problem = shown.problem(found.state == State::Running).to_owned();
         let identity = read_identity(context, machine);
         found.identity_note = identity.problem(found.state == State::Running).to_owned();
+        found.card_note = card_in_use_note(context).unwrap_or_default();
         if found.state == State::Running {
             let slot = found.slot.map(slots::number);
             found.screen = screen_text(&shown, ring_in(context, slot));

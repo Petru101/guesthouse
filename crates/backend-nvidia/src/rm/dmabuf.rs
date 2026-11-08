@@ -7,6 +7,7 @@
 
 use crate::profile::HostBranch;
 use crate::rm::Handle;
+use guesthouse_backend::PciAddress;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -14,6 +15,7 @@ const DRM_CLASS_FOLDER: &str = "/sys/class/drm";
 const DRM_DEVICE_FOLDER: &str = "/dev/dri";
 const RENDER_NODE_PREFIX: &str = "renderD";
 const DRIVER_LINK: &str = "device/driver";
+const DEVICE_LINK: &str = "device";
 const DRIVER_NAME: &str = "nvidia";
 
 const IOCTL_WRITE: u64 = 1 << 30;
@@ -127,13 +129,14 @@ pub fn gem_close_request(handle: u32) -> [u8; GEM_CLOSE_SIZE] {
     request
 }
 
-/// The render node of the first card this driver owns. It's found by its driver, as the numbers
-/// change with what else is in the machine.
-pub fn render_node() -> Option<PathBuf> {
-    render_node_in(Path::new(DRM_CLASS_FOLDER))
+/// The render node of the card at this address. It's found by its device, as the node numbers change
+/// with what else is in the machine. With no address it's the first card this driver owns, which is
+/// only sure to be the right one on a PC with one NVIDIA card.
+pub fn render_node(address: Option<&PciAddress>) -> Option<PathBuf> {
+    render_node_in(Path::new(DRM_CLASS_FOLDER), address)
 }
 
-fn render_node_in(class_folder: &Path) -> Option<PathBuf> {
+fn render_node_in(class_folder: &Path, address: Option<&PciAddress>) -> Option<PathBuf> {
     let mut names: Vec<_> = fs::read_dir(class_folder)
         .ok()?
         .flatten()
@@ -145,7 +148,14 @@ fn render_node_in(class_folder: &Path) -> Option<PathBuf> {
         let driver = fs::canonicalize(class_folder.join(name).join(DRIVER_LINK));
         driver.is_ok_and(|path| path.file_name().is_some_and(|driver| driver == DRIVER_NAME))
     };
-    names.iter().find(driven_here).map(|name| Path::new(DRM_DEVICE_FOLDER).join(name))
+    // The node's device link ends in the PCI address of the card it belongs to.
+    let at_address = |name: &&std::ffi::OsString| {
+        let Some(wanted) = address else { return true };
+        let device = fs::canonicalize(class_folder.join(name).join(DEVICE_LINK));
+        let found = device.ok().and_then(|path| PciAddress::parse(&path.file_name()?.to_string_lossy()));
+        found.as_ref() == Some(wanted)
+    };
+    names.iter().filter(at_address).find(driven_here).map(|name| Path::new(DRM_DEVICE_FOLDER).join(name))
 }
 
 #[cfg(test)]
@@ -196,17 +206,42 @@ mod tests {
         assert_eq!(prime_descriptor(&request), NO_DESCRIPTOR);
     }
 
-    #[test]
-    fn the_render_node_is_the_one_this_driver_owns() {
-        let class = env::temp_dir().join(format!("guesthouse-drm-{}", process::id()));
-        for (node, driver) in [("renderD128", "amdgpu"), ("renderD129", "nvidia"), ("card0", "nvidia")] {
-            let device = class.join(node).join("device");
+    /// A DRM class folder whose nodes link to PCI devices named by address, as sysfs does.
+    fn class_folder(name: &str, nodes: &[(&str, &str, &str)]) -> PathBuf {
+        let class = env::temp_dir().join(format!("guesthouse-drm-{name}-{}", process::id()));
+        let _ = fs::remove_dir_all(&class);
+        for (node, address, driver) in nodes {
+            let device = class.join("devices").join(address);
             fs::create_dir_all(&device).unwrap();
             let target = class.join("drivers").join(driver);
             fs::create_dir_all(&target).unwrap();
-            symlink(target, device.join("driver")).unwrap();
+            let _ = symlink(&target, device.join("driver"));
+            fs::create_dir_all(class.join(node)).unwrap();
+            symlink(&device, class.join(node).join("device")).unwrap();
         }
-        assert_eq!(render_node_in(&class), Some(PathBuf::from("/dev/dri/renderD129")));
+        class
+    }
+
+    #[test]
+    fn the_render_node_is_the_one_this_driver_owns() {
+        let nodes = [("renderD128", "0000:7c:00.0", "amdgpu"), ("renderD129", "0000:02:00.0", "nvidia")];
+        let class = class_folder("one", &[nodes[0], nodes[1], ("card0", "0000:02:00.0", "nvidia")]);
+        assert_eq!(render_node_in(&class, None), Some(PathBuf::from("/dev/dri/renderD129")));
+        let address = PciAddress::parse("0000:02:00.0").unwrap();
+        assert_eq!(render_node_in(&class, Some(&address)), Some(PathBuf::from("/dev/dri/renderD129")));
+        fs::remove_dir_all(class).unwrap();
+    }
+
+    #[test]
+    fn of_two_cards_the_render_node_is_the_one_at_the_address() {
+        let class = class_folder(
+            "two",
+            &[("renderD128", "0000:01:00.0", "nvidia"), ("renderD129", "0000:02:00.0", "nvidia")],
+        );
+        let second = PciAddress::parse("0000:02:00.0").unwrap();
+        assert_eq!(render_node_in(&class, Some(&second)), Some(PathBuf::from("/dev/dri/renderD129")));
+        let gone = PciAddress::parse("0000:03:00.0").unwrap();
+        assert_eq!(render_node_in(&class, Some(&gone)), None);
         fs::remove_dir_all(class).unwrap();
     }
 }
