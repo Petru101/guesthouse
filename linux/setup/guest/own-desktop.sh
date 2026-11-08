@@ -1,6 +1,7 @@
-# Sourced by gpu-up.sh and desktop-watch.sh, in a guest someone installed by hand. Its own display
-# manager and desktop go on the GPU, through nvidia-drm and the stand-in, as Ubuntu's desktop does. GDM
-# is the one set up for it. Anything else, or a GPU screen that never lights, keeps the plain screen.
+# Sourced by gpu-up.sh, desktop-watch.sh and setup-own.sh, in a guest someone installed by hand. Its own
+# display manager and desktop go on the GPU, through nvidia-drm and the stand-in, as Ubuntu's desktop does.
+# GDM with GNOME, and SDDM or Plasma Login with Plasma, are set up for it. Anything else, or a GPU screen that never lights,
+# keeps the plain screen.
 # shellcheck shell=bash disable=SC2034,SC2154  # sourced after common.sh, which sets root and the rest
 desktop_failed=$root/var/lib/nvfwd/desktop-failed
 # systemd reads these into every user manager it starts, the login screen's included, and /run goes
@@ -19,26 +20,42 @@ display_manager() {
     basename "$link"
 }
 
-is_gdm() {
+# Which of the display managers set up for the GPU this is: gdm, sddm, plasmalogin, or nothing.
+# Plasma Login Manager runs its KWin under systemd's user manager, as GDM does its GNOME Shell.
+manager_kind() {
     case $1 in
-    gdm.service | gdm3.service) return 0 ;;
+    gdm.service | gdm3.service) echo gdm ;;
+    sddm.service) echo sddm ;;
+    plasmalogin.service) echo plasmalogin ;;
     esac
-    return 1
+}
+
+# SDDM's login screen runs on X11 unless it's told otherwise, and an X server isn't set up for the GPU.
+# Plasma's own packages tell it to use KWin on Wayland in a file of their own.
+sddm_on_wayland() {
+    local said
+    # The last one read wins, as in SDDM, and a file that isn't there says nothing.
+    said=$(cat "$root"/usr/lib/sddm/sddm.conf.d/*.conf "$root"/etc/sddm.conf.d/*.conf "$root/etc/sddm.conf" 2>/dev/null |
+        sed -n 's/^DisplayServer=//p' | tail -n 1)
+    [ "$said" = wayland ]
 }
 
 # Why this boot's desktop stays on the plain screen, or nothing if it can go on the GPU.
 # Usage: plain_desktop_reason BUILT_FOR
 plain_desktop_reason() {
-    local manager
+    local manager kind
     manager=$(display_manager)
+    kind=$(manager_kind "$manager")
     if [ "$(value_of "$own_install" desktop)" = plain ]; then
         echo "desktop=plain in /etc/nvfwd/own-install.conf keeps it there"
     elif [ -z "$manager" ]; then
         echo "no display manager is enabled"
-    elif ! is_gdm "$manager"; then
-        echo "the display manager is ${manager%.service}, and only GDM is set up for the GPU so far"
+    elif [ -z "$kind" ]; then
+        echo "the display manager is ${manager%.service}, and only GDM, SDDM and Plasma Login are set up for the GPU so far"
+    elif [ "$kind" = sddm ] && ! sddm_on_wayland; then
+        echo "SDDM's login screen runs on X11 here, and only its Wayland one is set up for the GPU"
     elif [ "$(cat "$desktop_failed" 2>/dev/null)" = "$1" ]; then
-        echo "GDM didn't come up on the GPU on an earlier boot with this driver and kernel. Delete /var/lib/nvfwd/desktop-failed to try again"
+        echo "the login screen didn't come up on the GPU on an earlier boot with this driver and kernel. Delete /var/lib/nvfwd/desktop-failed to try again"
     fi
 }
 
@@ -66,14 +83,20 @@ hide_gdm_rules() {
     done
 }
 
-# Ubuntu's session settings, with one more EGL vendor first: it keeps Xwayland from waiting on itself
+# Ubuntu's session settings, and KWin's own, with one more EGL vendor first: it keeps Xwayland from waiting on itself
 # when NVIDIA's Vulkan driver opens DISPLAY, which Ubuntu's own install wraps Xwayland for instead. A
 # package manager would undo a wrapper here. GLX goes through cast/glx_dri3.c, as in Ubuntu.
 write_session_settings() {
+    local card
     mkdir -p "$(dirname "$session_settings")"
     {
         sed "s#^__EGL_VENDOR_LIBRARY_FILENAMES=#&$xwayland_vendor:#" "$here/files/gpu-session.env"
         echo __GLX_VENDOR_LIBRARY_NAME=dri3
+        # KWin has no tag to leave a card alone, and is told which to use. It has no cursor plane either.
+        for card in "$root"/sys/class/drm/card[0-9]; do
+            [ "$(cat "$card/device/device" 2>/dev/null)" != "$nvfwd_device" ] || echo "KWIN_DRM_DEVICES=/dev/dri/$(basename "$card")"
+        done
+        echo KWIN_FORCE_SW_CURSOR=1
     } > "$session_settings"
 }
 

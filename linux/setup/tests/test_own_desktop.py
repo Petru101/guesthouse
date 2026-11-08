@@ -12,7 +12,7 @@ from test_own_install import OwnGuest
 
 V = "615.78.08"
 SETTINGS = "run/environment.d/90-nvfwd.conf"
-IGNORED = "run/udev/rules.d/71-nvfwd-plain-card.rules"
+PLAIN_CARDS = "run/udev/rules.d/71-nvfwd-plain-card.rules"
 
 
 class DesktopGuest(Guest):
@@ -93,7 +93,7 @@ class GpuUpChoosesTheScreen(unittest.TestCase):
         vendors = settings.split("__EGL_VENDOR_LIBRARY_FILENAMES=")[1].split("\n")[0].split(":")
         self.assertEqual(vendors[0], "/opt/nv/built/EGL_nvfwd_xwayland.json", "before Mesa's")
         self.assertTrue(vendors[1].endswith("50_mesa.json"))
-        rules = guest.read(IGNORED)
+        rules = guest.read(PLAIN_CARDS)
         self.assertIn('KERNEL=="card0"', rules)
         self.assertNotIn("card1", rules)
         self.assertEqual(guest.said(), [f"nvfwd-gpu on {V}", "nvfwd-desktop gpu"])
@@ -105,10 +105,32 @@ class GpuUpChoosesTheScreen(unittest.TestCase):
         self.assertEqual(guest.state()["desktop"], "gpu")
 
     def test_another_display_manager_keeps_the_plain_screen(self):
-        guest = self.guest("sddm.service")
-        self.assert_plain(guest, "the display manager is sddm, and only GDM")
+        guest = self.guest("lightdm.service")
+        self.assert_plain(guest, "the display manager is lightdm, and only GDM, SDDM and Plasma Login")
         self.assertEqual(guest.called("modprobe nvidia-drm"), 0)
-        self.assertFalse(guest.exists(IGNORED))
+        self.assertFalse(guest.exists(PLAIN_CARDS))
+
+    def test_sddm_on_wayland_goes_on_the_gpu_with_kwin_told_its_card(self):
+        guest = self.guest("sddm.service")
+        write(os.path.join(guest.root, "usr/lib/sddm/sddm.conf.d/plasma-wayland.conf"),
+              "[General]\nDisplayServer=wayland\n")
+        guest.run()
+        self.assertEqual(guest.state()["desktop"], "gpu")
+        settings = guest.read(SETTINGS)
+        self.assertIn("KWIN_DRM_DEVICES=/dev/dri/card1\n", settings)
+        self.assertIn("KWIN_FORCE_SW_CURSOR=1\n", settings)
+
+    def test_plasma_login_goes_on_the_gpu(self):
+        guest = self.guest("plasmalogin.service")
+        guest.run()
+        self.assertEqual(guest.state()["desktop"], "gpu")
+
+    def test_sddm_on_x11_keeps_the_plain_screen(self):
+        guest = self.guest("sddm.service")
+        write(os.path.join(guest.root, "usr/lib/sddm/sddm.conf.d/plasma-wayland.conf"),
+              "[General]\nDisplayServer=wayland\n")
+        write(os.path.join(guest.root, "etc/sddm.conf.d/mine.conf"), "[General]\nDisplayServer=x11\n")
+        self.assert_plain(guest, "SDDM's login screen runs on X11")
 
     def test_someone_can_keep_it_plain(self):
         guest = self.guest()
@@ -208,14 +230,28 @@ class SetUpForTheDesktop(unittest.TestCase):
         self.assertNotIn("Requires=", drop_in)
         self.assertIn("ExecStart=/usr/lib/nvfwd/desktop-watch.sh",
                       guest.read("etc/systemd/system/nvfwd-desktop-watch.service"))
-        self.assertIn("GDM and your desktop go on the GPU", result.stdout)
+        self.assertIn("The login screen and your desktop go on the GPU", result.stdout)
 
-    def test_another_display_manager_is_left_as_it_is(self):
+    def test_sddm_waits_for_the_gpu_step_and_takes_its_settings(self):
         guest = self.guest("sddm.service")
         result = guest.run()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertFalse(guest.exists("etc/systemd/system/sddm.service.d"))
-        self.assertIn("Your display manager is sddm", result.stdout)
+        drop_in = guest.read("etc/systemd/system/sddm.service.d/nvfwd.conf")
+        self.assertIn("After=nvfwd-gpu.service", drop_in)
+        self.assertIn("EnvironmentFile=-/run/environment.d/90-nvfwd.conf", drop_in)
+        self.assertIn("SDDM and Plasma go on the GPU", result.stdout)
+
+    def test_plasma_login_waits_for_the_gpu_step(self):
+        guest = self.guest("plasmalogin.service")
+        self.assertEqual(guest.run().returncode, 0)
+        self.assertIn("After=nvfwd-gpu.service", guest.read("etc/systemd/system/plasmalogin.service.d/nvfwd.conf"))
+
+    def test_another_display_manager_is_left_as_it_is(self):
+        guest = self.guest("lightdm.service")
+        result = guest.run()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(guest.exists("etc/systemd/system/lightdm.service.d"))
+        self.assertIn("Your display manager is lightdm", result.stdout)
 
     def test_a_choice_of_the_plain_screen_survives_a_new_run(self):
         guest = self.guest("gdm.service")
@@ -240,7 +276,7 @@ class CheckSaysWhereTheDesktopIs(unittest.TestCase):
         self.guest.file("sys/class/drm/card1-HDMI-A-1/enabled", "enabled\n")
         result = self.guest.run()
         self.assertEqual(result.returncode, 0, result.stdout)
-        for line in ("PASS the GPU screen is lit", "PASS gnome-shell runs on the GPU", "PASS module nvidia_drm"):
+        for line in ("PASS the GPU screen is lit", "PASS the compositor runs on the GPU", "PASS module nvidia_drm"):
             self.assertIn(line, result.stdout)
 
     def test_a_dark_gpu_screen_fails(self):

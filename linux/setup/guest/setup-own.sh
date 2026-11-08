@@ -116,20 +116,31 @@ install_settings() {
     install_desktop
 }
 
-# GDM waits for the GPU step, which puts it on the GPU or leaves it on the plain screen. Any other
+# The login screen waits for the GPU step, which puts it on the GPU or leaves it on the plain screen.
+# SDDM starts its own compositor itself, so it takes the boot's settings from the same file. Any other
 # display manager is left as it is, on the plain screen.
 install_desktop() {
-    local manager
+    local manager kind
     manager=$(display_manager)
+    kind=$(manager_kind "$manager")
     rm -f "$units"/*.service.d/nvfwd.conf
-    if [ -z "$manager" ]; then
-        echo "There's no display manager enabled, so there's no desktop to put on the GPU."
-    elif is_gdm "$manager"; then
+    case $kind in
+    gdm | plasmalogin)
         install -D -m 644 "$here/files/display-manager-nvfwd.conf" "$units/$manager.d/nvfwd.conf"
-        echo "GDM and your desktop go on the GPU at each boot that has it. If the login screen doesn't come up there, it comes back on the plain screen."
-    else
-        echo "Your display manager is ${manager%.service}. Only GDM is set up for the GPU so far, so your desktop stays on the plain screen."
-    fi
+        echo "The login screen and your desktop go on the GPU at each boot that has it. If the login screen doesn't come up there, the guest boots again on the plain screen."
+        ;;
+    sddm)
+        install -D -m 644 "$here/files/sddm-nvfwd.conf" "$units/$manager.d/nvfwd.conf"
+        echo "SDDM and Plasma go on the GPU at each boot that has it, if SDDM's login screen is its Wayland one. If it doesn't come up there, the guest boots again on the plain screen."
+        ;;
+    *)
+        if [ -z "$manager" ]; then
+            echo "There's no display manager enabled, so there's no desktop to put on the GPU."
+        else
+            echo "Your display manager is ${manager%.service}. Only GDM, SDDM and Plasma Login are set up for the GPU so far, so your desktop stays on the plain screen."
+        fi
+        ;;
+    esac
 }
 
 # Programs that systemd starts from /usr/lib/nvfwd must be labelled as programs, or it runs them

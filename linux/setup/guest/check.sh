@@ -76,10 +76,10 @@ check_own_desktop() {
     . "$here/own-desktop.sh"
     check 'session settings for the GPU in place' grep -q '^GALLIUM_DRIVER=zink$' "$session_settings"
     check 'the GPU screen is lit' gpu_screen_lit
-    for pid in $(pgrep -x gnome-shell); do
+    for pid in $(pgrep -x gnome-shell) $(pgrep -x kwin_wayland); do
         grep -q /dev/nvidia0 "$root/proc/$pid/maps" 2>/dev/null && on_gpu=1
     done
-    if [ -n "$on_gpu" ]; then pass 'gnome-shell runs on the GPU'; else fail 'gnome-shell runs on the GPU'; fi
+    if [ -n "$on_gpu" ]; then pass 'the compositor runs on the GPU'; else fail 'the compositor runs on the GPU'; fi
 }
 
 check_version() {
