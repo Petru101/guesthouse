@@ -43,7 +43,7 @@ This repo has:
 - a display driver for Windows guests, in `drivers/windows-display/`, which the app installs by itself
 - an installer, `install.sh`
 
-A Windows GPU machine needs NVIDIA's kernel module loaded, with `/dev/nvidiactl` and `/dev/nvidia0`, and `nvidia-smi` on your PATH. It has run on one RTX 5090, with NVIDIA 615.78.08 on the host and 617.42 in Windows 11 Pro, build 26300, and on nothing else. It has never run on another card, or on a PC with two NVIDIA cards.
+A Windows GPU machine needs NVIDIA's kernel module loaded, with `/dev/nvidiactl` and the card's own `/dev/nvidiaN`, and `nvidia-smi` on your PATH. It has run on one RTX 5090, with NVIDIA 615.78.08 on the host and 617.42 in Windows 11 Pro, build 26300, and on nothing else. It has never run on another card, or on a PC with two NVIDIA cards. With two, setup picks one and writes down its PCI address, and Windows machines open that card. That has only been tried on pretend cards so far. Linux machines with the GPU still use the first card.
 
 A plain VM needs QEMU with its D-Bus display, which Fedora calls `qemu-ui-dbus`, plus `qemu-img`, `swtpm`, `genisoimage` and `7z` for installs. A QEMU built as `qemu/README.md` says has no `qemu-img` of its own, so install the system's. There are no recordings in the repo, so the replay tool only runs on a recording you make yourself.
 

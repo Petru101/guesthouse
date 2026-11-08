@@ -11,6 +11,9 @@ use std::path::{Path, PathBuf};
 
 /// Where the card's nodes are.
 pub(super) const DEVICES: &str = "/dev";
+/// Every card's nodes. The forwarding device in QEMU still opens `/dev/nvidia0` and the first render
+/// node NVIDIA drives, and isn't told setup's choice, so it assumes one card: on a PC with more than
+/// one, a Linux guest may get another card than a Windows one.
 const GPU_NODE_PREFIXES: [&str; 2] = ["nvidia", "dri/renderD"];
 /// Nodes a guest's calls have no use for.
 const LEFT_OUT: [&str; 3] = ["nvidia-modeset", "nvidia-caps", "nvidia-nvswitchctl"];

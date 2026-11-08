@@ -144,6 +144,8 @@ Cards are never listed in code as behaviour. Name, video memory, engines and cop
    - host and guest on different branches are refused, until that pair has been tested
 3. Only then does `Backend::open` touch the card.
 
+Which card it opens comes from setup, which writes down the card's PCI address. The driver's numbers aren't names: a card's device file number is the order the driver probed the cards in, and the RM's device instance the order it set them up in, and the two can differ and change between boots. So `rm/listing.rs` finds the device file for the address in `/proc/driver/nvidia/gpus`, and `rm/instance.rs` asks the RM which device instance the GPU at that address is. A setup with no address works on a PC with one card, and is refused with two. This has been tested with pretend cards and not yet on a real PC with two. The Linux forwarding device in the QEMU patch still opens the first card.
+
 A refusal is a plain sentence, and it comes before any request reaches the host's driver, since we'd otherwise be handing a driver structures of a size it may not expect.
 
 A real check has to compare what it found against the branch profiles. Asking the driver for its version and repeating that back to it passes on every version, so it proves nothing.
