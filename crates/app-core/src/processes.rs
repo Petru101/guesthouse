@@ -52,6 +52,17 @@ pub fn qemu_pid(context: &Context, slot: Option<Slot>) -> Option<u32> {
         .map(|found| found.0)
 }
 
+/// The passt a jailed QEMU of this slot was started with, by the pid it wrote and the pid file named in
+/// its words, so a pid the system has given to something else since isn't taken for it.
+pub fn passt_pid(context: &Context, slot: Option<Slot>) -> Option<u32> {
+    let pid_file = context.run_folder(slot).join(crate::vm_args::PASST_PID_FILE);
+    let pid: u32 = fs::read_to_string(&pid_file).ok()?.trim().parse().ok()?;
+    let words = process_words(context, pid)?;
+    let wanted = pid_file.as_os_str().as_encoded_bytes();
+    let names_it = words.windows(2).any(|pair| pair[0] == b"--pid" && pair[1] == wanted);
+    names_it.then_some(pid)
+}
+
 /// Each running VM, by slot number.
 pub fn running_slots(context: &Context) -> BTreeMap<u8, u32> {
     let mut found = BTreeMap::new();
@@ -154,6 +165,24 @@ mod tests {
     fn fake_daemon(context: &Context, pid: u32, slot: u8, mapped: &str) {
         let [program, base] = daemon_words(context);
         fake_process(context, pid, &[&program, &base], &[&format!("GUESTHOUSE_SLOT={slot}")], mapped);
+    }
+
+    #[test]
+    fn passt_is_found_by_its_pid_file_and_only_if_it_names_it() {
+        let scratch = Scratch::new();
+        let context = scratch_context(&scratch);
+        let folder = context.run_folder(None);
+        fs::create_dir_all(&folder).unwrap();
+        assert_eq!(passt_pid(&context, None), None);
+        let pid_file = folder.join(crate::vm_args::PASST_PID_FILE);
+        fs::write(&pid_file, "4242\n").unwrap();
+        assert_eq!(passt_pid(&context, None), None, "no such process");
+        fake_process(&context, 4242, &["/usr/bin/sleep", "100"], &[], "");
+        assert_eq!(passt_pid(&context, None), None, "a pid used again since");
+        let file = pid_file.display().to_string();
+        fake_process(&context, 4242, &["/usr/bin/passt", "--quiet", "--pid", &file, "--fd", "3"], &[], "");
+        assert_eq!(passt_pid(&context, None), Some(4242));
+        assert_eq!(passt_pid(&context, Some(slots::number(1))), None);
     }
 
     #[test]

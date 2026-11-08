@@ -8,7 +8,7 @@ use crate::host::GIB;
 use crate::jailing;
 use crate::machine::{Machine, sorted_names};
 use crate::monitor::Command as Qmp;
-use crate::processes::{memory_taken, qemu_pid};
+use crate::processes::{memory_taken, passt_pid, qemu_pid};
 use crate::start_checks::SECOND_INSTANCE_REFUSAL;
 use crate::vm_args::{OUTPUT_FILE, Sound, VmPlan};
 use guesthouse_daemon::jail::make_if_missing;
@@ -64,6 +64,18 @@ impl LocalHost<'_> {
             clock.sleep(STOP_POLL);
         }
         qemu_pid(self.context, None).is_none()
+    }
+
+    /// passt quits once QEMU has gone, as QEMU was its one client. This is for one that hasn't yet,
+    /// or one an earlier run left.
+    fn end_passt(&self) {
+        let Some(pid) = passt_pid(self.context, None) else { return };
+        terminate(Some(pid));
+        let clock = &self.context.clock;
+        let end = clock.now() + Duration::from_secs(AFTER_SIGKILL_SECONDS);
+        while passt_pid(self.context, None).is_some() && clock.now() < end {
+            clock.sleep(POLL);
+        }
     }
 
     /// The end of QEMU's output, which says why it failed to start.
@@ -288,6 +300,7 @@ impl VmHost for LocalHost<'_> {
                 how = Stopped::TurnedOff;
             }
         }
+        self.end_passt();
         if machine.has_gpu() {
             self.release()?;
         }
@@ -297,6 +310,9 @@ impl VmHost for LocalHost<'_> {
     fn release(&self) -> Result<()> {
         if self.context.second_instance() {
             return Err(Failure::new(SECOND_INSTANCE_REFUSAL));
+        }
+        if qemu_pid(self.context, None).is_none() {
+            self.end_passt();
         }
         for pid in self.daemons() {
             terminate(Some(pid));

@@ -217,6 +217,34 @@ fn release_frees_memory_only_when_no_other_vm_has_it() {
 }
 
 #[test]
+fn a_passt_left_running_is_ended_at_a_stop() {
+    let scratch = Scratch::new();
+    let mut context = scratch_context(&scratch);
+    context.processes = "/proc".into();
+    context.clock = Arc::new(QuickClock::default());
+    context.make_run_folder(None).unwrap();
+    let pid_file = context.run_folder(None).join(crate::vm_args::PASST_PID_FILE);
+    // Its words name the pid file, as passt's do.
+    let mut passt = Command::new("sh")
+        .args(["-c", &format!("sleep {PRETEND_LIFE_SECONDS}; :"), "--pid"])
+        .arg(&pid_file)
+        .spawn()
+        .unwrap();
+    fs::write(&pid_file, passt.id().to_string()).unwrap();
+    let host = LocalHost { context: &context };
+    let plain = Machine { kind: Kind::Plain, ..Machine::new("vm", "VM", "/d", "/v") };
+    host.stop(&plain, 1).unwrap();
+    let ended = passt.try_wait().unwrap().is_some() || {
+        thread::sleep(NOTICE_WITHIN);
+        passt.try_wait().unwrap().is_some()
+    };
+    if !ended {
+        let _ = passt.kill();
+    }
+    assert!(ended, "the stop ended it");
+}
+
+#[test]
 fn last_words_are_the_end_of_the_output() {
     let scratch = Scratch::new();
     let context = scratch_context(&scratch);
