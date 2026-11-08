@@ -4,6 +4,7 @@ use super::guest_cursor::CursorPicture;
 use gtk::gdk;
 use gtk::prelude::*;
 use guesthouse_app_core::machine::Machine;
+use guesthouse_app_core::tasks::Status;
 use guesthouse_frame_socket::CursorMove;
 
 const BYTES_PER_PIXEL: usize = 4;
@@ -15,7 +16,7 @@ pub enum FrameRoute {
     QemuDisplay,
     /// The frame socket, for a guest on GPU-PV.
     FrameSocket,
-    /// The nvfwd device, for an Ubuntu guest on the GPU.
+    /// The nvfwd device, for a Linux guest whose desktop is on the GPU.
     Forwarded,
 }
 
@@ -23,10 +24,19 @@ impl FrameRoute {
     pub fn of(machine: &Machine) -> Self {
         if machine.has_gpu() {
             Self::FrameSocket
-        } else if machine.wants_forwarded_gpu() {
+        } else if machine.wants_forwarded_gpu() || machine.own_linux_gpu() {
             Self::Forwarded
         } else {
             Self::QemuDisplay
+        }
+    }
+
+    /// The route while it runs. A Linux guest that says its desktop is on the plain screen this boot
+    /// has no GPU frames coming, and may have shown some before it went back there.
+    pub fn now(machine: &Machine, status: &Status) -> Self {
+        match Self::of(machine) {
+            Self::Forwarded if status.plain_desktop => Self::QemuDisplay,
+            route => route,
         }
     }
 }
@@ -107,6 +117,20 @@ pub fn thumbnail(texture: &gdk::Texture, width: usize) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_linux_guest_on_the_gpu_shows_forwarded_frames_until_it_says_its_desktop_is_plain() {
+        use guesthouse_app_core::machine::Kind;
+        let plain = Machine { kind: Kind::Plain, ..Machine::new("fedora", "Fedora", "/d", "/v") };
+        let own = Machine { linux_gpu: true, ..plain.clone() };
+        let running = Status::default();
+        let back_to_plain = Status { plain_desktop: true, ..Status::default() };
+        assert_eq!(FrameRoute::now(&plain, &running), FrameRoute::QemuDisplay);
+        assert_eq!(FrameRoute::now(&own, &running), FrameRoute::Forwarded);
+        assert_eq!(FrameRoute::now(&own, &back_to_plain), FrameRoute::QemuDisplay);
+        let windows = Machine { kind: Kind::Windows, ..plain };
+        assert_eq!(FrameRoute::now(&windows, &back_to_plain), FrameRoute::FrameSocket);
+    }
 
     #[test]
     fn a_thumbnail_keeps_the_shape_of_the_picture() {

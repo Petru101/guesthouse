@@ -227,7 +227,7 @@ impl Machine {
     }
 
     /// Whether this plain machine should get the forwarded GPU, if the host can offer it. Its desktop
-    /// stays on QEMU's display, so the viewer goes on as for any plain machine.
+    /// goes on the GPU where the guest can put it there, and stays on QEMU's display where it can't.
     pub fn own_linux_gpu(&self) -> bool {
         self.kind == Kind::Plain && self.linux_gpu
     }

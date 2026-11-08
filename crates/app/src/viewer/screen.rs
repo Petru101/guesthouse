@@ -341,7 +341,8 @@ impl Screen {
         }
     }
 
-    /// An Ubuntu guest's session takes its input down its own port.
+    /// An Ubuntu guest's session takes its input down its own port. A Linux the user installed has no
+    /// such port, and QEMU's own keyboard and pointer reach its compositor through the guest's kernel.
     fn follow_forwarded(&self) {
         let mut forwarded = self.0.forwarded.borrow_mut();
         if forwarded.as_ref().is_some_and(|input| !input.alive()) {
