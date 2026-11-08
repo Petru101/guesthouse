@@ -1,0 +1,23 @@
+# What a guest installed by hand needs, beside the kernel's headers: the build, our programs and the checks.
+gcc
+make
+kmod
+pciutils
+pkg-config
+python3
+glslang-devel
+libvulkan1
+vulkan-devel
+vulkan-tools
+Mesa-vulkan-device-select
+libvulkan_lvp
+libglvnd
+Mesa-libGL1
+Mesa-libEGL1
+Mesa-dri
+Mesa-demo-x
+libX11-6
+libXext6
+wayland-devel
+pipewire-devel
+glib2-devel

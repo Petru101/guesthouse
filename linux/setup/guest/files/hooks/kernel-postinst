@@ -1,0 +1,3 @@
+#!/bin/sh
+# Debian's and Ubuntu's kernel hooks, after a kernel and again after its headers: VERSION [IMAGE].
+exec /usr/lib/nvfwd/kernel-hook.sh "$1"

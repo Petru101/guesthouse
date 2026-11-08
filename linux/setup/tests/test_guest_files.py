@@ -92,7 +92,7 @@ class Scripts(unittest.TestCase):
 
     def test_run_directly_ones_are_executable(self):
         for path in self.shell_scripts():
-            if os.path.basename(path) != "common.sh":
+            if os.path.basename(path) not in ("common.sh", "distro.sh"):
                 self.assertTrue(os.access(path, os.X_OK), path)
 
 

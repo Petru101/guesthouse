@@ -8,10 +8,20 @@ kernel=$(uname -r)
 target=$root/lib/modules/$kernel/updates/nvfwd
 build_log=$log_folder/build.log
 first_check_seconds=60
+# The app on the host reads one line from here to say whether the guest has its GPU.
+serial=$root/dev/ttyS0
+selinux_label=system_u:object_r:lib_t:s0
 mkdir -p "$state_folder" "$log_folder" "$driver"
+
+# A guest with no serial port says nothing, and that's no reason to stop.
+tell_host() {
+    [ -w "$serial" ] && printf 'nvfwd-gpu %s\n' "$1" > "$serial" 2>/dev/null
+    return 0
+}
 
 gpu_off() {
     echo "GPU off: $1"
+    tell_host "off $1"
     "$here/link-driver.sh" unlink
     mountpoint -q "$driver" && umount "$driver"
     printf 'gpu=off\nreason=%s\n' "$1" > "$state_file"
@@ -38,10 +48,12 @@ host_reason() {
     echo "no nvfwd device. ${reason:-The VM was started without one, and the host gave no reason.}"
 }
 
+# With SELinux, the whole image is labelled as libraries, which any program may map.
 mount_image() {
-    local disk
+    local disk options=ro,nodev,nosuid
     disk=$(blkid -L NVFWD_DRIVER) || return 1
-    mount -t iso9660 -o ro,nodev,nosuid "$disk" "$driver"
+    [ ! -e "$root/sys/fs/selinux/enforce" ] || options=$options,context=$selinux_label
+    mount -t iso9660 -o "$options" "$disk" "$driver"
 }
 
 # The version only says the host's driver is the one we built for. On a version nobody has tried, the
@@ -108,6 +120,14 @@ host_version=$("$here/driver-version.py" 2>&1) || gpu_off "the host's driver did
 first_check CUDA cudavec
 first_check Vulkan vkcompute
 
+# A desktop someone installed stays on the plain screen, and the GPU is for its programs.
+if [ -n "$own_family" ]; then
+    printf 'gpu=on\nversion=%s\ntested=%s\n' "$version" "$tested" > "$state_file"
+    tell_host "on $version"
+    echo "GPU on: driver $version, for programs. The desktop stays on the plain screen"
+    exit 0
+fi
+
 # What nvidia-drm leans on. nvidia-drm's options are in /etc/modprobe.d/nvfwd.conf.
 modprobe -a drm_kms_helper drm_ttm_helper video drm_display_helper
 modprobe nvidia-drm || gpu_off "nvidia-drm would not load"
@@ -115,4 +135,5 @@ modprobe nvidia-drm || gpu_off "nvidia-drm would not load"
 hide_plain_cards
 probe_connectors
 printf 'gpu=on\nversion=%s\ntested=%s\n' "$version" "$tested" > "$state_file"
+tell_host "on $version"
 echo "GPU on: driver $version"

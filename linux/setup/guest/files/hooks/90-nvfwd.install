@@ -1,0 +1,4 @@
+#!/bin/sh
+# kernel-install's plugin, for Fedora: kernel-install add VERSION ENTRY-FOLDER IMAGE.
+[ "$1" = add ] || exit 0
+exec /usr/lib/nvfwd/kernel-hook.sh "$2"

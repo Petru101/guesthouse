@@ -43,9 +43,27 @@ check_install() {
     check 'Firefox installed' test -x "$root/opt/ff/firefox/firefox"
 }
 
+# A guest installed by hand has no first boot of ours, no desktop of ours, and no package list in dpkg.
+check_own_install() {
+    local label
+    check 'setup finished' test -e "$own_done_marker"
+    check 'GPU step enabled' systemctl is-enabled nvfwd-gpu.service
+    check 'udev keeps its hands off nvidia.ko' grep -q '^blacklist nvidia$' "$root/etc/modprobe.d/nvfwd.conf"
+    check 'headers for this kernel' test -e "$root/lib/modules/$(uname -r)/build/Makefile"
+    if [ -e "$root/sys/fs/selinux/enforce" ]; then
+        # user:role:type:level, and the type is what counts.
+        label=$(stat -c %C "$root/usr/lib/nvfwd/gpu-up.sh" 2>/dev/null | cut -d: -f3)
+        if [ "$label" = bin_t ]; then
+            pass 'SELinux labels the GPU step a program'
+        else
+            fail "SELinux labels the GPU step ${label:-nothing}, not a program"
+        fi
+    fi
+}
+
 check_version() {
     local version=$1 module answer
-    for module in nvidia nvidia_modeset nvidia_drm; do
+    for module in $modules; do
         check "module $module loaded" test -d "$root/sys/module/$module"
     done
     check "module nvidia says $version" test "$(cat "$root/sys/module/nvidia/version" 2>/dev/null)" = "$version"
@@ -154,8 +172,40 @@ check_apps() {
     done
 }
 
+finish() {
+    echo '----'
+    if [ "$failed" != 0 ]; then
+        echo "FAIL $failed parts do not work"
+        exit 1
+    fi
+    if [ "$gpu" != on ] && [ -z "$gpu_off_expected" ]; then
+        echo 'OFF  everything else works, but this boot has no GPU'
+        exit 2
+    fi
+    echo 'PASS everything'
+    exit 0
+}
+
 gpu_off_expected=
 [ "${1:-}" != --gpu-off-expected ] || gpu_off_expected=1
+modules='nvidia nvidia_modeset nvidia_drm'
+if [ -n "$own_family" ]; then
+    # Its desktop is its own, on the plain screen, and the GPU is for programs.
+    modules=nvidia
+    check_own_install
+    gpu=$(value_of "$state_file" gpu 2>/dev/null)
+    if [ "$gpu" = on ]; then
+        version=$(value_of "$state_file" version)
+        echo "---- GPU is on, driver $version"
+        [ "$(value_of "$state_file" tested)" = yes ] || warn "driver $version has never been tested with this project"
+        check_version "$version"
+        check_gpu
+    else
+        echo "---- GPU is off: $(value_of "$state_file" reason 2>/dev/null)"
+        off 'nvidia-smi, CUDA and Vulkan are not checked'
+    fi
+    finish
+fi
 check_install
 
 gpu=$(value_of "$state_file" gpu 2>/dev/null)
@@ -177,13 +227,4 @@ fi
 echo '---- applications, as Activities opens them'
 if [ -n "$shell_pid" ]; then check_apps; else fail 'no shell to open applications in'; fi
 
-echo '----'
-if [ "$failed" != 0 ]; then
-    echo "FAIL $failed parts do not work"
-    exit 1
-fi
-if [ "$gpu" != on ] && [ -z "$gpu_off_expected" ]; then
-    echo 'OFF  everything else works, but this boot has no GPU'
-    exit 2
-fi
-echo 'PASS everything'
+finish

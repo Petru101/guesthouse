@@ -1,0 +1,12 @@
+# Arch's pacman, once a kernel's headers are in: the build needs them, and they come with the kernel.
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Type = Path
+Target = usr/lib/modules/*/build/Makefile
+
+[Action]
+Description = Building the forwarded GPU's modules for the new kernel
+When = PostTransaction
+Exec = /usr/lib/nvfwd/kernel-hook.sh --paths
+NeedsTargets
