@@ -22,6 +22,10 @@ pub const CONTROL_UPDATE_CHANNEL_INFO: u32 = 0x2080_1116;
 pub const CONTROL_GET_TIME: u32 = 0x2080_0403;
 pub const CONTROL_GET_GPU_ID: u32 = 0x2080_0142;
 pub const CONTROL_GET_PROBED_IDS: u32 = 0x0000_0214;
+pub const CONTROL_GET_ATTACHED_IDS: u32 = 0x0000_0201;
+/// The `_V2` form, whose parameters hold no pointer.
+pub const CONTROL_GET_GPU_ID_INFO: u32 = 0x0000_0205;
+pub const CONTROL_GET_GPU_PCI_INFO: u32 = 0x0000_021B;
 pub const CONTROL_EXPORT_OBJECT_TO_FD: u32 = 0x0000_3D05;
 
 /// The RM's engine numbers for the two engines channels run on here.

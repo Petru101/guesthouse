@@ -3,7 +3,7 @@
 //! guest is involved. This is the first thing a VM would do on the card, and the first thing that
 //! could go wrong on a card nobody has tried.
 
-use crate::host::{CardListed, same_card};
+use crate::host::{ListedCard, same_card};
 use crate::survey::Findings;
 use guesthouse_backend_nvidia::answers::nodes::{ENGINE_VIDEO_ENCODE, Node};
 use guesthouse_backend_nvidia::channel::{AREA_SIZE, Channel, ChannelPlace, Engine, VideoEngine};
@@ -147,15 +147,15 @@ pub fn run_all<R: Rm>(
     Ok(results)
 }
 
-/// Why the channel test can't start on this card, if it can't. A card's number comes from the
-/// driver's list, and the device opened by that number says its own name: if the two differ, the
+/// Why the channel test can't start on this card, if it can't. The card is found by its PCI address
+/// in the driver's list, and the device opened there says its own name: if the two differ, the
 /// channels could reach another card, so none is made.
-pub fn refusal(listed: &CardListed, findings: &Findings) -> Option<String> {
+pub fn refusal(listed: &ListedCard, findings: &Findings) -> Option<String> {
     if !same_card(&listed.model, &findings.name) {
         return Some(format!(
-            "Card {} opened as {:?}, but the driver lists {:?} under that number. They don't line up on \
-             this PC, so the channel test was not run: it could reach another card.",
-            listed.minor, findings.name, listed.model
+            "The card at {} opened as {:?}, but the driver lists {:?} there. They don't line up on this \
+             PC, so the channel test was not run: it could reach another card.",
+            listed.address, findings.name, listed.model
         ));
     }
     if findings.generation.is_none() {
@@ -170,7 +170,7 @@ pub fn refusal(listed: &CardListed, findings: &Findings) -> Option<String> {
 /// Nothing here touches the device before [`refusal`] has passed it.
 pub fn run_on_listed_card<R: Rm>(
     device: &mut Device<R>,
-    listed: &CardListed,
+    listed: &ListedCard,
     findings: &Findings,
     sizes: &HostBranch,
     wait: Duration,

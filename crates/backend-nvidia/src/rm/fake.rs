@@ -2,8 +2,12 @@
 //! opens a device.
 
 use super::classes::ENGINE_COPY_0;
+use super::classes::{CONTROL_GET_ATTACHED_IDS, CONTROL_GET_GPU_ID_INFO, CONTROL_GET_GPU_PCI_INFO, DEVICE};
 use super::fake_engine::{ChannelArea, FakeEngine, Mapped, mapping_at};
-use super::{DmaMap, Handle, Rm, RmError, STATUS_NOT_SUPPORTED, STATUS_OK};
+use super::{
+    DmaMap, Handle, Rm, RmError, STATUS_INSUFFICIENT_PERMISSIONS, STATUS_INVALID_ARGUMENT,
+    STATUS_NOT_SUPPORTED, STATUS_OK,
+};
 use crate::channel::{
     CHANNEL_PARAM_CONTROL_MEMORY, CHANNEL_PARAM_ENGINE, CHANNEL_PARAM_RING, CHANNEL_PARAM_RING_ENTRIES,
 };
@@ -13,6 +17,27 @@ use std::io;
 use std::os::fd::{FromRawFd, OwnedFd};
 
 const FAKE_CLIENT: Handle = 0xC1D0_0001;
+const NO_GPU: u32 = u32::MAX;
+
+/// A GPU the pretend RM knows. Its device instance and its device file's number are separate, as on
+/// a real PC, where the RM numbers GPUs in the order they were first set up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FakeGpu {
+    pub id: u32,
+    pub address: guesthouse_backend::PciAddress,
+    pub minor: u32,
+    pub device_instance: u32,
+    /// Set up by the RM, which opening its device file does.
+    pub attached: bool,
+}
+
+impl FakeGpu {
+    /// The only GPU of a one-card PC, at 0000:01:00.0, device file 0 and device instance 0.
+    pub fn only() -> Self {
+        let address = guesthouse_backend::PciAddress { domain: 0, bus: 1, device: 0, function: 0 };
+        Self { id: 0x100, address, minor: 0, device_instance: 0, attached: true }
+    }
+}
 
 /// One call, as the RM would have seen it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,6 +80,9 @@ pub struct FakeRm {
     mapped: Mapped,
     host_pages: HashMap<Handle, u64>,
     next_token: u32,
+    /// What the RM has, and which device file this client opened.
+    pub gpus: Vec<FakeGpu>,
+    pub opened_minor: u32,
 }
 
 impl Default for FakeRm {
@@ -82,6 +110,69 @@ impl FakeRm {
             mapped: Mapped::new(),
             host_pages: HashMap::new(),
             next_token: 0x100,
+            gpus: vec![FakeGpu::only()],
+            opened_minor: 0,
+        }
+    }
+
+    /// A pretend RM with these GPUs, before any device file is open.
+    pub fn with_gpus(gpus: Vec<FakeGpu>) -> Self {
+        Self { gpus, opened_minor: NO_GPU, ..Self::new() }
+    }
+
+    /// Plays opening a GPU's device file, which attaches it if it wasn't.
+    pub fn open_device_file(&mut self, minor: u32) {
+        self.opened_minor = minor;
+        for gpu in self.gpus.iter_mut().filter(|gpu| gpu.minor == minor) {
+            gpu.attached = true;
+        }
+    }
+
+    fn attached_gpu(&self, id: u32) -> Option<&FakeGpu> {
+        self.gpus.iter().find(|gpu| gpu.attached && gpu.id == id)
+    }
+
+    /// The controls on the client that say which GPU is where.
+    fn answer_gpu_control(&self, command: u32, params: &mut [u8]) -> Option<u32> {
+        let put = |params: &mut [u8], at: usize, value: u32| {
+            params[at..at + 4].copy_from_slice(&value.to_le_bytes())
+        };
+        let asked = || u32::from_le_bytes(params[..4].try_into().expect("four bytes"));
+        match command {
+            CONTROL_GET_ATTACHED_IDS => {
+                params.fill(0xFF);
+                for (index, gpu) in self.gpus.iter().filter(|gpu| gpu.attached).enumerate() {
+                    put(params, index * 4, gpu.id);
+                }
+                Some(STATUS_OK)
+            }
+            CONTROL_GET_GPU_PCI_INFO => Some(match self.attached_gpu(asked()) {
+                Some(gpu) => {
+                    let address = gpu.address;
+                    put(params, 4, address.domain);
+                    params[8..10].copy_from_slice(&u16::from(address.bus).to_le_bytes());
+                    params[10..12].copy_from_slice(&u16::from(address.device).to_le_bytes());
+                    STATUS_OK
+                }
+                None => STATUS_INVALID_ARGUMENT,
+            }),
+            CONTROL_GET_GPU_ID_INFO => Some(match self.attached_gpu(asked()) {
+                Some(gpu) => {
+                    put(params, 8, gpu.device_instance);
+                    STATUS_OK
+                }
+                None => STATUS_INVALID_ARGUMENT,
+            }),
+            _ => None,
+        }
+    }
+
+    /// The RM's answer to a device with this instance: refused unless this client opened its GPU.
+    fn device_status(&self, instance: u32) -> u32 {
+        match self.gpus.iter().find(|gpu| gpu.attached && gpu.device_instance == instance) {
+            Some(gpu) if gpu.minor == self.opened_minor => STATUS_OK,
+            Some(_) => STATUS_INSUFFICIENT_PERMISSIONS,
+            None => STATUS_INVALID_ARGUMENT,
         }
     }
 
@@ -193,6 +284,12 @@ impl Rm for FakeRm {
             return Ok(STATUS_NOT_SUPPORTED);
         }
         self.calls.push(Call::Alloc { parent, handle, class, params: params.to_vec() });
+        if class == DEVICE {
+            let status = self.device_status(u32::from_le_bytes(params[..4].try_into().expect("four bytes")));
+            if status != STATUS_OK {
+                return Ok(status);
+            }
+        }
         if class == super::classes::MEMORY_LOCAL_USER {
             let size = u64::from_le_bytes(params[0x40..0x48].try_into().expect("eight bytes"));
             let rounded = size.next_multiple_of(self.round_memory_to);
@@ -205,6 +302,9 @@ impl Rm for FakeRm {
         self.calls.push(Call::Control { object, command, params: params.to_vec() });
         if self.refuse_control == Some(command) {
             return Ok(STATUS_NOT_SUPPORTED);
+        }
+        if let Some(status) = self.answer_gpu_control(command, params) {
+            return Ok(status);
         }
         if command == super::classes::CONTROL_GET_WORK_SUBMIT_TOKEN {
             self.next_token += 1;

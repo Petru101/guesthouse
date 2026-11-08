@@ -13,6 +13,7 @@ pub mod fake;
 pub mod fake_card;
 #[cfg(any(test, feature = "fake-rm"))]
 pub mod fake_engine;
+pub mod instance;
 pub mod linux;
 pub mod listing;
 
@@ -30,6 +31,12 @@ pub const STATUS_NOT_SUPPORTED: u32 = 0x56;
 
 /// The RM's status for parameters that aren't the size of the control's structure.
 pub const STATUS_INVALID_PARAM_STRUCT: u32 = 0x3A;
+
+/// The RM's status for a device whose GPU this client hasn't opened the device file of.
+pub const STATUS_INSUFFICIENT_PERMISSIONS: u32 = 0x1B;
+
+/// The RM's status for an argument that names nothing.
+pub const STATUS_INVALID_ARGUMENT: u32 = 0x1F;
 
 /// What went wrong in a call to the RM.
 #[derive(Debug, Clone, PartialEq, Eq)]
