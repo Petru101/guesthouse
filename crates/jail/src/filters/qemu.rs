@@ -68,9 +68,8 @@ const NAMESPACE_FLAGS: c_int =
 /// Typing into the terminal QEMU was started from, and the console's own requests.
 const TERMINAL_REQUESTS: [c_ulong; 2] = [TIOCSTI, TIOCLINUX];
 
-/// The filter for QEMU. With `own_sandboxes`, a program it starts makes namespaces of its own, as
-/// passt does for its sandbox, so those calls stay open.
-pub fn qemu(own_sandboxes: bool, no_new_unix_sockets: bool) -> Filter {
+/// The filter for QEMU. passt, which makes namespaces of its own, is started before it, outside.
+pub fn qemu(no_new_unix_sockets: bool) -> Filter {
     let mut rules: Vec<Rule> = all(&DENIED, Action::Fail(EPERM)).collect();
     rules.extend(
         TERMINAL_REQUESTS
@@ -81,12 +80,10 @@ pub fn qemu(own_sandboxes: bool, no_new_unix_sockets: bool) -> Filter {
         // Pairs can't reach anything outside, and the ones it needs were opened before.
         rules.push(Rule::when(SYS_socket, Condition::Equals(0, AF_UNIX as u32), Action::Fail(EPERM)));
     }
-    if !own_sandboxes {
-        rules.extend(all(&MOUNTS, Action::Fail(EPERM)));
-        rules.extend(all(&[SYS_unshare, SYS_setns], Action::Fail(EPERM)));
-        rules.push(Rule::when(SYS_clone, Condition::HasAny(0, NAMESPACE_FLAGS as u32), Action::Fail(EPERM)));
-        rules.push(Rule::always(SYS_clone3, Action::Fail(ENOSYS)));
-    }
+    rules.extend(all(&MOUNTS, Action::Fail(EPERM)));
+    rules.extend(all(&[SYS_unshare, SYS_setns], Action::Fail(EPERM)));
+    rules.push(Rule::when(SYS_clone, Condition::HasAny(0, NAMESPACE_FLAGS as u32), Action::Fail(EPERM)));
+    rules.push(Rule::always(SYS_clone3, Action::Fail(ENOSYS)));
     Filter { rules, otherwise: Action::Allow }
 }
 
@@ -102,11 +99,12 @@ mod tests {
     }
 
     #[test]
-    fn namespaces_stay_open_only_for_a_program_with_a_sandbox_of_its_own() {
-        assert!(denies(&qemu(false, false), SYS_unshare));
-        assert!(denies(&qemu(false, false), SYS_mount));
-        assert!(!denies(&qemu(true, false), SYS_unshare));
-        assert!(!denies(&qemu(true, false), SYS_mount));
-        assert!(denies(&qemu(true, false), SYS_ptrace));
+    fn no_namespaces_or_mounts_and_no_tracing() {
+        for no_new_unix_sockets in [false, true] {
+            let filter = qemu(no_new_unix_sockets);
+            for call in [SYS_unshare, SYS_setns, SYS_mount, SYS_ptrace, SYS_clone3] {
+                assert!(denies(&filter, call), "{call}");
+            }
+        }
     }
 }

@@ -10,7 +10,7 @@ use super::{QemuJail, VmPlan};
 use crate::disk_image::backing::backing_files;
 use crate::failure::{Failure, Result};
 use crate::network::{Mode, Protocol, bridge_helper};
-use guesthouse_jail::launch::{Launch, Tap, UnixSocket};
+use guesthouse_jail::launch::{Launch, Passt, Tap, UnixSocket};
 use guesthouse_jail::{Grant, Network, Plan, Ports};
 use std::path::{Path, PathBuf};
 
@@ -23,10 +23,13 @@ pub const PID_FILE: &str = "qemu.pid";
 
 /// Where a bridged network's device is open for QEMU. Out of the way of what QEMU opens itself.
 pub const TAP_FD: i32 = 10;
+/// Where QEMU's end of its connection to passt is open.
+pub const PASST_FD: i32 = 11;
+const PASST: &str = "passt";
 const DNS_PORT: u16 = 53;
 /// Any free port, which sending a datagram binds first.
 const EPHEMERAL_PORT: u16 = 0;
-/// QEMU's own filter, on top. Starting programs stays allowed, for passt and the shared folder's.
+/// QEMU's own filter, on top. Starting programs stays allowed, for the shared folder's.
 /// Its privileges group stays out: it ends QEMU's user network's child at `setsid`, before the
 /// shared folder's program runs, and no new privileges, which the launcher sets, already covers it.
 const QEMU_SANDBOX: &str = "on,obsolete=deny,spawn=allow,resourcecontrol=deny";
@@ -71,16 +74,10 @@ impl VmPlan {
         forwards.filter_map(|forward| u16::try_from(forward.host).ok()).collect()
     }
 
+    /// passt does the NAT for a machine on it, outside the jail, so QEMU's own network is the
+    /// restricted private link, as for a bridged or restricted machine.
     fn jail_network(&self) -> Network {
-        if self.network.mode == Mode::Nat && self.network.passt {
-            // passt does the NAT, and it's QEMU's child, so it has this jail too.
-            return Network {
-                tcp_bind: Ports::Any,
-                tcp_connect: Ports::Any,
-                udp_bind: Ports::Any,
-                udp_send: Ports::Any,
-            };
-        }
+        let nat = self.network.mode == Mode::Nat && !self.network.passt;
         let mut tcp_bind = vec![self.agent_port];
         tcp_bind.extend(self.forwarded_ports(Protocol::Tcp));
         // The user network reaches the shared folder's program through a pair of loopback TCP
@@ -89,7 +86,7 @@ impl VmPlan {
             tcp_bind.push(EPHEMERAL_PORT);
         }
         let tcp_bind = Ports::Only(tcp_bind);
-        if self.network.mode == Mode::Nat {
+        if nat {
             return Network { tcp_bind, tcp_connect: Ports::Any, udp_bind: Ports::Any, udp_send: Ports::Any };
         }
         // A restricted user network only answers forwards, and asks the host's resolver for names.
@@ -157,6 +154,14 @@ impl VmPlan {
         Ok(QemuJail { backing_files, ..jail })
     }
 
+    fn passt(&self) -> Option<Passt> {
+        (self.network.mode == Mode::Nat && self.network.passt).then(|| Passt {
+            program: super::program_on_path(PASST).unwrap_or_else(|| PASST.into()),
+            fd: PASST_FD,
+            words: self.passt_words(),
+        })
+    }
+
     fn tap(&self) -> Option<Tap> {
         (self.network.mode == Mode::Bridged).then(|| Tap {
             helper: bridge_helper().into(),
@@ -194,23 +199,39 @@ impl VmPlan {
         words
     }
 
-    /// What goes in front of QEMU for a jailed GPU machine, up to the program's own words.
+    /// What goes in front of QEMU for a jailed GPU machine, up to the program's own words. In
+    /// namespaces, passt starts before bubblewrap, as nothing of its should be inside, and the
+    /// launcher runs twice: once to start it, and once inside to jail QEMU.
     pub(super) fn jail_words(&self) -> Vec<String> {
         let Some(jail) = &self.jail else { return Vec::new() };
         let plan = self.qemu_jail_plan(jail);
-        let mut words =
-            if self.in_namespaces(jail) { Self::namespace_words(&plan, &jail.launcher) } else { Vec::new() };
-        let launch = Launch {
-            plan: Some(plan),
-            own_sandboxes: self.network.passt,
-            passt: None,
+        let mut jailing = Launch {
+            plan: Some(plan.clone()),
+            passt: self.passt(),
             tap: self.tap(),
             unix_sockets: self.unix_sockets(),
             no_new_unix_sockets: self.passes_unix_sockets(),
             program: Vec::new(),
         };
-        words.push(jail.launcher.display().to_string());
-        words.extend(launch.words());
+        let launcher = jail.launcher.display().to_string();
+        let mut words = Vec::new();
+        if self.in_namespaces(jail) {
+            if jailing.passt.is_some() {
+                let opening = Launch {
+                    plan: None,
+                    passt: jailing.passt.take(),
+                    tap: None,
+                    unix_sockets: Vec::new(),
+                    no_new_unix_sockets: false,
+                    program: Vec::new(),
+                };
+                words.push(launcher.clone());
+                words.extend(opening.words());
+            }
+            words.extend(Self::namespace_words(&plan, &jail.launcher));
+        }
+        words.push(launcher);
+        words.extend(jailing.words());
         words
     }
 
@@ -282,10 +303,10 @@ impl VmPlan {
         }
     }
 
-    /// QEMU's own filter, if this QEMU has one. passt's sandbox mounts, which the filter refuses.
+    /// QEMU's own filter, if this QEMU has one.
     pub(super) fn qemu_sandbox_arguments(&self) -> Vec<String> {
         match &self.jail {
-            Some(jail) if jail.qemu_sandbox && !self.network.passt => {
+            Some(jail) if jail.qemu_sandbox => {
                 vec!["-sandbox".to_owned(), QEMU_SANDBOX.to_owned()]
             }
             _ => Vec::new(),
@@ -293,8 +314,7 @@ impl VmPlan {
     }
 
     /// A jailed QEMU starts with only the environment it needs, as the user's may hold secrets. Its
-    /// temporary files, like the pid file passt is started with, go in its run folder, as the PC's
-    /// `/tmp` is out of its reach.
+    /// temporary files go in its run folder, as the PC's `/tmp` is out of its reach.
     pub(super) fn jailed_environment(&self, jail: &QemuJail) -> Vec<(String, String)> {
         let mut environment = vec![
             ("PATH".to_owned(), PATH.to_owned()),

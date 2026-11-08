@@ -1,12 +1,12 @@
-//! Whether a GPU machine may start with no jail, on a PC that can't give it one, or with passt. Off
-//! unless the user turns it on, and the machine's row says so whenever it runs that way.
+//! Whether a GPU machine may start with no jail, on a PC that can't give it one. Off unless the user
+//! turns it on, and the machine's row says so whenever it runs that way.
 
 use super::Shared;
 use adw::prelude::*;
 
 const NOTE: &str = "Only on a PC whose kernel has no Landlock, where QEMU and the daemon then run as you with \
-                    nothing around them, or for passt, which can't run in the jail, where QEMU does. A guest that \
-                    broke out would have your account. The machine's row says so while it runs.";
+                    nothing around them. A guest that broke out would have your account. The machine's row says \
+                    so while it runs.";
 
 pub struct Jail;
 

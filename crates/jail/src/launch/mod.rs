@@ -1,9 +1,8 @@
-//! `guesthouse-jail PLAN [--own-sandboxes] [--passt PROGRAM FD [--passt-word WORD]...]
-//! [--tap HELPER BRIDGE FD] -- PROGRAM ARGUMENTS`: puts itself in the jail the plan describes, with
+//! `guesthouse-jail PLAN [--passt PROGRAM FD [--passt-word WORD]...] [--tap HELPER BRIDGE FD]
+//! -- PROGRAM ARGUMENTS`: puts itself in the jail the plan describes, with
 //! QEMU's filter, and becomes the program. The jail carries across the exec, so the program can't
 //! leave it.
 //!
-//! `--own-sandboxes` is for a program that starts one that makes namespaces of its own.
 //! `--passt` starts passt first, outside the jail, as it builds a sandbox of its own that can't be
 //! made inside one, and leaves the other end of its connection open at `FD`. `--tap` gets a bridged
 //! network's device from QEMU's setuid helper first, as a helper can't gain its privileges once the
@@ -29,7 +28,6 @@ use std::path::PathBuf;
 use std::process::Command;
 
 const END_OF_PLAN: &str = "--";
-const OWN_SANDBOXES: &str = "--own-sandboxes";
 const TAP: &str = "--tap";
 const PASST: &str = "--passt";
 const PASST_WORD: &str = "--passt-word";
@@ -68,7 +66,6 @@ pub struct Passt {
 pub struct Launch {
     /// The jail, or `None` to open what's asked for and run the program as it is.
     pub plan: Option<Plan>,
-    pub own_sandboxes: bool,
     pub passt: Option<Passt>,
     pub tap: Option<Tap>,
     pub unix_sockets: Vec<UnixSocket>,
@@ -84,9 +81,6 @@ impl Launch {
             Some(plan) => plan.words(),
             None => vec![OPEN_ONLY.to_owned()],
         };
-        if self.own_sandboxes {
-            words.push(OWN_SANDBOXES.to_owned());
-        }
         if let Some(passt) = &self.passt {
             words.extend([PASST.to_owned(), passt.program.display().to_string(), passt.fd.to_string()]);
             for word in &passt.words {
@@ -115,7 +109,6 @@ impl Launch {
     pub fn parse(arguments: impl IntoIterator<Item = OsString>) -> Result<Self, String> {
         let mut launch = Self {
             plan: Some(Plan::default()),
-            own_sandboxes: false,
             passt: None,
             tap: None,
             unix_sockets: Vec::new(),
@@ -132,7 +125,6 @@ impl Launch {
             match name.as_str() {
                 END_OF_PLAN => break,
                 OPEN_ONLY => launch.plan = None,
-                OWN_SANDBOXES => launch.own_sandboxes = true,
                 PASST => {
                     let (program, fd) = (next(PASST)?, next(PASST)?);
                     let fd =
@@ -207,7 +199,7 @@ impl Launch {
 
     fn jail(&self, plan: &Plan) -> io::Result<()> {
         let applied = landlock::apply(plan)?;
-        let filter = filters::qemu(self.own_sandboxes, self.no_new_unix_sockets);
+        let filter = filters::qemu(self.no_new_unix_sockets);
         seccomp::install(&filter, Threads::This)?;
         let missing = applied.missing();
         let leaves_out = if missing.is_empty() {
@@ -232,7 +224,6 @@ mod tests {
         plan.network.tcp_bind = Ports::Only(vec![18768]);
         Launch {
             plan: Some(plan),
-            own_sandboxes: true,
             passt: Some(Passt {
                 program: "/usr/bin/passt".into(),
                 fd: 11,
@@ -256,7 +247,7 @@ mod tests {
 
     #[test]
     fn open_only_has_no_plan_and_takes_none() {
-        let wanted = Launch { plan: None, own_sandboxes: false, unix_sockets: Vec::new(), ..launch() };
+        let wanted = Launch { plan: None, unix_sockets: Vec::new(), ..launch() };
         let mut words: Vec<OsString> = wanted.words().into_iter().map(OsString::from).collect();
         assert_eq!(words[0], OPEN_ONLY);
         words.extend(wanted.program.iter().cloned());

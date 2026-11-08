@@ -83,7 +83,7 @@ fn daemon_calls() {
 }
 
 fn qemu_calls() {
-    seccomp::install(&filters::qemu(false, false), Threads::This).unwrap();
+    seccomp::install(&filters::qemu(false), Threads::This).unwrap();
     let traced = unsafe { libc::ptrace(libc::PTRACE_ATTACH, libc::getppid(), 0, 0) };
     assert_eq!((traced, std::io::Error::last_os_error().raw_os_error()), (-1, Some(libc::EPERM)));
     assert_eq!(unsafe { libc::unshare(libc::CLONE_NEWUSER) }, -1);
@@ -173,7 +173,7 @@ fn passt_connection() {
 }
 
 fn qemu_with_no_new_unix_sockets() {
-    seccomp::install(&filters::qemu(false, true), Threads::This).unwrap();
+    seccomp::install(&filters::qemu(true), Threads::This).unwrap();
     assert!(
         refused(UnixStream::connect("/run/user/1000/bus"))
             || unsafe { *libc::__errno_location() } == libc::EPERM

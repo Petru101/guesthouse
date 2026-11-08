@@ -9,7 +9,8 @@ mod nic;
 mod qemu_jail;
 mod ubuntu;
 
-pub use qemu_jail::{PID_FILE, TAP_FD};
+pub use nic::PASST_PID_FILE;
+pub use qemu_jail::{PASST_FD, PID_FILE, TAP_FD};
 pub use ubuntu::{FORWARDED_INPUT_SOCKET, FRAMES_PREFIX, INSTALL_LOG, ssh_port};
 
 use crate::context::Context;
@@ -204,8 +205,13 @@ impl VmPlan {
 
 /// Whether a program is on `PATH`.
 pub fn on_path(program: &str) -> bool {
+    program_on_path(program).is_some()
+}
+
+/// Where `PATH` finds a program.
+pub fn program_on_path(program: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH").unwrap_or_default();
-    std::env::split_paths(&path).any(|folder| is_program(&folder.join(program)))
+    std::env::split_paths(&path).map(|folder| folder.join(program)).find(|found| is_program(found))
 }
 
 fn is_program(path: &Path) -> bool {

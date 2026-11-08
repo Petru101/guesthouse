@@ -27,9 +27,6 @@ const SOUND_SOCKET: &str = "pipewire-0";
 const SOUND_FOLDER_VARIABLES: [&str; 2] = ["PIPEWIRE_RUNTIME_DIR", "XDG_RUNTIME_DIR"];
 /// Landlock's ABI that can hold pathname sockets, such as the session bus, out of reach.
 const SOCKETS_BY_PATH_ABI: u32 = 9;
-/// passt builds its own sandbox with mounts, and Landlock refuses mounts to anything in a jail.
-const PASST_REASON: &str = "passt makes a sandbox of its own, and that can't be made inside the \
-                            jail. Turn passt off in the machine's network settings to have the jail.";
 const ALLOW_HINT: &str = "To start this machine anyway, turn on \"Start without a jail\" in its \
                           settings, and it will say so while it runs.";
 
@@ -111,18 +108,6 @@ pub fn choose(context: &Context, machine: &Machine, plan: &VmPlan, offer: &Offer
             )));
         }
         return Ok(Choice { qemu: None, daemon_jailed: false, note: format!("Not jailed: {reason}") });
-    }
-    if plan.network.passt {
-        if !machine.start_without_jail {
-            return Err(Failure(format!(
-                "The VM did not start, as its QEMU can't be jailed: {PASST_REASON} {ALLOW_HINT}"
-            )));
-        }
-        return Ok(Choice {
-            qemu: None,
-            daemon_jailed: true,
-            note: format!("QEMU not jailed: {PASST_REASON}"),
-        });
     }
     let jail = QemuJail {
         launcher: context.paths.binary(LAUNCHER),
@@ -225,19 +210,16 @@ mod tests {
     }
 
     #[test]
-    fn passt_keeps_the_daemon_jailed_and_qemu_only_when_allowed() {
+    fn passt_has_the_whole_jail() {
         let scratch = Scratch::new();
         let context = scratch_context(&scratch);
         let machine = windows();
         let plan = VmPlan::new(&context, &machine, Boot::Gpu, slots::first(), 0);
         let plan =
             VmPlan { network: crate::vm_args::NetworkPlan { passt: true, ..plan.network.clone() }, ..plan };
-        let refused = choose(&context, &machine, &plan, &offer(10, true)).unwrap_err();
-        assert!(refused.0.contains("passt") && refused.0.contains("Start without a jail"), "{}", refused.0);
-        let allowed = Machine { start_without_jail: true, ..windows() };
-        let choice = choose(&context, &allowed, &plan, &offer(10, true)).unwrap();
-        assert_eq!((choice.qemu, choice.daemon_jailed), (None, true));
-        assert!(choice.note.starts_with("QEMU not jailed: passt"), "{}", choice.note);
+        let choice = choose(&context, &machine, &plan, &offer(10, true)).unwrap();
+        assert!(choice.daemon_jailed && choice.qemu.unwrap().namespaces);
+        assert_eq!(choice.note, "");
     }
 
     #[test]

@@ -3,6 +3,7 @@ use crate::machine::Machine;
 use crate::network::Forward;
 use crate::slots;
 use crate::testing::{Scratch, scratch_context};
+use crate::vm_args::PASST_PID_FILE;
 use crate::vm_args::{Boot, NetworkPlan};
 
 fn jail(namespaces: bool) -> QemuJail {
@@ -114,13 +115,49 @@ fn a_bridged_machine_gets_its_device_from_the_launcher_and_no_namespaces() {
     );
 }
 
-#[test]
-fn passt_keeps_its_own_sandbox() {
-    let (_scratch, plan) = jailed(windows(), true);
+fn on_passt(machine: Machine, namespaces: bool) -> (Scratch, VmPlan) {
+    let (scratch, plan) = jailed(machine, namespaces);
     let plan = VmPlan { network: NetworkPlan { passt: true, ..plan.network.clone() }, ..plan };
-    assert!(plan.qemu_command().iter().any(|word| word == "--own-sandboxes"));
-    assert!(!plan.qemu_arguments().iter().any(|word| word == "-sandbox"));
-    assert_eq!(plan.qemu_jail_plan(&jail(true)).network.tcp_connect, Ports::Any);
+    (scratch, plan)
+}
+
+#[test]
+fn passt_is_started_by_the_launcher_and_qemu_gets_its_end() {
+    let (_scratch, plan) = on_passt(windows(), false);
+    let command = plan.qemu_command();
+    assert_eq!(command[0], "/p/guesthouse-jail");
+    let passt = command.iter().position(|word| word == "--passt").unwrap();
+    assert!(command[passt + 1].ends_with("passt"));
+    assert_eq!(command[passt + 2], PASST_FD.to_string());
+    let passt_words: Vec<&str> =
+        command.windows(2).filter(|two| two[0] == "--passt-word").map(|two| two[1].as_str()).collect();
+    assert_eq!(passt_words[..3], ["--quiet", "--mtu", "1500"]);
+    let pid_file = plan.run_folder.join(PASST_PID_FILE).display().to_string();
+    assert!(passt_words.windows(2).any(|two| two == ["--pid", pid_file.as_str()]), "{passt_words:?}");
+    let arguments = plan.qemu_arguments();
+    assert!(arguments.iter().any(|word| *word == format!("socket,model=e1000e,fd={PASST_FD}")));
+    assert!(arguments.ends_with(&["-sandbox".to_owned(), QEMU_SANDBOX.to_owned()]), "its own filter too");
+}
+
+#[test]
+fn in_namespaces_passt_starts_before_bubblewrap() {
+    let (_scratch, plan) = on_passt(windows(), true);
+    let command = plan.qemu_command();
+    assert_eq!(command[..2], ["/p/guesthouse-jail".to_owned(), "--open-only".to_owned()]);
+    let at = |word: &str| command.iter().position(|found| found == word).unwrap();
+    assert!(at("--passt") < at("bwrap"));
+    assert_eq!(command.iter().filter(|word| *word == "--passt").count(), 1);
+    let inner = command.iter().rposition(|word| word == "/p/guesthouse-jail").unwrap();
+    assert!(inner > at("bwrap") && command[inner + 1] != "--open-only");
+}
+
+#[test]
+fn on_passt_qemu_only_has_the_private_link() {
+    let (_scratch, plan) = on_passt(windows(), true);
+    let network = plan.qemu_jail_plan(&jail(true)).network;
+    assert_eq!(network.tcp_connect, Ports::none());
+    assert_eq!(network.udp_send, Ports::Only(vec![DNS_PORT]));
+    assert_eq!(network.tcp_bind, Ports::Only(vec![plan.agent_port, 8080]));
 }
 
 #[test]

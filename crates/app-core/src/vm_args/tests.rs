@@ -161,6 +161,9 @@ fn passt_has_its_own_addresses_and_the_private_link() {
     assert!(nic.starts_with("passt,model=e1000e,mtu=1500,address=10.0.3.15,"));
     assert!(nic.ends_with("dns-forward=10.0.3.3,dns-host=192.168.1.1"));
     assert!(has(&arguments, "-netdev"));
+    let words = plan.passt_words();
+    assert!(words.windows(2).any(|two| two == ["--dns-host", "192.168.1.1"]), "{words:?}");
+    assert!(words.windows(2).any(|two| two == ["--map-host-loopback", "none"]), "{words:?}");
 }
 
 #[test]

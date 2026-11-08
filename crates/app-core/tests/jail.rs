@@ -2,20 +2,27 @@
 //! it, and its words are run with this program standing in for QEMU. In there it tries what a guest
 //! that had taken QEMU over would, and says how that went with its exit code. It has no sound, so the
 //! launcher opens QEMU's unix sockets and QEMU may make none. Its disk is a qcow2 on a base outside
-//! its folder, as a disk made by hand can be.
+//! its folder, as a disk made by hand can be. On passt, the launcher starts the real passt and the
+//! stand-in asks it for the gateway's address through the socket it was handed.
 
 use guesthouse_app_core::linux::forwarding::sandbox_runs;
 use guesthouse_app_core::machine::Machine;
 use guesthouse_app_core::slots;
 use guesthouse_app_core::testing::{Scratch, scratch_context};
-use guesthouse_app_core::vm_args::{Boot, QemuJail, VmPlan};
+use guesthouse_app_core::vm_args::{
+    Boot, NetworkPlan, PASST_FD, PASST_PID_FILE, QemuJail, VmPlan, passt_installed,
+};
 use guesthouse_jail::Support;
 use std::env;
-use std::fs::{self, OpenOptions};
+use std::fs::{self, File, OpenOptions};
+use std::io::{Read, Write};
 use std::net::TcpListener;
+use std::os::fd::FromRawFd;
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::process::{self, Command};
+use std::thread;
+use std::time::{Duration, Instant};
 
 const PROBE_VARIABLE: &str = "JAIL_PROBE";
 
@@ -26,6 +33,56 @@ fn variable(name: &str) -> PathBuf {
 fn status_says(wanted: [&str; 2]) -> bool {
     let status = fs::read_to_string("/proc/self/status").unwrap();
     status.lines().any(|line| line.split_whitespace().eq(wanted))
+}
+
+/// The guest's and the gateway's addresses on passt, as the machine's passt settings give them.
+const GUEST_ADDRESS: [u8; 4] = [10, 0, 3, 15];
+const GATEWAY: [u8; 4] = [10, 0, 3, 2];
+const GUEST_MAC: [u8; 6] = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
+const ARP: [u8; 2] = [0x08, 0x06];
+const ARP_REPLY: u8 = 2;
+const PASST_ANSWER: Duration = Duration::from_secs(5);
+
+/// One frame on passt's socket, which carries each with its length first.
+fn send_frame(socket: &mut File, frame: &[u8]) -> bool {
+    let length = (frame.len() as u32).to_be_bytes();
+    socket.write_all(&length).is_ok() && socket.write_all(frame).is_ok()
+}
+
+fn read_frame(socket: &mut File) -> Option<Vec<u8>> {
+    let mut length = [0u8; 4];
+    socket.read_exact(&mut length).ok()?;
+    let mut frame = vec![0u8; u32::from_be_bytes(length) as usize];
+    socket.read_exact(&mut frame).ok()?;
+    Some(frame)
+}
+
+/// Asks who has the gateway's address, as a guest's first packet would, and waits for passt's answer.
+fn passt_answers() -> bool {
+    // SAFETY: the launcher left this socket open for QEMU, and nothing else here holds it.
+    let mut socket = unsafe { File::from_raw_fd(PASST_FD) };
+    let mut request = vec![0xff; 6];
+    request.extend(GUEST_MAC);
+    request.extend(ARP);
+    request.extend([0, 1, 0x08, 0, 6, 4, 0, 1]);
+    request.extend(GUEST_MAC);
+    request.extend(GUEST_ADDRESS);
+    request.extend([0; 6]);
+    request.extend(GATEWAY);
+    if !send_frame(&mut socket, &request) {
+        return false;
+    }
+    let (sender, answer) = std::sync::mpsc::channel();
+    thread::spawn(move || {
+        while let Some(frame) = read_frame(&mut socket) {
+            let is_reply = frame.len() >= 42 && frame[12..14] == ARP && frame[21] == ARP_REPLY;
+            if is_reply && frame[28..32] == GATEWAY {
+                let _ = sender.send(true);
+                return;
+            }
+        }
+    });
+    answer.recv_timeout(PASST_ANSWER).unwrap_or(false)
 }
 
 /// What runs as QEMU. Everything it may not reach has to fail, however it fails: in namespaces a
@@ -50,6 +107,10 @@ fn probe() {
         ("no new privileges", status_says(["NoNewPrivs:", "1"])),
         ("a filter", status_says(["Seccomp:", "2"])),
     ];
+    let mut checks = checks.to_vec();
+    if env::var_os("PROBE_PASST").is_some() {
+        checks.push(("passt through its socket", passt_answers()));
+    }
     let failed: Vec<&str> = checks.iter().filter(|(_, held)| !held).map(|(name, _)| *name).collect();
     if !failed.is_empty() {
         eprintln!("not as it should be: {failed:?}");
@@ -76,8 +137,24 @@ fn machine(scratch: &Scratch, id: &str) -> Machine {
     Machine::new(id, id, &disk.to_string_lossy(), &vars.to_string_lossy())
 }
 
+fn pid_in(file: &Path) -> Option<u32> {
+    fs::read_to_string(file).ok()?.trim().parse().ok()
+}
+
+/// passt quits once its one client, QEMU, has gone.
+fn ends_with_qemu(pid: u32) -> bool {
+    let end = Instant::now() + PASST_ANSWER;
+    while Path::new(&format!("/proc/{pid}")).exists() {
+        if Instant::now() > end {
+            return false;
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    true
+}
+
 /// Runs the plan's words with this program as QEMU, in namespaces or not.
-fn run_jailed(namespaces: bool) -> bool {
+fn run_jailed(namespaces: bool, passt: bool) -> bool {
     let scratch = Scratch::new();
     let context = scratch_context(&scratch);
     let (own, other) = (machine(&scratch, "own"), machine(&scratch, "other"));
@@ -105,10 +182,15 @@ fn run_jailed(namespaces: bool) -> bool {
     let jail = plan.with_backing_files(jail).unwrap();
     let granted_base = jail.backing_files[0].clone();
     // A real VM may hold the slot's own port.
-    let plan = VmPlan { qemu, qemu_files: None, jail: Some(jail), agent_port: free_port(), ..plan };
+    let network = NetworkPlan { passt, ..plan.network.clone() };
+    let plan = VmPlan { qemu, qemu_files: None, jail: Some(jail), agent_port: free_port(), network, ..plan };
     let command = plan.qemu_command();
     let folder_of = |machine: &Machine| Path::new(&machine.disk).parent().unwrap().to_owned();
-    let done = Command::new(&command[0])
+    let mut run = Command::new(&command[0]);
+    if passt {
+        run.env("PROBE_PASST", "1");
+    }
+    let done = run
         .args(&command[1..])
         .env_clear()
         .envs(plan.qemu_environment())
@@ -122,6 +204,16 @@ fn run_jailed(namespaces: bool) -> bool {
         .env("PROBE_OTHER_PORT", free_port().to_string())
         .status()
         .unwrap();
+    if passt {
+        let Some(pid) = pid_in(&plan.run_folder.join(PASST_PID_FILE)) else {
+            eprintln!("passt left no pid file");
+            return false;
+        };
+        if !ends_with_qemu(pid) {
+            eprintln!("passt {pid} outlived QEMU");
+            return false;
+        }
+    }
     done.success()
 }
 
@@ -134,12 +226,19 @@ fn main() {
         println!("skipped: {refusal}");
         return;
     }
-    assert!(run_jailed(false), "jailed, without namespaces");
-    println!("without namespaces ... ok");
-    if sandbox_runs() {
-        assert!(run_jailed(true), "jailed, in namespaces");
-        println!("in namespaces ... ok");
-    } else {
-        println!("in namespaces ... skipped, as bubblewrap can't make them here");
+    let networks: &[bool] = if passt_installed() { &[false, true] } else { &[false] };
+    if !passt_installed() {
+        println!("on passt ... skipped, as passt isn't installed");
+    }
+    for &passt in networks {
+        let on = if passt { ", on passt" } else { "" };
+        assert!(run_jailed(false, passt), "jailed, without namespaces{on}");
+        println!("without namespaces{on} ... ok");
+        if sandbox_runs() {
+            assert!(run_jailed(true, passt), "jailed, in namespaces{on}");
+            println!("in namespaces{on} ... ok");
+        } else {
+            println!("in namespaces{on} ... skipped, as bubblewrap can't make them here");
+        }
     }
 }
