@@ -43,7 +43,7 @@ This repo has:
 - a display driver for Windows guests, in `drivers/windows-display/`, which the app installs by itself
 - an installer, `install.sh`
 
-A Windows GPU machine needs NVIDIA's kernel module loaded, with `/dev/nvidiactl` and the card's own `/dev/nvidiaN`, and `nvidia-smi` on your PATH. It has run on one RTX 5090, with NVIDIA 615.78.08 on the host and 617.42 in Windows 11 Pro, build 26300, and on nothing else. It has never run on another card, or on a PC with two NVIDIA cards. With two, setup picks one and writes down its PCI address, and Windows machines open that card. That has only been tried on pretend cards so far. Linux machines with the GPU still use the first card.
+A Windows GPU machine needs NVIDIA's kernel module loaded, with `/dev/nvidiactl` and the card's own `/dev/nvidiaN`, and `nvidia-smi` on your PATH. It has run on one RTX 5090, with NVIDIA 615.78.08 on the host and 617.42 in Windows 11 Pro, build 26300, and on nothing else. It has never run on another card, or on a PC with two NVIDIA cards. With two, setup picks one and writes down its PCI address, and Windows and Linux machines open that card. That has only been tried on pretend cards so far.
 
 A plain VM needs QEMU with its D-Bus display, which Fedora calls `qemu-ui-dbus`, plus `qemu-img`, `swtpm`, `genisoimage` and `7z` for installs. A QEMU built as `qemu/README.md` says has no `qemu-img` of its own, so install the system's. There are no recordings in the repo, so the replay tool only runs on a recording you make yourself.
 
@@ -167,7 +167,7 @@ What a guest can still do:
 What's still coming:
 
 - **Jails for the rest.** The virtual TPM and machines with no GPU aren't jailed yet.
-- **Trust a Linux guest like you trust yourself.** A Linux guest gets the GPU the way a program of yours does. It can do what your user can do to the card, it sees whole-card sensor and memory readings, and it can slow or crash your GPU session, which takes your desktop with it. It only gets calls on the list, it can only name its own GPU clients, and QEMU is in the same jail as a Windows guest's, plus the card's device files, as that's how the GPU gets to the guest. As far as I could test, it can't reach QEMU's memory or anyone else's GPU work. A bug in this device only gets a guest QEMU's jail, but a bug in NVIDIA's driver is a bug in your kernel. Treat a guest as being as trusted as you, and don't run one you don't trust.
+- **Trust a Linux guest like you trust yourself.** A Linux guest gets the GPU the way a program of yours does. It can do what your user can do to the card, it sees whole-card sensor and memory readings, and it can slow or crash your GPU session, which takes your desktop with it. It only gets calls on the list, it can only name its own GPU clients, and QEMU is in the same jail as a Windows guest's, plus the chosen card's device files, as that's how the GPU gets to the guest. As far as I could test, it can't reach QEMU's memory or anyone else's GPU work. A bug in this device only gets a guest QEMU's jail, but a bug in NVIDIA's driver is a bug in your kernel. Treat a guest as being as trusted as you, and don't run one you don't trust.
 
 ## My favourite bugs
 

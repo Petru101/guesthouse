@@ -10,6 +10,7 @@ pub const GUEST_NO_SOURCE: &str = "The host doesn't have NVIDIA's source for its
 pub const GUEST_DRIVER_FILES: &str = "The host's NVIDIA driver files can't be used right now.";
 pub const GUEST_TABLES_DIFFER: &str = "The host's driver changes calls the device checks.";
 pub const GUEST_NO_IMAGE: &str = "The host could not make the driver image.";
+pub const GUEST_NO_CARD: &str = "The host's NVIDIA driver doesn't have the card setup chose.";
 /// Added when there's more to say, so someone in the guest knows where to look.
 const SEE_THE_HOST: &str = "The app on the host says why.";
 

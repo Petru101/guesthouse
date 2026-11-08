@@ -3,7 +3,8 @@
  * Stands in for nvfwd-sensord in test_sensors, which starts it the same way. FAKE_SENSORD says how it
  * behaves: "good", "no-page" as on a driver it doesn't know, "silent" to exit with nothing said,
  * "stuck" to say nothing and stay, "dies" to go at the first mask it's sent, or "quits" to answer
- * that mask and then go.
+ * that mask and then go. Given another card than test_sensors gives, it has no page, as
+ * nvfwd-sensord would have none of the right card's.
  */
 #include "rusd.h"
 
@@ -15,6 +16,10 @@
 #define READING_AT 0x908
 #define READING 0x5a
 #define STUCK_SECONDS 30
+/* The card test_sensors starts it for. */
+#define CARD_MINOR 1
+#define CARD_GPU 0x300
+#define CARD_INSTANCE 1
 
 static void say_client(uint32_t client)
 {
@@ -23,7 +28,15 @@ static void say_client(uint32_t client)
     }
 }
 
-int main(void)
+static bool given_the_card(int argc, char *argv[])
+{
+    RusdCard card;
+
+    return rusd_card_parse(argc, argv, &card) && card.minor == CARD_MINOR && card.gpu_id == CARD_GPU &&
+           card.instance == CARD_INSTANCE;
+}
+
+int main(int argc, char *argv[])
 {
     const char *mode = getenv("FAKE_SENSORD");
     uint8_t reading = READING;
@@ -37,7 +50,7 @@ int main(void)
         sleep(STUCK_SECONDS);
         return 1;
     }
-    if (!strcmp(mode, "no-page")) {
+    if (!strcmp(mode, "no-page") || !given_the_card(argc, argv)) {
         say_client(0);
         return 1;
     }

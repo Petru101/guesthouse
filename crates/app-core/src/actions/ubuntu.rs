@@ -7,10 +7,11 @@ use crate::failure::{Failure, Result};
 use crate::iso::kernel_package;
 use crate::jailing::{decide, gpu_refusal};
 use crate::library::make_disk;
+use crate::linux::card::forwarded_card;
 use crate::linux::driver_host::LoaderHost;
 use crate::linux::driver_image::{Outcome, prepare};
 use crate::linux::forwarding::forwarding_problem;
-use crate::linux::gpu_off::{GUEST_NO_IMAGE, GUEST_NO_JAIL, GUEST_TURNED_OFF, GpuOff};
+use crate::linux::gpu_off::{GUEST_NO_CARD, GUEST_NO_IMAGE, GUEST_NO_JAIL, GUEST_TURNED_OFF, GpuOff};
 use crate::linux::layout::ALLOW_LIST;
 use crate::linux::seed::make_seed;
 use crate::linux::{guest_sources, sensor_daemon};
@@ -26,6 +27,8 @@ use std::time::Duration;
 const INSTALL_FINISHED: &[u8] = b"nvfwd-install-finished";
 const INSTALL_HOURS: u64 = 2;
 const REASON_FILE: &str = "gpu-off-reason";
+const NO_CARD_DETAIL: &str = "The NVIDIA driver doesn't list the card setup chose, so it has no device file to open. \
+                              Run Setup Again from the menu if the card has changed.";
 
 fn isoinfo_files(iso: &str) -> Result<String> {
     let listing = Command::new("isoinfo").args(["-R", "-f", "-i", iso]).output()?;
@@ -142,8 +145,13 @@ pub(super) fn gpu_boot(task: &mut Task) -> Result<UbuntuBoot> {
             refused(task, off)
         }
         Outcome::Ready { image, warning } => {
+            let Some(card) = forwarded_card(context) else {
+                let off = GpuOff::new(GUEST_NO_CARD, NO_CARD_DETAIL);
+                task.error = format!("Starting without the GPU: {}", off.detail);
+                return refused(task, off);
+            };
             task.error = warning.unwrap_or_default();
-            Ok(UbuntuBoot::WithGpu { image, allow_list, sensor_daemon })
+            Ok(UbuntuBoot::WithGpu { image, allow_list, sensor_daemon, card })
         }
     }
 }
@@ -205,6 +213,7 @@ pub(super) fn jailed(task: &mut Task, plan: VmPlan) -> Result<VmPlan> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::linux::card::ForwardedCard;
     use crate::machine::{Kind, Machine};
     use crate::testing::{Scratch, scratch_context};
     use crate::vm_host::stand_in::RecordingHost;
@@ -317,6 +326,7 @@ mod tests {
             image: "/store/driver.iso".into(),
             allow_list: "/p/allow.txt".into(),
             sensor_daemon: "/p/nvfwd-sensord".into(),
+            card: ForwardedCard { pci: "0000:02:00.0".into(), minor: 0, render_node: None },
         };
         plan_for(task.context, &task.machine, Boot::Ubuntu(boot))
     }

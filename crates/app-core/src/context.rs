@@ -35,6 +35,10 @@ pub struct Context {
     pub usb_nodes: PathBuf,
     pub pci_devices: PathBuf,
     pub pci_names: PathBuf,
+    /// The NVIDIA driver's own list of its cards, a folder for each by PCI address.
+    pub nvidia_cards: PathBuf,
+    /// The DRM class in sysfs, where each render node links to its PCI device.
+    pub drm_class: PathBuf,
     pub kvm: PathBuf,
     pub driver_version_file: PathBuf,
     pub meminfo: PathBuf,
@@ -63,6 +67,8 @@ impl Context {
             usb_nodes: "/dev/bus/usb".into(),
             pci_devices: "/sys/bus/pci/devices".into(),
             pci_names: "/usr/share/hwdata/pci.ids".into(),
+            nvidia_cards: "/proc/driver/nvidia/gpus".into(),
+            drm_class: "/sys/class/drm".into(),
             kvm: "/dev/kvm".into(),
             driver_version_file: "/sys/module/nvidia/version".into(),
             meminfo: "/proc/meminfo".into(),

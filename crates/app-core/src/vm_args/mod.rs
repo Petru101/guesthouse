@@ -17,6 +17,7 @@ pub use ubuntu::{FORWARDED_INPUT_SOCKET, FRAMES_PREFIX, INSTALL_LOG, ssh_port};
 use crate::context::Context;
 use crate::firmware::Firmware;
 use crate::gpu_identity::{PciIdentity, shown_identity};
+use crate::linux::card::ForwardedCard;
 use crate::machine::Machine;
 use crate::network::{Forward, Mode};
 use guesthouse_daemon::slot::Slot;
@@ -67,6 +68,7 @@ pub enum UbuntuBoot {
         image: PathBuf,
         allow_list: PathBuf,
         sensor_daemon: PathBuf,
+        card: ForwardedCard,
     },
     /// A file holding the reason, which reaches the guest so that it can say why.
     NoGpu {
