@@ -246,6 +246,15 @@ class SetUpForTheDesktop(unittest.TestCase):
         self.assertEqual(guest.run().returncode, 0)
         self.assertIn("After=nvfwd-gpu.service", guest.read("etc/systemd/system/plasmalogin.service.d/nvfwd.conf"))
 
+    def test_plasmas_power_button_shuts_down_unless_someone_set_it(self):
+        guest = self.guest("plasmalogin.service")
+        write(os.path.join(guest.root, "usr/lib/systemd/user/plasma-powerdevil.service"), "")
+        guest.run()
+        self.assertIn("PowerButtonAction=8", guest.read("etc/xdg/powerdevilrc"))
+        write(os.path.join(guest.root, "etc/xdg/powerdevilrc"), "mine\n")
+        guest.run()
+        self.assertEqual(guest.read("etc/xdg/powerdevilrc"), "mine\n")
+
     def test_another_display_manager_is_left_as_it_is(self):
         guest = self.guest("lightdm.service")
         result = guest.run()

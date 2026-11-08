@@ -1,0 +1,11 @@
+# The app's Shut Down presses the VM's power button. Plasma takes that button from logind and asks
+# first, and with nobody there to answer, the app waits and then turns the VM off. Here the button
+# shuts down, as the app means it to. 8 is PowerDevil's Shutdown action.
+[AC][SuspendAndShutdown]
+PowerButtonAction=8
+
+[Battery][SuspendAndShutdown]
+PowerButtonAction=8
+
+[LowBattery][SuspendAndShutdown]
+PowerButtonAction=8
