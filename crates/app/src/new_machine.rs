@@ -6,7 +6,7 @@ use crate::window::Window;
 use adw::prelude::*;
 use guesthouse_app_core::display::DriverPackage;
 use guesthouse_app_core::gpu_support::{kind_offered, plain_reason, ubuntu_note};
-use guesthouse_app_core::host::{host_ram_limit, physical_cores, plain_ram_limit};
+use guesthouse_app_core::host::{RamField, physical_cores};
 use guesthouse_app_core::iso::{Iso, read_iso};
 use guesthouse_app_core::library::{
     MAX_DISK_GIB, MIN_PLAIN_DISK_GIB, MIN_WINDOWS_DISK_GIB, NO_DRIVER_FILES, NewMachine, create,
@@ -54,6 +54,8 @@ struct Parts {
     /// The name last offered, to tell it from one the user typed.
     suggested: RefCell<String>,
     no_driver: Cell<bool>,
+    /// This PC can't give the machine the RAM it needs, which the RAM setting says.
+    no_room: Cell<bool>,
     vm_running: Cell<bool>,
 }
 
@@ -147,6 +149,7 @@ impl NewMachineDialog {
             iso: RefCell::default(),
             suggested: RefCell::default(),
             no_driver: Cell::new(false),
+            no_room: Cell::new(false),
             vm_running: Cell::new(false),
         }));
         this.set_vm_running(window.vm_running());
@@ -266,15 +269,21 @@ impl NewMachineDialog {
             Kind::Linux => UBUNTU_SIZES,
             Kind::Plain => PLAIN_SIZES,
         };
-        let limit = if windows { host_ram_limit(&context).unwrap_or(0) } else { plain_ram_limit(&context) };
+        let field = if windows {
+            RamField::for_gpu(&context, context.slot, MIN_RAM_GIB.into(), sizes.ram)
+        } else {
+            RamField::for_plain(&context, 1, sizes.ram)
+        };
         let parts = &self.0;
         let cores = physical_cores(&context.cpus);
         parts.cores.adjustment().set_lower(if windows { MIN_CORES.into() } else { 1.0 });
         parts.cores.set_value(sizes.cores.min(cores).into());
-        parts.ram.adjustment().set_lower(if windows { MIN_RAM_GIB.into() } else { 1.0 });
-        parts.ram.adjustment().set_upper(limit.max(1) as f64);
-        parts.ram.set_value(sizes.ram.min(limit) as f64);
-        parts.ram.set_subtitle(&format!("Up to {limit} GiB."));
+        parts.ram.adjustment().set_lower(field.lower as f64);
+        parts.ram.adjustment().set_upper(field.upper as f64);
+        parts.ram.set_value(field.value as f64);
+        parts.ram.set_sensitive(field.fits);
+        parts.ram.set_subtitle(&field.subtitle);
+        parts.no_room.set(!field.fits);
         let least = if windows { MIN_WINDOWS_DISK_GIB } else { MIN_PLAIN_DISK_GIB };
         parts.disk.adjustment().set_lower(least.into());
         parts.disk.set_value(sizes.disk.into());
@@ -301,7 +310,8 @@ impl NewMachineDialog {
         let ready = parts.iso.borrow().is_some()
             && !parts.name.text().trim().is_empty()
             && !parts.vm_running.get()
-            && !parts.no_driver.get();
+            && !parts.no_driver.get()
+            && !parts.no_room.get();
         parts.create_button.set_sensitive(ready);
     }
 

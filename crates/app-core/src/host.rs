@@ -119,6 +119,89 @@ impl RamOffer {
     pub fn limit_gib(&self) -> u64 {
         self.ram_room().min(self.tmpfs_room) / GIB
     }
+
+    fn tmpfs_binds(&self) -> bool {
+        self.tmpfs_room < self.ram_room()
+    }
+
+    /// Where the RAM goes, as a sentence or two.
+    fn reasons(&self) -> String {
+        let mut text = format!(
+            "This PC has {} GiB of RAM and keeps {} GiB for itself",
+            self.total / GIB,
+            self.keeps.div_ceil(GIB)
+        );
+        if self.others >= GIB / 2 {
+            text += &format!(", and the VMs running hold {} GiB", self.others.div_ceil(GIB));
+        }
+        text += ".";
+        if self.tmpfs_binds() {
+            text += &format!(
+                " Guest memory lives in /dev/shm, which holds {} GiB and keeps {} GiB of that for the GPU's IO space and a margin.",
+                self.tmpfs_size / GIB,
+                IO_SPACE_GIB + TMPFS_SPARE_GIB
+            );
+        }
+        text
+    }
+
+    /// What a RAM setting says under it, for a machine that needs at least `least` GiB.
+    pub fn explanation(&self, least: u64) -> String {
+        let limit = self.limit_gib();
+        if limit >= least {
+            return format!("Up to {limit} GiB. {}", self.reasons());
+        }
+        let way_out = if self.tmpfs_binds() {
+            let taken = (self.tmpfs_size - self.tmpfs_room).div_ceil(GIB);
+            format!("Make it larger: sudo mount -o remount,size={}G /dev/shm", least + taken)
+        } else if self.others >= GIB / 2 {
+            "Stop another VM to make room.".to_owned()
+        } else {
+            "A GPU machine needs a PC with more RAM.".to_owned()
+        };
+        format!(
+            "A GPU machine needs at least {least} GiB, and this PC can give one {limit} GiB. {} {way_out}",
+            self.reasons()
+        )
+    }
+}
+
+/// How a RAM setting is offered. A machine that couldn't start isn't offered at all: the setting
+/// stays at the least and says why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RamField {
+    pub lower: u64,
+    pub upper: u64,
+    pub value: u64,
+    /// Whether a machine of the least size fits at all.
+    pub fits: bool,
+    pub subtitle: String,
+}
+
+impl RamField {
+    /// All in GiB: the limit, the least the machine needs, and what it would like.
+    pub fn new(limit: u64, least: u64, wanted: u64, explanation: String) -> Self {
+        let fits = limit >= least;
+        let upper = if fits { limit } else { least };
+        Self { lower: least, upper, value: wanted.clamp(least, upper), fits, subtitle: explanation }
+    }
+
+    /// The setting for a GPU machine in `slot`.
+    pub fn for_gpu(context: &Context, slot: Slot, least: u64, wanted: u64) -> Self {
+        let offer = match context.ram_limit {
+            Some(limit) => Ok((limit, format!("Up to {limit} GiB."))),
+            None => ram_offer(context, slot).map(|offer| (offer.limit_gib(), offer.explanation(least))),
+        };
+        let (limit, explanation) =
+            offer.unwrap_or_else(|error| (0, format!("This PC's memory can't be read: {error}")));
+        Self::new(limit, least, wanted, explanation)
+    }
+
+    /// The setting for a machine with no GPU.
+    pub fn for_plain(context: &Context, least: u64, wanted: u64) -> Self {
+        let limit = plain_ram_limit(context);
+        Self::new(limit, least, wanted, format!("Up to {limit} GiB."))
+    }
 }
 
 pub fn shared_memory_used(context: &Context, slot: Slot, names: &[&str]) -> u64 {
@@ -281,6 +364,52 @@ mod tests {
         );
         assert_eq!(RamOffer::new(46 * GIB, 0, 0, 40 * GIB, 0).limit_gib(), 28, "the host keeps its share");
         assert_eq!(usual(sold_with(8)).limit_gib(), 0);
+    }
+
+    #[test]
+    fn a_low_offer_says_why_and_what_to_do() {
+        let small = RamOffer::new(32 * GIB, 0, 0, sold_with(8), 0).explanation(4);
+        assert!(
+            small.starts_with("A GPU machine needs at least 4 GiB, and this PC can give one 0 GiB."),
+            "{small}"
+        );
+        assert!(small.contains("This PC has 7 GiB of RAM and keeps 6 GiB for itself."), "{small}");
+        assert!(small.ends_with("needs a PC with more RAM."), "{small}");
+        let crowded = RamOffer::new(46 * GIB, 0, 0, 16 * GIB, 6 * GIB).explanation(4);
+        assert!(
+            crowded.contains("the VMs running hold 6 GiB")
+                && crowded.ends_with("Stop another VM to make room.")
+        );
+        let tmpfs = RamOffer::new(5 * GIB, 0, 0, 32 * GIB, 0).explanation(4);
+        assert!(
+            tmpfs.contains("/dev/shm, which holds 5 GiB") && tmpfs.ends_with("remount,size=7G /dev/shm"),
+            "{tmpfs}"
+        );
+        let fine = RamOffer::new(16 * GIB, 65 << 20, 0, 30 * GIB, 0).explanation(4);
+        assert!(fine.starts_with("Up to 12 GiB. This PC has 30 GiB of RAM and keeps 8 GiB"), "{fine}");
+    }
+
+    #[test]
+    fn a_setting_never_offers_a_machine_that_cant_start() {
+        let short = RamField::new(2, 4, 16, "why".into());
+        assert_eq!((short.lower, short.upper, short.value, short.fits), (4, 4, 4, false));
+        let roomy = RamField::new(21, 4, 16, "fine".into());
+        assert_eq!((roomy.lower, roomy.upper, roomy.value, roomy.fits), (4, 21, 16, true));
+        assert_eq!(RamField::new(8, 4, 16, String::new()).value, 8, "what it would like, as far as it goes");
+    }
+
+    #[test]
+    fn a_gpu_setting_stays_the_same_however_little_is_free_this_second() {
+        let scratch = Scratch::new();
+        let mut context = crate::testing::scratch_context(&scratch);
+        context.ram_limit = None;
+        context.meminfo = scratch.write("meminfo", "MemTotal: 8126464 kB\nMemAvailable: 6000000 kB\n");
+        let field = RamField::for_gpu(&context, crate::slots::first(), 4, 16);
+        assert!(!field.fits && field.subtitle.starts_with("A GPU machine needs at least 4 GiB"), "{field:?}");
+        context.meminfo = scratch.write("meminfo", "MemTotal: 31457280 kB\nMemAvailable: 1000000 kB\n");
+        let field = RamField::for_gpu(&context, crate::slots::first(), 4, 16);
+        assert!(field.fits, "{field:?}");
+        assert_eq!(field.lower, 4);
     }
 
     #[test]

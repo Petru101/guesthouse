@@ -3,10 +3,10 @@
 use super::{Shared, is_off};
 use crate::rows::number_row;
 use adw::prelude::*;
-use guesthouse_app_core::host::{cpu_list, physical_cores, ram_limit_for, vcache_cpus};
+use guesthouse_app_core::host::{RamField, cpu_list, physical_cores, vcache_cpus};
 use guesthouse_app_core::machine::{Kind, MIN_CORES, MIN_RAM_GIB};
 use guesthouse_app_core::settings::max_vram_gib;
-use guesthouse_app_core::tasks::Status;
+use guesthouse_app_core::tasks::{Status, slot_of};
 
 const VM_MUST_BE_OFF: &str = "The VM must be off to change these.";
 const SOUND_NOTE: &str = "Through PipeWire. Off, the guest's sound card plays nothing, and QEMU gets no way to your \
@@ -38,18 +38,21 @@ impl Hardware {
         );
         cores.set_subtitle(&format!("This PC has {host_cores} cores."));
         group.add(&cores);
-        let limit = ram_limit_for(&context, &machine).unwrap_or(0);
+        let wanted = machine.ram_gib.into();
+        let field = if machine.has_gpu() {
+            let slot = slot_of(&context, &machine).unwrap_or(context.slot);
+            RamField::for_gpu(&context, slot, MIN_RAM_GIB.into(), wanted)
+        } else {
+            RamField::for_plain(&context, if plain { 1 } else { MIN_RAM_GIB.into() }, wanted)
+        };
+        // What it has stays, so a setting that no longer fits isn't changed behind the user's back.
         let ram = number_row(
             "RAM in GiB",
             machine.ram_gib.into(),
-            if plain { 1.0 } else { MIN_RAM_GIB.into() },
-            limit.max(machine.ram_gib.into()) as f64,
+            field.lower as f64,
+            field.upper.max(wanted) as f64,
         );
-        ram.set_subtitle(&if plain {
-            format!("Up to {limit} GiB.")
-        } else {
-            format!("Up to {limit} GiB. Guest memory lives in /dev/shm, and the host needs the rest.")
-        });
+        ram.set_subtitle(&field.subtitle);
         group.add(&ram);
         let vram = number_row(
             "Video memory cap in GiB",
