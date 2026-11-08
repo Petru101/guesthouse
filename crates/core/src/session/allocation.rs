@@ -5,7 +5,9 @@ use crate::deferred::{DeferredAction, FreedAllocation};
 use crate::gpu_addresses::ADDRESSES_END;
 use crate::pending::QueueAction;
 use crate::tables::{Allocation, Queue};
-use guesthouse_backend::{AllocationShape, Backend, GuestMemory, MapRequest, SurfaceShape, UnmapRequest};
+use guesthouse_backend::{
+    AllocationShape, Backend, GuestMemory, MapRequest, MemoryKind, SurfaceShape, UnmapRequest,
+};
 use guesthouse_messages::address::PAGE_SIZE;
 use guesthouse_messages::allocation::{
     CACHED_FOR_CPU, CreateAllocation, CreateAllocationAnswer, DestroyAllocation, OpenResource, PRIMARY,
@@ -39,6 +41,7 @@ fn standard_shape(record: &StandardRecord) -> AllocationShape {
             colour: STANDARD_COLOUR,
         }),
         gpu_cached: false,
+        kind: MemoryKind::PLAIN,
     }
 }
 
@@ -104,6 +107,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
                 resource,
                 gpu_cached: shape.gpu_cached,
                 surface: shape.surface,
+                kind: shape.kind,
                 ..Allocation::default()
             };
             if guest_backed {
@@ -112,7 +116,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
                 let pages = shape.exact_size.div_ceil(PAGE_SIZE) as usize;
                 allocation.pending_pages = Some(vec![None; pages]);
             } else {
-                let (memory, size) = self.backend.allocate_video_memory(shape.size)?;
+                let (memory, size) = self.backend.allocate_video_memory(shape.size, shape.kind)?;
                 allocation.memory = Some(memory);
                 allocation.size = size;
             }

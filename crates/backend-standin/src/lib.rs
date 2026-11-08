@@ -15,9 +15,9 @@ mod random_messages;
 
 use guesthouse_backend::{
     AdapterFacts, AllocationShape, Backend, BackendError, CardLabel, DriverFound, DriverSurvey, GpuRange,
-    GuestBooks, HostServices, MapRequest, MemoryId, PciCard, Refusal, RegistryName, RegistryValue, Setup,
-    SlotCopy, SpaceId, StagingCopy, StagingStart, Status, SurfaceShape, UnmapRequest, VendorQuery, Work,
-    WorkStart,
+    GuestBooks, HostServices, MapRequest, MemoryId, MemoryKind, PciCard, Refusal, RegistryName,
+    RegistryValue, Setup, SlotCopy, SpaceId, StagingCopy, StagingStart, Status, SurfaceShape, UnmapRequest,
+    VendorQuery, Work, WorkStart,
 };
 pub use memory::SparseMemory;
 pub use random_messages::RandomMessages;
@@ -263,7 +263,11 @@ impl Backend for StandIn {
         &self.facts
     }
 
-    fn allocate_video_memory(&mut self, size: u64) -> Result<(MemoryId, u64), BackendError> {
+    fn allocate_video_memory(
+        &mut self,
+        size: u64,
+        _kind: MemoryKind,
+    ) -> Result<(MemoryId, u64), BackendError> {
         if std::mem::take(&mut self.fail_next_allocation) {
             return Err(BackendError::new("the stand-in was told to fail"));
         }
@@ -357,6 +361,7 @@ impl Backend for StandIn {
             exact_size: size,
             surface,
             gpu_cached: private.get(16).is_some_and(|&byte| byte != 0),
+            kind: MemoryKind::PLAIN,
         }
     }
 
@@ -501,7 +506,7 @@ mod tests {
     fn mapping_refuses_taken_addresses() {
         let mut gpu = StandIn::new();
         let space = gpu.create_address_space(&[GpuRange { start: 0, end: 0x10000 }]).unwrap();
-        let (memory, _) = gpu.allocate_video_memory(0x1000).unwrap();
+        let (memory, _) = gpu.allocate_video_memory(0x1000, MemoryKind::PLAIN).unwrap();
         gpu.map(&map(space, memory, 0x1000, 0x1000)).unwrap();
         assert!(gpu.map(&map(space, memory, 0x1800, 0x1000)).is_err());
         assert!(gpu.map(&map(space, memory, 0x800, 0x1000)).is_err());
@@ -512,7 +517,7 @@ mod tests {
     fn mapping_refuses_addresses_outside_the_ranges() {
         let mut gpu = StandIn::new();
         let space = gpu.create_address_space(&[GpuRange { start: 0x1000, end: 0x2000 }]).unwrap();
-        let (memory, _) = gpu.allocate_video_memory(0x1000).unwrap();
+        let (memory, _) = gpu.allocate_video_memory(0x1000, MemoryKind::PLAIN).unwrap();
         assert!(gpu.map(&map(space, memory, 0x2000, 0x10)).is_err());
     }
 

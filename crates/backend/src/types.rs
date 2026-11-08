@@ -140,6 +140,16 @@ pub struct SurfaceShape {
     pub colour: u32,
 }
 
+/// How the vendor wants an allocation's video memory laid out, in its own words. The core only
+/// keeps it and hands it back when it makes the memory.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct MemoryKind(pub u32);
+
+impl MemoryKind {
+    /// Memory with nothing special about it.
+    pub const PLAIN: Self = Self(0);
+}
+
 /// What an allocation's private data asks for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AllocationShape {
@@ -150,6 +160,7 @@ pub struct AllocationShape {
     pub surface: Option<SurfaceShape>,
     /// The vendor's driver asked for the GPU's cache to hold it.
     pub gpu_cached: bool,
+    pub kind: MemoryKind,
 }
 
 /// An adapter query offered to the vendor first.

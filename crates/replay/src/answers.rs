@@ -2,8 +2,9 @@
 
 use guesthouse_backend::{
     AdapterFacts, AllocationShape, Backend, BackendError, COPY_PIXEL_BYTES, DriverSurvey, GpuRange,
-    GuestBooks, HostServices, MapRequest, MemoryId, PciCard, Refusal, RegistryName, RegistryValue, Setup,
-    SpaceId, StagingCopy, StagingStart, Status, SurfaceShape, UnmapRequest, VendorQuery, Work, WorkStart,
+    GuestBooks, HostServices, MapRequest, MemoryId, MemoryKind, PciCard, Refusal, RegistryName,
+    RegistryValue, Setup, SpaceId, StagingCopy, StagingStart, Status, SurfaceShape, UnmapRequest,
+    VendorQuery, Work, WorkStart,
 };
 use guesthouse_backend_standin::StandIn;
 use guesthouse_messages::adapter::AdapterQuery;
@@ -140,8 +141,12 @@ impl Backend for RecordedAnswers {
 
     /// Whole pages, as a real driver gives. Only an allocation grown by a map gets here unrounded,
     /// and the recording does not say what the vendor's driver made of that.
-    fn allocate_video_memory(&mut self, size: u64) -> Result<(MemoryId, u64), BackendError> {
-        self.inner.allocate_video_memory(align_up(size, PAGE_SIZE))
+    fn allocate_video_memory(
+        &mut self,
+        size: u64,
+        kind: MemoryKind,
+    ) -> Result<(MemoryId, u64), BackendError> {
+        self.inner.allocate_video_memory(align_up(size, PAGE_SIZE), kind)
     }
 
     fn adopt_host_pages(&mut self, host_address: u64, size: u64) -> Result<MemoryId, BackendError> {
@@ -183,12 +188,24 @@ impl Backend for RecordedAnswers {
     fn describe_allocation(&mut self, _private: &[u8]) -> AllocationShape {
         self.note(Provenance::PartlyRecorded);
         if self.vendor_entries.is_empty() {
-            return AllocationShape { size: 0, exact_size: 0, surface: None, gpu_cached: false };
+            return AllocationShape {
+                size: 0,
+                exact_size: 0,
+                surface: None,
+                gpu_cached: false,
+                kind: MemoryKind::PLAIN,
+            };
         }
         let (_, index) = self.vendor_entries[self.next_described % self.vendor_entries.len()];
         self.next_described += 1;
         if self.was_refused() {
-            return AllocationShape { size: OVER_ANY_CAP, exact_size: 0, surface: None, gpu_cached: false };
+            return AllocationShape {
+                size: OVER_ANY_CAP,
+                exact_size: 0,
+                surface: None,
+                gpu_cached: false,
+                kind: MemoryKind::PLAIN,
+            };
         }
         let size = CreateAllocationAnswer::size_of_entry(&self.expected, index).unwrap_or(0);
         let fields = CreateAllocationAnswer::surface_of_entry(&self.expected, index);
@@ -206,7 +223,7 @@ impl Backend for RecordedAnswers {
                 colour: 0,
             }
         });
-        AllocationShape { size, exact_size: size, surface, gpu_cached: false }
+        AllocationShape { size, exact_size: size, surface, gpu_cached: false, kind: MemoryKind::PLAIN }
     }
 
     fn finish_allocation_data(&mut self, private: &mut [u8], _size: u64) {

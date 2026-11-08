@@ -1,9 +1,10 @@
 //! The guest driver's private data for an allocation: what it asks for, and what the kernel side
 //! would fill in on real hardware.
 
+use crate::depth::{self, DepthKinds};
 use crate::profile::AllocationLayout;
 use crate::tiling::{BLOCK_LIMIT, GOB_HEIGHT, GOB_WIDTH};
-use guesthouse_backend::{AllocationShape, SurfaceShape};
+use guesthouse_backend::{AllocationShape, MemoryKind, SurfaceShape};
 
 const SMALL_PAGE: u64 = 0x1000;
 const BIG_PAGE: u64 = 0x10000;
@@ -155,13 +156,25 @@ fn asks_gpu_cached(layout: &AllocationLayout, data: &[u8]) -> bool {
         && word(data, layout.attributes) >> CACHE_SHIFT & CACHE_MASK == CACHE_YES
 }
 
-/// Everything the core needs to know about an allocation.
-pub fn shape(layout: &AllocationLayout, data: &[u8]) -> AllocationShape {
+/// How the memory should be laid out, from the usage byte, the format byte and the attribute word the
+/// guest asked for, which starts with the depth bits.
+fn memory_kind(layout: &AllocationLayout, data: &[u8], depth: DepthKinds) -> MemoryKind {
+    if is_ours(layout, data) && data.len() >= layout.depth_bits + 4 {
+        depth::memory_kind(depth, data[layout.format], data[layout.colour], word(data, layout.depth_bits))
+    } else {
+        MemoryKind::PLAIN
+    }
+}
+
+/// Everything the core needs to know about an allocation, on a generation whose depth surfaces get
+/// kinds by `depth`.
+pub fn shape(layout: &AllocationLayout, data: &[u8], depth: DepthKinds) -> AllocationShape {
     AllocationShape {
         size: allocation_size(layout, data),
         exact_size: exact_size(layout, data),
         surface: surface_shape(layout, data),
         gpu_cached: asks_gpu_cached(layout, data),
+        kind: memory_kind(layout, data, depth),
     }
 }
 
@@ -270,6 +283,42 @@ mod tests {
         set_word(&mut bytes, LAYOUT.rows, u32::MAX);
         set_word(&mut bytes, LAYOUT.tiling, BLOCK_LIMIT - 1);
         assert!(allocation_size(LAYOUT, &bytes) > 1 << 60);
+    }
+
+    /// A 256 x 256 surface as the guest's D3D11 driver asks for one, with this usage, format and
+    /// attribute word.
+    fn depth_surface(usage: u8, format: u8, attributes: u32) -> Vec<u8> {
+        let mut bytes = data(0x40000);
+        bytes[LAYOUT.format] = usage;
+        bytes[LAYOUT.colour] = format;
+        set_word(&mut bytes, LAYOUT.width, 256);
+        set_word(&mut bytes, LAYOUT.height, 256);
+        set_word(&mut bytes, LAYOUT.depth_bits, attributes);
+        bytes
+    }
+
+    #[test]
+    fn a_depth_surface_passes_on_its_packing() {
+        let bytes = depth_surface(0x12, 0x16, 0x3A_0002);
+        for rule in [DepthKinds::AsStated, DepthKinds::Always] {
+            assert_eq!(shape(LAYOUT, &bytes, rule).kind, MemoryKind(0x38_0002));
+        }
+    }
+
+    #[test]
+    fn a_depth_surface_with_no_usage_is_found_by_its_format_where_it_must_be() {
+        let bytes = depth_surface(0, 0x17, 0xA_0054);
+        assert_eq!(shape(LAYOUT, &bytes, DepthKinds::Always).kind, MemoryKind(0x8_0004));
+        assert_eq!(shape(LAYOUT, &bytes, DepthKinds::AsStated).kind, MemoryKind::PLAIN);
+    }
+
+    #[test]
+    fn a_colour_surface_is_plain() {
+        let bytes = depth_surface(0x11, 0x20, 0x2_2004);
+        for rule in [DepthKinds::AsStated, DepthKinds::Always] {
+            assert_eq!(shape(LAYOUT, &bytes, rule).kind, MemoryKind::PLAIN);
+            assert_eq!(shape(LAYOUT, b"something else", rule).kind, MemoryKind::PLAIN);
+        }
     }
 
     #[test]
@@ -410,11 +459,11 @@ mod tests {
     #[test]
     fn the_cache_bits_are_a_yes_only_at_one() {
         let mut bytes = data(0x1000);
-        assert!(!shape(LAYOUT, &bytes).gpu_cached);
+        assert!(!shape(LAYOUT, &bytes, DepthKinds::Always).gpu_cached);
         set_word(&mut bytes, LAYOUT.attributes, 1 << CACHE_SHIFT);
-        assert!(shape(LAYOUT, &bytes).gpu_cached);
+        assert!(shape(LAYOUT, &bytes, DepthKinds::Always).gpu_cached);
         set_word(&mut bytes, LAYOUT.attributes, 2 << CACHE_SHIFT);
-        assert!(!shape(LAYOUT, &bytes).gpu_cached);
+        assert!(!shape(LAYOUT, &bytes, DepthKinds::Always).gpu_cached);
     }
 
     #[test]

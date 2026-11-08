@@ -1,6 +1,6 @@
 //! Allocations, queues and the other per-guest records.
 
-use guesthouse_backend::{MemoryId, PagesView, SpaceId, SurfaceShape};
+use guesthouse_backend::{MemoryId, MemoryKind, PagesView, SpaceId, SurfaceShape};
 use std::collections::VecDeque;
 
 /// Where an allocation is mapped in one address space.
@@ -43,6 +43,8 @@ pub struct Allocation {
     pub first_mapped: Option<u64>,
     pub gpu_cached: bool,
     pub surface: Option<SurfaceShape>,
+    /// How its video memory is laid out, so memory made again for it is the same.
+    pub kind: MemoryKind,
 }
 
 /// A hardware queue, or the queue the host makes for a context that has none.

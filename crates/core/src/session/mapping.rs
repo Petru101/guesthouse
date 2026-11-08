@@ -66,7 +66,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             self.backend.release_memory(memory);
             let allocation = self.allocations.get_mut(&handle).expect("read above");
             allocation.memory = None;
-            let (grown, size) = self.backend.allocate_video_memory(needed)?;
+            let (grown, size) = self.backend.allocate_video_memory(needed, allocation.kind)?;
             allocation.memory = Some(grown);
             allocation.size = size;
             memory = grown;
