@@ -10,6 +10,7 @@ session_settings=$root/run/environment.d/90-nvfwd.conf
 # the module is ours, and there's no X driver for it, so those rules are left out of a GPU boot.
 gdm_rules=61-gdm.rules
 gdm_rules_override=$root/run/udev/rules.d/$gdm_rules
+xwayland_vendor=/opt/nv/built/EGL_nvfwd_xwayland.json
 
 # The unit display-manager.service stands for, such as gdm.service, or nothing.
 display_manager() {
@@ -65,14 +66,14 @@ hide_gdm_rules() {
     done
 }
 
-# Ubuntu's session settings, and no glamor for Xwayland. Glamor would load Zink, and NVIDIA's Vulkan
-# driver opens DISPLAY as it loads, which is that same Xwayland, so it would wait on itself. Ubuntu's
-# own install wraps Xwayland for that instead, which a package manager here would undo.
+# Ubuntu's session settings, with one more EGL vendor first: it keeps Xwayland from waiting on itself
+# when NVIDIA's Vulkan driver opens DISPLAY, which Ubuntu's own install wraps Xwayland for instead. A
+# package manager would undo a wrapper here. GLX goes through cast/glx_dri3.c, as in Ubuntu.
 write_session_settings() {
     mkdir -p "$(dirname "$session_settings")"
     {
-        cat "$here/files/gpu-session.env"
-        echo XWAYLAND_NO_GLAMOR=1
+        sed "s#^__EGL_VENDOR_LIBRARY_FILENAMES=#&$xwayland_vendor:#" "$here/files/gpu-session.env"
+        echo __GLX_VENDOR_LIBRARY_NAME=dri3
     } > "$session_settings"
 }
 

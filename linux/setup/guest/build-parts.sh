@@ -62,6 +62,8 @@ cp VkLayer_nvfwd_wsi.json VkLayer_zink_on_nvidia.json "$layers/"
 
 cd "$work/nvfwd/cast"
 gcc -O2 -Wall -shared -fPIC -o "$built/libGLX_dri3.so.0" glx_dri3.c -l:libGLX_mesa.so.0
+gcc -O2 -Wall -shared -fPIC -o "$built/libEGL_nvfwd_xwayland.so.0" xwayland_display.c
+cp EGL_nvfwd_xwayland.json "$built/"
 # shellcheck disable=SC2046  # pkg-config's answer is meant to split into arguments
 gcc -O2 -Wall -I../guest -o "$built/fwdcast" fwdcast.c $(pkg-config --cflags --libs libpipewire-0.3 gio-2.0) -lvulkan
 

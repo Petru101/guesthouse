@@ -88,9 +88,11 @@ class GpuUpChoosesTheScreen(unittest.TestCase):
         self.assertEqual(guest.state()["desktop"], "gpu")
         self.assertEqual(guest.called("modprobe nvidia-drm"), 1)
         settings = guest.read(SETTINGS)
-        for line in ("GALLIUM_DRIVER=zink", "MESA_LOADER_DRIVER_OVERRIDE=zink", "XWAYLAND_NO_GLAMOR=1"):
+        for line in ("GALLIUM_DRIVER=zink", "MESA_LOADER_DRIVER_OVERRIDE=zink", "__GLX_VENDOR_LIBRARY_NAME=dri3"):
             self.assertIn(line + "\n", settings)
-        self.assertNotIn("__GLX_VENDOR_LIBRARY_NAME", settings, "that one needs Ubuntu's Xwayland wrapper")
+        vendors = settings.split("__EGL_VENDOR_LIBRARY_FILENAMES=")[1].split("\n")[0].split(":")
+        self.assertEqual(vendors[0], "/opt/nv/built/EGL_nvfwd_xwayland.json", "before Mesa's")
+        self.assertTrue(vendors[1].endswith("50_mesa.json"))
         rules = guest.read(IGNORED)
         self.assertIn('KERNEL=="card0"', rules)
         self.assertNotIn("card1", rules)

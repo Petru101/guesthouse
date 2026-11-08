@@ -1,0 +1,4 @@
+{
+    "file_format_version": "1.0.0",
+    "ICD": { "library_path": "/opt/nv/built/libEGL_nvfwd_xwayland.so.0" }
+}
