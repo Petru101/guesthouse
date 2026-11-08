@@ -7,6 +7,7 @@ mod gpu_check;
 mod guest_files;
 mod identity;
 mod identity_restart;
+mod identity_switch;
 mod install;
 mod ubuntu;
 
@@ -16,6 +17,7 @@ use gpu_check::check_gpu;
 use guest_files::{place_driver_files, place_profile_store};
 use identity::{after_failed_gpu, set_up_identity};
 use identity_restart::restart_after_switch;
+use identity_switch::{new_vm_needed, stop_for_new_identity};
 pub use install::{
     INSTALL_STEPS, answer_disc_path, answer_file, install, install_step, make_answer_disc, wait_for_setup,
 };
@@ -23,6 +25,7 @@ pub use install::{
 use crate::context::Context;
 use crate::disk_image::disk_size_gib;
 use crate::failure::{Failure, Result};
+use crate::gpu_identity::{PciIdentity, read_state};
 use crate::guest_memory::is_no_room;
 use crate::host::{cpu_list, host_ram_limit, ram_limit_for, vcache_cpus};
 use crate::library::MAX_DISK_GIB;
@@ -154,35 +157,57 @@ pub fn start(task: &mut Task) -> Result<()> {
 /// Starts a GPU machine. One that fails leaves nothing running, and says why.
 fn boot(task: &mut Task) -> Result<()> {
     task.step("Starting the VM");
-    let plan = plan_for(task.context, &task.machine, Boot::Gpu);
-    let started = task.host.start(&plan, &task.machine);
-    if started.is_err() {
-        if task.pid().is_none() {
-            // The daemon and shared memory are still there.
-            task.host.release()?;
-        }
-        return started;
-    }
-    let ready = get_ready(task);
+    let shown = start_gpu_vm(task)?;
+    let ready = get_ready(task, shown);
     if ready.is_err() {
         turn_off_after_failed_start(task);
     }
     ready
 }
 
+/// Starts QEMU and the daemon, and says which identity the render device has in this VM.
+fn start_gpu_vm(task: &mut Task) -> Result<PciIdentity> {
+    let plan = plan_for(task.context, &task.machine, Boot::Gpu);
+    let started = task.host.start(&plan, &task.machine);
+    if started.is_err() && task.pid().is_none() {
+        // The daemon and shared memory are still there.
+        task.host.release()?;
+    }
+    started.map(|()| plan.render_identity)
+}
+
 /// The guest has answered, so this takes it from there to a desktop someone can use.
-fn get_ready(task: &mut Task) -> Result<()> {
+fn get_ready(task: &mut Task, shown: PciIdentity) -> Result<()> {
+    get_gpu_ready(task)?;
+    if new_vm_needed(shown, &read_state(task.context, &task.machine)) {
+        start_again_for_new_identity(task)?;
+        get_gpu_ready(task)?;
+    }
+    set_up_desktop(task)?;
+    place_driver_files(task)?;
+    place_profile_store(task)
+}
+
+/// Up to the point where it's known which identity the VM should show, before any work on a desktop
+/// that might be about to go.
+fn get_gpu_ready(task: &mut Task) -> Result<()> {
     task.step("Waiting for the desktop");
     if !wait_for_desktop(task) {
         return Err(Failure::new("Windows started, but its desktop never came up."));
     }
     check_gpu(task).map_err(|failure| after_failed_gpu(task, failure))?;
     restart_after_switch(task)?;
-    set_up_desktop(task)?;
-    place_driver_files(task)?;
-    place_profile_store(task)?;
     set_up_identity(task);
     Ok(())
+}
+
+/// The same start goes on in a new VM, which shows NVIDIA's number. What the first one said is about a
+/// VM that's gone.
+fn start_again_for_new_identity(task: &mut Task) -> Result<()> {
+    stop_for_new_identity(task)?;
+    wait_for_memory(task);
+    task.error.clear();
+    start_gpu_vm(task).map(|_| ())
 }
 
 /// Asks Windows to go, then makes sure it does. The start has already failed, and this can only add to

@@ -2,7 +2,7 @@
 //! only binds to Microsoft's, so every machine starts with that one. Browsers and streaming programs
 //! look at the vendor number before they use a GPU, and stay on the CPU when it's Microsoft's. So once
 //! a guest holds a driver package for NVIDIA's number, written there from its own copy of Windows'
-//! driver, the next start shows NVIDIA's. The choice is kept in the machine's folder, as it has to
+//! driver, every VM after that shows NVIDIA's. The choice is kept in the machine's folder, as it has to
 //! outlive a VM: a guest shown NVIDIA's number without the package would start with no GPU.
 
 use crate::context::Context;
