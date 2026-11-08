@@ -1,6 +1,7 @@
 //! Installing Windows: the answer disc, the wait for setup, and the check of what it made.
 
 use super::desktop::{BOOT_LINE, SERIAL_FILE, count, wait_for_desktop};
+use super::identity::set_up_identity;
 use super::{KEY_POLL, Task, plan_for, start_if_there_is_room};
 use crate::agent::{QUICK_SECONDS, guest_script, make_password, make_token};
 use crate::context::Context;
@@ -233,6 +234,8 @@ pub fn install(task: &mut Task) -> Result<()> {
         return Err(Failure::new("Windows installed, but its desktop never came up."));
     }
     check_guest(task)?;
+    // Here, so the first start is already on NVIDIA's vendor number and needs no second VM.
+    set_up_identity(task);
     task.step("Shutting down Windows");
     task.ask_guest("Stop-Computer -Force", QUICK_SECONDS);
     let end = task.now() + Duration::from_secs(INSTALL_STOP_SECONDS);
