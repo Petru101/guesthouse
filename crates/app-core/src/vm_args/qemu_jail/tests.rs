@@ -11,6 +11,7 @@ fn jail(namespaces: bool) -> QemuJail {
         namespaces,
         qemu_sandbox: true,
         sound_socket: Some("/run/user/1000/pipewire-0".into()),
+        backing_files: Vec::new(),
     }
 }
 
@@ -166,4 +167,71 @@ fn a_shared_folder_gets_the_loopback_pair_its_program_is_reached_through() {
     let restricted = Machine { share: "/home/me/Shared".into(), network_mode: Mode::None, ..windows() };
     let (_scratch, plan) = jailed(restricted, true);
     assert_eq!(plan.qemu_jail_plan(&jail(true)).network.tcp_connect, Ports::Any);
+}
+
+#[test]
+fn a_backing_file_is_only_read_and_bound_read_only_last() {
+    let (_scratch, plan) = jailed(Machine { share: "/home/me/Shared".into(), ..windows() }, true);
+    let jail = QemuJail { backing_files: vec!["/bases/base.qcow2".into()], ..jail(true) };
+    let plan = VmPlan { jail: Some(jail.clone()), ..plan };
+    let rules = plan.qemu_jail_plan(&jail);
+    let given: Vec<Grant> = rules
+        .paths
+        .iter()
+        .filter(|(_, path)| path == Path::new("/bases/base.qcow2"))
+        .map(|(grant, _)| *grant)
+        .collect();
+    assert_eq!(given, [Grant::Read]);
+    assert_eq!(rules.paths.last().unwrap().1, Path::new("/bases/base.qcow2"));
+    let command = plan.qemu_command();
+    let bound = |kind: &str| {
+        command.windows(3).any(|three| three == [kind, "/bases/base.qcow2", "/bases/base.qcow2"])
+    };
+    assert!(bound("--ro-bind-try") && !bound("--bind-try"));
+}
+
+/// A machine whose disk is a qcow2 on a base in `base_folder`, under the scratch folder.
+fn on_a_base(scratch: &Scratch, base_folder: &str) -> (Machine, PathBuf) {
+    let base = scratch.path(&format!("{base_folder}/base.qcow2"));
+    let disk = scratch.path("machines/win/disk.qcow2");
+    for file in [&base, &disk] {
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    }
+    let create = |words: &[&str]| {
+        assert!(std::process::Command::new("qemu-img").args(words).status().unwrap().success());
+    };
+    create(&["create", "-q", "-f", "qcow2", base.to_str().unwrap(), "1G"]);
+    create(&[
+        "create",
+        "-q",
+        "-f",
+        "qcow2",
+        "-b",
+        base.to_str().unwrap(),
+        "-F",
+        "qcow2",
+        disk.to_str().unwrap(),
+    ]);
+    let machine = Machine {
+        share: scratch.path("Shared").display().to_string(),
+        ..Machine::new("win", "Win", disk.to_str().unwrap(), "/m/win/vars.fd")
+    };
+    (machine, base)
+}
+
+#[test]
+fn a_start_finds_the_disks_backing_files() {
+    let scratch = Scratch::new();
+    let (machine, base) = on_a_base(&scratch, "bases");
+    let (_plan_scratch, plan) = jailed(machine, true);
+    assert_eq!(plan.with_backing_files(jail(true)).unwrap().backing_files, [base]);
+}
+
+#[test]
+fn a_backing_file_in_the_shared_folder_is_refused() {
+    let scratch = Scratch::new();
+    let (machine, _) = on_a_base(&scratch, "Shared");
+    let (_plan_scratch, plan) = jailed(machine, true);
+    let refused = plan.with_backing_files(jail(true)).unwrap_err();
+    assert!(refused.0.contains("in the shared folder"), "{}", refused.0);
 }

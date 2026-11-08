@@ -141,6 +141,8 @@ pub struct QemuJail {
     pub qemu_sandbox: bool,
     /// PipeWire's socket, for a machine with sound.
     pub sound_socket: Option<PathBuf>,
+    /// The files the disk is built on, which QEMU may only read.
+    pub backing_files: Vec<PathBuf>,
 }
 
 impl VmPlan {

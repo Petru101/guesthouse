@@ -129,6 +129,7 @@ pub fn choose(context: &Context, machine: &Machine, plan: &VmPlan, offer: &Offer
         namespaces: offer.namespaces,
         qemu_sandbox: offer.qemu_sandbox,
         sound_socket: offer.sound_socket.clone(),
+        backing_files: Vec::new(),
     };
     let note = if plan.in_namespaces(&jail) {
         String::new()

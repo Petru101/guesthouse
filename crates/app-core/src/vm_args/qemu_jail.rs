@@ -7,6 +7,8 @@
 
 use super::arguments::{MONITOR_SOCKETS, words};
 use super::{QemuJail, VmPlan};
+use crate::disk_image::backing::backing_files;
+use crate::failure::{Failure, Result};
 use crate::network::{Mode, Protocol, bridge_helper};
 use guesthouse_jail::launch::{Launch, Tap, UnixSocket};
 use guesthouse_jail::{Grant, Network, Plan, Ports};
@@ -133,7 +135,26 @@ impl VmPlan {
             plan.grant(Grant::Socket, socket);
         }
         plan.grant(Grant::Own, &self.run_folder);
+        // Last, so in namespaces each is bound read-only over anything granted above.
+        for file in &jail.backing_files {
+            plan.grant(Grant::Read, file);
+        }
         plan
+    }
+
+    /// The jail with the files the disk is built on. Refuses a chain QEMU couldn't open, and a
+    /// backing file in the shared folder, where QEMU may write anything.
+    pub fn with_backing_files(&self, jail: QemuJail) -> Result<QemuJail> {
+        let backing_files = backing_files(Path::new(&self.disk))?;
+        let shared = |file: &&PathBuf| self.share.as_ref().is_some_and(|folder| file.starts_with(folder));
+        if let Some(file) = backing_files.iter().find(shared) {
+            return Err(Failure(format!(
+                "The VM did not start, as its disk is built on {}, which is in the shared folder. \
+                 Move it out, as the guest can write anything in there.",
+                file.display()
+            )));
+        }
+        Ok(QemuJail { backing_files, ..jail })
     }
 
     fn tap(&self) -> Option<Tap> {

@@ -223,7 +223,8 @@ impl LocalHost<'_> {
         let sound = if machine.sound { sound_on_this_host() } else { None };
         let plan = VmPlan { sound, ..plan.clone() };
         let choice = jailing::choose(self.context, machine, &plan, &(self.context.jail_offer)(&plan))?;
-        let plan = VmPlan { jail: choice.qemu.clone(), ..plan };
+        let jail = choice.qemu.clone().map(|jail| plan.with_backing_files(jail)).transpose()?;
+        let plan = VmPlan { jail, ..plan };
         self.stop(machine, LEFT_OVER_STOP_SECONDS)?;
         if qemu_pid(self.context, None).is_some()
             || !self.daemons().is_empty()
