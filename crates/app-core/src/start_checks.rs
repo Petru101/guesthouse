@@ -287,7 +287,8 @@ mod tests {
     fn startable(scratch: &Scratch) -> (Context, Machine) {
         let mut context = scratch_context(scratch);
         context.cpus = fake_cpus(scratch, "cpus", &[32768; 16]);
-        context.meminfo = scratch.write("meminfo", "MemAvailable:   100000000 kB\n");
+        context.meminfo =
+            scratch.write("meminfo", "MemTotal:       100000000 kB\nMemAvailable:   100000000 kB\n");
         let disk = scratch.write("disk", "").display().to_string();
         let vars = scratch.write("vars", "").display().to_string();
         let machine = Machine { kind: Kind::Plain, ..Machine::new("vm", "VM", &disk, &vars) };
