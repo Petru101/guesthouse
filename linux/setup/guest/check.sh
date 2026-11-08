@@ -140,6 +140,7 @@ check_shell_common() {
         return 1
     fi
     pass 'gnome-shell running'
+    check 'Power Off and Restart offered (nvfwd-session)' pgrep -x nvfwd-session
     check 'session holds no ambient capability, so images load' grep -q '^CapAmb:\s*0*$' "$root/proc/$shell_pid/status"
 }
 

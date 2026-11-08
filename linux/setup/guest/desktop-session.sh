@@ -17,6 +17,8 @@ gpu_settings() {
 # The second half runs inside the session's own bus. The login gives a user bus too, but its
 # socket-started PipeWire is masked and the shell's helpers belong on this one.
 if [ "${1:-}" = --inside-bus ]; then
+    # Power Off and Restart in the shell's menu, which otherwise ask a gnome-session that isn't here.
+    "$built/nvfwd-session" &
     pipewire &
     sleep 1
     wireplumber &
