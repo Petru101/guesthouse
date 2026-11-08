@@ -10,7 +10,7 @@ use crate::machine::{Machine, sorted_names};
 use crate::monitor::Command as Qmp;
 use crate::processes::{memory_taken, passt_pid, qemu_pid};
 use crate::start_checks::SECOND_INSTANCE_REFUSAL;
-use crate::vm_args::{OUTPUT_FILE, Sound, VmPlan};
+use crate::vm_args::{OUTPUT_FILE, PASST_PID_FILE, Sound, VmPlan};
 use guesthouse_daemon::jail::make_if_missing;
 use rustix::process::{Pid, Signal, kill_process, kill_process_group};
 use std::fs::{self, File};
@@ -38,7 +38,7 @@ const SOUND_CHECK_SECONDS: &str = "3";
 const RAM_FILE: &str = "ram";
 const SHARED_FILES: [&str; 3] = ["iomem", RAM_FILE, "display"];
 /// These can only be left by an earlier run, and a stale socket would pass for a ready daemon.
-const STALE_FILES: [&str; 3] = ["vgpu.sock", "global.sock", "screen.sock"];
+const STALE_FILES: [&str; 4] = ["vgpu.sock", "global.sock", "screen.sock", PASST_PID_FILE];
 /// The last run's logs are the only evidence of whatever made someone restart.
 const LOGS_TO_KEEP: [&str; 3] = [daemon::OUTPUT_FILE, "serial.log", "qemu.log"];
 const TPM_SOCKET: &str = "tpm.sock";
@@ -121,8 +121,11 @@ impl LocalHost<'_> {
     /// QEMU with no daemon and no shared memory. Returns once its monitor answers.
     fn start_plain(&self, plan: &VmPlan) -> Result<()> {
         let _ = fs::remove_file(self.run_file(BOOTS_FILE));
-        // Whatever an earlier machine in this slot had to say about its jail isn't this one's.
+        // Whatever an earlier machine in this slot had to say about its jail isn't this one's, and
+        // its passt, if one is somehow still there, goes before this one's is noted.
         jailing::write_note(&plan.run_folder, &plan.jail_note)?;
+        self.end_passt();
+        let _ = fs::remove_file(self.run_file(PASST_PID_FILE));
         if !plan.qemu.exists() {
             return Err(Failure::new(NO_QEMU_HELP));
         }
