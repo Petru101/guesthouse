@@ -1,17 +1,21 @@
 //! The program on the pretend Ada and Turing cards: what it finds, what it says, and what never
 //! reaches the file. Nothing here goes near a card.
 
+use guesthouse_backend::PciAddress;
 use guesthouse_backend_nvidia::profile::{ADA, BLACKWELL, Generation, HOST_615, TURING};
 use guesthouse_backend_nvidia::record::card::UUID;
-use guesthouse_backend_nvidia::rm::classes::CONTROL_GET_GPU_ID;
+use guesthouse_backend_nvidia::rm::classes::{CONTROL_GET_GPU_ID, DEVICE};
 use guesthouse_backend_nvidia::rm::device::Device;
-use guesthouse_backend_nvidia::rm::fake::{Call, FakeRm};
+use guesthouse_backend_nvidia::rm::fake::{Call, FakeGpu, FakeRm};
 use guesthouse_backend_nvidia::rm::fake_card::{
     FAKE_ADA, FAKE_BLACKWELL, FAKE_TURING, FakeCard, install_card,
 };
+use guesthouse_backend_nvidia::rm::{Rm, STATUS_INSUFFICIENT_PERMISSIONS};
 use guesthouse_card_check::channels::{Outcome, refusal, run_all, run_on_listed_card};
-use guesthouse_card_check::host::{CardListed, Host};
-use guesthouse_card_check::report::{Branch, card_lines, channel_lines, heading, host_lines, progress_lines};
+use guesthouse_card_check::host::{Host, ListedCard};
+use guesthouse_card_check::report::{
+    Branch, card_lines, channel_lines, heading, host_lines, place_line, progress_lines,
+};
 use guesthouse_card_check::survey::{Findings, Verdict, survey};
 use std::time::Duration;
 
@@ -68,8 +72,8 @@ fn host() -> Host {
         version: "615.78.08".to_owned(),
         open_module: true,
         cards: vec![
-            CardListed { minor: 0, model: "NVIDIA GeForce RTX 4080".to_owned() },
-            CardListed { minor: 1, model: "NVIDIA GeForce GTX 1660 SUPER".to_owned() },
+            listed("0000:01:00.0", 0, "NVIDIA GeForce RTX 4080"),
+            listed("0000:02:00.0", 1, "NVIDIA GeForce GTX 1660 SUPER"),
         ],
     }
 }
@@ -83,7 +87,9 @@ fn whole_report(card: &FakeCard) -> String {
         run_all(&mut device, generation, &HOST_615, &findings.nodes, Duration::ZERO, &mut |_| Ok(()))
             .unwrap();
     let mut text = heading();
-    text.push_str(&host_lines(&host(), Branch::Known { version_tested: true }));
+    let host = host();
+    text.push_str(&host_lines(&host, Branch::Known { version_tested: true }));
+    text.push_str(&place_line(0, &host.cards[0], device.instance));
     text.push_str(&card_lines(0, &findings));
     text.push_str(&channel_lines(&results));
     text
@@ -244,7 +250,11 @@ fn the_file_holds_no_path_user_name_host_name_or_uuid() {
         let text = whole_report(expected.card);
         assert!(!text.contains('/'), "a path or a date: {text}");
         assert!(!text.contains("GPU-"), "a UUID: {text}");
-        assert!(!text.contains("0000:"), "a bus address: {text}");
+        for line in text.lines().filter(|line| line.contains("0000:")) {
+            let where_it_is =
+                line.starts_with("  ") && line.contains(" at ") || line.contains("opened at PCI");
+            assert!(where_it_is, "a bus address only says where a card is: {line}");
+        }
         if user.len() > 2 {
             assert!(!text.to_lowercase().contains(&user.to_lowercase()), "the user name: {text}");
         }
@@ -258,8 +268,8 @@ fn the_file_holds_no_path_user_name_host_name_or_uuid() {
     }
 }
 
-fn listed(minor: u32, model: &str) -> CardListed {
-    CardListed { minor, model: model.to_owned() }
+fn listed(address: &str, minor: u32, model: &str) -> ListedCard {
+    ListedCard { address: PciAddress::parse(address).unwrap(), minor, model: model.to_owned() }
 }
 
 #[test]
@@ -267,10 +277,10 @@ fn a_card_whose_number_and_name_do_not_line_up_gets_no_channel() {
     let mut device = device_on(&FAKE_ADA);
     let findings = survey(&mut device).unwrap();
     let calls_before = device.rm.calls.len();
-    let other = listed(1, "NVIDIA GeForce GTX 1660 SUPER");
+    let other = listed("0000:02:00.0", 1, "NVIDIA GeForce GTX 1660 SUPER");
     let why = refusal(&other, &findings).unwrap();
     assert!(why.contains("don't line up"), "{why}");
-    assert!(why.contains("Card 1"), "{why}");
+    assert!(why.contains("0000:02:00.0"), "{why}");
     let mut told = Vec::new();
     let stopped =
         run_on_listed_card(&mut device, &other, &findings, &HOST_615, Duration::ZERO, &mut |label| {
@@ -282,7 +292,7 @@ fn a_card_whose_number_and_name_do_not_line_up_gets_no_channel() {
     assert_eq!(device.rm.calls.len(), calls_before, "nothing reached the card");
     assert!(!device.rm.allocated().any(|(class, _)| class == ADA.channel_class));
 
-    let same = listed(1, FAKE_ADA.name);
+    let same = listed("0000:02:00.0", 1, FAKE_ADA.name);
     assert_eq!(refusal(&same, &findings), None);
     let ran = run_on_listed_card(&mut device, &same, &findings, &HOST_615, Duration::ZERO, &mut |label| {
         told.push(label.to_owned());
@@ -306,4 +316,64 @@ fn each_channel_is_announced_before_it_is_tried_and_not_tried_if_that_fails() {
     assert!(file.contains("trying graphics"), "{file}");
     assert!(file.contains("last line"), "{file}");
     assert!(!device.rm.allocated().any(|(class, _)| class == TURING.channel_class), "never made");
+}
+
+/// The tester's PC: the 4080's device file is 0 and the 1660 SUPER's 1, but the RM set the 1660 SUPER
+/// up first, so its device instance is 0 and the 4080's 1. Each card is a pretend RM of its own here,
+/// as each run of the program opens one device file.
+fn tester_rm(card: &FakeCard, opened_minor: u32) -> FakeRm {
+    let at = |text: &str| PciAddress::parse(text).unwrap();
+    let mut rm = FakeRm::with_gpus(vec![
+        FakeGpu { id: 0x0100, address: at("0000:01:00.0"), minor: 0, device_instance: 1, attached: true },
+        FakeGpu { id: 0x0200, address: at("0000:02:00.0"), minor: 1, device_instance: 0, attached: true },
+    ]);
+    install_card(&mut rm, card);
+    rm.open_device_file(opened_minor);
+    rm
+}
+
+#[test]
+fn on_two_cards_each_is_opened_by_the_instance_the_rm_gave_its_address() {
+    let host = Host {
+        cards: vec![listed("0000:01:00.0", 0, FAKE_ADA.name), listed("0000:02:00.0", 1, FAKE_TURING.name)],
+        ..host()
+    };
+    for (number, card, instance) in [(0, &FAKE_ADA, 1), (1, &FAKE_TURING, 0)] {
+        let (found, listed) = host.card_numbered(number).unwrap();
+        let mut device = Device::open_at(tester_rm(card, listed.minor), &HOST_615, &listed.address).unwrap();
+        assert_eq!(device.instance, instance, "card {number}");
+        let findings = survey(&mut device).unwrap();
+        assert_eq!(refusal(listed, &findings), None, "the name check passes on the right card");
+        let line = place_line(found, listed, device.instance);
+        assert_eq!(
+            line,
+            format!(
+                "Card {number} opened at PCI {}, device file nvidia{}, RM device instance {instance}\n",
+                listed.address, listed.minor
+            )
+        );
+    }
+    let by_address = host.card_at(&PciAddress::parse("0000:02:00.0").unwrap()).unwrap();
+    assert_eq!(by_address.0, 1);
+}
+
+#[test]
+fn on_two_cards_the_device_file_number_as_the_instance_is_refused_as_the_tester_saw() {
+    let mut rm = tester_rm(&FAKE_TURING, 1);
+    let mut params = vec![0; HOST_615.device_params];
+    params[..4].copy_from_slice(&1u32.to_le_bytes());
+    let client = rm.new_client().unwrap();
+    let status = rm.alloc(client, 0xC000_0001, DEVICE, &mut params).unwrap();
+    assert_eq!(status, STATUS_INSUFFICIENT_PERMISSIONS, "the 1660 SUPER's file with the 4080's instance");
+}
+
+#[test]
+fn one_card_is_opened_as_before() {
+    let mut rm = FakeRm::new();
+    install_card(&mut rm, &FAKE_ADA);
+    let only = listed("0000:01:00.0", 0, FAKE_ADA.name);
+    let mut device = Device::open_at(rm, &HOST_615, &only.address).unwrap();
+    assert_eq!(device.instance, 0);
+    let findings = survey(&mut device).unwrap();
+    assert_eq!(refusal(&only, &findings), None);
 }

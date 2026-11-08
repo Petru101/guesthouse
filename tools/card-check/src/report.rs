@@ -2,7 +2,7 @@
 //! line here comes from a named field, and none of them identifies the card or the PC.
 
 use crate::channels::{ChannelResult, Outcome};
-use crate::host::Host;
+use crate::host::{Host, ListedCard};
 use crate::survey::{Findings, Verdict};
 use guesthouse_backend_nvidia::answers::nodes::engine_label;
 
@@ -42,8 +42,8 @@ pub fn host_lines(host: &Host, branch: Branch) -> String {
     };
     line(&mut text, format!("Driver branch: {known}"));
     line(&mut text, format!("Cards: {}", host.cards.len()));
-    for card in &host.cards {
-        line(&mut text, format!("  {}: {}", card.minor, card.model));
+    for (number, card) in host.cards.iter().enumerate() {
+        line(&mut text, format!("  {number}: {} at {}", card.model, card.address));
     }
     text
 }
@@ -93,10 +93,19 @@ fn generation_class_lines(findings: &Findings) -> String {
     }
 }
 
+/// Where the card was reached: its PCI address, its device file, and the RM's device instance for it.
+/// The last two are only the order things were set up in, and can differ from each other.
+pub fn place_line(number: usize, card: &ListedCard, instance: u32) -> String {
+    format!(
+        "Card {number} opened at PCI {}, device file nvidia{}, RM device instance {instance}\n",
+        card.address, card.minor
+    )
+}
+
 /// What the read-only part found on one card.
-pub fn card_lines(minor: u32, findings: &Findings) -> String {
+pub fn card_lines(number: usize, findings: &Findings) -> String {
     let mut text = String::new();
-    line(&mut text, format!("Card {minor}: {}", findings.name));
+    line(&mut text, format!("Card {number}: {}", findings.name));
     line(&mut text, format!("Device ID: {:#06X}, revision {:#04X}", findings.device, findings.revision));
     line(
         &mut text,

@@ -4,17 +4,21 @@ use super::classes::{
     CONTROL_GET_GPU_ID, CONTROL_GET_TIME, DEVICE, MEMORY_LOCAL_USER, MEMORY_VIRTUAL, SUBDEVICE,
     VIRTUAL_ADDRESS_SPACE,
 };
+use super::instance::device_instance_at;
+use super::listing::CardPlace;
 use super::{DmaMap, Handle, Rm, RmError};
 use crate::guest_clock::GuestClock;
 use crate::profile::HostBranch;
+use guesthouse_backend::PciAddress;
 use std::os::fd::OwnedFd;
 
 const DEVICE_HANDLE: Handle = 0xC000_0001;
 const SUBDEVICE_HANDLE: Handle = 0xC000_0002;
 const FIRST_OBJECT: Handle = 0xC000_1000;
 
-/// Which of the host's cards the device is, counting from zero in the RM's order.
-const DEVICE_PARAM_CARD: usize = 0x00;
+/// Which of the host's GPUs the device is: the RM's device instance, which isn't the device file's
+/// number. See [`super::instance`].
+const DEVICE_PARAM_INSTANCE: usize = 0x00;
 /// Each channel gets its own address space from this client, which needs this mode on the device.
 const VA_MODE_MULTIPLE: u32 = 2;
 const DEVICE_PARAM_VA_MODE: usize = 0x30;
@@ -77,6 +81,8 @@ pub struct Device<R> {
     pub client: Handle,
     pub device: Handle,
     pub subdevice: Handle,
+    /// The RM's device instance of this GPU.
+    pub instance: u32,
     /// One doorbell page serves every channel.
     pub doorbell_mapped: bool,
     pub(crate) guest_clock: GuestClock,
@@ -85,16 +91,36 @@ pub struct Device<R> {
 }
 
 impl<R: Rm> Device<R> {
-    /// Makes the client, device and subdevice that everything else hangs from, on the first card.
-    pub fn open(rm: R, sizes: &'static HostBranch) -> Result<Self, RmError> {
-        Self::open_card(rm, sizes, 0)
+    /// Makes the client, device and subdevice that everything else hangs from, on the RM's first
+    /// device. That's only sure to be the card whose device file is open on a PC with one card.
+    pub fn open(mut rm: R, sizes: &'static HostBranch) -> Result<Self, RmError> {
+        let client = rm.new_client()?;
+        Self::open_instance(rm, sizes, client, 0)
     }
 
-    /// The same on the card with this number. Only the first has been run.
-    pub fn open_card(mut rm: R, sizes: &'static HostBranch, card: u32) -> Result<Self, RmError> {
+    /// The same on the GPU at this address, whose device file the RM must have open.
+    pub fn open_at(mut rm: R, sizes: &'static HostBranch, address: &PciAddress) -> Result<Self, RmError> {
         let client = rm.new_client()?;
+        let instance = device_instance_at(&mut rm, client, address)?;
+        Self::open_instance(rm, sizes, client, instance)
+    }
+
+    /// By its address where that's known, and otherwise as [`Device::open`] does.
+    pub fn open_place(rm: R, sizes: &'static HostBranch, place: &CardPlace) -> Result<Self, RmError> {
+        match &place.address {
+            Some(address) => Self::open_at(rm, sizes, address),
+            None => Self::open(rm, sizes),
+        }
+    }
+
+    fn open_instance(
+        mut rm: R,
+        sizes: &'static HostBranch,
+        client: Handle,
+        instance: u32,
+    ) -> Result<Self, RmError> {
         let mut params = vec![0; sizes.device_params];
-        put_u32(&mut params, DEVICE_PARAM_CARD, card);
+        put_u32(&mut params, DEVICE_PARAM_INSTANCE, instance);
         put_u32(&mut params, DEVICE_PARAM_VA_MODE, VA_MODE_MULTIPLE);
         let status = rm.alloc(client, DEVICE_HANDLE, DEVICE, &mut params)?;
         RmError::check(|| format!("class {DEVICE:#x}"), status)?;
@@ -107,6 +133,7 @@ impl<R: Rm> Device<R> {
             client,
             device: DEVICE_HANDLE,
             subdevice: SUBDEVICE_HANDLE,
+            instance,
             doorbell_mapped: false,
             guest_clock: GuestClock::default(),
             next_handle: FIRST_OBJECT,
@@ -257,7 +284,7 @@ impl<R: Rm> Device<R> {
 mod tests {
     use super::*;
     use crate::profile::HOST_615;
-    use crate::rm::fake::{Call, FakeRm};
+    use crate::rm::fake::{Call, FakeGpu, FakeRm};
 
     fn device() -> Device<FakeRm> {
         Device::open(FakeRm::new(), &HOST_615).unwrap()
@@ -278,14 +305,57 @@ mod tests {
         assert_eq!(params.len(), HOST_615.device_params);
     }
 
+    fn instance_in(params: &[u8]) -> u32 {
+        u32::from_le_bytes(params[DEVICE_PARAM_INSTANCE..DEVICE_PARAM_INSTANCE + 4].try_into().unwrap())
+    }
+
+    /// Two cards whose device files are in the other order from the RM's instances: the 4080's file is
+    /// 0 and its instance 1, the 1660 SUPER's file 1 and its instance 0.
+    fn two_cards() -> Vec<FakeGpu> {
+        let at = |text: &str| PciAddress::parse(text).unwrap();
+        vec![
+            FakeGpu { id: 0x100, address: at("0000:01:00.0"), minor: 0, device_instance: 1, attached: true },
+            FakeGpu { id: 0x200, address: at("0000:02:00.0"), minor: 1, device_instance: 0, attached: false },
+        ]
+    }
+
     #[test]
-    fn the_first_card_is_the_default_and_another_is_named_in_the_device() {
+    fn a_one_card_pc_opens_instance_0_either_way() {
         let device = device();
-        let (_, params) = device.rm.allocated().next().unwrap();
-        assert_eq!(params[DEVICE_PARAM_CARD..DEVICE_PARAM_CARD + 4], [0, 0, 0, 0]);
-        let second = Device::open_card(FakeRm::new(), &HOST_615, 1).unwrap();
-        let (_, params) = second.rm.allocated().next().unwrap();
-        assert_eq!(params[DEVICE_PARAM_CARD..DEVICE_PARAM_CARD + 4], [1, 0, 0, 0]);
+        assert_eq!(instance_in(device.rm.allocated().next().unwrap().1), 0);
+        let address = PciAddress::parse("0000:01:00.0").unwrap();
+        let device = Device::open_at(FakeRm::new(), &HOST_615, &address).unwrap();
+        assert_eq!(device.instance, 0);
+        assert_eq!(instance_in(device.rm.allocated().next().unwrap().1), 0);
+    }
+
+    #[test]
+    fn a_card_is_opened_by_the_instance_the_rm_gave_its_address() {
+        for (minor, address, instance) in [(1, "0000:02:00.0", 0), (0, "0000:01:00.0", 1)] {
+            let mut rm = FakeRm::with_gpus(two_cards());
+            rm.open_device_file(minor);
+            let place = CardPlace { minor, address: PciAddress::parse(address) };
+            let device = Device::open_place(rm, &HOST_615, &place).unwrap();
+            assert_eq!(device.instance, instance, "{address}");
+            assert_eq!(instance_in(device.rm.allocated().next().unwrap().1), instance);
+        }
+    }
+
+    #[test]
+    fn the_device_file_number_as_the_instance_is_what_the_rm_refused() {
+        let mut rm = FakeRm::with_gpus(two_cards());
+        rm.open_device_file(1);
+        let error = Device::open_instance(rm, &HOST_615, 1, 1).err().unwrap();
+        assert!(error.to_string().contains("status 0x1b"), "{error}");
+    }
+
+    #[test]
+    fn an_address_with_no_gpu_is_said_plainly() {
+        let mut rm = FakeRm::with_gpus(two_cards());
+        rm.open_device_file(1);
+        let error =
+            Device::open_at(rm, &HOST_615, &PciAddress::parse("0000:03:00.0").unwrap()).err().unwrap();
+        assert!(error.to_string().contains("no GPU set up at 0000:03:00.0"), "{error}");
     }
 
     #[test]

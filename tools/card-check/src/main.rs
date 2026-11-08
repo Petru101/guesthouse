@@ -5,11 +5,12 @@
 //! It needs no root, no Rust and no Windows driver. It changes nothing on the system: the objects it
 //! makes in the driver go when it ends.
 
+use guesthouse_backend::PciAddress;
 use guesthouse_backend_nvidia::profile::{HostBranch, host_branch, host_branch_of_version};
 use guesthouse_backend_nvidia::rm::device::Device;
 use guesthouse_backend_nvidia::rm::linux::LinuxRm;
 use guesthouse_card_check::channels::{self, ChannelResult};
-use guesthouse_card_check::host::{self, Host, NoHost, no_host_text};
+use guesthouse_card_check::host::{self, Host, ListedCard, NoHost, no_host_text};
 use guesthouse_card_check::report::{self, Branch};
 use guesthouse_card_check::survey;
 use std::io::{self, BufRead, Write};
@@ -18,10 +19,11 @@ use std::process::ExitCode;
 use std::{env, fs};
 
 const REPORT_NAME: &str = "guesthouse-card-check.txt";
-const USAGE: &str = "usage: guesthouse-card-check [--card N] [--read-only]\n\
+const USAGE: &str = "usage: guesthouse-card-check [--card N | --pci ADDRESS] [--read-only]\n\
                      \n\
                      Reads an NVIDIA card and writes guesthouse-card-check.txt. With more than one card,\n\
-                     --card N picks one by the number the driver gives it, and without it the program asks.\n\
+                     --card N picks one by its number in the list the program prints, --pci picks one by\n\
+                     its PCI address, like 0000:01:00.0, and with neither the program asks.\n\
                      --read-only stops before the channel test.";
 
 const CHANNEL_WARNING: &str = "\
@@ -34,8 +36,14 @@ const NO_DEVICE_FILES: &str = "\
 The driver is loaded but its device files are not there. They are made when something first uses the
 card, so running nvidia-smi once usually makes them. Inside a container they are not there at all.";
 
+/// A card asked for on the command line.
+enum Wanted {
+    Number(usize),
+    Address(PciAddress),
+}
+
 struct Options {
-    card: Option<u32>,
+    card: Option<Wanted>,
     read_only: bool,
 }
 
@@ -46,7 +54,14 @@ fn parse_options() -> Result<Options, String> {
         match argument.as_str() {
             "--card" => {
                 let number = arguments.next().ok_or("--card needs a number")?;
-                options.card = Some(number.parse().map_err(|_| format!("{number} is not a card number"))?);
+                let number = number.parse().map_err(|_| format!("{number} is not a card number"))?;
+                options.card = Some(Wanted::Number(number));
+            }
+            "--pci" => {
+                let text = arguments.next().ok_or("--pci needs an address, like 0000:01:00.0")?;
+                let address =
+                    PciAddress::parse(&text).ok_or_else(|| format!("{text} is not a PCI address"))?;
+                options.card = Some(Wanted::Address(address));
             }
             "--read-only" => options.read_only = true,
             "--help" | "-h" => return Err(USAGE.to_owned()),
@@ -63,19 +78,23 @@ fn answer() -> String {
     line.trim().to_lowercase()
 }
 
-fn choose_card(host: &Host, wanted: Option<u32>) -> Result<u32, String> {
-    let listed = |minor: u32| host.cards.iter().any(|card| card.minor == minor);
-    if let Some(minor) = wanted {
-        return if listed(minor) { Ok(minor) } else { Err(format!("There is no card {minor}.")) };
+fn choose_card<'a>(host: &'a Host, wanted: Option<&Wanted>) -> Result<(usize, &'a ListedCard), String> {
+    let numbered = |number: usize| host.card_numbered(number).ok_or(format!("There is no card {number}."));
+    match wanted {
+        Some(Wanted::Number(number)) => return numbered(*number),
+        Some(Wanted::Address(address)) => {
+            return host.card_at(address).ok_or(format!("The driver has no card at {address}."));
+        }
+        None => {}
     }
     if host.cards.len() == 1 {
-        return Ok(host.cards[0].minor);
+        return numbered(0);
     }
     print!("Which card? Type its number: ");
     let _ = io::stdout().flush();
     let typed = answer();
-    let minor: u32 = typed.parse().map_err(|_| format!("{typed:?} is not one of the numbers above."))?;
-    if listed(minor) { Ok(minor) } else { Err(format!("There is no card {minor}.")) }
+    let number: usize = typed.parse().map_err(|_| format!("{typed:?} is not one of the numbers above."))?;
+    numbered(number)
 }
 
 /// Writes the report where it was run from, or in the temp folder, and waits for the disk to have
@@ -151,23 +170,24 @@ fn run(options: &Options) -> ExitCode {
         save(&text);
         return ExitCode::FAILURE;
     };
-    let minor = match choose_card(&host, options.card) {
-        Ok(minor) => minor,
+    let (number, listed) = match choose_card(&host, options.card.as_ref()) {
+        Ok(chosen) => chosen,
         Err(why) => {
             println!("{why}");
             return ExitCode::FAILURE;
         }
     };
-    if minor != 0 {
+    if host.cards.len() > 1 {
         let note = format!(
-            "\nNote: card {minor} is not the first one. This program has only been run on a first card, so \
+            "\nNote: this PC has more than one card. The program finds card {number} by its PCI address and \
+             asks the driver which device that is, which has not been tried on a PC with two cards yet, so \
              a wrong answer below could be the program's rather than the card's.\n"
         );
         print!("{note}");
         text.push_str(&note);
     }
 
-    let rm = match LinuxRm::open_card(&host.version, profile, minor) {
+    let rm = match LinuxRm::open_card(&host.version, profile, listed.minor) {
         Ok(rm) => rm,
         Err(error) => {
             println!("\nOpening the driver failed: {error}");
@@ -178,14 +198,22 @@ fn run(options: &Options) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let mut device = match Device::open_card(rm, profile, minor) {
+    let mut device = match Device::open_at(rm, profile, &listed.address) {
         Ok(device) => device,
         Err(error) => {
-            println!("\nOpening card {minor} failed: {error}");
+            let failed = format!(
+                "\nOpening card {number} at {}, device file nvidia{}, failed: {error}\n",
+                listed.address, listed.minor
+            );
+            print!("{failed}");
+            text.push_str(&failed);
             save(&text);
             return ExitCode::FAILURE;
         }
     };
+    let place = format!("\n{}", report::place_line(number, listed, device.instance));
+    print!("{place}");
+    text.push_str(&place);
     let findings = match survey::survey(&mut device) {
         Ok(findings) => findings,
         Err(error) => {
@@ -194,7 +222,7 @@ fn run(options: &Options) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let card_text = format!("\n{}", report::card_lines(minor, &findings));
+    let card_text = format!("\n{}", report::card_lines(number, &findings));
     print!("{card_text}");
     text.push_str(&card_text);
     save(&text);
@@ -202,7 +230,6 @@ fn run(options: &Options) -> ExitCode {
     if options.read_only {
         return ExitCode::SUCCESS;
     }
-    let listed = host.cards.iter().find(|card| card.minor == minor).expect("chosen from the list");
     if let Some(why) = channels::refusal(listed, &findings) {
         let why = format!("\n{why}\n");
         print!("{why}");

@@ -7,7 +7,8 @@ Run `guesthouse-card-check` from a terminal. It needs no root, no Rust, no Windo
 ```sh
 ./guesthouse-card-check               # reads the card, asks before the channel test
 ./guesthouse-card-check --read-only   # stops before the channel test
-./guesthouse-card-check --card 1      # with more than one card, picks one by the driver's number
+./guesthouse-card-check --card 1      # with more than one card, picks the second in the list it prints
+./guesthouse-card-check --pci 0000:02:00.0   # or picks one by its PCI address
 ```
 
 ## What it reads
@@ -18,7 +19,7 @@ Then it says what the channel test does and asks for a y or n. The test makes a 
 
 The file never has the card's UUID or ECID, a serial number, your PC's name, your user name or a path in it. The program never asks the card for the first two, and a test proves the file holds none of those shapes.
 
-A second card is opened through the driver's second device. That part has only been run on a first card, and the program says so when it tries one. Before the channel test it compares the name the opened card gives with the one the driver lists under that number, and if they differ it writes that down and stops, as the channels could reach another card. If a second card gives an odd answer, say which number it had.
+With more than one card, each is found by its PCI address, which stays the same from boot to boot while the card stays in its slot. The program opens the device file the driver lists for that address, then asks the driver which of its devices is the GPU at that address, as the driver numbers them in the order it set them up, which needn't be the device files' order. It prints and writes the address, the device file and the driver's number it used. This has been tried on pretend cards and not yet on a real PC with two cards. Before the channel test it still compares the name the opened card gives with the one the driver lists at that address, and if they differ it writes that down and stops, as the channels could reach another card.
 
 ## When it stops
 

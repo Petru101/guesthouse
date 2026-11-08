@@ -149,8 +149,9 @@ impl LinuxRm {
         Self::open_card(version, sizes, 0)
     }
 
-    /// The same for the card with this number, which is its device file's and the one its line in
-    /// `/proc/driver/nvidia/gpus` calls the minor. Only the first has been run.
+    /// The same for the card with this device file number, which its information file in
+    /// `/proc/driver/nvidia/gpus` calls the minor. The RM's device instance for it is another number:
+    /// see [`super::instance`].
     pub fn open_card(version: &str, sizes: &'static HostBranch, card: u32) -> Result<Self, RmError> {
         let open = |path: &str| {
             let file = OpenOptions::new().read(true).write(true).open(path);
