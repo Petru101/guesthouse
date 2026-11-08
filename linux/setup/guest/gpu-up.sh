@@ -26,10 +26,26 @@ gpu_off() {
 device_present() {
     local device
     for device in "$root"/sys/bus/pci/devices/*; do
-        [ "$(cat "$device/vendor" 2>/dev/null)" = "$nvfwd_vendor" ] &&
-            [ "$(cat "$device/device" 2>/dev/null)" = "$nvfwd_device" ] && return 0
+        if [ "$(cat "$device/vendor" 2>/dev/null)" = "$nvfwd_vendor" ] &&
+            [ "$(cat "$device/device" 2>/dev/null)" = "$nvfwd_device" ]; then
+            nvfwd_pci=$device
+            return 0
+        fi
     done
     return 1
+}
+
+# The call slots are BAR 2 and the window BAR 4, side by side: the range from one to the other.
+cache_device_memory() {
+    local slots window start end
+    slots=$(sed -n 3p "$nvfwd_pci/resource" 2>/dev/null)
+    window=$(sed -n 5p "$nvfwd_pci/resource" 2>/dev/null)
+    # shellcheck disable=SC2086  # three numbers each
+    set -- $slots $window
+    [ $# = 6 ] && [ $(($4)) != 0 ] || return 0
+    start=$(($1 < $4 ? $1 : $4))
+    end=$(($2 > $5 ? $2 : $5))
+    "$here/window-cache.sh" "$start" $((end + 1 - start))
 }
 
 # The host leaves its reason in fw_cfg when it starts a VM with no GPU.
@@ -93,6 +109,7 @@ if [ -n "$own_family" ]; then
     plain_reason=$(plain_desktop_reason "$built_for")
     [ -n "$plain_reason" ] || hide_gdm_rules
 fi
+cache_device_memory
 modprobe nvidia || gpu_off "the nvidia module would not load"
 host_version=$("$here/driver-version.py" 2>&1) || gpu_off "the host's driver did not answer: $host_version"
 # The module cannot unload, but with no user-mode files linked nothing in the guest will use it.
