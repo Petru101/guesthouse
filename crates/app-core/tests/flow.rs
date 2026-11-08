@@ -9,6 +9,7 @@ use guesthouse_app_core::agent::make_token;
 use guesthouse_app_core::context::Context;
 use guesthouse_app_core::machine::{Kind, Machine};
 use guesthouse_app_core::processes::qemu_pid;
+use guesthouse_app_core::settings::{driver_folder, write_setup};
 use guesthouse_app_core::tasks::{State, Status, launch, status};
 use guesthouse_app_core::text::base64_decode;
 use guesthouse_app_core::vm_host::LocalHost;
@@ -215,6 +216,8 @@ fn inner() {
     start_and_stop(&context, &plain);
     let windows = make_machine(&context, "windows", Kind::Windows);
     make_token(&context, &windows).unwrap();
+    fs::create_dir_all(driver_folder(&context)).unwrap();
+    write_setup(&context, json!({"card": {"device": 1}}).as_object().cloned().unwrap()).unwrap();
     start_and_stop(&context, &windows);
     let daemons = context.paths.shared_file("ram", context.slot);
     assert!(!daemons.exists(), "the shared memory has been given back");
