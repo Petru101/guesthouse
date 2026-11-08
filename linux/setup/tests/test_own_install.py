@@ -265,6 +265,7 @@ class SetUp(unittest.TestCase):
         self.assertIn("systemctl enable nvfwd-gpu.service nvfwd-desktop-watch.service", guest.lines("systemctl"))
         self.assertIn("ExecStart=/usr/lib/nvfwd/gpu-up.sh", guest.read("etc/systemd/system/nvfwd-gpu.service"))
         self.assertIn("blacklist nvidia", guest.read("etc/modprobe.d/nvfwd.conf"))
+        self.assertIn("PowerKeyIgnoreInhibited=yes", guest.read("etc/systemd/logind.conf.d/90-nvfwd.conf"))
         self.assertNotIn("drm", guest.read("etc/udev/rules.d/70-nvfwd.rules").split("\n", 2)[-1])
         self.assertEqual(os.readlink(os.path.join(guest.root, "usr/local/sbin/nvfwd-check")), "/usr/lib/nvfwd/check.sh")
         self.assertTrue(os.access(os.path.join(guest.root, "usr/lib/nvfwd/gpu-up.sh"), os.X_OK))

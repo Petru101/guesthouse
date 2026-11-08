@@ -107,6 +107,7 @@ install_hook() {
 install_settings() {
     install -D -m 644 "$here/files/modprobe-nvfwd.conf" "$root/etc/modprobe.d/nvfwd.conf"
     install -D -m 644 "$here/files/70-nvfwd-own.rules" "$root/etc/udev/rules.d/70-nvfwd.rules"
+    install -D -m 644 "$here/files/logind-nvfwd.conf" "$root/etc/systemd/logind.conf.d/90-nvfwd.conf"
     install -D -m 644 "$here/units/nvfwd-gpu.service" "$units/nvfwd-gpu.service"
     install -D -m 644 "$here/units/nvfwd-desktop-watch.service" "$units/nvfwd-desktop-watch.service"
     mkdir -p "$root/usr/local/sbin"
@@ -143,7 +144,7 @@ label_for_selinux() {
         semanage fcontext -m -t bin_t '/usr/lib/nvfwd(/.*)?'
     restorecon -R "$installed" "$units/nvfwd-gpu.service" "$units/nvfwd-desktop-watch.service" \
         "$units"/*.service.d/nvfwd.conf "$root/etc/modprobe.d/nvfwd.conf" "$root/etc/udev/rules.d/70-nvfwd.rules" \
-        "$root/etc/kernel" "$root/lib/modules/$kernel/updates" 2>/dev/null || true
+        "$root/etc/systemd/logind.conf.d" "$root/etc/kernel" "$root/lib/modules/$kernel/updates" 2>/dev/null || true
     echo "SELinux is on: the scripts are labelled as programs, and the driver image is mounted as libraries."
 }
 

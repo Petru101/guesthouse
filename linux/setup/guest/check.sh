@@ -35,6 +35,7 @@ check_install() {
     check 'starts to the graphical target' test "$(systemctl get-default)" = graphical.target
     check 'udev keeps its hands off nvidia.ko' grep -q '^blacklist nvidia$' $root/etc/modprobe.d/nvfwd.conf
     check 'nvidia-drm options set' grep -q 'fbdev=0' $root/etc/modprobe.d/nvfwd.conf
+    check 'the power button powers off' grep -q '^PowerKeyIgnoreInhibited=yes$' "$root/etc/systemd/logind.conf.d/90-nvfwd.conf"
     check 'Xwayland wrapped' test -x "$root/usr/bin/Xwayland.real"
     check 'headers for this kernel' test -e "$root/lib/modules/$(uname -r)/build/Makefile"
     for mask in pipewire.socket pipewire.service wireplumber.service; do
@@ -50,6 +51,7 @@ check_own_install() {
     check 'GPU step enabled' systemctl is-enabled nvfwd-gpu.service
     check 'desktop watch enabled' systemctl is-enabled nvfwd-desktop-watch.service
     check 'udev keeps its hands off nvidia.ko' grep -q '^blacklist nvidia$' "$root/etc/modprobe.d/nvfwd.conf"
+    check 'the power button powers off' grep -q '^PowerKeyIgnoreInhibited=yes$' "$root/etc/systemd/logind.conf.d/90-nvfwd.conf"
     check 'headers for this kernel' test -e "$root/lib/modules/$(uname -r)/build/Makefile"
     if [ -e "$root/sys/fs/selinux/enforce" ]; then
         # user:role:type:level, and the type is what counts.

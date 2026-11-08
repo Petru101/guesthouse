@@ -84,6 +84,20 @@ class SessionSettings(unittest.TestCase):
         self.assertEqual(output.strip(), "noshobj")
 
 
+class PowerButton(unittest.TestCase):
+    def test_it_powers_off_whatever_a_desktop_holds(self):
+        parser = configparser.RawConfigParser()
+        parser.optionxform = str
+        parser.read(os.path.join(GUEST, "files/logind-nvfwd.conf"))
+        self.assertEqual(parser["Login"]["HandlePowerKey"], "poweroff")
+        self.assertEqual(parser["Login"]["PowerKeyIgnoreInhibited"], "yes")
+
+    def test_both_routes_install_it(self):
+        for script in ("first-boot.sh", "setup-own.sh"):
+            with open(os.path.join(GUEST, script)) as f:
+                self.assertIn("logind.conf.d/90-nvfwd.conf", f.read(), script)
+
+
 class FirstBoot(unittest.TestCase):
     def test_it_never_unloads_itself_while_it_runs(self):
         with open(os.path.join(GUEST, "first-boot.sh")) as f:

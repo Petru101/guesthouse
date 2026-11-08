@@ -22,6 +22,7 @@ class FakeGuest:
         shutil.copytree(GUEST, self.scripts)
         self.file("var/lib/nvfwd/first-boot-done", "")
         self.file("etc/modprobe.d/nvfwd.conf", "blacklist nvidia\noptions nvidia-drm modeset=1 fbdev=0\n")
+        self.file("etc/systemd/logind.conf.d/90-nvfwd.conf", "[Login]\nPowerKeyIgnoreInhibited=yes\n")
         self.file("usr/bin/Xwayland.real", "", True)
         self.file("lib/modules/7.0/build/Makefile", "")
         self.file("opt/ff/firefox/firefox", "", True)

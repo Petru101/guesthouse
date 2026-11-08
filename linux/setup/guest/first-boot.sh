@@ -18,6 +18,7 @@ install_packages() {
 install_settings() {
     install -m 644 "$here/files/modprobe-nvfwd.conf" /etc/modprobe.d/nvfwd.conf
     install -m 644 "$here/files/70-nvfwd.rules" /etc/udev/rules.d/70-nvfwd.rules
+    install -D -m 644 "$here/files/logind-nvfwd.conf" /etc/systemd/logind.conf.d/90-nvfwd.conf
     install -D -m 644 "$here/files/grub-nvfwd.cfg" /etc/default/grub.d/90-nvfwd.cfg
     update-grub
 }
