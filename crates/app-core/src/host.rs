@@ -12,8 +12,10 @@ use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
 pub const GIB: u64 = 1 << 30;
-/// The part of the shared window the guest can fill, on the same tmpfs as RAM.
-pub const IO_SPACE_GIB: u64 = 8;
+/// What a GPU guest's IO space is counted at, on the same tmpfs as RAM and in the PC's RAM. It fills
+/// only as far as the guest's locked allocations go, which on Windows desktops was 130 to 270 MiB.
+/// Games can lock more, and a full tmpfs stops the VM, so this keeps several times that.
+pub const IO_SPACE_GIB: u64 = 2;
 /// Running out of tmpfs kills QEMU with SIGBUS, so stop short of it.
 pub const TMPFS_SPARE_GIB: u64 = 1;
 /// The host keeps a share of its RAM for itself, never less than the least and never more than the
@@ -242,28 +244,24 @@ mod tests {
 
     #[test]
     fn what_a_pc_offers_follows_its_ram_and_its_tmpfs() {
-        assert_eq!(
-            usual(sold_with(16)).limit_gib(),
-            0,
-            "a 16 GB PC: its 7.8 GiB tmpfs is short of the IO space"
-        );
-        assert_eq!(RamOffer::new(16 * GIB, 65 << 20, 0, 30 * GIB, 0).limit_gib(), 6, "issue 9's PC");
-        assert_eq!(usual(sold_with(32)).limit_gib(), 6);
+        assert_eq!(usual(sold_with(16)).limit_gib(), 4, "a 16 GB PC, held to its 7.8 GiB tmpfs");
+        assert_eq!(RamOffer::new(16 * GIB, 65 << 20, 0, 30 * GIB, 0).limit_gib(), 12, "issue 9's PC");
+        assert_eq!(usual(sold_with(32)).limit_gib(), 12);
         assert_eq!(
             RamOffer::new(46 * GIB, 0, 0, 91 * GIB, 0).limit_gib(),
-            37,
+            43,
             "the tmpfs, less the IO space"
         );
-        assert_eq!(RamOffer::new(46 * GIB, 0, 0, 40 * GIB, 0).limit_gib(), 22, "the host keeps its share");
+        assert_eq!(RamOffer::new(46 * GIB, 0, 0, 40 * GIB, 0).limit_gib(), 28, "the host keeps its share");
         assert_eq!(usual(sold_with(8)).limit_gib(), 0);
     }
 
     #[test]
     fn the_other_vms_count_and_this_slots_own_does_not() {
         let alone = RamOffer::new(46 * GIB, 17 * GIB, 17 * GIB, 91 * GIB, 0);
-        assert_eq!(alone.limit_gib(), 37, "the VM's own files do not count");
+        assert_eq!(alone.limit_gib(), 43, "the VM's own files do not count");
         let beside = RamOffer::new(46 * GIB, 17 * GIB, 0, 91 * GIB, 17 * GIB);
-        assert_eq!(beside.limit_gib(), 20, "another VM's do, on the tmpfs and in RAM");
-        assert_eq!(RamOffer::new(46 * GIB, 0, 0, 40 * GIB, 20 * GIB).limit_gib(), 2);
+        assert_eq!(beside.limit_gib(), 26, "another VM's do, on the tmpfs and in RAM");
+        assert_eq!(RamOffer::new(46 * GIB, 0, 0, 40 * GIB, 20 * GIB).limit_gib(), 8);
     }
 }

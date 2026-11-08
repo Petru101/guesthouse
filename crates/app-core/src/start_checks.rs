@@ -71,7 +71,7 @@ pub fn shared_problems(machine: &Machine, others: &[Machine], facts: &SharedFact
     }
     let mut found = Vec::new();
     // RAM they haven't touched yet will still come out of the same tmpfs. Their IO windows count as
-    // far as they have gone: reserving 8 GiB each would stop two 16 GiB guests on a 46 GiB tmpfs.
+    // far as they have gone.
     let reserved: u64 =
         others.iter().filter(|other| other.has_gpu()).map(|other| u64::from(other.ram_gib)).sum();
     let untouched = reserved.saturating_sub(facts.touched_gib);
