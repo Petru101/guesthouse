@@ -9,7 +9,7 @@ use super::driver_versions::{
 use super::gpu_off::{
     GUEST_DRIVER_FILES, GUEST_NO_SOURCE, GUEST_TABLES_DIFFER, GUEST_UNKNOWN_DRIVER, GpuOff,
 };
-use super::layout::BUILT_SOURCES;
+use super::layout::{BUILT_SOURCES, GUEST_SETUP};
 use super::tables::{TABLE_FILES, match_the_device, write_tables};
 use crate::failure::Result;
 use crate::iso::iso_maker;
@@ -33,6 +33,8 @@ const HEADER_FOLDERS: [&str; 8] = [
     "src/nvidia/arch/nvalloc/unix/include",
 ];
 const SOURCE_ID_LENGTH: usize = 12;
+/// Where the guest's scripts go on the image, for a Linux the user installed to set itself up from.
+const SETUP_ON_IMAGE: &str = "setup";
 const READ_ONLY: u32 = 0o444;
 
 /// What came of asking for an image.
@@ -70,6 +72,27 @@ fn our_files(sources: &Path) -> Vec<String> {
     }
     found.sort();
     found
+}
+
+/// The guest's scripts, which go on the image as they are. They aren't built, so they're no part of
+/// the manifest's id, and a new script doesn't rebuild a guest that doesn't use them.
+fn setup_files(sources: &Path) -> Vec<String> {
+    let mut found = Vec::new();
+    walk(sources, GUEST_SETUP, &mut found);
+    found.sort();
+    found
+}
+
+/// A copy keeps each file's mode, and the image keeps whether a file runs.
+fn copy_setup(sources: &Path, to: &Path) -> Result<()> {
+    for name in setup_files(sources) {
+        let target = to.join(&name[GUEST_SETUP.len() + 1..]);
+        if let Some(folder) = target.parent() {
+            fs::create_dir_all(folder)?;
+        }
+        fs::copy(sources.join(&name), target)?;
+    }
+    Ok(())
 }
 
 /// Changes when the guest's sources do, so a guest rebuilds when they move on.
@@ -195,6 +218,7 @@ fn build(
         copy_file(Path::new(source), &content.join(place), place)?;
     }
     write_sources(&content.join("sources.tar"), sources, tree, names, &tables)?;
+    copy_setup(sources, &content.join(SETUP_ON_IMAGE))?;
     let tested = if TESTED_VERSIONS.contains(&loaded) { "yes" } else { "no" };
     fs::write(content.join("manifest"), format!("version={loaded}\nid={id}\ntested={tested}\n"))?;
     let partial = staging.join("image.iso");
@@ -221,7 +245,8 @@ pub fn prepare(host: &dyn DriverHost, sources: &Path, tree: &Path, folder: &Path
     };
     let names = our_files(sources);
     let id = format!("{loaded}-{}", sources_id(sources, &names)?);
-    let image = folder.join(format!("driver-{id}.iso"));
+    let setup_id = sources_id(sources, &setup_files(sources))?;
+    let image = folder.join(format!("driver-{id}-{setup_id}.iso"));
     let warning = untested_warning(&loaded);
     if image.exists() {
         return Ok(Outcome::Ready { image, warning });
@@ -285,6 +310,11 @@ mod tests {
         scratch.path("sources")
     }
 
+    fn image_name(sources: &Path, version: &str) -> String {
+        let id = sources_id(sources, &our_files(sources)).unwrap();
+        format!("driver-{version}-{id}-{}.iso", sources_id(sources, &setup_files(sources)).unwrap())
+    }
+
     fn reason(outcome: Outcome) -> String {
         match outcome {
             Outcome::Refused(off) => off.detail,
@@ -333,8 +363,7 @@ mod tests {
         let scratch = Scratch::new();
         let tree = tree(&scratch, "615.78.08");
         let sources = sources(&scratch);
-        let id = sources_id(&sources, &our_files(&sources)).unwrap();
-        let image = scratch.write(&format!("images/driver-615.78.08-{id}.iso"), "made earlier");
+        let image = scratch.write(&format!("images/{}", image_name(&sources, "615.78.08")), "made earlier");
         let moved_on = FakeHost { installed: Some("615.90.01".into()), ..host("615.78.08") };
         let found = prepare(&moved_on, &sources, &tree, &scratch.path("images")).unwrap();
         assert_eq!(found, Outcome::Ready { image, warning: None });
@@ -345,8 +374,7 @@ mod tests {
         let scratch = Scratch::new();
         let tree = tree(&scratch, "615.90.01");
         let sources = sources(&scratch);
-        let id = sources_id(&sources, &our_files(&sources)).unwrap();
-        scratch.write(&format!("images/driver-615.90.01-{id}.iso"), "made earlier");
+        scratch.write(&format!("images/{}", image_name(&sources, "615.90.01")), "made earlier");
         let found = prepare(&host("615.90.01"), &sources, &tree, &scratch.path("images")).unwrap();
         assert!(matches!(found, Outcome::Ready { warning: Some(_), .. }));
     }
@@ -359,6 +387,32 @@ mod tests {
         assert_eq!(before.len(), SOURCE_ID_LENGTH);
         scratch.write("sources/guest/nvidia.c", "another module");
         assert_ne!(sources_id(&sources, &our_files(&sources)).unwrap(), before);
+    }
+
+    #[test]
+    fn a_new_script_names_a_new_image_and_leaves_the_built_id_alone() {
+        let scratch = Scratch::new();
+        let sources = sources(&scratch);
+        scratch.write("sources/setup/guest/gpu-up.sh", "one");
+        let (built, name) =
+            (sources_id(&sources, &our_files(&sources)).unwrap(), image_name(&sources, "615.78.08"));
+        scratch.write("sources/setup/guest/gpu-up.sh", "two");
+        assert_eq!(sources_id(&sources, &our_files(&sources)).unwrap(), built);
+        assert_ne!(image_name(&sources, "615.78.08"), name);
+        assert_eq!(setup_files(&sources), ["setup/guest/gpu-up.sh"]);
+    }
+
+    #[test]
+    fn the_scripts_go_on_the_image_as_they_are() {
+        let scratch = Scratch::new();
+        let sources = sources(&scratch);
+        let script = scratch.write("sources/setup/guest/setup-own.sh", "#!/bin/bash\n");
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        scratch.write("sources/setup/guest/files/hooks/90-nvfwd.hook", "[Trigger]\n");
+        copy_setup(&sources, &scratch.path("image/setup")).unwrap();
+        let copied = scratch.path("image/setup/setup-own.sh");
+        assert_eq!(fs::metadata(copied).unwrap().permissions().mode() & 0o777, 0o755);
+        assert!(scratch.path("image/setup/files/hooks/90-nvfwd.hook").is_file());
     }
 
     #[test]

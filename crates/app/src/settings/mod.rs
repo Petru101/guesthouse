@@ -7,6 +7,7 @@ mod forwards;
 mod gpu_preview;
 mod hardware;
 mod jail;
+mod linux_gpu;
 mod network;
 mod remove;
 mod sharing;
@@ -59,6 +60,7 @@ struct Parts {
     _token: token::Token,
     _gpu_preview: gpu_preview::GpuPreview,
     _jail: jail::Jail,
+    linux_gpu: linux_gpu::LinuxGpu,
     sharing: sharing::Sharing,
     network: network::Network,
     usb: usb::Usb,
@@ -86,6 +88,7 @@ impl SettingsDialog {
             _token: token::Token::new(&shared, &page),
             _gpu_preview: gpu_preview::GpuPreview::new(&shared, &page),
             _jail: jail::Jail::new(&shared, &page),
+            linux_gpu: linux_gpu::LinuxGpu::new(&shared, &page),
             remove: remove::Remove::new(&shared, &page),
             shared,
         }));
@@ -111,6 +114,7 @@ impl SettingsDialog {
         parts.sharing.set_status(status);
         parts.network.set_status(status);
         parts.usb.set_status(status);
+        parts.linux_gpu.set_status(status);
         parts.remove.set_status(status);
     }
 }

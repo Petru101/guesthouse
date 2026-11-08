@@ -2,10 +2,11 @@
 //! and the guest's disk and NIC are virtio. Its plain screen always comes through QEMU's D-Bus display,
 //! whether or not it gets the GPU.
 
-use super::arguments::words;
+use super::arguments::{RELATIVE_MOUSE, words};
 use super::{Boot, DISPLAY_SOCKET, UbuntuBoot, UbuntuInstall, VmPlan};
 use crate::text::qemu_value;
 use guesthouse_daemon::slot::Slot;
+use std::path::Path;
 
 /// The installer asks for a confirmation unless this is on its command line, and the ISO's own menu
 /// doesn't put it there, which is why the kernel is booted directly.
@@ -88,40 +89,58 @@ impl VmPlan {
 
     fn with_gpu_arguments(&self, boot: &UbuntuBoot) -> Vec<String> {
         match boot {
-            UbuntuBoot::NoGpu { reason_file } => {
-                let file = qemu_value(&reason_file.to_string_lossy());
-                words(&["-fw_cfg", &format!("name={OFF_REASON_NAME},file={file}")])
+            UbuntuBoot::NoGpu { reason_file } => Self::off_reason_arguments(reason_file),
+            UbuntuBoot::WithGpu { image, allow_list, sensor_daemon } => {
+                let mut arguments = self.forwarding_arguments(image, allow_list, sensor_daemon);
+                arguments.extend(words(&[
+                    "-device",
+                    "virtio-serial-pci",
+                    "-chardev",
+                    &format!(
+                        "socket,id=fwdin,path={},server=on,wait=off",
+                        self.in_run_folder(FORWARDED_INPUT_SOCKET)
+                    ),
+                    "-device",
+                    &format!("virtserialport,chardev=fwdin,name={INPUT_PORT}"),
+                ]));
+                arguments
             }
-            UbuntuBoot::WithGpu { image, allow_list, sensor_daemon } => words(&[
-                "-global",
-                &format!("q35-pcihost.pci-hole64-size={GPU_WINDOW}"),
-                "-drive",
-                &format!(
-                    "if=none,id=nvdriver,file={},format=raw,readonly=on",
-                    qemu_value(&image.to_string_lossy())
-                ),
-                "-device",
-                "virtio-blk-pci,drive=nvdriver",
-                "-device",
-                &format!(
-                    "nvfwd,allow={},sensord={},log={},trace=off,nogpu=off,show={}{}",
-                    allow_list.display(),
-                    sensor_daemon.display(),
-                    self.in_run_folder("calls.log"),
-                    self.in_run_folder(FRAMES_PREFIX),
-                    self.vram.as_ref().map_or_else(String::new, |cap| format!(",max-vram={cap}"))
-                ),
-                "-device",
-                "virtio-serial-pci",
-                "-chardev",
-                &format!(
-                    "socket,id=fwdin,path={},server=on,wait=off",
-                    self.in_run_folder(FORWARDED_INPUT_SOCKET)
-                ),
-                "-device",
-                &format!("virtserialport,chardev=fwdin,name={INPUT_PORT}"),
-            ]),
         }
+    }
+
+    /// The window, the driver image and the device, which a Linux the user installed has too.
+    pub(super) fn forwarding_arguments(
+        &self,
+        image: &Path,
+        allow_list: &Path,
+        sensor_daemon: &Path,
+    ) -> Vec<String> {
+        words(&[
+            "-global",
+            &format!("q35-pcihost.pci-hole64-size={GPU_WINDOW}"),
+            "-drive",
+            &format!(
+                "if=none,id=nvdriver,file={},format=raw,readonly=on",
+                qemu_value(&image.to_string_lossy())
+            ),
+            "-device",
+            "virtio-blk-pci,drive=nvdriver",
+            "-device",
+            &format!(
+                "nvfwd,allow={},sensord={},log={},trace=off,nogpu=off,show={}{}",
+                allow_list.display(),
+                sensor_daemon.display(),
+                self.in_run_folder("calls.log"),
+                self.in_run_folder(FRAMES_PREFIX),
+                self.vram.as_ref().map_or_else(String::new, |cap| format!(",max-vram={cap}"))
+            ),
+        ])
+    }
+
+    /// The guest's reason for having no GPU, where gpu-up.sh looks for it.
+    pub(super) fn off_reason_arguments(reason_file: &Path) -> Vec<String> {
+        let file = qemu_value(&reason_file.to_string_lossy());
+        words(&["-fw_cfg", &format!("name={OFF_REASON_NAME},file={file}")])
     }
 
     fn boot_ubuntu_arguments(&self, boot: &UbuntuBoot) -> Vec<String> {
@@ -152,6 +171,9 @@ impl VmPlan {
             "qemu-xhci,id=xhci",
             "-device",
             "usb-tablet",
+            // For a captured mouse, which moves it with no position to keep.
+            "-device",
+            RELATIVE_MOUSE,
             "-vga",
             "std",
             "-display",
@@ -178,7 +200,10 @@ impl VmPlan {
     /// guest's own values.
     pub(super) fn address_layout(&self) -> Vec<String> {
         match self.boot {
-            Boot::Ubuntu(_) => words(&["setarch", "x86_64", "-L"]),
+            Boot::Ubuntu(_) | Boot::OwnLinux { gpu: UbuntuBoot::WithGpu { .. }, .. } => {
+                words(&["setarch", "x86_64", "-L"])
+            }
+            // With no GPU it's a plain machine, which starts as one always has.
             _ => Vec::new(),
         }
     }
@@ -239,6 +264,15 @@ mod tests {
         assert!(arguments.iter().any(|word| word.contains("file=/images/driver.iso,format=raw,readonly=on")));
         assert!(arguments.iter().any(|word| word.contains("forwarded-input.sock")));
         assert!(!arguments.iter().any(|word| word == "-fw_cfg"));
+    }
+
+    #[test]
+    fn a_boot_has_the_mouse_capturing_needs_and_the_install_does_not() {
+        let scratch = Scratch::new();
+        for boot in [no_gpu(), with_gpu()] {
+            let arguments = plan(&scratch_context(&scratch), boot).qemu_arguments();
+            assert!(arguments.iter().any(|word| word == RELATIVE_MOUSE));
+        }
     }
 
     #[test]

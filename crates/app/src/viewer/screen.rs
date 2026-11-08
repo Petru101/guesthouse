@@ -40,6 +40,8 @@ pub(super) struct Inner {
     pub(super) guest_pointer: RefCell<Option<gdk::Cursor>>,
     /// The guest's cursor, while there's no host pointer to show it.
     pub(super) cursor_layer: CursorLayer,
+    /// No pointer at all, over a guest that draws its own into its frames.
+    pub(super) no_pointer: Option<gdk::Cursor>,
     pub(super) run_folder: RefCell<PathBuf>,
     /// The guest's frames from the GPU, when it has any.
     pub(super) gpu: RefCell<Option<Box<dyn FrameSource>>>,
@@ -110,6 +112,7 @@ impl Screen {
             spinner,
             guest_pointer: RefCell::default(),
             cursor_layer,
+            no_pointer: gdk::Cursor::from_name("none", None),
             gpu: RefCell::default(),
             qemu: RefCell::default(),
             booting: Cell::new(true),
@@ -172,10 +175,18 @@ impl Screen {
             self.0.gpu.borrow_mut().take();
             self.0.qemu.borrow_mut().take();
             self.0.booting.set(true);
+            // A still screen sends nothing new, and the last one shown here was the other route's.
+            self.forget_picture();
             *self.0.input_socket.borrow_mut() = socket;
             self.close_guest();
             self.follow_guest();
         }
+    }
+
+    fn forget_picture(&self) {
+        self.0.latest.borrow_mut().take();
+        self.0.picture.set_paintable(None::<&gdk::Paintable>);
+        self.0.spinner.set_visible(true);
     }
 
     fn connect_life(&self) {
@@ -212,8 +223,7 @@ impl Screen {
         self.close_guest();
         self.0.gpu.borrow_mut().take();
         self.0.qemu.borrow_mut().take();
-        self.0.latest.borrow_mut().take();
-        self.0.picture.set_paintable(None::<&gdk::Paintable>);
+        self.forget_picture();
     }
 
     fn poll(&self) {
@@ -252,13 +262,23 @@ impl Screen {
     /// A cursor moving makes no frame, so this is looked at whether a frame came or not.
     fn follow_gpu_cursor(&self) {
         let mut gpu = self.0.gpu.borrow_mut();
-        let Some(source) = gpu.as_mut() else { return };
+        let Some(source) = gpu.as_mut() else {
+            // QEMU's display sets its own, and only the hidden one is this side's to take back.
+            if self.0.no_pointer.is_some() && self.0.picture.cursor() == self.0.no_pointer {
+                self.0.picture.set_cursor(None);
+            }
+            return;
+        };
         if let Some(cursor) = source.new_cursor() {
             *self.0.guest_pointer.borrow_mut() = Some(cursor);
         }
         // A pointer set here would show through the capture, which hides the root's.
         let captured = self.captured();
-        let pointer = self.0.guest_pointer.borrow().clone().filter(|_| !captured);
+        let pointer = if self.guest_draws_pointer() {
+            self.0.no_pointer.clone()
+        } else {
+            self.0.guest_pointer.borrow().clone().filter(|_| !captured)
+        };
         if self.0.picture.cursor() != pointer {
             self.0.picture.set_cursor(pointer.as_ref());
         }
@@ -268,6 +288,12 @@ impl Screen {
             (Some((cursor, _)), Some((x, y, scale))) => self.0.cursor_layer.show(&cursor, x, y, scale),
             _ => self.0.cursor_layer.hide(),
         }
+    }
+
+    /// The stand-in for nvidia-modeset has no cursor plane, so a Linux desktop on the GPU draws its pointer
+    /// into its frames. The host's would be a second one, ahead of it.
+    fn guest_draws_pointer(&self) -> bool {
+        self.0.route.get() == FrameRoute::Forwarded && !self.0.booting.get()
     }
 
     /// A point in the guest's pixels as a point on the screen widget, and the scale between them.
@@ -341,7 +367,8 @@ impl Screen {
         }
     }
 
-    /// An Ubuntu guest's session takes its input down its own port.
+    /// An Ubuntu guest's session takes its input down its own port. A Linux the user installed has no
+    /// such port, and QEMU's own keyboard and pointer reach its compositor through the guest's kernel.
     fn follow_forwarded(&self) {
         let mut forwarded = self.0.forwarded.borrow_mut();
         if forwarded.as_ref().is_some_and(|input| !input.alive()) {

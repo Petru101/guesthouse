@@ -1,0 +1,3 @@
+# NVIDIA's nodes are open to every user, as NVIDIA's own driver makes them. The host's allow list is
+# what guards the GPU. Unlike Ubuntu's own install, the guest's other display nodes are left as they are.
+KERNEL=="nvidiactl|nvidia[0-9]*|nvidia-uvm", MODE="0666"

@@ -144,6 +144,12 @@ impl VmPlan {
         if self.has_machine_line() {
             plan.grant(Grant::Read, self.firmware_code()).grant(Grant::Write, &self.vars);
         }
+        // A disc chosen while it runs is outside the jail, and the guest sees an empty drive.
+        if let Boot::Plain { iso } | Boot::OwnLinux { iso, .. } = &self.boot
+            && !iso.is_empty()
+        {
+            plan.grant(Grant::Read, iso);
+        }
         for device in DEVICES {
             plan.grant(Grant::Device, device);
         }

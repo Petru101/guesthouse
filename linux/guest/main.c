@@ -6,6 +6,7 @@
 #include <linux/module.h>
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
+#include "kernel_compat.h"
 #include "nvfwd_guest.h"
 
 #define NV_MAJOR 195

@@ -35,6 +35,7 @@ check_install() {
     check 'starts to the graphical target' test "$(systemctl get-default)" = graphical.target
     check 'udev keeps its hands off nvidia.ko' grep -q '^blacklist nvidia$' $root/etc/modprobe.d/nvfwd.conf
     check 'nvidia-drm options set' grep -q 'fbdev=0' $root/etc/modprobe.d/nvfwd.conf
+    check 'the power button powers off' grep -q '^PowerKeyIgnoreInhibited=yes$' "$root/etc/systemd/logind.conf.d/90-nvfwd.conf"
     check 'Xwayland wrapped' test -x "$root/usr/bin/Xwayland.real"
     check 'headers for this kernel' test -e "$root/lib/modules/$(uname -r)/build/Makefile"
     for mask in pipewire.socket pipewire.service wireplumber.service; do
@@ -43,9 +44,47 @@ check_install() {
     check 'Firefox installed' test -x "$root/opt/ff/firefox/firefox"
 }
 
+# A guest installed by hand has no first boot of ours and no package list in dpkg. Its desktop is its own.
+check_own_install() {
+    local label
+    check 'setup finished' test -e "$own_done_marker"
+    check 'GPU step enabled' systemctl is-enabled nvfwd-gpu.service
+    check 'desktop watch enabled' systemctl is-enabled nvfwd-desktop-watch.service
+    check 'udev keeps its hands off nvidia.ko' grep -q '^blacklist nvidia$' "$root/etc/modprobe.d/nvfwd.conf"
+    check 'the power button powers off' grep -q '^PowerKeyIgnoreInhibited=yes$' "$root/etc/systemd/logind.conf.d/90-nvfwd.conf"
+    check 'headers for this kernel' test -e "$root/lib/modules/$(uname -r)/build/Makefile"
+    if [ -e "$root/sys/fs/selinux/enforce" ]; then
+        # user:role:type:level, and the type is what counts.
+        label=$(stat -c %C "$root/usr/lib/nvfwd/gpu-up.sh" 2>/dev/null | cut -d: -f3)
+        if [ "$label" = bin_t ]; then
+            pass 'SELinux labels the GPU step a program'
+        else
+            fail "SELinux labels the GPU step ${label:-nothing}, not a program"
+        fi
+    fi
+}
+
+# Its own login screen and desktop, on the GPU, or on the plain screen and why.
+check_own_desktop() {
+    local where pid on_gpu=
+    where=$(value_of "$state_file" desktop 2>/dev/null)
+    if [ "$where" != gpu ]; then
+        echo "---- desktop on the plain screen: $(value_of "$state_file" desktop_reason 2>/dev/null)"
+        return 0
+    fi
+    echo '---- desktop on the GPU, through Zink'
+    . "$here/own-desktop.sh"
+    check 'session settings for the GPU in place' grep -q '^GALLIUM_DRIVER=zink$' "$session_settings"
+    check 'the GPU screen is lit' gpu_screen_lit
+    for pid in $(pgrep -x gnome-shell) $(pgrep -x kwin_wayland); do
+        grep -q /dev/nvidia0 "$root/proc/$pid/maps" 2>/dev/null && on_gpu=1
+    done
+    if [ -n "$on_gpu" ]; then pass 'the compositor runs on the GPU'; else fail 'the compositor runs on the GPU'; fi
+}
+
 check_version() {
     local version=$1 module answer
-    for module in nvidia nvidia_modeset nvidia_drm; do
+    for module in $modules; do
         check "module $module loaded" test -d "$root/sys/module/$module"
     done
     check "module nvidia says $version" test "$(cat "$root/sys/module/nvidia/version" 2>/dev/null)" = "$version"
@@ -101,6 +140,7 @@ check_shell_common() {
         return 1
     fi
     pass 'gnome-shell running'
+    check 'Power Off and Restart offered (nvfwd-session)' pgrep -x nvfwd-session
     check 'session holds no ambient capability, so images load' grep -q '^CapAmb:\s*0*$' "$root/proc/$shell_pid/status"
 }
 
@@ -154,8 +194,41 @@ check_apps() {
     done
 }
 
+finish() {
+    echo '----'
+    if [ "$failed" != 0 ]; then
+        echo "FAIL $failed parts do not work"
+        exit 1
+    fi
+    if [ "$gpu" != on ] && [ -z "$gpu_off_expected" ]; then
+        echo 'OFF  everything else works, but this boot has no GPU'
+        exit 2
+    fi
+    echo 'PASS everything'
+    exit 0
+}
+
 gpu_off_expected=
 [ "${1:-}" != --gpu-off-expected ] || gpu_off_expected=1
+modules='nvidia nvidia_modeset nvidia_drm'
+if [ -n "$own_family" ]; then
+    modules=nvidia
+    check_own_install
+    gpu=$(value_of "$state_file" gpu 2>/dev/null)
+    if [ "$gpu" = on ]; then
+        version=$(value_of "$state_file" version)
+        echo "---- GPU is on, driver $version"
+        [ "$(value_of "$state_file" tested)" = yes ] || warn "driver $version has never been tested with this project"
+        [ "$(value_of "$state_file" desktop)" != gpu ] || modules='nvidia nvidia_modeset nvidia_drm'
+        check_version "$version"
+        check_gpu
+        check_own_desktop
+    else
+        echo "---- GPU is off: $(value_of "$state_file" reason 2>/dev/null)"
+        off 'nvidia-smi, CUDA and Vulkan are not checked'
+    fi
+    finish
+fi
 check_install
 
 gpu=$(value_of "$state_file" gpu 2>/dev/null)
@@ -177,13 +250,4 @@ fi
 echo '---- applications, as Activities opens them'
 if [ -n "$shell_pid" ]; then check_apps; else fail 'no shell to open applications in'; fi
 
-echo '----'
-if [ "$failed" != 0 ]; then
-    echo "FAIL $failed parts do not work"
-    exit 1
-fi
-if [ "$gpu" != on ] && [ -z "$gpu_off_expected" ]; then
-    echo 'OFF  everything else works, but this boot has no GPU'
-    exit 2
-fi
-echo 'PASS everything'
+finish

@@ -7,14 +7,9 @@ input_port=/dev/virtio-ports/nvfwd.input
 session_env=$XDG_RUNTIME_DIR/nvfwd-session.env
 
 gpu_settings() {
-    # NVIDIA's Vulkan driver needs NVIDIA's EGL vendor loaded, and Mesa must come first to win.
-    export __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/50_mesa.json:/usr/share/glvnd/egl_vendor.d/10_nvidia.json
-    export GBM_BACKEND=dri GALLIUM_DRIVER=zink MESA_LOADER_DRIVER_OVERRIDE=zink
-    export VK_DRIVER_FILES=/usr/share/vulkan/icd.d/nvidia_icd.x86_64.json
-    # The stand-in has no cursor plane, so the pointer is drawn into the frame.
-    export MUTTER_DEBUG_DISABLE_HW_CURSORS=1
-    # Zink crashes compiling some shaders on its VK_EXT_shader_object path.
-    export ZINK_DEBUG=noshobj
+    set -a
+    . "$here/files/gpu-session.env"
+    set +a
     # GLX goes through cast/glx_dri3.c, which says why.
     export __GLX_VENDOR_LIBRARY_NAME=dri3
 }
@@ -22,6 +17,8 @@ gpu_settings() {
 # The second half runs inside the session's own bus. The login gives a user bus too, but its
 # socket-started PipeWire is masked and the shell's helpers belong on this one.
 if [ "${1:-}" = --inside-bus ]; then
+    # Power Off and Restart in the shell's menu, which otherwise ask a gnome-session that isn't here.
+    "$built/nvfwd-session" &
     pipewire &
     sleep 1
     wireplumber &

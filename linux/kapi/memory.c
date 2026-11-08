@@ -173,7 +173,8 @@ NvBool mapMemory(const struct NvKmsKapiDevice *cd, const struct NvKmsKapiMemory 
 			nvfwd_kclose(gpu);
 			return NV_FALSE;
 		}
-		rc = nvfwd_kmap(gpu, m->size, &m->phys, &m->window);
+		/* The window maps whole pages. nvidia-drm asks for smaller memory, such as a colour LUT's. */
+		rc = nvfwd_kmap(gpu, PAGE_ALIGN(m->size), &m->phys, &m->window);
 		nvfwd_kclose(gpu); /* the mapping keeps what it needs */
 		if (rc) {
 			pr_warn("nvidia-modeset stand-in: window: %ld\n", rc);
@@ -204,7 +205,7 @@ void freeMemory(struct NvKmsKapiDevice *d, struct NvKmsKapiMemory *m)
 		d->shown[m->show_id - 1] = NULL;
 	spin_unlock_irq(&d->held_lock);
 	if (m->mapped)
-		nvfwd_kunmap(m->window, m->size);
+		nvfwd_kunmap(m->window, PAGE_ALIGN(m->size));
 	rm_free(d, HANDLE_DEVICE, m->handle);
 	if (m->import)
 		fput(m->import);

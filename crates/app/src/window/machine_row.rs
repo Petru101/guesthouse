@@ -165,6 +165,9 @@ impl MachineRow {
         if !status.jail_note.is_empty() {
             lines.push(status.jail_note.clone());
         }
+        if !status.guest_gpu.is_empty() {
+            lines.push(status.guest_gpu.clone());
+        }
         if blocked {
             lines.push(no_slot_text(&self.window.context()));
         }

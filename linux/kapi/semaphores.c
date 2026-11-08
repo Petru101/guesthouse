@@ -94,7 +94,7 @@ static void semaphore_memory_free(struct NvKmsKapiDevice *d, struct NvKmsKapiMem
 	if (map)
 		unmapMemory(d, m, NVKMS_KAPI_MAPPING_TYPE_KERNEL, map);
 	if (m->mapped)
-		nvfwd_kunmap(m->window, m->size);
+		nvfwd_kunmap(m->window, PAGE_ALIGN(m->size));
 	rm_free(d, HANDLE_DEVICE, m->handle);
 	kfree(m);
 }

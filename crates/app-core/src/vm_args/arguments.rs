@@ -20,6 +20,8 @@ const IO_MEMORY_SIZE: &str = "64G";
 const HOST_CAPABILITIES: u32 = 1;
 const MIB: u64 = 1 << 20;
 const BYTES_PER_PIXEL: u64 = 4;
+/// The relative mouse beside the tablet, which capturing the mouse moves.
+pub(super) const RELATIVE_MOUSE: &str = "usb-mouse,bus=xhci.0";
 pub(super) const MONITOR_SOCKETS: [&str; 4] = ["qmp.sock", "watch.sock", "input.sock", DISPLAY_SOCKET];
 
 impl VmPlan {
@@ -181,7 +183,7 @@ impl VmPlan {
 
     fn boot_arguments(&self) -> Vec<String> {
         match &self.boot {
-            Boot::Plain { iso } => words(&[
+            Boot::Plain { iso } | Boot::OwnLinux { iso, .. } => words(&[
                 "-drive",
                 &Self::cdrom("cd0", iso),
                 "-device",
@@ -215,7 +217,7 @@ impl VmPlan {
         arguments.extend(self.common_arguments());
         arguments.extend(self.boot_arguments());
         if self.mouse {
-            arguments.extend(words(&["-device", "usb-mouse,bus=xhci.0"]));
+            arguments.extend(words(&["-device", RELATIVE_MOUSE]));
         }
         if self.tpm.is_some() {
             arguments.extend(words(&[
@@ -229,6 +231,8 @@ impl VmPlan {
         }
         arguments.extend(self.second_nic());
         arguments.extend(self.qemu_sandbox_arguments());
+        // Last, so the devices the guest was installed with keep their places.
+        arguments.extend(self.own_linux_arguments());
         arguments
     }
 

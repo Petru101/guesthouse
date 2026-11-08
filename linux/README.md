@@ -1,6 +1,6 @@
 # Linux guests
 
-A Linux guest doesn't use the Windows route. It runs NVIDIA's own Linux user-mode driver, the same files as the host, and a QEMU device forwards its kernel calls to the host's `/dev/nvidia*`. So far that's Ubuntu 26.04.
+A Linux guest doesn't use the Windows route. It runs NVIDIA's own Linux user-mode driver, the same files as the host, and a QEMU device forwards its kernel calls to the host's `/dev/nvidia*`. Ubuntu 26.04 installs by itself, and a Linux you install by hand can have it too.
 
 The app does the host's side of this: the install, the driver image, the QEMU arguments and the viewer. This folder is what goes into a guest, and the device itself is in `qemu/qemu-gpupv.patch`.
 
@@ -11,7 +11,7 @@ The app does the host's side of this: the install, the driver image, the QEMU ar
 - **A mapping** goes over part of a 64 GiB window in guest physical space. KVM's notifier does the rest, so no memory slot changes per mapping. UVM has to keep the guest's own address, so a UVM mapping gets a memory slot of its own.
 - **`kapi/`** stands in for `nvidia-modeset`, under NVIDIA's own `nvidia-drm`. There's one virtual monitor, and a flip goes to the viewer. No display class reaches the host.
 - **`layer/`** has two Vulkan layers. `wsi_*.c` answers surface calls, as NVIDIA's own WSI wants its X driver: a Vulkan app on Wayland turns it on with `ENABLE_NVFWD_WSI=1`. `zink_on_nvidia.c` corrects a few things for a compositor on Zink.
-- **`cast/`** carries the viewer's keys and pointer into the session, and has a GLX vendor and the Xwayland wrapper for X11 clients.
+- **`cast/`** carries the viewer's keys and pointer into the session, and has a GLX vendor and the Xwayland wrapper for X11 clients, and for a Linux installed by hand an EGL vendor that does the wrapper's job. `session_manager.c` answers for gnome-session, which Ubuntu's desktop here doesn't run, so the shell's menu has Power Off and Restart.
 - **`setup/`** is the guest's side of the install: the seed, first boot, and `gpu-up.sh`, which brings the GPU up on each boot or turns it off and says why.
 
 The card's sensor readings go through `nvfwd-sensord`, a separate program. It keeps the driver's sensor page and copies the parts a guest may see into a page of its own, so `nvidia-smi` shows real readings and QEMU holds no host client. If the daemon can't start, or doesn't know the driver, or dies, the guest keeps the GPU and `nvidia-smi` shows N/A. The VM's `calls.log` says why.
@@ -26,6 +26,29 @@ You need an NVIDIA card with the open kernel modules loaded, and the driver vers
 4. Set `GUESTHOUSE_PROGRAM` to this repository and `QEMU` to your build, and make an Ubuntu machine from Ubuntu's server ISO.
 
 The install needs no hands, and the first boot builds everything. If anything about the driver is in doubt the GPU stays off and the VM still boots. The guest gets one plain sentence and the app has the details, as those can hold your paths. As root in the guest, `nvfwd-check` says which parts work.
+
+## A Linux you installed yourself
+
+Any ISO the app doesn't install by itself makes a plain machine, which you install by hand in the viewer. If it's a Linux, its settings have a Linux GPU switch. With it on, the machine starts with the same device, driver image and jail as Ubuntu's, on its own firmware and disk, and with the GPU off it boots as it always did.
+
+Once, as root in the guest:
+
+    mount -o ro LABEL=NVFWD_DRIVER /mnt
+    bash /mnt/setup/setup-own.sh
+
+then reboot. `setup-own.sh` reads `/etc/os-release` and uses dnf, apt, pacman or zypper, so Fedora, Debian, Ubuntu, Arch, openSUSE and the distributions built on them. It refuses anything else, an image-based system like Silverblue, and Secure Boot. It installs the running kernel's headers, a compiler and what our programs need, builds our module and the stand-in for nvidia-modeset, and installs `nvfwd-gpu.service`, which brings the GPU up at each boot as in Ubuntu. With SELinux on, the scripts are labelled as programs and the image is mounted as libraries. It never turns SELinux off. Run it again after updating the app.
+
+A new kernel needs a new build. Each boot builds for its kernel if it has to, and a hook builds as the kernel arrives, so the first boot doesn't wait: kernel-install on Fedora, the kernel's postinst and header_postinst hooks on Debian and Ubuntu, a pacman hook on Arch. openSUSE has no hook yet, so its first boot on a new kernel takes a minute or two longer. There's no DKMS: what's built depends on the host's driver as much as on the kernel, and the boot already rebuilds for either.
+
+With GDM, the login screen and your desktop go on the GPU too, the way Ubuntu's does: nvidia-drm on the stand-in, and GNOME on Zink over NVIDIA's Vulkan driver. That covers Fedora Workstation, Debian and Ubuntu with GNOME. Plasma goes on the GPU the same way, with KWin told which card is the GPU's, behind Plasma Login (Fedora's KDE) or SDDM's Wayland login screen. The settings live in `/run/environment.d` for that boot only, so a boot without the GPU gets plain Mesa on the plain screen. If the login screen doesn't light the GPU's screen within 90 seconds, the guest boots again on the plain screen, and later boots with the same driver and kernel start there. Delete `/var/lib/nvfwd/desktop-failed` to try again, or put `desktop=plain` in `/etc/nvfwd/own-install.conf` to keep it plain. Any other display manager, and SDDM with its X11 login screen, stays on the plain screen for now, and there the GPU is for programs: CUDA, Vulkan, NVENC and NVDEC, `nvidia-smi`. On the GPU's desktop, X11 programs get the GPU too, through Xwayland on Zink as in Ubuntu, and a Vulkan program on Wayland needs `ENABLE_NVFWD_WSI=1` to show a window.
+
+The viewer shows the GPU's frames once there are some, and the plain screen until then or when the guest says its desktop is there. The keyboard and mouse are QEMU's either way, and a Linux machine has the relative mouse that capturing it needs. The app's Shut Down is the VM's power button, so the setup makes that button shut down: logind acts on it, GNOME does by itself in a VM, and Plasma is told to in `/etc/xdg/powerdevilrc` unless you have one.
+
+`nvfwd-check` says which parts work, and while the VM runs its row in the app says whether the guest brought its GPU up, and where its desktop is. Every network mode and a shared folder work with the GPU, in the same jail as Ubuntu's. A disc you put in the drive while it runs can't be read in the jail.
+
+Like Ubuntu's, it uses the first NVIDIA card on a PC with more than one.
+
+What's tested: Fedora 45 Workstation and Fedora 45 KDE Plasma, installed by hand, with SELinux enforcing. The setup, `nvfwd-check`, CUDA, Vulkan and `nvidia-smi` all passed. GDM and GNOME, and Plasma Login and Plasma, came up on the GPU in the viewer, with automatic login and without, a Vulkan window and an X11 GL window drew, and Shut Down worked. After `dnf upgrade kernel` the next boot fetched the new kernel's headers and built for it. The build also passed in Debian 13 and Arch containers against their kernel headers. Debian, Ubuntu, Arch and openSUSE haven't run in a real guest yet, and openSUSE not even in a container.
 
 ## Video
 

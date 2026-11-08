@@ -71,6 +71,33 @@ class Units(unittest.TestCase):
             self.assertTrue(os.access(path, os.X_OK), path)
 
 
+class SessionSettings(unittest.TestCase):
+    def test_they_are_lines_a_shell_and_environment_d_both_read(self):
+        with open(os.path.join(GUEST, "files/gpu-session.env")) as f:
+            lines = [line.strip() for line in f if line.strip() and not line.startswith("#")]
+        names = [line.split("=", 1)[0] for line in lines]
+        for line in lines:
+            self.assertRegex(line, r"^[A-Z_]+=[^ '\"$]+$")
+        self.assertIn("GALLIUM_DRIVER", names)
+        output = subprocess.run(["bash", "-c", f'set -a; . {GUEST}/files/gpu-session.env; echo "$ZINK_DEBUG"'],
+                                capture_output=True, text=True, check=True).stdout
+        self.assertEqual(output.strip(), "noshobj")
+
+
+class PowerButton(unittest.TestCase):
+    def test_it_powers_off_whatever_a_desktop_holds(self):
+        parser = configparser.RawConfigParser()
+        parser.optionxform = str
+        parser.read(os.path.join(GUEST, "files/logind-nvfwd.conf"))
+        self.assertEqual(parser["Login"]["HandlePowerKey"], "poweroff")
+        self.assertEqual(parser["Login"]["PowerKeyIgnoreInhibited"], "yes")
+
+    def test_both_routes_install_it(self):
+        for script in ("first-boot.sh", "setup-own.sh"):
+            with open(os.path.join(GUEST, script)) as f:
+                self.assertIn("logind.conf.d/90-nvfwd.conf", f.read(), script)
+
+
 class FirstBoot(unittest.TestCase):
     def test_it_never_unloads_itself_while_it_runs(self):
         with open(os.path.join(GUEST, "first-boot.sh")) as f:
@@ -92,7 +119,7 @@ class Scripts(unittest.TestCase):
 
     def test_run_directly_ones_are_executable(self):
         for path in self.shell_scripts():
-            if os.path.basename(path) != "common.sh":
+            if os.path.basename(path) not in ("common.sh", "distro.sh", "own-desktop.sh"):
                 self.assertTrue(os.access(path, os.X_OK), path)
 
 

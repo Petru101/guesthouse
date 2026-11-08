@@ -26,7 +26,7 @@ static PFN_vkGetDeviceProcAddr next_device_proc;
 
 static int is_compositor(void)
 {
-    static const char *const names[] = { "gnome-shell", "mutter", "Xwayland", "Xwayland.real" };
+    static const char *const names[] = { "gnome-shell", "mutter", "kwin_wayland", "Xwayland", "Xwayland.real" };
 
     for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
         if (!strcmp(program_invocation_short_name, names[i])) {

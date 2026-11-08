@@ -6,6 +6,7 @@
 mod arguments;
 mod forwarding_jail;
 mod nic;
+mod own_linux;
 mod qemu_jail;
 mod ubuntu;
 
@@ -46,6 +47,8 @@ pub enum Boot {
     UbuntuInstall(UbuntuInstall),
     /// An installed Ubuntu guest.
     Ubuntu(UbuntuBoot),
+    /// A plain machine holding a Linux the user installed, with the forwarded GPU if it can have it.
+    OwnLinux { iso: String, gpu: UbuntuBoot },
 }
 
 /// What Ubuntu's unattended install starts from.
@@ -57,7 +60,7 @@ pub struct UbuntuInstall {
     pub initrd: PathBuf,
 }
 
-/// An Ubuntu guest gets the forwarded GPU, or the reason it hasn't.
+/// An Ubuntu guest, or a Linux the user installed, gets the forwarded GPU, or the reason it hasn't.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UbuntuBoot {
     WithGpu {

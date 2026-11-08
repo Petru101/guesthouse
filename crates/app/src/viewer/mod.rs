@@ -344,8 +344,8 @@ impl ScreenPage {
     /// What is going on, under the machine's name.
     pub fn show_hint(&self, status: Option<&Status>) {
         let Some(screen) = self.screen() else { return };
-        if status.is_some() {
-            screen.follow_machine(self.run_folder(), FrameRoute::of(&self.0.machine.borrow()));
+        if let Some(status) = status {
+            screen.follow_machine(self.run_folder(), FrameRoute::now(&self.0.machine.borrow(), status));
         }
         let hint = match status {
             Some(status) if status.state == State::Installing => status.step.clone(),
