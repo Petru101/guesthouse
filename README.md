@@ -209,6 +209,7 @@ What `install.sh` does, in order:
 4. Asks the release's own `guesthouse-check` what this PC can run. That's what looks at the GPU and its driver. If the answer's no it still installs, with plain VMs only, and says why.
 5. Shows you the plan and every command that needs root, word for word, and waits for you to type yes. Root is one `sudo` for missing packages, or nothing at all if they're here.
 6. Puts everything under your own folders: the program in `~/.local/lib/guesthouse/VERSION`, reached through a `current` link, plus a launcher and icons. It writes all of that in `~/.local/lib/guesthouse/manifest`.
+7. Tells the desktop the icons changed. It touches `~/.local/share/icons/hicolor`, and if there's an icon cache in it already, it rebuilds that with `gtk-update-icon-cache`. It never makes a cache, and the uninstall does the same once the icons are gone.
 
 It never installs or changes a GPU driver, kernel arguments or services. On an immutable distro it only touches your home folder, and prints what to layer.
 

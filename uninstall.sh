@@ -300,8 +300,26 @@ confirm_machines() {
     DELETE_CONFIRMED=yes
 }
 
+# The same as install.sh does once the icons are in, so that they're gone from the menus too. The cache
+# isn't in the manifest, as the install never made it, so it stays.
+refresh_icons() {
+    theme=$DATA_HOME/icons/hicolor
+    awk -F "$TAB" -v prefix="$theme/" '$1 == "file" && index($3, prefix) == 1 { found = 1 }
+        END { exit !found }' "$MANIFEST" || return 0
+    [ -d "$theme" ] || return 0
+    touch "$theme" 2>/dev/null || true
+    [ -f "$theme/icon-theme.cache" ] || return 0
+    for tool in gtk-update-icon-cache gtk4-update-icon-cache; do
+        if command -v "$tool" >/dev/null 2>&1; then
+            "$tool" -q -t -f "$theme" >/dev/null 2>&1 || true
+            return 0
+        fi
+    done
+}
+
 remove_program() {
     remove_entries "$MANIFEST"
+    refresh_icons
     # A run killed outright can leave these behind, and only these scripts make them.
     for stale in "$LIB_ROOT"/.incoming.*; do
         [ "$stale" = "$KEPT" ] || [ ! -e "$stale" ] || rm -rf -- "${stale:?}"

@@ -863,6 +863,21 @@ place_desktop_files() {
     done
 }
 
+# GNOME looks again only when the theme's folder changes, and an icon cache that's there already would
+# hide the new icons. A cache that isn't there is left that way, as it's not this script's to make.
+refresh_icons() {
+    theme=$ICON_FOLDER/hicolor
+    [ -d "$theme" ] || return 0
+    touch "$theme" 2>/dev/null || true
+    [ -f "$theme/icon-theme.cache" ] || return 0
+    for tool in gtk-update-icon-cache gtk4-update-icon-cache; do
+        if command -v "$tool" >/dev/null 2>&1; then
+            "$tool" -q -t -f "$theme" >/dev/null 2>&1 || true
+            return 0
+        fi
+    done
+}
+
 # Until this one step, the old version is what runs.
 flip_current() {
     OLD_LINK=$(readlink "$CURRENT_LINK" 2>/dev/null || true)
@@ -916,6 +931,7 @@ roll_back() {
     set +e
     restore_link
     restore_placed_files
+    refresh_icons
     restore_version
     restore_manifest
 }
@@ -944,6 +960,7 @@ install_files() {
     write_manifest_ahead
     place_version
     place_desktop_files
+    refresh_icons
     flip_current
     write_final_manifest
     ROLLBACK=no
