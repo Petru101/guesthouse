@@ -1,9 +1,10 @@
 //! The guest driver's private data for an allocation: what it asks for, and what the kernel side
 //! would fill in on real hardware.
 
+use crate::depth;
 use crate::profile::AllocationLayout;
 use crate::tiling::{BLOCK_LIMIT, GOB_HEIGHT, GOB_WIDTH};
-use guesthouse_backend::{AllocationShape, SurfaceShape};
+use guesthouse_backend::{AllocationShape, MemoryKind, SurfaceShape};
 
 const SMALL_PAGE: u64 = 0x1000;
 const BIG_PAGE: u64 = 0x10000;
@@ -155,6 +156,16 @@ fn asks_gpu_cached(layout: &AllocationLayout, data: &[u8]) -> bool {
         && word(data, layout.attributes) >> CACHE_SHIFT & CACHE_MASK == CACHE_YES
 }
 
+/// How the memory should be laid out, from the usage byte and the attribute word the guest asked for,
+/// which starts with the depth bits.
+fn memory_kind(layout: &AllocationLayout, data: &[u8]) -> MemoryKind {
+    if is_ours(layout, data) && data.len() >= layout.depth_bits + 4 {
+        depth::memory_kind(data[layout.format], word(data, layout.depth_bits))
+    } else {
+        MemoryKind::PLAIN
+    }
+}
+
 /// Everything the core needs to know about an allocation.
 pub fn shape(layout: &AllocationLayout, data: &[u8]) -> AllocationShape {
     AllocationShape {
@@ -162,6 +173,7 @@ pub fn shape(layout: &AllocationLayout, data: &[u8]) -> AllocationShape {
         exact_size: exact_size(layout, data),
         surface: surface_shape(layout, data),
         gpu_cached: asks_gpu_cached(layout, data),
+        kind: memory_kind(layout, data),
     }
 }
 
@@ -270,6 +282,29 @@ mod tests {
         set_word(&mut bytes, LAYOUT.rows, u32::MAX);
         set_word(&mut bytes, LAYOUT.tiling, BLOCK_LIMIT - 1);
         assert!(allocation_size(LAYOUT, &bytes) > 1 << 60);
+    }
+
+    /// A 256 x 256 depth surface as the guest's D3D11 driver asks for one, in the format it names.
+    fn depth_surface(usage: u8, attributes: u32) -> Vec<u8> {
+        let mut bytes = data(0x40000);
+        bytes[LAYOUT.format] = usage;
+        set_word(&mut bytes, LAYOUT.width, 256);
+        set_word(&mut bytes, LAYOUT.height, 256);
+        set_word(&mut bytes, LAYOUT.depth_bits, attributes);
+        bytes
+    }
+
+    #[test]
+    fn a_depth_surface_passes_on_its_packing() {
+        let bytes = depth_surface(0x12, 0x3A_0002);
+        assert_eq!(shape(LAYOUT, &bytes).kind, MemoryKind(0x38_0002));
+    }
+
+    #[test]
+    fn a_colour_surface_is_plain() {
+        let bytes = depth_surface(0x11, 0x2_2004);
+        assert_eq!(shape(LAYOUT, &bytes).kind, MemoryKind::PLAIN);
+        assert_eq!(shape(LAYOUT, b"something else").kind, MemoryKind::PLAIN);
     }
 
     #[test]

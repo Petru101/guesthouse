@@ -8,6 +8,7 @@
 
 pub mod answers;
 pub mod channel;
+mod depth;
 pub mod encode_sessions;
 pub mod escape;
 #[cfg(any(test, feature = "fake-rm"))]
@@ -37,8 +38,8 @@ use channel::VideoEngine;
 use encode_sessions::EncodeSessions;
 use guesthouse_backend::{
     AdapterFacts, AllocationShape, Backend, BackendError, DriverSurvey, GpuRange, GuestBooks, HostServices,
-    MapRequest, MemoryId, PciCard, Refusal, RegistryName, RegistryValue, Setup, SlotCopy, SpaceId,
-    StagingCopy, StagingStart, Status, SurfaceShape, UnmapRequest, VendorQuery, Work, WorkStart,
+    MapRequest, MemoryId, MemoryKind, PciCard, Refusal, RegistryName, RegistryValue, Setup, SlotCopy,
+    SpaceId, StagingCopy, StagingStart, Status, SurfaceShape, UnmapRequest, VendorQuery, Work, WorkStart,
 };
 use inf::{INF_NAME, Inf};
 use profile::{
@@ -328,8 +329,12 @@ impl<R: Rm + OpenRm> Backend for NvidiaBackend<R> {
         &self.facts
     }
 
-    fn allocate_video_memory(&mut self, size: u64) -> Result<(MemoryId, u64), BackendError> {
-        let (handle, given) = self.device.alloc_video_memory(size).map_err(memory_error)?;
+    fn allocate_video_memory(
+        &mut self,
+        size: u64,
+        kind: MemoryKind,
+    ) -> Result<(MemoryId, u64), BackendError> {
+        let (handle, given) = self.device.alloc_video_memory(size, kind).map_err(memory_error)?;
         let memory = MemoryId(u64::from(handle));
         self.last_memory = Some(memory);
         Ok((memory, given))

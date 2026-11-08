@@ -9,7 +9,7 @@ use super::listing::CardPlace;
 use super::{DmaMap, Handle, Rm, RmError};
 use crate::guest_clock::GuestClock;
 use crate::profile::HostBranch;
-use guesthouse_backend::PciAddress;
+use guesthouse_backend::{MemoryKind, PciAddress};
 use std::os::fd::OwnedFd;
 
 const DEVICE_HANDLE: Handle = 0xC000_0001;
@@ -26,11 +26,15 @@ const DEVICE_PARAM_VA_MODE: usize = 0x30;
 /// A tag the RM keeps with memory. Any value but zero does.
 const MEMORY_OWNER: u32 = 0x6770_7576;
 const MEMORY_PARAM_OWNER: usize = 0x00;
+const MEMORY_PARAM_TYPE: usize = 0x04;
 const MEMORY_PARAM_FLAGS: usize = 0x08;
+const MEMORY_PARAM_ATTRIBUTES: usize = 0x18;
 const MEMORY_PARAM_SIZE: usize = 0x40;
 const MEMORY_PARAM_OFFSET: usize = 0x50;
 const MEMORY_PARAM_ADDRESS_SPACE: usize = 0x6C;
 const MEMORY_FLAG_HANDLE_PROVIDED: u32 = 0x4000;
+/// Memory for a depth surface, which the RM gives the depth kind its attributes' packing calls for.
+const MEMORY_TYPE_DEPTH: u32 = 1;
 /// Virtual, at a fixed address, with the handle provided, and lazily. Without lazily the page tables
 /// for the whole range are made up front, which takes seconds, and every process needs its own.
 const VIRTUAL_RANGE_FLAGS: u32 = 0x0008_0000 | 0x0000_0010 | 0x0000_4000 | 0x0000_0400;
@@ -177,11 +181,16 @@ impl<R: Rm> Device<R> {
     }
 
     /// Makes video memory. Returns it, and the size the RM gave it.
-    pub fn alloc_video_memory(&mut self, size: u64) -> Result<(Handle, u64), RmError> {
+    /// Makes video memory. A kind that isn't plain holds the attributes of a depth surface.
+    pub fn alloc_video_memory(&mut self, size: u64, kind: MemoryKind) -> Result<(Handle, u64), RmError> {
         let mut params = vec![0; self.sizes.memory_params];
         put_u32(&mut params, MEMORY_PARAM_OWNER, MEMORY_OWNER);
         put_u32(&mut params, MEMORY_PARAM_FLAGS, MEMORY_FLAG_HANDLE_PROVIDED);
         put_u64(&mut params, MEMORY_PARAM_SIZE, size);
+        if kind != MemoryKind::PLAIN {
+            put_u32(&mut params, MEMORY_PARAM_TYPE, MEMORY_TYPE_DEPTH);
+            put_u32(&mut params, MEMORY_PARAM_ATTRIBUTES, kind.0);
+        }
         let handle = self.alloc(self.device, MEMORY_LOCAL_USER, &mut params)?;
         let given = params[MEMORY_PARAM_SIZE..MEMORY_PARAM_SIZE + 8].try_into().expect("eight bytes");
         Ok((handle, u64::from_le_bytes(given)))
@@ -362,14 +371,45 @@ mod tests {
     fn video_memory_reports_what_the_rm_gave() {
         let mut device = device();
         device.rm.round_memory_to = 0x10000;
-        assert_eq!(device.alloc_video_memory(0x1234).unwrap().1, 0x10000);
+        assert_eq!(device.alloc_video_memory(0x1234, MemoryKind::PLAIN).unwrap().1, 0x10000);
+    }
+
+    fn memory_params(device: &Device<FakeRm>) -> Vec<u8> {
+        let (_, params) =
+            device.rm.allocated().filter(|(class, _)| *class == MEMORY_LOCAL_USER).last().unwrap();
+        params.to_vec()
+    }
+
+    fn u32_in(params: &[u8], at: usize) -> u32 {
+        u32::from_le_bytes(params[at..at + 4].try_into().unwrap())
+    }
+
+    #[test]
+    fn plain_memory_asks_for_no_type_or_attributes() {
+        let mut device = device();
+        device.alloc_video_memory(0x1000, MemoryKind::PLAIN).unwrap();
+        let params = memory_params(&device);
+        assert_eq!(u32_in(&params, MEMORY_PARAM_TYPE), 0);
+        assert_eq!(u32_in(&params, MEMORY_PARAM_ATTRIBUTES), 0);
+        assert_eq!(u32_in(&params, MEMORY_PARAM_FLAGS), MEMORY_FLAG_HANDLE_PROVIDED);
+    }
+
+    #[test]
+    fn depth_memory_asks_for_the_depth_type_with_its_attributes() {
+        let mut device = device();
+        device.alloc_video_memory(0x40000, MemoryKind(0x8_0004)).unwrap();
+        let params = memory_params(&device);
+        assert_eq!(u32_in(&params, MEMORY_PARAM_TYPE), MEMORY_TYPE_DEPTH);
+        assert_eq!(u32_in(&params, MEMORY_PARAM_ATTRIBUTES), 0x8_0004);
+        assert_eq!(u32_in(&params, MEMORY_PARAM_ATTRIBUTES + 4), 0, "no second attribute word");
+        assert_eq!(u32_in(&params, MEMORY_PARAM_OWNER), MEMORY_OWNER);
     }
 
     #[test]
     fn a_refusal_names_what_failed() {
         let mut device = device();
         device.rm.refuse_class = Some(MEMORY_LOCAL_USER);
-        let error = device.alloc_video_memory(0x1000).unwrap_err();
+        let error = device.alloc_video_memory(0x1000, MemoryKind(0x3A_0002)).unwrap_err();
         assert!(error.to_string().contains("0x40"), "{error}");
     }
 

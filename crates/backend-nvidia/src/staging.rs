@@ -553,8 +553,8 @@ mod tests {
         let mut backend = crate::fake_guest::fake_backend(rm);
         let range = GpuRange { start: 0x400_0000, end: 0x1_0000_0000 };
         let space = backend.create_address_space(&[range]).unwrap();
-        let (from, _) = backend.allocate_video_memory(0x1000).unwrap();
-        let (to, _) = backend.allocate_video_memory(0x1000).unwrap();
+        let (from, _) = backend.allocate_video_memory(0x1000, guesthouse_backend::MemoryKind::PLAIN).unwrap();
+        let (to, _) = backend.allocate_video_memory(0x1000, guesthouse_backend::MemoryKind::PLAIN).unwrap();
         let moved = backend.preserve_contents(&mut AreaOnly, space, from, to, 0x1000);
         assert!(moved.is_err());
         assert_eq!(backend.device().rm.memory_at(window), None);

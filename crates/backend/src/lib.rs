@@ -47,8 +47,10 @@ pub trait Backend: Sized {
     /// What the card and its driver turned out to be.
     fn facts(&self) -> &AdapterFacts;
 
-    /// Makes video memory of at least `size` bytes. Returns it and the size it really has.
-    fn allocate_video_memory(&mut self, size: u64) -> Result<(MemoryId, u64), BackendError>;
+    /// Makes video memory of at least `size` bytes, laid out as `kind` says. Returns it and the
+    /// size it really has.
+    fn allocate_video_memory(&mut self, size: u64, kind: MemoryKind)
+    -> Result<(MemoryId, u64), BackendError>;
 
     /// Lets the GPU reach host memory that is already mapped in this process.
     fn adopt_host_pages(&mut self, host_address: u64, size: u64) -> Result<MemoryId, BackendError>;

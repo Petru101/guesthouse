@@ -11,8 +11,8 @@ use crate::frames::{Delivery, Frame, FrameCounts, FrameRing, FrameSink, Picture,
 use crate::frames::{LiveRing, RING_SLOTS, SlotInFlight, SlotMemory};
 use crate::gpu_addresses::{ALLOCATION_ALIGN, AddressUse};
 use guesthouse_backend::{
-    Backend, BackendError, GuestMemory, MapRequest, SlotCopy, SpaceId, StagingCopy, StagingStart, Status,
-    SurfaceShape, UnmapRequest,
+    Backend, BackendError, GuestMemory, MapRequest, MemoryKind, SlotCopy, SpaceId, StagingCopy, StagingStart,
+    Status, SurfaceShape, UnmapRequest,
 };
 use guesthouse_messages::indirect::Look;
 use guesthouse_messages::wire::align_up;
@@ -234,7 +234,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
 
     /// Makes one slot: video memory the GPU can reach, and the file a viewer reads it by.
     fn make_slot(&mut self, size: u64, space: SpaceId) -> Result<(SlotMemory, OwnedFd), BackendError> {
-        let (memory, given) = self.backend.allocate_video_memory(size)?;
+        let (memory, given) = self.backend.allocate_video_memory(size, MemoryKind::PLAIN)?;
         if given < size {
             self.backend.release_memory(memory);
             return Err(BackendError::new("the card gave a slot less memory than the picture needs"));
