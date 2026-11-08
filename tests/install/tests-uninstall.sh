@@ -117,11 +117,28 @@ t_a_vm_of_this_install_stops_the_uninstall() {
     check_there "$H/.local/lib/guesthouse/current"
 }
 
-t_a_vm_on_the_systems_qemu_stops_the_uninstall() {
+# Another install's VM, like a test run's, has its sockets in the same runtime folder.
+another_installs_vm() {
+    start_process_as "$T/elsewhere/qemu/build/qemu-system-x86_64" \
+        "unix:$T/runtime/guesthouse/run/qmp.sock,server" -pidfile "$T/runtime/guesthouse/run/qemu.pid"
+}
+
+t_a_vm_of_another_install_does_not_stop_the_uninstall() {
     install_plain
-    start_process_as "$T/elsewhere/qemu-system-x86_64" "unix:$T/runtime/guesthouse/run/qmp.sock,server"
+    another_installs_vm
     answering 'yes\n' "$SHELL_UNDER_TEST" "$(uninstaller)"
     stop_process
+    check_exit 0
+    check_not_said "Guesthouse is running"
+    check_gone "$H/.local/lib/guesthouse/current"
+}
+
+t_a_vm_started_through_current_stops_the_uninstall() {
+    install_plain
+    start_process_as "$H/.local/lib/guesthouse/current/qemu/build/qemu-copy" "unix:$T/runtime/guesthouse/run/qmp.sock,server"
+    answering 'yes\n' "$SHELL_UNDER_TEST" "$(uninstaller)"
+    stop_process
+    rm -f "$H/.local/lib/guesthouse/1.0/qemu/build/qemu-copy"
     check_exit 1
     check_said "Guesthouse is running"
     check_there "$H/.local/lib/guesthouse/current"

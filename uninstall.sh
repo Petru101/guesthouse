@@ -76,10 +76,6 @@ set_paths() {
     CONFIG=$(xdg_folder "${XDG_CONFIG_HOME:-}" .config)/guesthouse
     STATE=$(xdg_folder "${XDG_STATE_HOME:-}" .local/state)/guesthouse
     DATA=$(xdg_folder "${XDG_DATA_HOME:-}" .local/share)/guesthouse
-    case ${XDG_RUNTIME_DIR:-} in
-        /*) RUN_BASE=$XDG_RUNTIME_DIR/guesthouse ;;
-        *) RUN_BASE=$STATE/runtime ;;
-    esac
 }
 
 # The same order as the app: the variable, then the pointer, then the default. See paths.rs.
@@ -119,26 +115,17 @@ real_folder() {
     (cd "$1" 2>/dev/null && pwd -P) || printf '%s' "$1"
 }
 
-# Processes of this install, and any QEMU of this HOME with one of its sockets, as a VM may run on the
-# system's QEMU. Someone can run the app under another HOME and share a runtime folder.
+# Processes started from this install: their program is in its folder, which is also how the app tells
+# its own QEMU from another's. Every install of this user shares the runtime folder, so a socket there
+# doesn't say whose VM it is. A process that won't say what it runs is judged by its first word.
 list_running() {
     real_root=$(real_folder "$LIB_ROOT")
     for folder in /proc/[0-9]*; do
-        exe=$(readlink "$folder/exe" 2>/dev/null) || continue
-        case $exe in
-            "$real_root"/*)
-                say "${folder#/proc/} ${exe##*/}"
-                continue
-                ;;
+        program=$(readlink "$folder/exe" 2>/dev/null) ||
+            program=$(tr '\0' '\n' 2>/dev/null <"$folder/cmdline" | head -n 1)
+        case $program in
+            "$real_root"/* | "$LIB_ROOT"/*) say "${folder#/proc/} ${program##*/}" ;;
         esac
-        case ${exe##*/} in
-            qemu-system-*) ;;
-            *) continue ;;
-        esac
-        if tr '\0' '\n' <"$folder/cmdline" 2>/dev/null | grep -qF "$RUN_BASE/" &&
-            tr '\0' '\n' <"$folder/environ" 2>/dev/null | grep -qxF "HOME=$HOME"; then
-            say "${folder#/proc/} ${exe##*/}"
-        fi
     done
 }
 
@@ -300,8 +287,26 @@ confirm_machines() {
     DELETE_CONFIRMED=yes
 }
 
+# The same as install.sh does once the icons are in, so that they're gone from the menus too. The cache
+# isn't in the manifest, as the install never made it, so it stays.
+refresh_icons() {
+    theme=$DATA_HOME/icons/hicolor
+    awk -F "$TAB" -v prefix="$theme/" '$1 == "file" && index($3, prefix) == 1 { found = 1 }
+        END { exit !found }' "$MANIFEST" || return 0
+    [ -d "$theme" ] || return 0
+    touch "$theme" 2>/dev/null || true
+    [ -f "$theme/icon-theme.cache" ] || return 0
+    for tool in gtk-update-icon-cache gtk4-update-icon-cache; do
+        if command -v "$tool" >/dev/null 2>&1; then
+            "$tool" -q -t -f "$theme" >/dev/null 2>&1 || true
+            return 0
+        fi
+    done
+}
+
 remove_program() {
     remove_entries "$MANIFEST"
+    refresh_icons
     # A run killed outright can leave these behind, and only these scripts make them.
     for stale in "$LIB_ROOT"/.incoming.*; do
         [ "$stale" = "$KEPT" ] || [ ! -e "$stale" ] || rm -rf -- "${stale:?}"

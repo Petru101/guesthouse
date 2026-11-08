@@ -1,0 +1,7 @@
+#!/bin/sh
+# Stands in for gtk-update-icon-cache: it writes down what it was asked, and rewrites the cache it names.
+printf '%s %s\n' "${0##*/}" "$*" >>"$STAND_IN_LOG"
+for argument in "$@"; do
+    folder=$argument
+done
+echo "fresh cache" >"$folder/icon-theme.cache"
