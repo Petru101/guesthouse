@@ -110,14 +110,15 @@ fn wait_for_poweroff(task: &Task) -> Result<()> {
 }
 
 /// A boot with no GPU, whose reason reaches the guest.
-fn refused(task: &Task, off: &GpuOff) -> Result<UbuntuBoot> {
+pub(super) fn refused(task: &Task, off: &GpuOff) -> Result<UbuntuBoot> {
     let reason_file = task.run_file(REASON_FILE);
     task.context.make_run_folder(None)?;
     fs::write(&reason_file, off.guest_text())?;
     Ok(UbuntuBoot::NoGpu { reason_file })
 }
 
-fn gpu_boot(task: &mut Task) -> Result<UbuntuBoot> {
+/// The GPU if the host can offer it, for Ubuntu and for a Linux the user installed alike.
+pub(super) fn gpu_boot(task: &mut Task) -> Result<UbuntuBoot> {
     let context = task.context;
     let refused = |task: &mut Task, off: GpuOff| refused(task, &off);
     if !task.machine.gpu_preview {
@@ -191,8 +192,12 @@ pub(super) fn jailed(task: &mut Task, plan: VmPlan) -> Result<VmPlan> {
         Err(reason) => {
             let detail = gpu_refusal(reason);
             task.error = format!("Starting without the GPU: {detail}");
-            let boot = refused(task, &GpuOff::new(GUEST_NO_JAIL, detail))?;
-            Ok(VmPlan { boot: Boot::Ubuntu(boot), ..plan })
+            let gpu = refused(task, &GpuOff::new(GUEST_NO_JAIL, detail))?;
+            let boot = match plan.boot {
+                Boot::OwnLinux { iso, .. } => Boot::OwnLinux { iso, gpu },
+                _ => Boot::Ubuntu(gpu),
+            };
+            Ok(VmPlan { boot, ..plan })
         }
     }
 }

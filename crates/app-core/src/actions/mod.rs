@@ -9,6 +9,7 @@ mod identity;
 mod identity_restart;
 mod identity_switch;
 mod install;
+mod own_linux;
 mod ubuntu;
 
 pub use desktop::{apply_share, boots, rebooted};
@@ -138,6 +139,9 @@ fn wait_for_memory(task: &Task) {
 pub fn start(task: &mut Task) -> Result<()> {
     if task.machine.kind == Kind::Linux {
         return ubuntu::start(task);
+    }
+    if task.machine.own_linux_gpu() {
+        return own_linux::start(task);
     }
     let machine = task.machine.clone();
     if machine.has_gpu() {

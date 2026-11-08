@@ -38,7 +38,9 @@ pub(super) fn gpu_nodes(devices: &Path) -> Vec<PathBuf> {
 impl VmPlan {
     /// The forwarded GPU, if this boot has it.
     pub(super) fn forwarded_gpu(&self) -> Option<ForwardedGpu<'_>> {
-        let Boot::Ubuntu(UbuntuBoot::WithGpu { image, allow_list, sensor_daemon }) = &self.boot else {
+        let (Boot::Ubuntu(UbuntuBoot::WithGpu { image, allow_list, sensor_daemon })
+        | Boot::OwnLinux { gpu: UbuntuBoot::WithGpu { image, allow_list, sensor_daemon }, .. }) = &self.boot
+        else {
             return None;
         };
         Some(ForwardedGpu { image, allow_list, sensor_daemon })

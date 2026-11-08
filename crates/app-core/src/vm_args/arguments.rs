@@ -181,7 +181,7 @@ impl VmPlan {
 
     fn boot_arguments(&self) -> Vec<String> {
         match &self.boot {
-            Boot::Plain { iso } => words(&[
+            Boot::Plain { iso } | Boot::OwnLinux { iso, .. } => words(&[
                 "-drive",
                 &Self::cdrom("cd0", iso),
                 "-device",
@@ -229,6 +229,8 @@ impl VmPlan {
         }
         arguments.extend(self.second_nic());
         arguments.extend(self.qemu_sandbox_arguments());
+        // Last, so the devices the guest was installed with keep their places.
+        arguments.extend(self.own_linux_arguments());
         arguments
     }
 

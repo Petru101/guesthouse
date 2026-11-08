@@ -150,6 +150,10 @@ pub struct Machine {
     /// off unless they make it. Left out of the file when off, so an older build can still read it.
     #[serde(default, skip_serializing_if = "is_off")]
     pub start_without_jail: bool,
+    /// The forwarded GPU for a plain machine that holds a Linux the user installed. A preview, and
+    /// off unless they turn it on. Left out of the file when off, so an older build can still read it.
+    #[serde(default, skip_serializing_if = "is_off")]
+    pub linux_gpu: bool,
     /// Sound for a GPU machine, through PipeWire. Off, the guest's sound card plays nothing and
     /// QEMU has no socket to PipeWire, so its jail can refuse it any socket of its own. Left out of
     /// the file when on, so an older build can still read it.
@@ -186,6 +190,7 @@ impl Machine {
             forwards: Vec::new(),
             gpu_preview: true,
             start_without_jail: false,
+            linux_gpu: false,
             sound: true,
         }
     }
@@ -221,6 +226,12 @@ impl Machine {
         self.kind == Kind::Linux && !self.installing && self.gpu_preview
     }
 
+    /// Whether this plain machine should get the forwarded GPU, if the host can offer it. Its desktop
+    /// stays on QEMU's display, so the viewer goes on as for any plain machine.
+    pub fn own_linux_gpu(&self) -> bool {
+        self.kind == Kind::Plain && self.linux_gpu
+    }
+
     /// Whether its disk and firmware file live in its folder, so deleting that takes them too.
     pub fn owns_files(&self, context: &Context) -> bool {
         let Ok(folder) = fs::canonicalize(self.folder(context)) else { return false };
@@ -249,6 +260,7 @@ impl Machine {
     pub fn summary_showing(&self, screen: &str) -> String {
         let (kind, cores, ram) = (self.kind.name(), self.cores, self.ram_gib);
         match self.kind {
+            Kind::Plain if self.linux_gpu => format!("{kind}, {cores} cores, {ram} GiB, Linux GPU preview"),
             Kind::Plain => format!("{kind}, {cores} cores, {ram} GiB, no GPU acceleration"),
             Kind::Linux if self.gpu_preview => format!("{kind}, {cores} cores, {ram} GiB, GPU preview"),
             Kind::Linux => format!("{kind}, {cores} cores, {ram} GiB, no GPU"),
@@ -542,6 +554,24 @@ mod tests {
     fn an_install_has_no_forwarded_gpu() {
         let machine = Machine { kind: Kind::Linux, installing: true, ..sample() };
         assert!(!machine.wants_forwarded_gpu());
+    }
+
+    #[test]
+    fn a_plain_machine_can_ask_for_the_linux_gpu_and_an_older_build_still_reads_one_that_does_not() {
+        let plain = Machine { kind: Kind::Plain, ..sample() };
+        assert!(!plain.own_linux_gpu());
+        assert!(!serde_json::to_string(&plain).unwrap().contains("linux_gpu"), "the default stays out");
+        let with_gpu = Machine { linux_gpu: true, ..plain };
+        let read: Machine = serde_json::from_str(&serde_json::to_string(&with_gpu).unwrap()).unwrap();
+        assert!(read.own_linux_gpu() && !read.wants_forwarded_gpu() && !read.has_gpu());
+        assert!(read.summary().starts_with("Plain VM, ") && read.summary().contains("Linux GPU preview"));
+    }
+
+    #[test]
+    fn only_a_plain_machine_takes_the_linux_gpu() {
+        for kind in [Kind::Windows, Kind::Linux] {
+            assert!(!Machine { kind, linux_gpu: true, ..sample() }.own_linux_gpu(), "{kind:?}");
+        }
     }
 
     #[test]
