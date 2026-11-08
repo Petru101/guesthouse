@@ -1,6 +1,7 @@
 //! What changes with a GPU's architecture. Class numbers are in the open kernel module's headers.
 
 use super::guest::{ChannelObject, GuestBranch};
+use crate::depth::DepthKinds;
 
 /// One class bound to a channel, and the size of its parameters.
 pub type ChannelClass = (u32, usize);
@@ -56,6 +57,8 @@ pub struct Generation {
     /// bit can go alone, but a guest with none of them failed its Vulkan test.
     pub copy_node_flags: Option<u32>,
     pub video_record_flags: VideoRecordFlags,
+    /// Which surfaces get a depth kind for their memory.
+    pub depth_kinds: DepthKinds,
     /// Guest branches this generation has been run with. On any other the backend still starts, and
     /// says so in the log.
     pub run_on_guest_branches: &'static [&'static str],
@@ -118,6 +121,7 @@ pub const BLACKWELL: Generation = Generation {
         words: [BLACKWELL_VIDEO_FLAG, BLACKWELL_VIDEO_FRAMES],
         decoder: BLACKWELL_DECODER_FLAGS,
     },
+    depth_kinds: DepthKinds::AsStated,
     run_on_guest_branches: &["617"],
 };
 
@@ -170,6 +174,7 @@ pub const ADA: Generation = Generation {
     nodes: ADA_NODES,
     copy_node_flags: None,
     video_record_flags: NO_VIDEO_FLAGS,
+    depth_kinds: DepthKinds::Always,
     run_on_guest_branches: &[],
 };
 
@@ -201,6 +206,7 @@ pub const TURING: Generation = Generation {
     nodes: TURING_NODES,
     copy_node_flags: None,
     video_record_flags: NO_VIDEO_FLAGS,
+    depth_kinds: DepthKinds::Always,
     run_on_guest_branches: &[],
 };
 

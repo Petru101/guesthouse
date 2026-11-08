@@ -413,7 +413,7 @@ impl<R: Rm + OpenRm> Backend for NvidiaBackend<R> {
     }
 
     fn describe_allocation(&mut self, private: &[u8]) -> AllocationShape {
-        private_data::shape(&self.guest.allocation, private)
+        private_data::shape(&self.guest.allocation, private, self.generation.depth_kinds)
     }
 
     fn finish_allocation_data(&mut self, private: &mut [u8], size: u64) {
