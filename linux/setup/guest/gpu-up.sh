@@ -129,7 +129,7 @@ own_desktop() {
         echo "GPU on: driver $version, for programs. nvidia-drm would not load, so the desktop stays on the plain screen"
     else
         write_session_settings
-        ignore_cards plain
+        hide_plain_cards
         probe_connectors
         gpu_on
         say_desktop gpu
@@ -140,7 +140,7 @@ own_desktop() {
 
 [ -z "$own_family" ] || own_desktop
 load_nvidia_drm || gpu_off "nvidia-drm would not load"
-ignore_cards plain
+hide_plain_cards
 probe_connectors
 gpu_on
 echo "GPU on: driver $version"

@@ -12,8 +12,7 @@ from test_own_install import OwnGuest
 
 V = "615.78.08"
 SETTINGS = "run/environment.d/90-nvfwd.conf"
-IGNORED = "run/udev/rules.d/71-nvfwd-ignored-cards.rules"
-GREETERS = "1000 desk no -\n60578 gdm-greeter no -\n"
+IGNORED = "run/udev/rules.d/71-nvfwd-plain-card.rules"
 
 
 class DesktopGuest(Guest):
@@ -32,7 +31,6 @@ class DesktopGuest(Guest):
         write(os.path.join(self.connector, "status"), "connected\n")
         write(os.path.join(self.connector, "enabled"), "disabled\n")
         self.fake("systemctl", "exit 0")
-        self.fake("loginctl", f"printf '{GREETERS}'")
         self.fake("sleep", "exit 0")
         if manager:
             self.set_manager(manager)
@@ -168,23 +166,17 @@ class WatchKeepsADesktop(unittest.TestCase):
         self.assertEqual(self.guest.state()["desktop"], "gpu")
         self.assertEqual(self.guest.called("systemctl"), 0)
 
-    def test_a_screen_that_never_lights_goes_back_to_plain(self):
+    def test_a_screen_that_never_lights_boots_again_on_the_plain_screen(self):
         result = self.guest.watch(seconds=0)
         self.assertEqual(result.returncode, 0, result.stderr)
         state = self.guest.state()
         self.assertEqual(state["desktop"], "plain")
         self.assertIn("didn't come up on the GPU", state["desktop_reason"])
-        self.assertFalse(self.guest.exists(SETTINGS))
-        rules = self.guest.read(IGNORED)
-        self.assertIn('KERNEL=="card1"', rules)
-        self.assertNotIn("card0", rules)
         self.assertEqual(self.guest.read("var/lib/nvfwd/desktop-failed").strip(), f"{V}-abc 7.0.0-38-generic")
-        calls = self.guest.calls_in_order()
-        stop, start = calls.index("systemctl stop gdm.service"), calls.index("systemctl start gdm.service")
-        self.assertLess(stop, calls.index("loginctl terminate-user gdm-greeter"))
-        self.assertLess(calls.index("loginctl terminate-user gdm-greeter"), start)
-        self.assertNotIn("loginctl terminate-user desk", calls, "a person's own login is theirs")
+        self.assertEqual(self.guest.calls_in_order()[-1], "systemctl reboot")
         self.assertTrue(self.guest.said()[-1].startswith("nvfwd-desktop plain the login screen didn't"))
+        self.guest.run()
+        self.assertEqual(self.guest.state()["desktop"], "plain", "the next boot starts there")
 
     def test_a_plain_boot_has_nothing_to_watch(self):
         self.guest.set_manager("sddm.service")

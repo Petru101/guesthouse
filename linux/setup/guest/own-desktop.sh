@@ -88,23 +88,12 @@ gpu_screen_lit() {
     return 1
 }
 
-# Takes the desktop back to the plain screen, remembers that for this driver and kernel, and starts
-# the display manager again there. Usage: back_to_plain REASON BUILT_FOR
+# Takes the desktop back to the plain screen: remembers that for this driver and kernel, and boots
+# again, which then starts plain. Starting the display manager again in this boot isn't enough, as
+# udev never takes back the tag that hid the plain card from mutter. Usage: back_to_plain REASON BUILT_FOR
 back_to_plain() {
-    local manager name
     mkdir -p "$(dirname "$desktop_failed")"
     echo "$2" > "$desktop_failed"
-    rm -f "$session_settings" "$gdm_rules_override"
-    ignore_cards ours
-    say_desktop plain "$1"
-    manager=$(display_manager)
-    [ -n "$manager" ] || return 0
-    systemctl stop "$manager"
-    # The login screen's user manager keeps the settings it started with, so it goes too.
-    for name in $(loginctl list-users --no-legend 2>/dev/null | awk '{ print $2 }'); do
-        case $name in
-        gdm | gdm-* | Debian-gdm) loginctl terminate-user "$name" ;;
-        esac
-    done
-    systemctl start "$manager"
+    say_desktop plain "$1. Starting again on the plain screen"
+    systemctl reboot
 }

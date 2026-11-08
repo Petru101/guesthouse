@@ -230,7 +230,7 @@ class GpuUp(unittest.TestCase):
         write(os.path.join(self.guest.root, "sys/class/drm/card0/device/device"), "0x1111\n")
         write(os.path.join(self.guest.root, "sys/class/drm/card1/device/device"), "0x11ea\n")
         self.guest.run()
-        with open(os.path.join(self.guest.root, "run/udev/rules.d/71-nvfwd-ignored-cards.rules")) as f:
+        with open(os.path.join(self.guest.root, "run/udev/rules.d/71-nvfwd-plain-card.rules")) as f:
             rules = f.read()
         self.assertIn('KERNEL=="card0"', rules)
         self.assertNotIn("card1", rules)
