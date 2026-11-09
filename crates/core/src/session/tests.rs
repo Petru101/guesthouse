@@ -645,6 +645,24 @@ mod allocations {
     }
 
     #[test]
+    fn a_resource_shared_by_a_global_handle_opens_by_the_one_in_the_answer() {
+        let mut session = session();
+        let reply = send(&mut session, &create_message(0x3, &[private(0x1000)]));
+        let (global, handle) = (u32_at(&reply, 8).unwrap(), u32_at(&reply, 0x10).unwrap());
+        assert_ne!(global, 0);
+        assert_eq!(u32_at(&open(&mut session, global, 1), 8), Ok(handle));
+    }
+
+    #[test]
+    fn only_a_resource_shared_by_a_global_handle_gets_one() {
+        let mut session = session();
+        for flags in [0, 0x1, 0x43] {
+            let reply = send(&mut session, &create_message(flags, &[private(0x1000)]));
+            assert_eq!(u32_at(&reply, 8), Ok(0), "flags {flags:#x}");
+        }
+    }
+
+    #[test]
     fn opening_more_than_a_resource_holds_is_refused() {
         let mut session = session();
         let (resource, _) = allocate(&mut session, private(0x1000));

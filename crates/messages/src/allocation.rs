@@ -17,6 +17,10 @@ const HANDLE_SIZE: usize = 4;
 /// Request flags that say the guest brings its own memory and will list its pages afterwards.
 const GUEST_BACKED: u32 = 0x20020;
 
+/// Request flags: the resource is shared, and by an NT handle rather than a global one.
+const CREATE_SHARED: u32 = 0x2;
+const NT_SECURITY_SHARING: u32 = 0x40;
+
 /// An entry flag: this allocation is a screen's primary surface.
 pub const PRIMARY: u32 = 1;
 
@@ -62,6 +66,11 @@ impl<'a> CreateAllocation<'a> {
         self.flags & GUEST_BACKED != 0
     }
 
+    /// Shared through a global handle, which another device opens the resource by later.
+    pub fn shared_by_global_handle(&self) -> bool {
+        self.flags & CREATE_SHARED != 0 && self.flags & NT_SECURITY_SHARING == 0
+    }
+
     /// The entries in order, each with its private data. The data blocks follow the table and each
     /// other, and any that run past the message are cut short.
     pub fn entries(&self) -> impl Iterator<Item = AllocationEntry<'a>> + use<'a> {
@@ -83,6 +92,7 @@ pub struct CreateAllocationAnswer;
 impl CreateAllocationAnswer {
     const STATUS: usize = 0;
     const RESOURCE: usize = 4;
+    const GLOBAL_SHARE: usize = 8;
     const HEADER: usize = 0x10;
     const ENTRY_SIZE: usize = 0x48;
     const ENTRY_PRIVATE_SIZE: usize = 4;
@@ -101,6 +111,11 @@ impl CreateAllocationAnswer {
 
     pub fn set_resource(resource: u32, out: &mut [u8]) {
         set_u32(out, Self::RESOURCE, resource);
+    }
+
+    /// The handle the guest sends back to open the resource from another device.
+    pub fn set_global_share(handle: u32, out: &mut [u8]) {
+        set_u32(out, Self::GLOBAL_SHARE, handle);
     }
 
     pub fn set_entry(index: usize, handle: u32, private_size: u32, flags: u32, size: u64, out: &mut [u8]) {

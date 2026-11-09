@@ -109,6 +109,10 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         let resource = self.handles.take();
         self.resources.insert(resource, Vec::with_capacity(request.count));
         CreateAllocationAnswer::set_resource(resource, out);
+        if request.shared_by_global_handle() {
+            // The guest opens it by this from another device, and an open finds resources by handle.
+            CreateAllocationAnswer::set_global_share(resource, out);
+        }
         for (index, (entry, shape)) in request.entries().zip(shapes).enumerate() {
             let handle = self.handles.take();
             let mut allocation = Allocation {
