@@ -98,9 +98,14 @@ impl SpaceVm {
         let fresh = self.books.handle_of(buffer).is_none();
         let handle = match (self.books.handle_of(buffer), origin) {
             (Some(handle), _) => handle,
-            (None, Origin::Made) => memory::import(&self.file, &memory::export(device, buffer)?)?,
+            (None, Origin::Made) => {
+                let shared =
+                    memory::export(device, buffer).map_err(|error| step("handing the buffer over", error))?;
+                memory::import(&self.file, &shared).map_err(|error| step("taking the buffer in", error))?
+            }
             (None, Origin::HostPages { address, size }) => {
-                memory::adopt_userptr(&self.file, address, size, false)?
+                memory::adopt_userptr(&self.file, address, size, false)
+                    .map_err(|error| step("adopting the pages", error))?
             }
         };
         if let Err(error) = memory::map(&self.file, handle, address, offset, length, flags) {
@@ -135,6 +140,11 @@ impl SpaceVm {
         }
         addresses
     }
+}
+
+/// `error`, saying which step it came from.
+fn step(doing: &str, error: io::Error) -> io::Error {
+    io::Error::new(error.kind(), format!("{doing}: {error}"))
 }
 
 #[cfg(test)]
