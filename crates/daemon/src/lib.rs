@@ -15,6 +15,9 @@ pub mod router;
 pub mod server;
 #[cfg(feature = "nvidia")]
 pub mod setup;
+#[cfg(all(feature = "amd", not(feature = "nvidia")))]
+#[path = "amd_setup.rs"]
+pub mod setup;
 pub mod slot;
 pub mod startup;
 pub mod viewer;
