@@ -1,6 +1,7 @@
 //! The adapter's registry values, which apps look up to find their drivers.
 
 use crate::inf::{Inf, InfValue};
+use guesthouse_backend::guest_text::{utf16_list, utf16_zero};
 use guesthouse_backend::{PciCard, Refusal, RegistryName, RegistryValue};
 use guesthouse_messages::registry::{TYPE_NUMBER, TYPE_STRING, TYPE_STRING_LIST};
 use std::collections::HashMap;
@@ -27,19 +28,11 @@ const VALUES: [&str; 13] = [
     "OpenCLDriverNameWow",
 ];
 
-fn utf16_zero(text: &str) -> Vec<u8> {
-    text.encode_utf16().chain([0]).flat_map(u16::to_le_bytes).collect()
-}
-
 fn registry_form(value: InfValue) -> (u32, Vec<u8>) {
     match value {
         InfValue::Number(number) => (TYPE_NUMBER, number.to_le_bytes().to_vec()),
         InfValue::Text(text) => (TYPE_STRING, utf16_zero(&text)),
-        InfValue::TextList(list) => {
-            let mut bytes: Vec<u8> = list.iter().flat_map(|text| utf16_zero(text)).collect();
-            bytes.extend_from_slice(&[0, 0]);
-            (TYPE_STRING_LIST, bytes)
-        }
+        InfValue::TextList(list) => (TYPE_STRING_LIST, utf16_list(&list)),
     }
 }
 

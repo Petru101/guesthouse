@@ -2,7 +2,7 @@
 
 use super::{Handled, Session, answer_status};
 use crate::deferred::{DeferredAction, FreedAllocation};
-use crate::gpu_addresses::{ADDRESSES_END, ALLOCATION_ALIGN, AddressUse, GpuAddresses, LARGE_ALIGN};
+use crate::gpu_addresses::{ADDRESSES_END, ALLOCATION_ALIGN, AddressUse, GpuAddresses, LARGE_ALIGN, Window};
 use crate::pending::Pending;
 use crate::tables::Mapping;
 use guesthouse_backend::{Backend, BackendError, GuestMemory, MapRequest, MemoryId, SpaceId, UnmapRequest};
@@ -26,6 +26,12 @@ fn mapped_span(request: &GuestMap, allocation_size: u64) -> Option<(u64, u64, u6
     let length = if request.pages != 0 { request.pages.checked_mul(PAGE_SIZE)? } else { allocation_size };
     let end = first.checked_add(length).filter(|&end| end <= ADDRESSES_END)?;
     Some((first, length, end))
+}
+
+/// Where the guest will take a mapping the host places.
+fn map_window(request: &GuestMap) -> Window {
+    let to = if request.limit == 0 { u64::MAX } else { request.limit };
+    Window { from: request.lowest, to }
 }
 
 /// The end of a range from an address update.
@@ -103,8 +109,13 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         let align = if size >= LARGE_PAGES_FROM { LARGE_ALIGN } else { ALLOCATION_ALIGN };
         let whole = align_up(size, ALLOCATION_ALIGN);
         let usage = AddressUse::mapped(allocation.in_system_memory());
-        let base = self.gpu_addresses.take(whole, align, usage)?;
+        let Some(base) = self.choose_address(whole, align, usage, map_window(&request), space) else {
+            log::warn!("no room for {handle:#x} in {:x?}", map_window(&request));
+            map_answer(0, Status::UNSUCCESSFUL, out);
+            return Ok(());
+        };
         log::debug!("map {handle:#x} at {base:#x}, chosen here, for {mapped:#x}");
+        let allocation = &self.allocations[&handle];
         let gpu_cached = allocation.gpu_cached;
         let map = MapRequest {
             space,
@@ -121,7 +132,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         };
         if let Err(error) = self.backend.map(&map) {
             log::warn!("mapping {handle:#x}: {error}");
-            self.gpu_addresses.give_back(base, whole, align, usage);
+            self.release_address(base, whole, align, usage);
             map_answer(0, Status::UNSUCCESSFUL, out);
             return Ok(());
         }
@@ -145,7 +156,36 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
     /// what was behind it at the end, which a first lock can have changed since it was mapped.
     pub(crate) fn give_back_mapping(&mut self, address: u64, system_memory: bool) {
         if let Some((size, align)) = self.mapped_addresses.remove(&address) {
-            self.gpu_addresses.give_back(address, size, align, AddressUse::mapped(system_memory));
+            self.release_address(address, size, align, AddressUse::mapped(system_memory));
+        }
+    }
+
+    /// Addresses for a mapping the host places, inside the guest's window. New addresses are
+    /// handed out in order, so a window below the next new one is searched in this space alone,
+    /// and what is found there is placed, so nothing is handed out over it.
+    fn choose_address(
+        &mut self,
+        size: u64,
+        align: u64,
+        usage: AddressUse,
+        window: Window,
+        space: SpaceId,
+    ) -> Option<u64> {
+        if let Some(base) = self.gpu_addresses.take_within(size, align, usage, window) {
+            return Some(base);
+        }
+        let taken = self.taken_in(space);
+        let base = self.gpu_addresses.find_gap(window, size, align, &taken)?;
+        self.gpu_addresses.place(base, size);
+        self.placed_mappings.insert(base, size);
+        Some(base)
+    }
+
+    /// The opposite of [`Session::choose_address`].
+    fn release_address(&mut self, base: u64, size: u64, align: u64, usage: AddressUse) {
+        match self.placed_mappings.remove(&base) {
+            Some(placed) => self.gpu_addresses.unplace(base, placed),
+            None => self.gpu_addresses.give_back(base, size, align, usage),
         }
     }
 

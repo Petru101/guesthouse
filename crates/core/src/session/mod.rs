@@ -174,6 +174,9 @@ pub struct Session<B, M> {
 
     /// Where a mapping the host placed sits: address to size and alignment.
     pub(crate) mapped_addresses: HashMap<u64, (u64, u64)>,
+    /// Mappings the host placed in a gap of one space because the guest's window lay below the
+    /// next new address: their start and size, to unplace when they go.
+    pub(crate) placed_mappings: HashMap<u64, u64>,
     pub(crate) mapped_so_far: u64,
     /// In the order the guest asked, which decides who gets a freed range next.
     pub(crate) reserved_addresses: Vec<ReservedRange>,
@@ -238,6 +241,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             failed_queues: HashMap::new(),
             faults: FaultRate::new(),
             mapped_addresses: HashMap::new(),
+            placed_mappings: HashMap::new(),
             mapped_so_far: 0,
             reserved_addresses: Vec::new(),
             copies: VecDeque::new(),

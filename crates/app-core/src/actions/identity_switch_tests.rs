@@ -7,7 +7,7 @@ use crate::agent::GuestAgent;
 use crate::agent::stand_in::ScriptedAgent;
 use crate::context::Context;
 use crate::failure::Failure;
-use crate::gpu_identity::{MICROSOFT_RENDER, read_state, write_state};
+use crate::gpu_identity::{AMD_RENDER, MICROSOFT_RENDER, NVIDIA_RENDER, read_state, write_state};
 use crate::machine::Machine;
 use crate::testing::Scratch;
 use crate::vm_args::VmPlan;
@@ -29,34 +29,50 @@ const RESTARTED: &str = "restarting\r\n";
 /// What the stand-in host says when asked to stop with the time a shutdown by choice gets.
 const STOP_BY_CHOICE: &str = "stop 100";
 
+fn on_nvidia() -> Machine {
+    Machine::new("x", "x", "", "")
+}
+
+fn on_amd() -> Machine {
+    Machine { amd_gpu: "0000:7c:00.0".into(), ..on_nvidia() }
+}
+
 fn staged() -> IdentityState {
-    IdentityState { shown: Shown::Nvidia, restart_due: true, ..IdentityState::default() }
+    IdentityState { shown: Shown::Maker, restart_due: true, ..IdentityState::default() }
 }
 
 #[test]
 fn a_start_that_staged_the_package_on_microsofts_number_starts_a_new_vm() {
-    assert!(new_vm_needed(MICROSOFT_RENDER, &staged()));
+    assert!(new_vm_needed(MICROSOFT_RENDER, &staged(), &on_nvidia()));
 }
 
 #[test]
 fn a_vm_already_on_nvidias_number_is_not_started_again() {
-    assert!(!new_vm_needed(NVIDIA_RENDER, &staged()));
-    let settled = IdentityState { shown: Shown::Nvidia, ..IdentityState::default() };
-    assert!(!new_vm_needed(NVIDIA_RENDER, &settled));
+    assert!(!new_vm_needed(NVIDIA_RENDER, &staged(), &on_nvidia()));
+    let settled = IdentityState { shown: Shown::Maker, ..IdentityState::default() };
+    assert!(!new_vm_needed(NVIDIA_RENDER, &settled, &on_nvidia()));
+}
+
+#[test]
+fn an_amd_machine_moves_to_amds_number_and_stays_there() {
+    let staged = IdentityState { package_vendor: AMD_RENDER.vendor, ..staged() };
+    assert!(new_vm_needed(MICROSOFT_RENDER, &staged, &on_amd()));
+    assert!(new_vm_needed(NVIDIA_RENDER, &staged, &on_amd()), "NVIDIA's number is not AMD's");
+    assert!(!new_vm_needed(AMD_RENDER, &staged, &on_amd()));
 }
 
 #[test]
 fn a_guest_that_kept_microsofts_number_is_not_started_again() {
     let refused =
         IdentityState { reason: "why".into(), failed_script: "abc".into(), ..IdentityState::default() };
-    assert!(!new_vm_needed(MICROSOFT_RENDER, &refused));
-    assert!(!new_vm_needed(MICROSOFT_RENDER, &IdentityState::default()));
+    assert!(!new_vm_needed(MICROSOFT_RENDER, &refused, &on_nvidia()));
+    assert!(!new_vm_needed(MICROSOFT_RENDER, &IdentityState::default(), &on_nvidia()));
 }
 
 #[test]
 fn a_fall_back_to_microsofts_number_is_not_a_reason_for_a_new_vm() {
     let fell_back = IdentityState { reason: "back".into(), ..IdentityState::default() };
-    assert!(!new_vm_needed(NVIDIA_RENDER, &fell_back), "that start has failed and ends");
+    assert!(!new_vm_needed(NVIDIA_RENDER, &fell_back, &on_nvidia()), "that start has failed and ends");
 }
 
 /// A guest that answers as scripted, and whose firmware boots again when Windows is asked to restart.
@@ -133,7 +149,7 @@ fn the_start_that_stages_the_package_ends_on_nvidias_number_after_one_new_vm() {
     let asked = rig.asked();
     assert!(asked[2].ends_with("make the package"), "the package is made in the first VM");
     assert_eq!(asked[5], RESTART_SCRIPT, "and Windows restarts once in the second");
-    assert_eq!(rig.state(), IdentityState { shown: Shown::Nvidia, ..IdentityState::default() });
+    assert_eq!(rig.state(), IdentityState { shown: Shown::Maker, ..IdentityState::default() });
 
     let host = RecordingHost::default();
     let before = rig.asked().len();
@@ -195,7 +211,7 @@ fn a_new_vm_that_will_not_start_leaves_nothing_running() {
     let result = boot(&mut task);
     assert_eq!(result, Err(Failure::new("no room")));
     assert_eq!(host.said(), ["start gpu", STOP_BY_CHOICE, "start gpu", "release", "stop 30"]);
-    assert_eq!(rig.state().shown, Shown::Nvidia, "the package is in, so the next start tries again");
+    assert_eq!(rig.state().shown, Shown::Maker, "the package is in, so the next start tries again");
 }
 
 /// A host whose second start fails.

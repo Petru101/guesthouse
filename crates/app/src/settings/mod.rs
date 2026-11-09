@@ -16,6 +16,7 @@ mod sharing;
 mod snapshots;
 mod token;
 mod usb;
+mod windows_card;
 
 use crate::window::{MachineHandle, Window};
 use adw::prelude::*;
@@ -64,6 +65,7 @@ struct Parts {
     _gpu_preview: gpu_preview::GpuPreview,
     _jail: jail::Jail,
     linux_gpu: linux_gpu::LinuxGpu,
+    windows_card: windows_card::WindowsCard,
     sharing: sharing::Sharing,
     network: network::Network,
     usb: usb::Usb,
@@ -93,6 +95,7 @@ impl SettingsDialog {
             _gpu_preview: gpu_preview::GpuPreview::new(&shared, &page),
             _jail: jail::Jail::new(&shared, &page),
             linux_gpu: linux_gpu::LinuxGpu::new(&shared, &page),
+            windows_card: windows_card::WindowsCard::new(&shared, &page),
             remove: remove::Remove::new(&shared, &page),
             shared,
         }));
@@ -119,6 +122,7 @@ impl SettingsDialog {
         parts.network.set_status(status);
         parts.usb.set_status(status);
         parts.linux_gpu.set_status(status);
+        parts.windows_card.set_status(status);
         parts.remove.set_status(status);
     }
 }

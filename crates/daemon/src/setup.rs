@@ -1,31 +1,15 @@
 //! What the app's setup found, which it keeps as a JSON file in the data store.
 
+use crate::store::store;
 use guesthouse_backend::{DriverVersion, PciAddress, PciCard, Setup, driver_version_from_inf};
 use guesthouse_backend_nvidia::inf::INF_NAME;
 use guesthouse_backend_nvidia::startup::guest_branch_of;
 use serde_json::Value;
-use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const STORE_VARIABLE: &str = "GUESTHOUSE_STORE";
-const STORE_CONFIG: &str = ".config/guesthouse/store";
-const STORE_DEFAULT: &str = ".local/share/guesthouse";
 const SETUP_FILE: &str = "setup/setup.json";
 const NVIDIA_VENDOR: u16 = 0x10DE;
-
-fn store() -> PathBuf {
-    let home = PathBuf::from(env::var_os("HOME").unwrap_or_default());
-    if let Some(folder) = env::var_os(STORE_VARIABLE).filter(|folder| !folder.is_empty()) {
-        return folder.into();
-    }
-    let configured = fs::read_to_string(home.join(STORE_CONFIG)).ok();
-    let first_line = configured.as_deref().and_then(|text| text.lines().next()).map(str::trim);
-    match first_line.filter(|line| !line.is_empty()) {
-        Some(line) => line.strip_prefix("~/").map_or_else(|| line.into(), |rest| home.join(rest)),
-        None => home.join(STORE_DEFAULT),
-    }
-}
 
 /// INF files are Latin-1, and only the version line matters here.
 fn guest_driver_version(driver_folder: &Path) -> Result<DriverVersion, String> {
@@ -68,6 +52,7 @@ pub fn read_setup() -> Result<Setup, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::env;
     use std::process;
 
     #[test]

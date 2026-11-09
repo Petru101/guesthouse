@@ -1,0 +1,294 @@
+//! A GPU address space of its own for each space the core makes.
+//!
+//! amdgpu gives each open render node one VM. Guest processes place their own reservations, and two
+//! processes often place them at the same addresses, so each space opens the node again and gets a
+//! VM of its own. Memory is made on the backend's first open and taken into a space's open with a
+//! dma-buf before it is mapped there. amdgpu won't hand out adopted host pages that way, so a space
+//! adopts those pages itself. A buffer taken in is kept while any of its mappings in the space
+//! are, and let go after the last.
+
+use crate::device::Device;
+use crate::memory::{self, GemHandle, MapFlags};
+use crate::submit::{self, Context, Ib, Syncobj};
+use std::collections::hash_map::Entry;
+use std::collections::{BTreeMap, HashMap};
+use std::fs::File;
+use std::io;
+
+/// Which buffers a space has taken in, and its mappings of them. Kept apart from the files so the
+/// counting can be tested without a card.
+#[derive(Debug, Default)]
+pub struct Books {
+    /// By the buffer's handle on the first open: its handle here, and how many mappings use it.
+    taken_in: HashMap<GemHandle, (GemHandle, u32)>,
+    /// By address: the buffer's handle on the first open, and the mapping's place in it.
+    mappings: BTreeMap<u64, Placed>,
+}
+
+/// Where in its buffer a mapping starts, and how long it is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Placed {
+    buffer: GemHandle,
+    offset: u64,
+    length: u64,
+}
+
+/// A mapping on its way out, and whether the buffer's handle here must be let go after it.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Unmapping {
+    pub handle: GemHandle,
+    pub address: u64,
+    pub length: u64,
+    pub last_use: bool,
+}
+
+impl Books {
+    /// The handle here for `buffer`, if it was taken in.
+    pub fn handle_of(&self, buffer: GemHandle) -> Option<GemHandle> {
+        self.taken_in.get(&buffer).map(|&(handle, _)| handle)
+    }
+
+    /// Notes `length` bytes of `buffer` from `offset`, mapped at `address` through `handle`.
+    pub fn add(&mut self, buffer: GemHandle, handle: GemHandle, address: u64, offset: u64, length: u64) {
+        self.taken_in.entry(buffer).or_insert((handle, 0)).1 += 1;
+        self.mappings.insert(address, Placed { buffer, offset, length });
+    }
+
+    pub fn remove(&mut self, address: u64) -> Option<Unmapping> {
+        let Placed { buffer, length, .. } = self.mappings.remove(&address)?;
+        let (handle, uses) = self.taken_in.get_mut(&buffer)?;
+        let handle = *handle;
+        *uses -= 1;
+        let last_use = *uses == 0;
+        if last_use {
+            self.taken_in.remove(&buffer);
+        }
+        Some(Unmapping { handle, address, length, last_use })
+    }
+
+    /// The handles here of every buffer taken in.
+    pub fn handles(&self) -> Vec<GemHandle> {
+        self.taken_in.values().map(|&(handle, _)| handle).collect()
+    }
+
+    /// Every mapping of `buffer` here.
+    pub fn addresses_of(&self, buffer: GemHandle) -> Vec<u64> {
+        let of_buffer = self.mappings.iter().filter(|(_, placed)| placed.buffer == buffer);
+        of_buffer.map(|(&address, _)| address).collect()
+    }
+
+    /// The buffer behind an address, by its handle on the first open, and how far into it the
+    /// address is.
+    pub fn locate(&self, address: u64) -> Option<(GemHandle, u64)> {
+        let (&start, placed) = self.mappings.range(..=address).next_back()?;
+        (address - start < placed.length).then_some((placed.buffer, placed.offset + (address - start)))
+    }
+
+    /// Whether `bytes` from `address` lie inside one mapping here.
+    pub fn holds(&self, address: u64, bytes: u64) -> bool {
+        let Some((&start, placed)) = self.mappings.range(..=address).next_back() else {
+            return false;
+        };
+        let end = start.saturating_add(placed.length);
+        address.checked_add(bytes).is_some_and(|wanted| wanted <= end)
+    }
+}
+
+/// Where a buffer on the backend's first open came from, which says how a space takes it in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Origin {
+    /// Made on the card, and handed over as a dma-buf.
+    Made,
+    /// Host pages adopted at this address, of this size, which a space adopts again.
+    HostPages { address: u64, size: u64 },
+}
+
+/// One space's open of the render node, and what it holds.
+#[derive(Debug)]
+pub struct SpaceVm {
+    file: File,
+    books: Books,
+    /// One amdgpu context for each engine family, made on first use. Closing the file frees them.
+    contexts: HashMap<u32, Context>,
+}
+
+/// How a run on the card ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ran {
+    Retired,
+    StillRunning,
+}
+
+impl SpaceVm {
+    pub fn open(device: &Device) -> io::Result<Self> {
+        Ok(Self { file: device.open_again()?, books: Books::default(), contexts: HashMap::new() })
+    }
+
+    /// The buffer behind an address here, by its handle on the first open, and the offset into it.
+    pub fn locate(&self, address: u64) -> Option<(GemHandle, u64)> {
+        self.books.locate(address)
+    }
+
+    /// Whether `bytes` from `address` lie inside one mapping here.
+    pub fn holds(&self, address: u64, bytes: u64) -> bool {
+        self.books.holds(address, bytes)
+    }
+
+    /// The first command buffer not wholly mapped here. The card would fault reading it, and a fault
+    /// costs every program on the card a reset.
+    pub fn first_unmapped<'a>(&self, ibs: &'a [Ib]) -> Option<&'a Ib> {
+        ibs.iter().find(|ib| !self.books.holds(ib.address, u64::from(ib.bytes)))
+    }
+
+    /// Runs command buffers already mapped here on the engine family `ip_type`, in order, and waits
+    /// up to `timeout_ms` for the last to retire.
+    pub fn run(&mut self, ip_type: u32, ibs: &[Ib], timeout_ms: i32) -> io::Result<Ran> {
+        let context = match self.contexts.entry(ip_type) {
+            Entry::Occupied(slot) => slot.into_mut(),
+            Entry::Vacant(slot) => {
+                slot.insert(Context::create(&self.file).map_err(|error| step("making a context", error))?)
+            }
+        };
+        let signal = Syncobj::create(&self.file).map_err(|error| step("making a sync object", error))?;
+        // The guest doesn't say which buffers the work uses, so it may use any mapped here.
+        let buffers = self.books.handles();
+        let retired = submit::submit_all(&self.file, context, ip_type, ibs, &buffers, &signal)
+            .map_err(|error| step("submitting", error))
+            .and_then(|_| signal.arm_eventfd(&self.file).map_err(|error| step("arming the eventfd", error)))
+            .and_then(|event| submit::wait_eventfd(&event, timeout_ms));
+        signal.destroy(&self.file);
+        Ok(if retired? { Ran::Retired } else { Ran::StillRunning })
+    }
+
+    /// Maps `length` bytes of `buffer`, a handle on `device`, from `offset`, at `address`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn map(
+        &mut self,
+        device: &Device,
+        buffer: GemHandle,
+        origin: Origin,
+        address: u64,
+        offset: u64,
+        length: u64,
+        flags: MapFlags,
+    ) -> io::Result<()> {
+        let fresh = self.books.handle_of(buffer).is_none();
+        let handle = match (self.books.handle_of(buffer), origin) {
+            (Some(handle), _) => handle,
+            (None, Origin::Made) => {
+                let shared =
+                    memory::export(device, buffer).map_err(|error| step("handing the buffer over", error))?;
+                memory::import(&self.file, &shared).map_err(|error| step("taking the buffer in", error))?
+            }
+            (None, Origin::HostPages { address, size }) => {
+                memory::adopt_userptr(&self.file, address, size, false)
+                    .map_err(|error| step("adopting the pages", error))?
+            }
+        };
+        if let Err(error) = memory::map(&self.file, handle, address, offset, length, flags) {
+            if fresh {
+                memory::close(&self.file, handle);
+            }
+            return Err(error);
+        }
+        self.books.add(buffer, handle, address, offset, length);
+        Ok(())
+    }
+
+    /// Takes back the mapping at `address`, if there is one.
+    pub fn unmap(&mut self, address: u64) -> io::Result<()> {
+        let Some(unmapping) = self.books.remove(address) else {
+            return Ok(());
+        };
+        let result = memory::unmap(&self.file, unmapping.handle, unmapping.address, unmapping.length);
+        if unmapping.last_use {
+            memory::close(&self.file, unmapping.handle);
+        }
+        result
+    }
+
+    /// Takes back every mapping of `buffer`, as before it is freed. Returns where they were.
+    pub fn forget(&mut self, buffer: GemHandle) -> Vec<u64> {
+        let addresses = self.books.addresses_of(buffer);
+        for &address in &addresses {
+            if let Err(error) = self.unmap(address) {
+                log::warn!("GEM_VA unmap at {address:#x}: {error}");
+            }
+        }
+        addresses
+    }
+}
+
+/// `error`, saying which step it came from.
+fn step(doing: &str, error: io::Error) -> io::Error {
+    io::Error::new(error.kind(), format!("{doing}: {error}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const BUFFER: GemHandle = GemHandle(7);
+    const HERE: GemHandle = GemHandle(3);
+    const AT: u64 = 0x40_0000;
+    const SIZE: u64 = 0x1_0000;
+
+    #[test]
+    fn a_buffer_mapped_twice_is_let_go_after_its_second_mapping() {
+        let mut books = Books::default();
+        books.add(BUFFER, HERE, AT, 0, SIZE);
+        books.add(BUFFER, HERE, AT + SIZE, SIZE, SIZE);
+        assert_eq!(books.handle_of(BUFFER), Some(HERE));
+        let first = books.remove(AT).unwrap();
+        assert_eq!(first, Unmapping { handle: HERE, address: AT, length: SIZE, last_use: false });
+        assert!(books.remove(AT + SIZE).unwrap().last_use);
+        assert_eq!(books.handle_of(BUFFER), None);
+    }
+
+    #[test]
+    fn an_address_with_nothing_mapped_has_nothing_to_take_back() {
+        let mut books = Books::default();
+        assert_eq!(books.remove(AT), None);
+    }
+
+    #[test]
+    fn a_buffers_mappings_are_found_by_the_buffer() {
+        let mut books = Books::default();
+        books.add(BUFFER, HERE, AT, 0, SIZE);
+        books.add(GemHandle(8), GemHandle(4), AT + SIZE, 0, SIZE);
+        assert_eq!(books.addresses_of(BUFFER), vec![AT]);
+    }
+
+    #[test]
+    fn a_buffer_mapped_twice_is_listed_once() {
+        let mut books = Books::default();
+        books.add(BUFFER, HERE, AT, 0, SIZE);
+        books.add(BUFFER, HERE, AT + SIZE, SIZE, SIZE);
+        books.add(GemHandle(8), GemHandle(4), AT + 2 * SIZE, 0, SIZE);
+        let mut handles = books.handles();
+        handles.sort_by_key(|handle| handle.0);
+        assert_eq!(handles, vec![HERE, GemHandle(4)]);
+    }
+
+    #[test]
+    fn an_address_is_found_in_its_buffer_by_the_mapping_s_offset() {
+        let mut books = Books::default();
+        books.add(BUFFER, HERE, AT, 0x3000, SIZE);
+        assert_eq!(books.locate(AT), Some((BUFFER, 0x3000)));
+        assert_eq!(books.locate(AT + 0x10), Some((BUFFER, 0x3010)));
+        assert_eq!(books.locate(AT + SIZE), None);
+        assert_eq!(books.locate(AT - 1), None);
+    }
+
+    #[test]
+    fn a_range_is_held_only_inside_one_mapping() {
+        let mut books = Books::default();
+        books.add(BUFFER, HERE, AT, 0, SIZE);
+        assert!(books.holds(AT, SIZE));
+        assert!(books.holds(AT + 0x100, 0x100));
+        assert!(!books.holds(AT + 0x100, SIZE));
+        assert!(!books.holds(AT - 0x100, 0x200));
+        assert!(!books.holds(AT + SIZE, 4));
+        assert!(!books.holds(u64::MAX - 1, 4));
+    }
+}

@@ -1,9 +1,10 @@
 //! Which PCI identity the virtual render device shows Windows. Windows' own virtual render driver
 //! only binds to Microsoft's, so every machine starts with that one. Browsers and streaming programs
 //! look at the vendor number before they use a GPU, and stay on the CPU when it's Microsoft's. So once
-//! a guest holds a driver package for NVIDIA's number, written there from its own copy of Windows'
-//! driver, every VM after that shows NVIDIA's. The choice is kept in the machine's folder, as it has to
-//! outlive a VM: a guest shown NVIDIA's number without the package would start with no GPU.
+//! a guest holds a driver package for its card maker's number, NVIDIA's or AMD's, written there from
+//! its own copy of Windows' driver, every VM after that shows that number. The choice is kept in the
+//! machine's folder, as it has to outlive a VM: a guest shown a number without its package would
+//! start with no GPU.
 
 use crate::context::Context;
 use crate::failure::Result;
@@ -27,6 +28,19 @@ pub const MICROSOFT_RENDER: PciIdentity = PciIdentity { vendor: 0x1414, device: 
 /// NVIDIA's vendor number with a device number NVIDIA has never shipped, so NVIDIA's own driver can't
 /// claim the device.
 pub const NVIDIA_RENDER: PciIdentity = PciIdentity { vendor: 0x10DE, device: 0x2BFE };
+/// AMD's vendor number with a device number AMD has never shipped, far from every range it uses.
+pub const AMD_RENDER: PciIdentity = PciIdentity { vendor: 0x1002, device: 0x7FFE };
+
+/// The number a machine shows once its guest holds the package: its card maker's. A Windows machine
+/// stays with one maker, so this never changes under a guest.
+pub fn maker_identity(machine: &Machine) -> PciIdentity {
+    if machine.windows_amd_card().is_some() { AMD_RENDER } else { NVIDIA_RENDER }
+}
+
+/// The card maker's name, for what the user hears.
+pub fn maker_name(machine: &Machine) -> &'static str {
+    if machine.windows_amd_card().is_some() { "AMD" } else { "NVIDIA" }
+}
 
 impl PciIdentity {
     /// The start of the hardware id Windows gives the device, with the rest left open.
@@ -50,20 +64,27 @@ impl PciIdentity {
 pub enum Shown {
     #[default]
     Microsoft,
-    Nvidia,
+    /// The card maker's, [`maker_identity`]. Written as "nvidia" before AMD cards came.
+    #[serde(alias = "nvidia")]
+    Maker,
 }
 
 impl Shown {
-    pub fn identity(self) -> PciIdentity {
+    pub fn identity(self, machine: &Machine) -> PciIdentity {
         match self {
             Self::Microsoft => MICROSOFT_RENDER,
-            Self::Nvidia => NVIDIA_RENDER,
+            Self::Maker => maker_identity(machine),
         }
     }
 }
 
+/// What a state from before AMD cards holds a package for.
+fn nvidia_vendor() -> u16 {
+    NVIDIA_RENDER.vendor
+}
+
 /// How a machine stands. Tasks write it in the machine's folder, and the app reads it from there.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IdentityState {
     pub shown: Shown,
     /// The guest script that failed to write the package, which a start doesn't run again.
@@ -75,15 +96,31 @@ pub struct IdentityState {
     /// What the user should hear about a machine that's up.
     #[serde(default)]
     pub note: String,
-    /// The next start is Windows' first on NVIDIA's number, which ends with Windows restarting once.
+    /// The next start is Windows' first on its maker's number, which ends with Windows restarting once.
     #[serde(default)]
     pub restart_due: bool,
+    /// The vendor number of the package Windows holds.
+    #[serde(default = "nvidia_vendor")]
+    pub package_vendor: u16,
+}
+
+impl Default for IdentityState {
+    fn default() -> Self {
+        Self {
+            shown: Shown::default(),
+            failed_script: String::new(),
+            reason: String::new(),
+            note: String::new(),
+            restart_due: false,
+            package_vendor: nvidia_vendor(),
+        }
+    }
 }
 
 impl IdentityState {
-    /// Whether this start, the first on NVIDIA's number, has to restart Windows before it's ready.
+    /// Whether this start, the first on its maker's number, has to restart Windows before it's ready.
     pub fn restarts_windows(&self) -> bool {
-        self.shown == Shown::Nvidia && self.restart_due
+        self.shown == Shown::Maker && self.restart_due
     }
 
     /// What the user should hear, if anything. A note is about the machine as it runs now.
@@ -96,10 +133,16 @@ fn state_file(context: &Context, machine: &Machine) -> PathBuf {
     machine.folder(context).join(STATE_FILE)
 }
 
-/// A file that's missing or bad says Microsoft's number, which always works.
+/// A file that's missing or bad says Microsoft's number, which always works. So does a package for
+/// another maker's number than this machine's, which the guest gets again for its own maker.
 pub fn read_state(context: &Context, machine: &Machine) -> IdentityState {
     let text = fs::read_to_string(state_file(context, machine)).unwrap_or_default();
-    serde_json::from_str(&text).unwrap_or_default()
+    let mut state: IdentityState = serde_json::from_str(&text).unwrap_or_default();
+    if state.shown == Shown::Maker && state.package_vendor != maker_identity(machine).vendor {
+        state.shown = Shown::Microsoft;
+        state.restart_due = false;
+    }
+    state
 }
 
 pub fn write_state(context: &Context, machine: &Machine, state: &IdentityState) -> Result<()> {
@@ -108,7 +151,7 @@ pub fn write_state(context: &Context, machine: &Machine, state: &IdentityState) 
 
 /// The identity this machine's next start shows.
 pub fn shown_identity(context: &Context, machine: &Machine) -> PciIdentity {
-    read_state(context, machine).shown.identity()
+    read_state(context, machine).shown.identity(machine)
 }
 
 #[cfg(test)]
@@ -134,7 +177,7 @@ mod tests {
         let context = scratch_context(&scratch);
         let machine = Machine::new("x", "x", "", "");
         assert_eq!(shown_identity(&context, &machine), MICROSOFT_RENDER);
-        let state = IdentityState { shown: Shown::Nvidia, ..IdentityState::default() };
+        let state = IdentityState { shown: Shown::Maker, ..IdentityState::default() };
         write_state(&context, &machine, &state).unwrap();
         assert_eq!(shown_identity(&context, &machine), NVIDIA_RENDER);
         assert_eq!(read_state(&context, &machine), state);

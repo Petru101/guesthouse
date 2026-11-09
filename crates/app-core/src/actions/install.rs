@@ -12,7 +12,7 @@ use crate::iso::iso_maker;
 use crate::library::make_disk;
 use crate::machine::Machine;
 use crate::monitor::Command as Qmp;
-use crate::settings::driver_folder;
+use crate::setup::guest_driver::guest_driver;
 use crate::start_checks::start_problems;
 use crate::vm_args::Boot;
 use crate::vm_host::{last_words, send_key};
@@ -100,6 +100,7 @@ fn fill_answer_disc(context: &Context, machine: &Machine, files: &Path) -> Resul
     let answers = answer_file(context, &zone, machine.account(), &password)?;
     fs::write(files.join("autounattend.xml"), password_is_filled(answers)?)?;
     fs::write(files.join(TOKEN_ON_DISC), make_token(context, machine)? + "\n")?;
+    let driver = guest_driver(context, machine).map_err(Failure::new)?;
     let path = answer_disc_path(context, machine);
     // Made private first: the disc holds the token, and genisoimage keeps a file's mode.
     fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&path)?;
@@ -107,7 +108,7 @@ fn fill_answer_disc(context: &Context, machine: &Machine, files: &Path) -> Resul
         .args(["-quiet", "-J", "-joliet-long", "-r", "-V", ANSWER_LABEL, "-graft-points", "-o"])
         .arg(&path)
         .arg(format!("/={}", files.display()))
-        .arg(format!("nvidia/={}", driver_folder(context).display()))
+        .arg(format!("{}/={}", driver.disc_folder, driver.folder.display()))
         .output()?;
     if !result.status.success() {
         let said = String::from_utf8_lossy(&result.stderr);
@@ -194,8 +195,10 @@ fn count_files(folder: &Path) -> usize {
 /// Looks at the finished guest, so that anything missing is found here and not at first boot.
 fn check_guest(task: &Task) -> Result<()> {
     task.step("Checking Windows");
-    let expected = count_files(&driver_folder(task.context));
-    let script = format!("$expected = {expected}\n{}", account_script(task, "check.ps1")?);
+    let driver = guest_driver(task.context, &task.machine).map_err(Failure::new)?;
+    let expected = count_files(&driver.folder);
+    let check = account_script(task, "check.ps1")?;
+    let script = format!("$expected = {expected}\n$store_folder = '{}'\n{check}", driver.store_folder);
     let answer = task.ask_guest(&script, CHECK_SCRIPT_SECONDS);
     if !answer.contains("all there") {
         let said = answer.trim();
@@ -243,7 +246,7 @@ pub fn install(task: &mut Task) -> Result<()> {
         return Err(Failure::new("Windows installed, but its desktop never came up."));
     }
     check_guest(task)?;
-    // Here, so the first start is already on NVIDIA's vendor number and needs no second VM.
+    // Here, so the first start is already on the card maker's vendor number and needs no second VM.
     set_up_identity(task);
     task.step("Shutting down Windows");
     task.ask_guest("Stop-Computer -Force", QUICK_SECONDS);

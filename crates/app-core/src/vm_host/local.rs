@@ -258,6 +258,9 @@ impl LocalHost<'_> {
         if !choice.daemon_jailed {
             start = start.without_jail();
         }
+        if let Some(pci) = machine.windows_amd_card() {
+            start = start.on_amd_card(pci);
+        }
         let mut daemon = start.spawn(&plan.run_folder)?;
         self.wait_for_daemon(&mut daemon)?;
         if plan.jail.is_some() {

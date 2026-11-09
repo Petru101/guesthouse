@@ -148,7 +148,12 @@ mod tests {
     use crate::testing::{Scratch, scratch_context};
 
     fn card() -> AmdCard {
-        AmdCard { pci: "0000:7c:00.0".into(), render_node: "/dev/dri/renderD128".into(), name: "AMD".into() }
+        AmdCard {
+            pci: "0000:7c:00.0".into(),
+            render_node: "/dev/dri/renderD128".into(),
+            name: "AMD".into(),
+            device: 0x13C0,
+        }
     }
 
     fn amd(mode: AmdMode) -> AmdBoot {

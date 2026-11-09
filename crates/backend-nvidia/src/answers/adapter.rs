@@ -6,11 +6,11 @@ use super::nodes::{ENGINE_3D, ENGINE_COPY, ENGINE_VIDEO_ENCODE, Node, node_metad
 use super::queries::fixed_answers;
 use super::registry::{AdapterRegistry, DRIVER_STORE};
 use crate::profile::RecordLayout;
+use guesthouse_backend::guest_text::{self, QUERY_USER_DRIVER_NAME};
 use guesthouse_backend::{Status, VendorQuery};
 use std::collections::HashMap;
 
 const QUERY_RECORD: u32 = 0;
-const QUERY_USER_DRIVER_NAME: u32 = 1;
 const QUERY_OPENGL: u32 = 2;
 const QUERY_NODE: u32 = 25;
 const QUERY_GPU_MMU_CAPS: u32 = 34;
@@ -24,13 +24,8 @@ const WDDM_3_0_CAPS: u32 = 0xE;
 const USER_DRIVER: &str = "nvldumdx.dll";
 const USER_DRIVER_32_BIT: &str = "nvldumd.dll";
 const OPENGL_NAME_BYTES: usize = 520;
-const VERSION_FIELD: usize = 4;
 const NODE_NUMBER_MASK: u32 = 0xFFFF;
 const NODE_ENGINE_FIELD: usize = 4;
-
-fn utf16_zero(text: &str) -> Vec<u8> {
-    text.encode_utf16().chain([0]).flat_map(u16::to_le_bytes).collect()
-}
 
 /// What goes into the answers. Clocks are in hertz.
 #[derive(Debug, Clone)]
@@ -126,10 +121,7 @@ impl AdapterAnswers {
 
     fn user_driver_name(query: &VendorQuery<'_>, out: &mut Vec<u8>) {
         let name = if query.process_is_32_bit { USER_DRIVER_32_BIT } else { USER_DRIVER };
-        let start = out.len();
-        out.extend_from_slice(query.data.get(..VERSION_FIELD).unwrap_or(&[0; VERSION_FIELD]));
-        out.extend(utf16_zero(&format!("{DRIVER_STORE}\\{name}")));
-        out.resize((start + query.data.len()).max(out.len()), 0);
+        guest_text::user_driver_name(query, &format!("{DRIVER_STORE}\\{name}"), out);
     }
 
     fn opengl_info(&self, query: &VendorQuery<'_>, out: &mut Vec<u8>) -> Option<()> {

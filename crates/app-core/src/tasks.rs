@@ -100,7 +100,7 @@ pub struct Status {
     pub screen: String,
     /// Why the screen isn't what was asked for.
     pub display_problem: String,
-    /// What stands in the way of NVIDIA's vendor ID, or when it comes.
+    /// What stands in the way of the card maker's vendor ID, or when it comes.
     pub identity_note: String,
     /// What the running machine's jail is missing, if anything.
     pub jail_note: String,
@@ -207,7 +207,10 @@ pub fn status(context: &Context, machine: &Machine) -> Status {
         found.display_problem = shown.problem(found.state == State::Running).to_owned();
         let identity = read_identity(context, machine);
         found.identity_note = identity.problem(found.state == State::Running).to_owned();
-        found.card_note = card_in_use_note(context).unwrap_or_default();
+        found.card_note = match machine.windows_amd_card() {
+            Some(pci) => amd_card_note(context, pci),
+            None => card_in_use_note(context).unwrap_or_default(),
+        };
         if found.state == State::Running {
             let slot = found.slot.map(slots::number);
             found.screen = screen_text(&shown, ring_in(context, slot));
@@ -217,6 +220,14 @@ pub fn status(context: &Context, machine: &Machine) -> Status {
         found.jail_note = folder.as_deref().and_then(jailing::read_note).unwrap_or_default();
     }
     found
+}
+
+/// Which AMD card a Windows machine runs on, as a machine on AMD is the rarer case.
+fn amd_card_note(context: &Context, pci: &str) -> String {
+    crate::linux::amd::amd_card(context, pci).map_or_else(
+        || format!("Runs on the AMD card at {pci}."),
+        |card| format!("Runs on the {} at {pci}.", card.name),
+    )
 }
 
 /// Whether the task in `read` ended without finishing. A task's last act is to clear its pid, so this

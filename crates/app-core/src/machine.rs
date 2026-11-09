@@ -28,6 +28,8 @@ pub const MIN_CORES: u32 = 2;
 /// 4 GiB hole. The daemon relies on the larger-RAM split.
 pub const MIN_RAM_GIB: u32 = 4;
 const MACHINE_FILE: &str = "machine.json";
+const OTHER_MAKER: &str =
+    "Windows here was installed for the card it has now. For a card from another maker, make a new machine.";
 const THUMBNAIL_FILE: &str = "thumbnail.png";
 const TOKEN_FILE: &str = "guest.token";
 const PASSWORD_FILE: &str = "windows-password";
@@ -161,9 +163,9 @@ pub struct Machine {
     /// the file when on, so an older build can still read it.
     #[serde(default = "default_on", skip_serializing_if = "is_on")]
     pub sound: bool,
-    /// For a Linux guest's GPU, the PCI address of the AMD card it runs on. Empty is the NVIDIA card,
-    /// forwarded, and a guest never has both. Left out of the file when empty, so an older build can
-    /// still read it.
+    /// The PCI address of the AMD card the guest's GPU runs on. Empty is the NVIDIA card: setup's for
+    /// a Windows guest, forwarded for a Linux one. A guest never has both. Left out of the file when
+    /// empty, so an older build can still read it.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub amd_gpu: String,
     /// The name of the account the install makes, if the user chose one. Empty is the name the guest
@@ -259,6 +261,18 @@ impl Machine {
     pub fn amd_card(&self) -> Option<&str> {
         let linux_gpu = self.wants_forwarded_gpu() || self.own_linux_gpu();
         Some(self.amd_gpu.as_str()).filter(|pci| linux_gpu && !pci.is_empty())
+    }
+
+    /// The AMD card a Windows guest's GPU-PV runs on, by its PCI address. None is setup's NVIDIA card.
+    pub fn windows_amd_card(&self) -> Option<&str> {
+        Some(self.amd_gpu.as_str()).filter(|pci| self.kind == Kind::Windows && !pci.is_empty())
+    }
+
+    /// Why this machine can't move to the card at `pci`, empty being the NVIDIA card. A Windows guest
+    /// was installed with its card maker's driver, so it stays with that maker.
+    pub fn card_change_problem(&self, pci: &str) -> Option<&'static str> {
+        let same_maker = self.amd_gpu.is_empty() == pci.is_empty();
+        (self.kind == Kind::Windows && !same_maker).then_some(OTHER_MAKER)
     }
 
     /// Whether its disk and firmware file live in its folder, so deleting that takes them too.
@@ -421,6 +435,26 @@ mod tests {
 
     fn sample() -> Machine {
         Machine::new("sample", "Sample", "/d", "/v")
+    }
+
+    #[test]
+    fn a_windows_guest_on_an_amd_card_names_it_and_a_linux_one_does_not_count() {
+        assert_eq!(sample().windows_amd_card(), None);
+        let on_amd = Machine { amd_gpu: "0000:7c:00.0".into(), ..sample() };
+        assert_eq!(on_amd.windows_amd_card(), Some("0000:7c:00.0"));
+        let linux = Machine { kind: Kind::Linux, ..on_amd };
+        assert_eq!(linux.windows_amd_card(), None);
+    }
+
+    #[test]
+    fn a_windows_guest_moves_only_to_a_card_of_the_same_maker() {
+        let on_amd = Machine { amd_gpu: "0000:7c:00.0".into(), ..sample() };
+        assert_eq!(on_amd.card_change_problem("0000:03:00.0"), None);
+        assert!(on_amd.card_change_problem("").unwrap().contains("make a new machine"));
+        assert!(sample().card_change_problem("0000:7c:00.0").is_some());
+        assert_eq!(sample().card_change_problem(""), None);
+        let linux = Machine { kind: Kind::Linux, ..sample() };
+        assert_eq!(linux.card_change_problem("0000:7c:00.0"), None, "a Linux guest builds its Mesa again");
     }
 
     #[test]

@@ -26,6 +26,17 @@ pub fn put_qword(data: &mut [u8], at: usize, value: u64) {
     data[at..at + 8].copy_from_slice(&value.to_le_bytes());
 }
 
+/// The first `count` dwords of a guest buffer in hex, for a log line about a buffer that was refused.
+/// A short last dword is read as if padded with zeros.
+pub fn first_dwords(data: &[u8], count: usize) -> String {
+    let words = data.chunks(4).take(count).map(|word| {
+        let mut bytes = [0; 4];
+        bytes[..word.len()].copy_from_slice(word);
+        format!("{:#x}", u32::from_le_bytes(bytes))
+    });
+    words.collect::<Vec<_>>().join(", ")
+}
+
 /// The sum, over the first `dwords` dwords, of each dword's index XOR its value, with the dword at
 /// byte `skip` counted as zero. That dword is where the sum itself is kept, so a buffer checks out
 /// when the sum equals what is stored there. A buffer shorter than `dwords` counts its missing

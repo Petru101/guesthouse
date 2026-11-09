@@ -189,11 +189,15 @@ fn start_gpu_vm(task: &mut Task) -> Result<PciIdentity> {
 /// The guest has answered, so this takes it from there to a desktop someone can use.
 fn get_ready(task: &mut Task, shown: PciIdentity) -> Result<()> {
     get_gpu_ready(task)?;
-    if new_vm_needed(shown, &read_state(task.context, &task.machine)) {
+    if new_vm_needed(shown, &read_state(task.context, &task.machine), &task.machine) {
         start_again_for_new_identity(task)?;
         get_gpu_ready(task)?;
     }
     set_up_desktop(task)?;
+    if task.machine.windows_amd_card().is_some() {
+        // What follows places NVIDIA's files and settings store, which a guest on AMD has no use for.
+        return Ok(());
+    }
     place_driver_files(task)?;
     place_profile_store(task)
 }
@@ -211,7 +215,7 @@ fn get_gpu_ready(task: &mut Task) -> Result<()> {
     Ok(())
 }
 
-/// The same start goes on in a new VM, which shows NVIDIA's number. What the first one said is about a
+/// The same start goes on in a new VM, which shows the card maker's number. What the first one said is about a
 /// VM that's gone.
 fn start_again_for_new_identity(task: &mut Task) -> Result<()> {
     stop_for_new_identity(task)?;

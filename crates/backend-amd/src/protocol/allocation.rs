@@ -16,6 +16,12 @@ pub const SECOND_BLOCK_SIZE: usize = 0x114;
 /// The largest buffer the kernel takes, 128 KiB.
 pub const MAX_SIZE: usize = 0x20000;
 
+/// The RDNA1 and RDNA2 driver puts a wrapper of this size before the header. Its first dword is the
+/// size of what follows, which the header gives again as its own [`CLAIMED_SIZE`]. Seen in the
+/// private data driver 32.0.21045 sends; the RDNA3 driver's header starts the buffer.
+const WRAPPER_SIZE: usize = 0x40;
+const WRAPPED_SIZE: usize = 0x00;
+
 // The header.
 /// The guest's own count of the buffer's bytes.
 const CLAIMED_SIZE: usize = 0x00;
@@ -38,6 +44,11 @@ const HINTS_LIMIT: u32 = 0x40000;
 /// The low bits of the hints count the heap type bytes that follow.
 const HEAP_COUNT_MASK: u32 = 0b111;
 const HEAP_TYPES: usize = 0x20;
+// The kernel maps a heap type to a memory segment: type 1 to segment 0, or 5 when the host
+// aperture stands in; 2 to 1; 3, 4, 5, 7 and 8 to 2; 9 to 4; 0 and 6 to none. Only segment 0 is
+// named, the CPU-visible local video memory, so type 1 is the only one that says where memory
+// goes. The other segments aren't named local, aperture or cacheable, and until they are, no heap
+// type picks a memory domain here.
 /// Each heap type is a number below this.
 const HEAP_TYPE_LIMIT: u8 = 0xA;
 const SIZE_64: usize = 0x68;
@@ -59,9 +70,13 @@ const SURFACE_SWIZZLE_MODE: usize = 0x08;
 /// 0 to 3. 1, 2 and 3 are 1D, 2D and 3D.
 const SURFACE_DIMENSIONS: usize = 0x0C;
 const MAX_DIMENSIONS: u32 = 3;
+/// The guest's own format number. Nothing converts it to a byte size anywhere that was read, so
+/// the host side takes it as an opaque number.
 const SURFACE_FORMAT: usize = 0x10;
 const SURFACE_WIDTH: usize = 0x14;
 const SURFACE_HEIGHT: usize = 0x18;
+/// The pitch's unit isn't known: the kernel fills it from the address library's own first output.
+/// It must be nonzero unless the shape check is skipped.
 const SURFACE_PITCH: usize = 0x1C;
 
 /// The second block's own size field.
@@ -131,8 +146,20 @@ fn surface_at(data: &[u8], index: usize) -> Result<Surface, Refused> {
     Ok(surface)
 }
 
+/// The header and what follows it, past the wrapper if the buffer has one.
+fn unwrapped(data: &[u8]) -> &[u8] {
+    let wrapped = dword(data, WRAPPED_SIZE).map(|size| size as usize);
+    let inner = data.get(WRAPPER_SIZE..).unwrap_or_default();
+    let header_size = dword(inner, CLAIMED_SIZE).map(|size| size as usize);
+    match wrapped {
+        Some(size) if size == inner.len() && header_size == Some(size) => inner,
+        _ => data,
+    }
+}
+
 /// Checks the buffer as the kernel driver would, and reads what it asks for.
 pub fn parse(data: &[u8]) -> Result<Allocation, Refused> {
+    let data = unwrapped(data);
     let field = |at: usize| dword(data, at).ok_or(Refused("the header runs past the end"));
     let claimed = field(CLAIMED_SIZE)? as usize;
     if claimed > MAX_SIZE || claimed > data.len() {
@@ -196,6 +223,12 @@ pub fn parse(data: &[u8]) -> Result<Allocation, Refused> {
     Ok(Allocation { size, alignment, heap_types, surfaces, has_second_block })
 }
 
+/// The WDK's D3DKMDT_FREQUENCY_NOTSPECIFIED. AMD's private data carries no refresh rate, and the
+/// guest's kernel compares a primary's rate with the display mode's: any rate that isn't the mode's
+/// fails setting the mode, over and over. Not specified matches any mode, and is what the kernel
+/// gives its own primaries.
+const REFRESH_NOT_SPECIFIED: u32 = 0xFFFF_FFFE;
+
 /// The shape the core makes the allocation in. Data the kernel would refuse gets a page, and
 /// [`parse`] then refuses the call before anything is made.
 pub fn shape(data: &[u8]) -> AllocationShape {
@@ -220,7 +253,7 @@ pub fn shape(data: &[u8]) -> AllocationShape {
             format: surface.format,
             pitch: surface.pitch,
             tiling: (surface.swizzle_mode != 0).then_some(surface.swizzle_mode),
-            refresh: (0, 1),
+            refresh: (REFRESH_NOT_SPECIFIED, REFRESH_NOT_SPECIFIED),
             samples: (1, 0),
             colour: surface.format,
         }),
@@ -310,6 +343,29 @@ mod tests {
         parse(data).unwrap_err().0
     }
 
+    /// The buffer as the RDNA1 and RDNA2 driver sends it, behind its wrapper.
+    fn wrapped(header: &[u8]) -> Vec<u8> {
+        let mut data = vec![0u8; WRAPPER_SIZE];
+        put_dword(&mut data, WRAPPED_SIZE, header.len() as u32);
+        data.extend_from_slice(header);
+        data
+    }
+
+    #[test]
+    fn a_wrapped_buffer_is_read_past_its_wrapper() {
+        let header = Builder { size: 0x1234, second_block: true, ..Builder::default() }.build();
+        assert_eq!(parse(&wrapped(&header)), parse(&header));
+        assert_eq!(parse(&header).unwrap().size, 0x1234);
+    }
+
+    #[test]
+    fn a_wrapper_whose_size_does_not_match_the_header_is_not_taken_for_one() {
+        let header = Builder::default().build();
+        let mut data = wrapped(&header);
+        put_dword(&mut data, WRAPPER_SIZE + CLAIMED_SIZE, header.len() as u32 - 4);
+        assert!(parse(&data).is_err());
+    }
+
     #[test]
     fn a_plain_buffer_is_taken_and_sized_to_its_alignment() {
         let data = Builder { size: 0x1234, ..Builder::default() }.build();
@@ -339,6 +395,7 @@ mod tests {
         let shape = shape(&data);
         let surface = shape.surface.unwrap();
         assert_eq!((surface.width, surface.height, surface.tiling), (1920, 1080, Some(27)));
+        assert_eq!(surface.refresh, (0xFFFF_FFFE, 0xFFFF_FFFE));
         assert_eq!(shape.kind, MemoryKind(27));
     }
 

@@ -1,5 +1,5 @@
 # Writes a driver package into Windows that binds its own virtual render driver to the GPU device under
-# NVIDIA's vendor number, so the next start can show that number. Runs as SYSTEM, sent by the host, which
+# the card maker's vendor number, so the next start can show that number. Runs as SYSTEM, sent by the host, which
 # puts $vendor and $device in front of this. The package is made here from this Windows' own copy of the
 # driver, nothing is brought in, and the catalog is signed the way the display driver's is: with a
 # certificate made here, trusted only here, whose private key is deleted straight after.
@@ -9,8 +9,10 @@ $inboxInf = 'C:\Windows\INF\vrd.inf'
 $driverStore = 'C:\Windows\System32\DriverStore\FileRepository'
 $folder = 'C:\gpupv\render-identity'
 $package = "$folder\pkg"
-$infName = 'guesthouse-render.inf'
-$catalogName = 'guesthouse-render.cat'
+# One package for each vendor number. Packages from before AMD cards are named without it.
+$infName = "guesthouse-render-$vendor.inf"
+$catalogName = "guesthouse-render-$vendor.cat"
+$ourPackages = '*\guesthouse-render*.inf'
 $subject = 'CN=Guesthouse render identity, this machine only'
 # Windows puts the name in quotes in what it reads back, as it has a comma in it.
 $ourCertificates = '*Guesthouse render identity, this machine only*'
@@ -28,8 +30,15 @@ function Remove-OurCertificates {
 }
 
 # Everything that can refuse returns from here, as the agent's shell must go on to send the answer.
+# Our packages already in Windows that bind this number.
+function Find-Package {
+    Get-WindowsDriver -Online -ea 0 | Where-Object OriginalFileName -like $ourPackages |
+        Where-Object { (Get-Content -LiteralPath $_.OriginalFileName -ea 0) -match [regex]::Escape($hardwareId) } |
+        Select-Object -First 1
+}
+
 function Stage-Package {
-    $already = Get-WindowsDriver -Online -ea 0 | Where-Object OriginalFileName -like "*\$infName"
+    $already = Find-Package
     if ($already) {
         "package in: $($already.Driver)"
         return 'identity staged'
@@ -80,7 +89,7 @@ function Stage-Package {
     if ($signed.Status -ne 'Valid') { Remove-OurCertificates; return 'stay: The package could not be signed here.' }
 
     pnputil /add-driver "$package\$infName" 2>&1
-    $added = Get-WindowsDriver -Online -ea 0 | Where-Object OriginalFileName -like "*\$infName"
+    $added = Find-Package
     if (-not $added) { Remove-OurCertificates; return 'stay: Windows did not take the package.' }
     "package in: $($added.Driver)"
     return 'identity staged'

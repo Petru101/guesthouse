@@ -29,6 +29,8 @@ const DMA_BUFFER: u32 = 0;
 const DMA_BUFFER_LENGTH: u32 = 0x40;
 /// The buffer's GPU address, which must be set.
 const DMA_BUFFER_ADDRESS: usize = 0x18;
+/// The buffer's length in bytes: what the guest wrote, not the room the buffer has.
+const DMA_BUFFER_BYTES: usize = 0x08;
 /// An indirect buffer.
 const INDIRECT_BUFFER: u32 = 1;
 const INDIRECT_BUFFER_LENGTH: u32 = 0x40;
@@ -47,14 +49,15 @@ const WDDM2_INFO_LENGTH: u32 = 0x48;
 /// The guest's checksum of the submission.
 const CHECKSUM: u32 = 5;
 const CHECKSUM_LENGTH: u32 = 0x40;
-/// The guest's [`index_xor_sum`]. Zero is taken unchecked.
+/// The guest's [`index_xor_sum`]. A zero fails the submission, whatever the version.
 const CHECKSUM_VALUE: usize = 0x08;
 /// Bytes the version-0 sum covers past the record's own [`CHECKSUM_LENGTH`], from the record's
-/// start. The sum runs over a quarter of that many dwords, which is medium confidence.
+/// start. The sum runs over a quarter of that many bytes plus [`CHECKSUM_LENGTH`], in dwords.
 const CHECKSUM_COVERED: usize = 0x0C;
 const CHECKSUM_VERSION: usize = 0x10;
 /// Version 0 sums the submission's own bytes from the record on. Version 1 sums a list the kernel
-/// gathers from the DMA buffer records, which is taken unchecked here.
+/// gathers from the DMA buffer records, with three constants that are not in this tree until the
+/// owner decides, so a version-1 sum is taken unchecked here, though a zero one still fails.
 const CHECKSUM_OVER_BYTES: u32 = 0;
 /// Work for several engines at once.
 const GANG: u32 = 6;
@@ -132,12 +135,15 @@ fn check_record(record: &[u8], opcode: u32) -> Result<(), Refused> {
     }
 }
 
-/// Checks a version-0 checksum. `rest` is the submission from the checksum record to its end, and
+/// Checks a checksum record: a zero sum fails, and a version-0 sum is summed. `rest` is the submission from the checksum record to its end, and
 /// the record itself has been checked.
 fn check_sum(rest: &[u8]) -> Result<(), Refused> {
     let field = |at: usize| dword(rest, at).expect("inside a checked record");
     let stored = field(CHECKSUM_VALUE);
-    if field(CHECKSUM_VERSION) != CHECKSUM_OVER_BYTES || stored == 0 {
+    if stored == 0 {
+        return Err(Refused("the checksum is zero"));
+    }
+    if field(CHECKSUM_VERSION) != CHECKSUM_OVER_BYTES {
         return Ok(());
     }
     let covered = (field(CHECKSUM_COVERED) as usize).checked_add(CHECKSUM_LENGTH as usize);
@@ -147,6 +153,35 @@ fn check_sum(rest: &[u8]) -> Result<(), Refused> {
         return Err(Refused("the checksum doesn't match"));
     }
     Ok(())
+}
+
+/// A command buffer a submission runs: its GPU address and its length in bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CommandBuffer {
+    pub address: u64,
+    pub bytes: u32,
+}
+
+/// The command buffers a submission's DMA buffer records name, in order. The data must have passed
+/// [`check`].
+pub fn command_buffers(data: &[u8]) -> Vec<CommandBuffer> {
+    let count = dword(data, RECORD_COUNT).unwrap_or(0);
+    let mut buffers = Vec::new();
+    let mut at = HEADER_SIZE;
+    for _ in 0..count {
+        let (Some(opcode), Some(length)) = (dword(data, at + OPCODE), dword(data, at + LENGTH)) else {
+            break;
+        };
+        if opcode == DMA_BUFFER {
+            let address = qword(data, at + DMA_BUFFER_ADDRESS).unwrap_or(0);
+            let bytes = dword(data, at + DMA_BUFFER_BYTES).unwrap_or(0);
+            if address != 0 && bytes != 0 {
+                buffers.push(CommandBuffer { address, bytes });
+            }
+        }
+        at += length as usize;
+    }
+    buffers
 }
 
 /// Checks a submission's private data as the kernel driver would.
@@ -196,6 +231,7 @@ mod tests {
     fn checksum() -> Vec<u8> {
         let mut data = record(CHECKSUM, CHECKSUM_LENGTH);
         put_dword(&mut data, CHECKSUM_VERSION, 1);
+        put_dword(&mut data, CHECKSUM_VALUE, 0x1234);
         data
     }
 
@@ -244,6 +280,34 @@ mod tests {
         check(data).unwrap_err().0
     }
 
+    fn sized_dma_buffer(address: u64, bytes: u32) -> Vec<u8> {
+        let mut data = dma_buffer(address);
+        put_dword(&mut data, DMA_BUFFER_BYTES, bytes);
+        data
+    }
+
+    #[test]
+    fn the_command_buffers_are_the_dma_buffer_records_in_order() {
+        let records = [
+            checksum(),
+            sized_dma_buffer(0x2_0000, 0x40),
+            record(INDIRECT_BUFFER, 0x40),
+            sized_dma_buffer(0x1_0000, 0x1C),
+        ];
+        let buffers = command_buffers(&submission(1, &records));
+        let expected = [
+            CommandBuffer { address: 0x2_0000, bytes: 0x40 },
+            CommandBuffer { address: 0x1_0000, bytes: 0x1C },
+        ];
+        assert_eq!(buffers, expected);
+    }
+
+    #[test]
+    fn an_empty_dma_buffer_runs_nothing() {
+        let buffers = command_buffers(&submission(1, &[sized_dma_buffer(0x2_0000, 0), dma_buffer(0)]));
+        assert!(buffers.is_empty());
+    }
+
     #[test]
     fn a_usual_submission_is_taken() {
         let records =
@@ -267,13 +331,33 @@ mod tests {
     }
 
     #[test]
-    fn a_zero_or_version_1_checksum_is_not_summed() {
+    fn a_zero_checksum_fails_and_a_version_1_one_is_not_summed() {
         let mut zero = summed(2, &[dma_buffer(0x1_0000)]);
         put_dword(&mut zero, HEADER_SIZE + CHECKSUM_VALUE, 0);
-        assert!(check(&zero).is_ok());
+        assert_eq!(refused(&zero), "the checksum is zero");
         let mut gathered = summed(2, &[dma_buffer(0x1_0000)]);
         put_dword(&mut gathered, HEADER_SIZE + CHECKSUM_VERSION, 1);
         assert!(check(&gathered).is_ok());
+        put_dword(&mut gathered, HEADER_SIZE + CHECKSUM_VALUE, 0);
+        assert_eq!(refused(&gathered), "the checksum is zero");
+    }
+
+    #[test]
+    fn a_version_0_sum_covers_the_records_length_plus_its_own_as_dwords() {
+        // 8 bytes after the record: (0x40 + 8) / 4 = 18 dwords, the last two being the next record's.
+        let data = summed(2, &[record(UNCHECKED, 8)]);
+        let mut changed = data.clone();
+        let last = changed.len() - 1;
+        changed[last] ^= 1;
+        assert_eq!(refused(&changed), "the checksum doesn't match");
+        // A byte past the covered length changes nothing.
+        let mut past = summed(2, &[record(UNCHECKED, 8), record(UNCHECKED, 12)]);
+        put_dword(&mut past, HEADER_SIZE + CHECKSUM_COVERED, 8);
+        let sum = index_xor_sum(&past[HEADER_SIZE..], (CHECKSUM_LENGTH as usize + 8) / 4, CHECKSUM_VALUE);
+        put_dword(&mut past, HEADER_SIZE + CHECKSUM_VALUE, sum);
+        let tail = past.len() - 1;
+        past[tail] ^= 1;
+        assert!(check(&past).is_ok());
     }
 
     #[test]

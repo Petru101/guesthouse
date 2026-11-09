@@ -8,7 +8,8 @@ use crate::host::{free_gib, host_ram_limit, plain_ram_limit};
 use crate::machine::{Kind, Machine, load_all, sorted_names};
 use crate::monitor::{Command, failed};
 use crate::network;
-use crate::settings::{driver_folder, with_suffix};
+use crate::settings::with_suffix;
+use crate::setup::guest_driver::guest_driver;
 use crate::snapshots::{list_snapshots, snapshots_folder};
 use crate::tasks::{State, slot_of, status};
 use serde_json::json;
@@ -85,6 +86,9 @@ pub struct NewMachine {
     pub user: String,
     /// Its password, or empty for a random one.
     pub password: String,
+    /// The AMD card its GPU runs on, by PCI address, or empty for the NVIDIA card. None takes this
+    /// PC's usual choice.
+    pub amd_gpu: Option<String>,
 }
 
 /// Says why this new machine can't be made now.
@@ -125,8 +129,8 @@ pub fn create_problems(context: &Context, new: &NewMachine, machine: &Machine) -
                 context.install_room_gib()
             ));
         }
-        if !driver_folder(context).is_dir() {
-            found.push(NO_DRIVER_FILES.to_owned());
+        if let Err(missing) = guest_driver(context, machine) {
+            found.push(missing.to_owned());
         }
     }
     Ok(found)
@@ -167,7 +171,7 @@ pub fn create(context: &Context, new: &NewMachine) -> Result<Machine> {
         installing: installs,
         tpm: windows,
         mac: unused_mac(context),
-        amd_gpu: crate::linux::amd::default_linux_gpu(context),
+        amd_gpu: new.amd_gpu.clone().unwrap_or_else(|| crate::linux::amd::default_linux_gpu(context)),
         user: if installs { new.user.trim().to_owned() } else { String::new() },
         ..Machine::new(&id, new.name.trim(), &disk.to_string_lossy(), &firmware)
     };
@@ -299,6 +303,7 @@ mod tests {
             disk_gib: 2,
             user: String::new(),
             password: String::new(),
+            amd_gpu: None,
         }
     }
 
@@ -331,6 +336,7 @@ mod tests {
             disk_gib: 20,
             user: "ana".into(),
             password: "chosen".into(),
+            amd_gpu: None,
         };
         let made = create(&context, &new).unwrap();
         assert_eq!(made.account(), "ana");
@@ -404,6 +410,7 @@ mod tests {
             disk_gib: 80,
             user: String::new(),
             password: String::new(),
+            amd_gpu: None,
         };
         assert!(create(&context, &new).unwrap_err().0.contains("room for 6 GiB"));
     }
@@ -423,6 +430,7 @@ mod tests {
             disk_gib: 4,
             user: String::new(),
             password: String::new(),
+            amd_gpu: None,
         };
         assert_eq!(create(&context, &new).unwrap_err().0, NO_FIRMWARE);
     }
@@ -443,6 +451,7 @@ mod tests {
             disk_gib: 64,
             user: String::new(),
             password: String::new(),
+            amd_gpu: None,
         };
         let made = create(&context, &new).unwrap();
         assert!(made.installing && made.tpm && !made.has_gpu());
@@ -474,6 +483,7 @@ mod tests {
             disk_gib: 2,
             user: String::new(),
             password: String::new(),
+            amd_gpu: None,
         };
         let made = create(&context, &new).unwrap();
         assert!(made.installing && !made.tpm && made.vars.is_empty());
@@ -495,6 +505,7 @@ mod tests {
             disk_gib: 64,
             user: String::new(),
             password: String::new(),
+            amd_gpu: None,
         };
         assert_eq!(create(&context, &new).unwrap_err().0, NO_DRIVER_FILES);
     }

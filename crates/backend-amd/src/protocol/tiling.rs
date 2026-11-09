@@ -9,8 +9,10 @@
 //! passes through, and only the modifier's other fields are worked out here, from the card's
 //! GB_ADDR_CONFIG, the way amdgpu does it for a buffer that has tiling flags and no modifier.
 //!
-//! A mode too big for the tiling field gets none: the kernel driver refuses modes past 0x20 on
-//! GFX10, and 0x20 itself is addrlib's linear-general, which has no hardware number.
+//! A mode too big for the tiling field gets none. The kernel driver's address library refuses modes
+//! past 0x20, but not on the allocation path that was read for a GFX10.3 part, so this is a choice
+//! of layout here and not a refusal. 0x20 itself is addrlib's linear-general, which has no hardware
+//! number.
 //!
 //! Every number here is from the open uAPI headers, amdgpu_drm.h and drm_fourcc.h.
 

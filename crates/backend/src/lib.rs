@@ -8,6 +8,7 @@
 //! picks its profiles, and nothing in this trait is per-architecture or per-card.
 
 mod driver;
+pub mod guest_text;
 mod memory;
 mod pci_address;
 mod types;

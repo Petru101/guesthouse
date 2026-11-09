@@ -11,6 +11,10 @@ pub const PAGE_SIZE: u64 = 4096;
 pub struct MapRequest {
     /// Where the guest wants it, or zero for wherever the host likes.
     pub address: u64,
+    /// When the host chooses, the lowest address that will do.
+    pub lowest: u64,
+    /// When the host chooses, where the mapping must have ended by, or zero for no limit.
+    pub limit: u64,
     /// Zero means the guest is only setting a range aside.
     pub allocation: u32,
     pub first_page: u64,
@@ -19,6 +23,8 @@ pub struct MapRequest {
 
 impl MapRequest {
     const ADDRESS: usize = 0x20;
+    const LOWEST: usize = 0x28;
+    const LIMIT: usize = 0x30;
     const ALLOCATION: usize = 0x38;
     const FIRST_PAGE: usize = 0x40;
     const PAGES: usize = 0x48;
@@ -26,6 +32,8 @@ impl MapRequest {
     pub fn parse(message: &[u8]) -> Result<Self, Malformed> {
         Ok(Self {
             address: u64_at(message, Self::ADDRESS)?,
+            lowest: u64_at(message, Self::LOWEST)?,
+            limit: u64_at(message, Self::LIMIT)?,
             allocation: u32_at(message, Self::ALLOCATION)?,
             first_page: u64_at(message, Self::FIRST_PAGE)?,
             pages: u64_at(message, Self::PAGES)?,

@@ -627,6 +627,7 @@ name = "guesthouse-daemon"
 version = "0.2.3"
 dependencies = [
  "guesthouse-backend",
+ "guesthouse-backend-amd",
  "guesthouse-backend-nvidia",
  "guesthouse-backend-standin",
  "guesthouse-core",

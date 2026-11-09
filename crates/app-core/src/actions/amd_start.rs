@@ -85,6 +85,7 @@ mod tests {
             pci: "0000:7c:00.0".into(),
             render_node: "/dev/dri/renderD128".into(),
             name: "AMD".into(),
+            device: 0x13C0,
         };
         let boot = Boot::Ubuntu(UbuntuBoot::Amd(AmdBoot { card, mode, setup_image: None }));
         super::super::plan_for(task.context, &task.machine, boot)

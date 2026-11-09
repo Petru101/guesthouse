@@ -94,6 +94,25 @@ pub fn gpu_devices(devices: &Path, render_nodes: &Path) -> Vec<PathBuf> {
 pub const WINDOW_FILE: &str = "iomem";
 pub const RAM_FILE: &str = "ram";
 
+#[cfg(feature = "amd")]
+impl Needs {
+    /// What the AMD daemon of this slot needs. Only the one render node is granted, so the other
+    /// cards' device files are not reachable from this process.
+    pub fn of_amd_card(
+        slot: crate::slot::Slot,
+        project: &Path,
+        driver_folder: &Path,
+        render_node: PathBuf,
+    ) -> Self {
+        Self {
+            run_folder: slot.run_folder(project),
+            shared_files: vec![slot.shared_file(WINDOW_FILE), slot.shared_file(RAM_FILE)],
+            devices: vec![render_node],
+            driver_folder: Some(driver_folder.to_owned()),
+        }
+    }
+}
+
 #[cfg(feature = "nvidia")]
 impl Needs {
     /// What the real daemon of this slot needs.

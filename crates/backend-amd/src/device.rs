@@ -9,13 +9,14 @@ use std::os::fd::{AsRawFd, RawFd};
 use std::path::{Path, PathBuf};
 use std::ptr;
 
-/// An open render node, with what was read off the card at open time. Every address space the GPU
-/// knows belongs to this one open file: a second guest would be a second open.
+/// An open render node, with what was read off the card at open time. amdgpu gives each open file
+/// its own GPU address space, so a guest process's space is a second open, see [`Device::open_again`].
 #[derive(Debug)]
 pub struct Device {
     file: File,
     info: DeviceInfo,
     folder: Option<PathBuf>,
+    node: PathBuf,
 }
 
 impl Device {
@@ -26,7 +27,12 @@ impl Device {
         let file = OpenOptions::new().read(true).write(true).open(&node)?;
         let folder = ioctl::device_folder(&node);
         let info = info::read_device_info(&file, folder.as_deref())?;
-        Ok(Self { file, info, folder })
+        Ok(Self { file, info, folder, node })
+    }
+
+    /// The same render node opened anew, with a GPU address space of its own.
+    pub fn open_again(&self) -> io::Result<File> {
+        OpenOptions::new().read(true).write(true).open(&self.node)
     }
 
     pub fn info(&self) -> &DeviceInfo {
@@ -93,6 +99,14 @@ impl Mapping {
         assert!(offset + 4 <= self.size, "read past the mapping");
         // SAFETY: the offset is inside the mapping, which is readable.
         unsafe { ptr::read_volatile(self.address.add(offset).cast::<u32>()) }
+    }
+
+    pub fn as_ptr(&self) -> *mut u8 {
+        self.address
+    }
+
+    pub fn size(&self) -> usize {
+        self.size
     }
 
     /// Fills the start of the mapping with dwords, for writing an IB.

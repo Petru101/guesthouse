@@ -419,9 +419,13 @@ stage_bundled() {
     say "the bundled source is $OUT/$name.tar"
 }
 
-# The real backend goes in if the tree has one, and otherwise the daemon says it has none.
+# Each real backend the tree has goes in. With none, the daemon says it has none.
 daemon_features() {
-    [ ! -d "$REPO/crates/backend-nvidia" ] || printf '%s' '--features guesthouse-daemon/nvidia'
+    features=""
+    for vendor in nvidia amd; do
+        [ ! -d "$REPO/crates/backend-$vendor" ] || features="$features${features:+,}guesthouse-daemon/$vendor"
+    done
+    [ -z "$features" ] || printf '%s' "--features $features"
 }
 
 # What the app calls in GTK and libadwaita. install.sh looks for each in the host's libraries, which

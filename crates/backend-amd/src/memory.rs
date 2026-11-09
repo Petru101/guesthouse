@@ -13,6 +13,9 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 pub const DOMAIN_GTT: u64 = 0x2;
 pub const DOMAIN_VRAM: u64 = 0x4;
 const CREATE_CPU_ACCESS_REQUIRED: u64 = 1 << 0;
+/// The kernel fills a new buffer with zeros. WDDM promises a guest that new memory is, and AMD's
+/// driver counts on it: a command buffer's first packet waits on a word it never wrote.
+const CREATE_VRAM_CLEARED: u64 = 1 << 3;
 
 // GEM_USERPTR flags. REGISTER keeps the pages tracked so the GPU sees the mapping the process has,
 // and VALIDATE faults them in now. ANONONLY is left off, as the guest's RAM is file-backed.
@@ -88,7 +91,7 @@ const PRIME_REQUEST_SIZE: usize = 12;
 const GEM_CLOSE_REQUEST_SIZE: usize = 8;
 
 /// A GEM handle on an open render node. It is only a number until it is given an address.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct GemHandle(pub u32);
 
 /// How much CPU reach a new buffer needs.
@@ -111,11 +114,15 @@ pub fn create(
     put64(&mut request, CREATE_BO_SIZE, size);
     put64(&mut request, CREATE_ALIGNMENT, align.max(1));
     put64(&mut request, CREATE_DOMAINS, domain);
-    let flags =
-        if cpu == CpuAccess::Required && domain == DOMAIN_VRAM { CREATE_CPU_ACCESS_REQUIRED } else { 0 };
-    put64(&mut request, CREATE_DOMAIN_FLAGS, flags);
+    put64(&mut request, CREATE_DOMAIN_FLAGS, create_flags(domain, cpu));
     ioctl::drm_ioctl(file, call::gem_create(), &mut request)?;
     Ok(GemHandle(get32(&request, CREATE_OUT_HANDLE)))
+}
+
+fn create_flags(domain: u64, cpu: CpuAccess) -> u64 {
+    let cpu_flag =
+        if cpu == CpuAccess::Required && domain == DOMAIN_VRAM { CREATE_CPU_ACCESS_REQUIRED } else { 0 };
+    cpu_flag | CREATE_VRAM_CLEARED
 }
 
 /// Adopts pages already mapped in this process, so the GPU reaches the same memory the CPU does.
@@ -225,6 +232,15 @@ pub fn export(file: &impl AsRawFd, handle: GemHandle) -> io::Result<OwnedFd> {
     Ok(unsafe { OwnedFd::from_raw_fd(fd) })
 }
 
+/// Takes in a buffer another open file handed out with [`export`], as a handle on `file`. A buffer
+/// already known to `file` comes back under the handle it has there.
+pub fn import(file: &impl AsRawFd, buffer: &impl AsRawFd) -> io::Result<GemHandle> {
+    let mut request = [0u8; PRIME_REQUEST_SIZE];
+    put32(&mut request, PRIME_FD, buffer.as_raw_fd() as u32);
+    ioctl::drm_ioctl(file, call::prime_fd_to_handle(), &mut request)?;
+    Ok(GemHandle(get32(&request, PRIME_HANDLE)))
+}
+
 // GEM_METADATA, a 288-byte request: the handle, the operation, then flags, tiling_info and an opaque
 // blob the buffer carries for whoever imports it.
 const METADATA_REQUEST_SIZE: usize = 288;
@@ -257,4 +273,32 @@ pub fn close(file: &impl AsRawFd, handle: GemHandle) {
     let mut request = [0u8; GEM_CLOSE_REQUEST_SIZE];
     put32(&mut request, 0, handle.0);
     let _ = ioctl::drm_ioctl(file, call::gem_close(), &mut request);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_new_buffer_starts_cleared() {
+        for domain in [DOMAIN_GTT, DOMAIN_VRAM] {
+            for cpu in [CpuAccess::Required, CpuAccess::NotNeeded] {
+                assert_ne!(create_flags(domain, cpu) & CREATE_VRAM_CLEARED, 0);
+            }
+        }
+    }
+
+    #[test]
+    fn only_video_memory_the_cpu_needs_asks_for_cpu_access() {
+        assert_ne!(create_flags(DOMAIN_VRAM, CpuAccess::Required) & CREATE_CPU_ACCESS_REQUIRED, 0);
+        assert_eq!(create_flags(DOMAIN_VRAM, CpuAccess::NotNeeded) & CREATE_CPU_ACCESS_REQUIRED, 0);
+        assert_eq!(create_flags(DOMAIN_GTT, CpuAccess::Required) & CREATE_CPU_ACCESS_REQUIRED, 0);
+    }
+
+    #[test]
+    fn an_executable_mapping_says_so_to_the_kernel() {
+        let flags = MapFlags { executable: true, ..MapFlags::read_write() };
+        assert_ne!(flags.bits() & VM_PAGE_EXECUTABLE, 0);
+        assert_eq!(MapFlags::read_write().bits() & VM_PAGE_EXECUTABLE, 0);
+    }
 }

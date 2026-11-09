@@ -9,6 +9,7 @@ pub mod account;
 pub mod actions;
 pub mod agent;
 pub mod bridge;
+pub mod card_choice;
 pub mod clock;
 pub mod context;
 pub mod daemon;

@@ -9,6 +9,7 @@ use crate::machine::{Kind, Machine};
 use crate::network_settings::{network_start_problems, other_machines};
 use crate::processes::{memory_taken, qemu_pid, running_slots};
 use crate::settings::max_vram_gib;
+use crate::setup::amd::amd_start_problems;
 use crate::setup::cards::card_problem;
 use crate::setup::setup_done;
 use crate::slots;
@@ -137,7 +138,9 @@ pub fn start_problems(context: &Context, machine: &Machine) -> Result<Vec<String
     if machine.kind == Kind::Windows && !gpu_ready(context) {
         found.push(NO_GPU_PART.to_owned());
     } else if machine.has_gpu() {
-        if !setup_done(context) {
+        if let Some(pci) = machine.windows_amd_card() {
+            found.extend(amd_start_problems(context, pci));
+        } else if !setup_done(context) {
             found.push(NO_SETUP.to_owned());
         } else {
             found.extend(card_problem(context));
@@ -354,6 +357,18 @@ mod tests {
         assert!(found[0].contains("Run Setup Again"), "it comes first, so it's what the row says");
         finish_setup(&context);
         assert!(!says(&start_problems(&context, &gpu).unwrap(), NO_SETUP));
+    }
+
+    #[test]
+    fn a_windows_machine_on_an_amd_card_needs_amds_driver_and_not_nvidias_setup() {
+        use crate::setup::amd::NO_AMD_SETUP;
+        let scratch = Scratch::new();
+        let (context, machine) = startable(&scratch);
+        let on_amd = Machine { kind: Kind::Windows, amd_gpu: "0000:7c:00.0".into(), ..machine };
+        let found = start_problems(&context, &on_amd).unwrap();
+        assert!(says(&found, NO_AMD_SETUP), "{found:?}");
+        assert!(says(&found, "at 0000:7c:00.0, isn't in this PC now"), "{found:?}");
+        assert!(!says(&found, NO_SETUP), "NVIDIA's setup is not this machine's");
     }
 
     #[test]

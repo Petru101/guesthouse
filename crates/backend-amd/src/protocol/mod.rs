@@ -10,11 +10,18 @@
 //! A field the guest computes is checked and kept as it is. A field the kernel driver would invent
 //! is filled in here.
 
+pub mod adapter_header;
 pub mod adapter_info;
+pub mod adapter_records;
+pub mod adapter_registry;
 pub mod allocation;
-mod bytes;
+pub mod api_drivers;
+pub(crate) mod bytes;
 pub mod command_data;
 pub mod context;
 pub mod escape;
+pub mod gpu_mmu_caps;
+pub mod guest_driver;
 pub mod hw_queue;
 pub mod tiling;
+pub mod wddm_caps;

@@ -30,6 +30,7 @@ guesthouse-transport = { path = "crates/transport" }
 guesthouse-messages = { path = "crates/messages" }
 guesthouse-backend = { path = "crates/backend" }
 guesthouse-backend-standin = { path = "crates/backend-standin" }
+guesthouse-backend-amd = { path = "crates/backend-amd" }
 guesthouse-backend-nvidia = { path = "crates/backend-nvidia" }
 guesthouse-core = { path = "crates/core" }
 guesthouse-daemon = { path = "crates/daemon" }
