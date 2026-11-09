@@ -1,7 +1,8 @@
 //! The adapter block AMD's Windows driver reads at start, built from the host card.
 //!
-//! The guest asks for it with an adapter query of type 0, the WDK's DXGKQAITYPE_UMDRIVERPRIVATE,
-//! into a buffer of exactly [`BLOCK_SIZE`] bytes. AMD's open interop header calls the structure
+//! The guest asks for it with an adapter query of type 0, the WDK's DXGKQAITYPE_UMDRIVERPRIVATE.
+//! The block is [`BLOCK_SIZE`] bytes. A guest that asks for fewer gets the front of the same block.
+//! AMD's open interop header calls the structure
 //! ADAPTERINFOEX. All of it is the kernel driver's to fill in, and the guest only reads it, so each
 //! field here is one of three things:
 //!
@@ -19,7 +20,7 @@ use guesthouse_backend::{Status, VendorQuery};
 
 /// The adapter query type that asks for the block, DXGKQAITYPE_UMDRIVERPRIVATE.
 pub const QUERY_TYPE: u32 = 0;
-/// The guest's buffer must be exactly this size, or the kernel refuses the query.
+/// The whole block. A shorter ask is answered with the front of it.
 pub const BLOCK_SIZE: usize = 0x3A00;
 
 // The block's start. Fixed values.
@@ -170,12 +171,14 @@ pub fn answer(query: &VendorQuery<'_>, info: &DeviceInfo, out: &mut Vec<u8>) -> 
     if query.kind != QUERY_TYPE {
         return None;
     }
-    if query.size != BLOCK_SIZE {
+    // The bare-metal kernel demands the whole block. This guest asks for a shorter prefix
+    // first, and refusing that ask is where it stops. A longer ask has nowhere to go.
+    if query.size == 0 || query.size > BLOCK_SIZE {
         log::info!("adapter block refused: the guest asked for {} bytes", query.size);
         return Some(Status::INVALID_PARAMETER);
     }
-    log::info!("answered the adapter block");
-    out.extend_from_slice(&build(info));
+    log::info!("answered the adapter block, {} bytes of {BLOCK_SIZE}", query.size);
+    out.extend_from_slice(&build(info)[..query.size]);
     Some(Status::SUCCESS)
 }
 
@@ -541,7 +544,12 @@ mod tests {
         let other = VendorQuery { kind: 7, size: BLOCK_SIZE, data: &[], process_is_32_bit: false };
         assert_eq!(answer(&other, &info, &mut out), None);
         let short = VendorQuery { kind: QUERY_TYPE, size: 0x100, data: &[], process_is_32_bit: false };
-        assert_eq!(answer(&short, &info, &mut out), Some(Status::INVALID_PARAMETER));
+        assert_eq!(answer(&short, &info, &mut out), Some(Status::SUCCESS));
+        assert_eq!(out, build(&info)[..0x100]);
+        out.clear();
+        let too_big =
+            VendorQuery { kind: QUERY_TYPE, size: BLOCK_SIZE + 4, data: &[], process_is_32_bit: false };
+        assert_eq!(answer(&too_big, &info, &mut out), Some(Status::INVALID_PARAMETER));
         assert!(out.is_empty());
         let right = VendorQuery { kind: QUERY_TYPE, size: BLOCK_SIZE, data: &[], process_is_32_bit: false };
         assert_eq!(answer(&right, &info, &mut out), Some(Status::SUCCESS));
