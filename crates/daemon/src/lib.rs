@@ -5,6 +5,8 @@
 //! runs every message through [`router::Router`] to the session. [`viewer::ViewerPort`] serves the
 //! frame socket from that same thread.
 
+#[cfg(all(feature = "amd", not(feature = "nvidia")))]
+pub mod amd_setup;
 pub mod display_note;
 pub mod environment;
 pub mod gpu_note;
@@ -15,9 +17,8 @@ pub mod router;
 pub mod server;
 #[cfg(feature = "nvidia")]
 pub mod setup;
-#[cfg(all(feature = "amd", not(feature = "nvidia")))]
-#[path = "amd_setup.rs"]
-pub mod setup;
 pub mod slot;
 pub mod startup;
+#[cfg(any(feature = "nvidia", feature = "amd"))]
+mod store;
 pub mod viewer;

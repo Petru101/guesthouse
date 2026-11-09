@@ -1,30 +1,14 @@
 //! What an AMD guest was set up with. The app's `setup.json` stays the NVIDIA card's record, which
 //! this daemon does not read: a Windows guest on the AMD card is described by `setup/amd.json` in
-//! the same store.
+//! the same store. The app doesn't write that file yet, so for now it is written by hand.
 
+use crate::store::store;
 use guesthouse_backend::{DriverVersion, PciAddress, Setup};
 use serde_json::Value;
-use std::env;
 use std::fs;
 use std::path::PathBuf;
 
-const STORE_VARIABLE: &str = "GUESTHOUSE_STORE";
-const STORE_CONFIG: &str = ".config/guesthouse/store";
-const STORE_DEFAULT: &str = ".local/share/guesthouse";
 const AMD_FILE: &str = "setup/amd.json";
-
-fn store() -> PathBuf {
-    let home = PathBuf::from(env::var_os("HOME").unwrap_or_default());
-    if let Some(folder) = env::var_os(STORE_VARIABLE).filter(|folder| !folder.is_empty()) {
-        return folder.into();
-    }
-    let configured = fs::read_to_string(home.join(STORE_CONFIG)).ok();
-    let first_line = configured.as_deref().and_then(|text| text.lines().next()).map(str::trim);
-    match first_line.filter(|line| !line.is_empty()) {
-        Some(line) => line.strip_prefix("~/").map_or_else(|| line.into(), |rest| home.join(rest)),
-        None => home.join(STORE_DEFAULT),
-    }
-}
 
 fn parse_setup(text: &str) -> Result<Setup, String> {
     let setup: Value = serde_json::from_str(text).map_err(|error| error.to_string())?;
@@ -63,6 +47,7 @@ pub fn read_setup() -> Result<Setup, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::env;
     use std::process;
 
     #[test]

@@ -52,7 +52,7 @@ fn serve(slot: Slot, project: PathBuf) -> Result<(), Box<dyn std::error::Error>>
     use guesthouse_daemon::jail::{Needs, RAM_FILE, WINDOW_FILE, lock_calls, lock_files};
     use guesthouse_daemon::router::Router;
     use guesthouse_daemon::server::Server;
-    use guesthouse_daemon::setup::read_setup;
+    use guesthouse_daemon::amd_setup::read_setup;
     use guesthouse_daemon::startup::start_backend;
 
     let setup = read_setup()?;
