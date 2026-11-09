@@ -80,7 +80,8 @@ const ECID_HIGH: u32 = 2;
 const FB_CLEARED_ON_ALLOCATION: (usize, u8) = (2, 0x02);
 const FIFO_NO_PIPELINED_PAGE_TABLE_BLIT: (usize, u8) = (0, 0x80);
 
-/// The identifiers the guest's adapter goes by, which the core's identity answer repeats.
+/// The identifiers the guest's adapter goes by, which the core's identity answer repeats. Once the
+/// guest opens the adapter, the record has the guest's own identifier in their place.
 const ADAPTER_ID: [u32; 2] = [0xABC, 1];
 
 /// The most classes the record's list has room for, before the next field.

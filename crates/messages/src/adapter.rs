@@ -12,6 +12,8 @@ const HOST_ADAPTER_HANDLE: u32 = 0x4000_0000;
 const INTERFACE_VERSION: u32 = 40;
 const DRIVER_INTERFACE_VERSION: u32 = 0xF003;
 const ADAPTER_ID: (u32, u32) = (0x0000_0ABC, 0x0000_0001);
+/// Where the guest's offer gives the identifier its own Windows chose for the adapter.
+const GUEST_ADAPTER_ID_AT: usize = HEADER_SIZE + 8;
 
 /// Set in the identity answer to let the guest send submissions, waits and signals without
 /// waiting for each reply. Needs interface version 40.
@@ -28,6 +30,11 @@ pub fn open_adapter(message: &[u8], out: &mut Vec<u8>) -> Result<(), Malformed> 
     put_u32(out, INTERFACE_VERSION);
     put_u32(out, last_compatible);
     Ok(())
+}
+
+/// The identifier the guest's Windows gave the adapter, which its programs see, if the offer has it.
+pub fn guest_adapter_id(message: &[u8]) -> Option<u64> {
+    u64_at(message, GUEST_ADAPTER_ID_AT).ok()
 }
 
 /// What the guest is told the adapter is.
@@ -319,6 +326,14 @@ mod tests {
         assert_eq!(out.len(), 16);
         assert_eq!(u32_at(&out, 8), Ok(INTERFACE_VERSION));
         assert_eq!(u32_at(&out, 12), Ok(7));
+    }
+
+    #[test]
+    fn the_offer_gives_the_guests_own_adapter_id() {
+        let mut message = vec![0; HEADER_SIZE + 16];
+        message[HEADER_SIZE + 8..].copy_from_slice(&0x6949u64.to_le_bytes());
+        assert_eq!(guest_adapter_id(&message), Some(0x6949));
+        assert_eq!(guest_adapter_id(&message[..HEADER_SIZE + 8]), None);
     }
 
     #[test]

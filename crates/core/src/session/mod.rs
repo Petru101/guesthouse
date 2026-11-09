@@ -350,7 +350,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
     fn dispatch(&mut self, command: Option<Command>, message: &[u8], out: &mut Vec<u8>) -> Handled {
         use Command as C;
         match command {
-            Some(C::OpenAdapter) => guesthouse_messages::adapter::open_adapter(message, out)?,
+            Some(C::OpenAdapter) => self.open_adapter(message, out)?,
             Some(C::GetAdapterIdentity) => self.adapter_identity(out),
             Some(C::SetIoSpace) => self.set_io_space(message, out)?,
             Some(C::DriverEscape) => self.driver_escape(message, out)?,

@@ -120,6 +120,10 @@ pub trait Backend: Sized {
     /// messages, so this is only for what has to follow the guest's own start.
     fn guest_restarted(&mut self) {}
 
+    /// The guest has opened the adapter, and says the identifier its own Windows gave it. That is
+    /// the one the guest's programs see, so a vendor's driver that matches on it needs it too.
+    fn adapter_opened(&mut self, _guest_adapter_id: u64) {}
+
     /// `memory` adds up the guest's allocations and `processes` sorts them by owner, so both are
     /// only for the escapes that ask.
     fn escape(&mut self, process: u32, data: &mut [u8], books: &GuestBooks<'_>);

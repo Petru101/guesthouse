@@ -78,6 +78,15 @@ impl AdapterAnswers {
         &self.record
     }
 
+    /// Puts the guest's own identifier for the adapter in the record. The guest's compute runtime
+    /// reports the record's, and Vulkan's DLSS and optical flow find their compute device by it.
+    pub fn set_adapter_id(&mut self, id: u64) {
+        let at = self.layout.adapter_id;
+        if let Some(field) = self.record.get_mut(at..at + 8) {
+            field.copy_from_slice(&id.to_le_bytes());
+        }
+    }
+
     /// The RM's engine numbers on this card.
     pub fn rm_engines(&self) -> &[u32] {
         &self.rm_engines
@@ -200,6 +209,24 @@ mod tests {
         assert_eq!(out.len(), field + 8);
         assert_eq!(out[0], 7);
         assert_eq!(out[field], 1);
+    }
+
+    #[test]
+    fn the_record_takes_the_guests_adapter_id() {
+        let mut answers = answers();
+        let field = GUEST_617.record.adapter_id;
+        answers.record = vec![0; field + 8];
+        answers.set_adapter_id(0x1_0000_6949);
+        let mut out = Vec::new();
+        answers.answer(&query(0, field + 8, &[]), &mut out);
+        assert_eq!(out[field..field + 8], 0x1_0000_6949u64.to_le_bytes());
+    }
+
+    #[test]
+    fn a_short_record_has_no_room_for_the_adapter_id() {
+        let mut answers = answers();
+        answers.set_adapter_id(0x6949);
+        assert_eq!(answers.record(), &[7; 16]);
     }
 
     #[test]
