@@ -29,6 +29,8 @@ const DMA_BUFFER: u32 = 0;
 const DMA_BUFFER_LENGTH: u32 = 0x40;
 /// The buffer's GPU address, which must be set.
 const DMA_BUFFER_ADDRESS: usize = 0x18;
+/// The buffer's length in bytes: what the guest wrote, not the room the buffer has.
+const DMA_BUFFER_BYTES: usize = 0x08;
 /// An indirect buffer.
 const INDIRECT_BUFFER: u32 = 1;
 const INDIRECT_BUFFER_LENGTH: u32 = 0x40;
@@ -153,6 +155,35 @@ fn check_sum(rest: &[u8]) -> Result<(), Refused> {
     Ok(())
 }
 
+/// A command buffer a submission runs: its GPU address and its length in bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CommandBuffer {
+    pub address: u64,
+    pub bytes: u32,
+}
+
+/// The command buffers a submission's DMA buffer records name, in order. The data must have passed
+/// [`check`].
+pub fn command_buffers(data: &[u8]) -> Vec<CommandBuffer> {
+    let count = dword(data, RECORD_COUNT).unwrap_or(0);
+    let mut buffers = Vec::new();
+    let mut at = HEADER_SIZE;
+    for _ in 0..count {
+        let (Some(opcode), Some(length)) = (dword(data, at + OPCODE), dword(data, at + LENGTH)) else {
+            break;
+        };
+        if opcode == DMA_BUFFER {
+            let address = qword(data, at + DMA_BUFFER_ADDRESS).unwrap_or(0);
+            let bytes = dword(data, at + DMA_BUFFER_BYTES).unwrap_or(0);
+            if address != 0 && bytes != 0 {
+                buffers.push(CommandBuffer { address, bytes });
+            }
+        }
+        at += length as usize;
+    }
+    buffers
+}
+
 /// Checks a submission's private data as the kernel driver would.
 pub fn check(data: &[u8]) -> Result<Submission, Refused> {
     let header = |at: usize| dword(data, at).ok_or(Refused("the header is cut short"));
@@ -247,6 +278,34 @@ mod tests {
 
     fn refused(data: &[u8]) -> &'static str {
         check(data).unwrap_err().0
+    }
+
+    fn sized_dma_buffer(address: u64, bytes: u32) -> Vec<u8> {
+        let mut data = dma_buffer(address);
+        put_dword(&mut data, DMA_BUFFER_BYTES, bytes);
+        data
+    }
+
+    #[test]
+    fn the_command_buffers_are_the_dma_buffer_records_in_order() {
+        let records = [
+            checksum(),
+            sized_dma_buffer(0x2_0000, 0x40),
+            record(INDIRECT_BUFFER, 0x40),
+            sized_dma_buffer(0x1_0000, 0x1C),
+        ];
+        let buffers = command_buffers(&submission(1, &records));
+        let expected = [
+            CommandBuffer { address: 0x2_0000, bytes: 0x40 },
+            CommandBuffer { address: 0x1_0000, bytes: 0x1C },
+        ];
+        assert_eq!(buffers, expected);
+    }
+
+    #[test]
+    fn an_empty_dma_buffer_runs_nothing() {
+        let buffers = command_buffers(&submission(1, &[sized_dma_buffer(0x2_0000, 0), dma_buffer(0)]));
+        assert!(buffers.is_empty());
     }
 
     #[test]

@@ -101,6 +101,14 @@ impl Mapping {
         unsafe { ptr::read_volatile(self.address.add(offset).cast::<u32>()) }
     }
 
+    pub fn as_ptr(&self) -> *mut u8 {
+        self.address
+    }
+
+    pub fn size(&self) -> usize {
+        self.size
+    }
+
     /// Fills the start of the mapping with dwords, for writing an IB.
     pub fn write_dwords(&mut self, dwords: &[u32]) {
         for (index, &word) in dwords.iter().enumerate() {

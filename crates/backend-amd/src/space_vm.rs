@@ -9,6 +9,8 @@
 
 use crate::device::Device;
 use crate::memory::{self, GemHandle, MapFlags};
+use crate::submit::{self, Context, Ib, Syncobj};
+use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, HashMap};
 use std::fs::File;
 use std::io;
@@ -19,8 +21,16 @@ use std::io;
 pub struct Books {
     /// By the buffer's handle on the first open: its handle here, and how many mappings use it.
     taken_in: HashMap<GemHandle, (GemHandle, u32)>,
-    /// By address: the buffer's handle on the first open, and the mapping's length.
-    mappings: BTreeMap<u64, (GemHandle, u64)>,
+    /// By address: the buffer's handle on the first open, and the mapping's place in it.
+    mappings: BTreeMap<u64, Placed>,
+}
+
+/// Where in its buffer a mapping starts, and how long it is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Placed {
+    buffer: GemHandle,
+    offset: u64,
+    length: u64,
 }
 
 /// A mapping on its way out, and whether the buffer's handle here must be let go after it.
@@ -38,13 +48,14 @@ impl Books {
         self.taken_in.get(&buffer).map(|&(handle, _)| handle)
     }
 
-    pub fn add(&mut self, buffer: GemHandle, handle: GemHandle, address: u64, length: u64) {
+    /// Notes `length` bytes of `buffer` from `offset`, mapped at `address` through `handle`.
+    pub fn add(&mut self, buffer: GemHandle, handle: GemHandle, address: u64, offset: u64, length: u64) {
         self.taken_in.entry(buffer).or_insert((handle, 0)).1 += 1;
-        self.mappings.insert(address, (buffer, length));
+        self.mappings.insert(address, Placed { buffer, offset, length });
     }
 
     pub fn remove(&mut self, address: u64) -> Option<Unmapping> {
-        let (buffer, length) = self.mappings.remove(&address)?;
+        let Placed { buffer, length, .. } = self.mappings.remove(&address)?;
         let (handle, uses) = self.taken_in.get_mut(&buffer)?;
         let handle = *handle;
         *uses -= 1;
@@ -57,8 +68,15 @@ impl Books {
 
     /// Every mapping of `buffer` here.
     pub fn addresses_of(&self, buffer: GemHandle) -> Vec<u64> {
-        let of_buffer = self.mappings.iter().filter(|(_, (mapped, _))| *mapped == buffer);
+        let of_buffer = self.mappings.iter().filter(|(_, placed)| placed.buffer == buffer);
         of_buffer.map(|(&address, _)| address).collect()
+    }
+
+    /// The buffer behind an address, by its handle on the first open, and how far into it the
+    /// address is.
+    pub fn locate(&self, address: u64) -> Option<(GemHandle, u64)> {
+        let (&start, placed) = self.mappings.range(..=address).next_back()?;
+        (address - start < placed.length).then_some((placed.buffer, placed.offset + (address - start)))
     }
 }
 
@@ -76,11 +94,43 @@ pub enum Origin {
 pub struct SpaceVm {
     file: File,
     books: Books,
+    /// One amdgpu context for each engine family, made on first use. Closing the file frees them.
+    contexts: HashMap<u32, Context>,
+}
+
+/// How a run on the card ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ran {
+    Retired,
+    StillRunning,
 }
 
 impl SpaceVm {
     pub fn open(device: &Device) -> io::Result<Self> {
-        Ok(Self { file: device.open_again()?, books: Books::default() })
+        Ok(Self { file: device.open_again()?, books: Books::default(), contexts: HashMap::new() })
+    }
+
+    /// The buffer behind an address here, by its handle on the first open, and the offset into it.
+    pub fn locate(&self, address: u64) -> Option<(GemHandle, u64)> {
+        self.books.locate(address)
+    }
+
+    /// Runs command buffers already mapped here on the engine family `ip_type`, in order, and waits
+    /// up to `timeout_ms` for the last to retire.
+    pub fn run(&mut self, ip_type: u32, ibs: &[Ib], timeout_ms: i32) -> io::Result<Ran> {
+        let context = match self.contexts.entry(ip_type) {
+            Entry::Occupied(slot) => slot.into_mut(),
+            Entry::Vacant(slot) => {
+                slot.insert(Context::create(&self.file).map_err(|error| step("making a context", error))?)
+            }
+        };
+        let signal = Syncobj::create(&self.file).map_err(|error| step("making a sync object", error))?;
+        let retired = submit::submit_all(&self.file, context, ip_type, ibs, &signal)
+            .map_err(|error| step("submitting", error))
+            .and_then(|_| signal.arm_eventfd(&self.file).map_err(|error| step("arming the eventfd", error)))
+            .and_then(|event| submit::wait_eventfd(&event, timeout_ms));
+        signal.destroy(&self.file);
+        Ok(if retired? { Ran::Retired } else { Ran::StillRunning })
     }
 
     /// Maps `length` bytes of `buffer`, a handle on `device`, from `offset`, at `address`.
@@ -114,7 +164,7 @@ impl SpaceVm {
             }
             return Err(error);
         }
-        self.books.add(buffer, handle, address, length);
+        self.books.add(buffer, handle, address, offset, length);
         Ok(())
     }
 
@@ -159,8 +209,8 @@ mod tests {
     #[test]
     fn a_buffer_mapped_twice_is_let_go_after_its_second_mapping() {
         let mut books = Books::default();
-        books.add(BUFFER, HERE, AT, SIZE);
-        books.add(BUFFER, HERE, AT + SIZE, SIZE);
+        books.add(BUFFER, HERE, AT, 0, SIZE);
+        books.add(BUFFER, HERE, AT + SIZE, SIZE, SIZE);
         assert_eq!(books.handle_of(BUFFER), Some(HERE));
         let first = books.remove(AT).unwrap();
         assert_eq!(first, Unmapping { handle: HERE, address: AT, length: SIZE, last_use: false });
@@ -177,8 +227,18 @@ mod tests {
     #[test]
     fn a_buffers_mappings_are_found_by_the_buffer() {
         let mut books = Books::default();
-        books.add(BUFFER, HERE, AT, SIZE);
-        books.add(GemHandle(8), GemHandle(4), AT + SIZE, SIZE);
+        books.add(BUFFER, HERE, AT, 0, SIZE);
+        books.add(GemHandle(8), GemHandle(4), AT + SIZE, 0, SIZE);
         assert_eq!(books.addresses_of(BUFFER), vec![AT]);
+    }
+
+    #[test]
+    fn an_address_is_found_in_its_buffer_by_the_mapping_s_offset() {
+        let mut books = Books::default();
+        books.add(BUFFER, HERE, AT, 0x3000, SIZE);
+        assert_eq!(books.locate(AT), Some((BUFFER, 0x3000)));
+        assert_eq!(books.locate(AT + 0x10), Some((BUFFER, 0x3010)));
+        assert_eq!(books.locate(AT + SIZE), None);
+        assert_eq!(books.locate(AT - 1), None);
     }
 }

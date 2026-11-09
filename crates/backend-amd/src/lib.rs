@@ -22,6 +22,7 @@ mod ioctl;
 mod memory;
 mod nodes;
 pub mod protocol;
+mod screen_copy;
 mod space_vm;
 mod submit;
 
@@ -49,14 +50,22 @@ use guesthouse_backend::{
     RegistryValue, Setup, SpaceId, StagingCopy, StagingStart, Status, UnmapRequest, VendorQuery, Work,
     WorkStart,
 };
-use space_vm::{Origin, SpaceVm};
+use nodes::nodes;
+use screen_copy::CopyPlan;
+use space_vm::{Origin, Ran, SpaceVm};
 use std::collections::{BTreeMap, HashMap};
 use std::os::fd::OwnedFd;
 use std::time::Instant;
+use submit::Ib;
 
 /// How this backend names the host driver's branch. There is no Windows-style branch here: the host
 /// side is the Linux kernel's amdgpu.
 const HOST_BRANCH: &str = "amdgpu";
+/// How long a submission may run before the daemon stops waiting for it. A frame's work takes a
+/// few milliseconds; a run this long is a stuck one, and the kernel resets the card's queue first.
+const RUN_WAIT_MS: i32 = 2000;
+/// The CPU maps whole pages.
+const PAGE_BYTES: usize = 4096;
 
 /// One buffer object the backend is holding, on its first open. Where it is mapped is in each
 /// space's [`SpaceVm`].
@@ -82,6 +91,8 @@ pub struct AmdBackend {
     next_id: u64,
     memory: HashMap<MemoryId, Bo>,
     spaces: HashMap<SpaceId, Space>,
+    /// CPU mappings of buffers made on the card, kept while the buffer lives, for the screen copy.
+    cpu_views: HashMap<GemHandle, Mapping>,
 }
 
 impl std::fmt::Debug for AmdBackend {
@@ -97,7 +108,14 @@ impl AmdBackend {
         let device =
             Device::open(address).map_err(|error| Refusal(format!("opening the AMD card: {error}")))?;
         let facts = facts_from(device.info());
-        Ok(Self { device, facts, next_id: 1, memory: HashMap::new(), spaces: HashMap::new() })
+        Ok(Self {
+            device,
+            facts,
+            next_id: 1,
+            memory: HashMap::new(),
+            spaces: HashMap::new(),
+            cpu_views: HashMap::new(),
+        })
     }
 
     /// The full device readings, richer than [`AdapterFacts`], for the harness and the report.
@@ -107,6 +125,42 @@ impl AmdBackend {
 
     pub fn device(&self) -> &Device {
         &self.device
+    }
+
+    /// Copies a frame with the CPU. The work that drew it has retired, as a submission is waited for.
+    fn copy_with_cpu(&mut self, copy: &StagingCopy) -> Result<(), String> {
+        let plan = CopyPlan::of(copy).ok_or("a tiled surface, or a rectangle past a surface")?;
+        let source = self.cpu_address(copy.own_space, copy.source_address, plan.source_end())?;
+        let target = self.cpu_address(copy.own_space, copy.target_address, plan.target_end())?;
+        // SAFETY: each address is good for the bytes asked of `cpu_address`, which are the plan's
+        // ends, and the two surfaces are different allocations.
+        unsafe { plan.run(source, target) };
+        Ok(())
+    }
+
+    /// Where the CPU reaches `bytes` bytes at a GPU address of a space.
+    fn cpu_address(&mut self, space: SpaceId, address: u64, bytes: u64) -> Result<*mut u8, String> {
+        let space = self.spaces.get(&space).ok_or("no such space")?;
+        let (buffer, offset) =
+            space.vm.locate(address).ok_or_else(|| format!("nothing mapped at {address:#x}"))?;
+        let bo = self.memory.values().find(|bo| bo.handle == buffer).ok_or("the buffer has gone")?;
+        let end = offset.checked_add(bytes).ok_or("too long")?;
+        if let Origin::HostPages { address: host, size } = bo.origin {
+            if end > size {
+                return Err(format!("{bytes:#x} bytes at {offset:#x} run past the pages"));
+            }
+            return Ok((host + offset) as *mut u8);
+        }
+        let length = usize::try_from(end).map_err(|_| "too long")?.next_multiple_of(PAGE_BYTES);
+        if self.cpu_views.get(&buffer).is_none_or(|view| view.size() < length) {
+            let view = self
+                .device
+                .map_cpu(buffer, length)
+                .map_err(|error| format!("mapping {buffer:?}: {error}"))?;
+            self.cpu_views.insert(buffer, view);
+        }
+        // SAFETY: the view covers `length` bytes, which is past `offset`.
+        Ok(unsafe { self.cpu_views[&buffer].as_ptr().add(offset as usize) })
     }
 
     fn new_id(&mut self) -> u64 {
@@ -207,6 +261,7 @@ impl Backend for AmdBackend {
 
     fn release_memory(&mut self, memory: MemoryId) {
         if let Some(bo) = self.memory.remove(&memory) {
+            self.cpu_views.remove(&bo.handle);
             for space in self.spaces.values_mut() {
                 for address in space.vm.forget(bo.handle) {
                     space.mappings.remove(&address);
@@ -418,11 +473,34 @@ impl Backend for AmdBackend {
             log::warn!("refused a submission on queue {:#x}: {}", work.queue, refused.0);
             return WorkStart::QueueFailed;
         }
-        // amdgpu submission is a blocking ioctl that signals a sync object, not a doorbell the core
-        // rings, and completion arrives on an eventfd, not in fence memory. The trait has no event
-        // source, so the real path is `submit::submit` plus `Syncobj::arm_eventfd`, proven by the
-        // `amd-probe` binary. Part B adds the completion-event variant this would return.
-        WorkStart::Finished
+        let Some(node) = nodes(&self.device.info().engines).get(work.node as usize).copied() else {
+            log::warn!("work for node {}, which this card hasn't got", work.node);
+            return WorkStart::QueueFailed;
+        };
+        let ibs: Vec<Ib> = protocol::command_data::command_buffers(work.private)
+            .into_iter()
+            .map(|buffer| Ib { address: buffer.address, bytes: buffer.bytes })
+            .collect();
+        if ibs.is_empty() || !work.may_run || work.queue_failed {
+            return WorkStart::Finished;
+        }
+        let Some(space) = self.spaces.get_mut(&work.space) else {
+            log::warn!("work for a space that isn't here");
+            return WorkStart::QueueFailed;
+        };
+        // The run is waited for here, so the core then completes the fence as for finished work. A
+        // completion that arrives on its own, as amdgpu's eventfd allows, would free this thread.
+        match space.vm.run(node.ip_type, &ibs, RUN_WAIT_MS) {
+            Ok(Ran::Retired) => WorkStart::Finished,
+            Ok(Ran::StillRunning) => {
+                log::warn!("work on engine family {} still running after {RUN_WAIT_MS} ms", node.ip_type);
+                WorkStart::QueueFailed
+            }
+            Err(error) => {
+                log::warn!("work on engine family {} not run: {error}", node.ip_type);
+                WorkStart::QueueFailed
+            }
+        }
     }
 
     /// Where the command submission will go: amdgpu's CS call is the doorbell, and it can fail.
@@ -432,10 +510,14 @@ impl Backend for AmdBackend {
 
     fn close_queue(&mut self, _queue: u32) {}
 
-    fn start_staging_copy(&mut self, _host: &mut dyn HostServices, _copy: &StagingCopy) -> StagingStart {
-        // The copy-to-screen path wants the tiling hooks and a BAR-size-aware route; not part of the
-        // host-execution proof.
-        StagingStart::Finished(Status::UNSUCCESSFUL)
+    fn start_staging_copy(&mut self, _host: &mut dyn HostServices, copy: &StagingCopy) -> StagingStart {
+        StagingStart::Finished(match self.copy_with_cpu(copy) {
+            Ok(()) => Status::SUCCESS,
+            Err(reason) => {
+                log::warn!("a copy to the screen failed: {reason}");
+                Status::UNSUCCESSFUL
+            }
+        })
     }
 
     fn poll_staging_copy(&mut self, _host: &mut dyn HostServices, _now: Instant) -> Option<Status> {

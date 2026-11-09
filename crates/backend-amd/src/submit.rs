@@ -141,6 +141,13 @@ pub fn wait_eventfd(event: &impl AsRawFd, timeout_ms: i32) -> io::Result<bool> {
     Ok(true)
 }
 
+/// One indirect buffer: where it is in the file's address space and how many bytes it runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Ib {
+    pub address: u64,
+    pub bytes: u32,
+}
+
 /// Submits one IB and asks the kernel to signal `signal` when it retires. The IB is already at
 /// `ib_va` in this file's address space, `ib_bytes` long, for the engine family `ip_type`.
 pub fn submit(
@@ -151,21 +158,35 @@ pub fn submit(
     ib_bytes: u32,
     signal: &Syncobj,
 ) -> io::Result<u64> {
-    let mut ib_chunk = [0u8; IB_CHUNK_SIZE];
-    put64(&mut ib_chunk, IB_VA_START, ib_va);
-    put32(&mut ib_chunk, IB_BYTES, ib_bytes);
-    put32(&mut ib_chunk, IB_IP_TYPE, ip_type);
-    put32(&mut ib_chunk, IB_IP_INSTANCE, 0);
-    put32(&mut ib_chunk, IB_RING, 0);
+    submit_all(file, context, ip_type, &[Ib { address: ib_va, bytes: ib_bytes }], signal)
+}
 
+/// Submits IBs to run in order on one engine, and asks the kernel to signal `signal` when the last
+/// retires.
+pub fn submit_all(
+    file: &impl AsRawFd,
+    context: &Context,
+    ip_type: u32,
+    ibs: &[Ib],
+    signal: &Syncobj,
+) -> io::Result<u64> {
+    let mut ib_chunks = vec![[0u8; IB_CHUNK_SIZE]; ibs.len()];
+    for (chunk, ib) in ib_chunks.iter_mut().zip(ibs) {
+        put64(chunk, IB_VA_START, ib.address);
+        put32(chunk, IB_BYTES, ib.bytes);
+        put32(chunk, IB_IP_TYPE, ip_type);
+        put32(chunk, IB_IP_INSTANCE, 0);
+        put32(chunk, IB_RING, 0);
+    }
     let mut sem_chunk = [0u8; 4];
     put32(&mut sem_chunk, 0, signal.handle());
 
-    let mut chunks = [0u8; CHUNK_SIZE * 2];
-    write_chunk(&mut chunks[..CHUNK_SIZE], CHUNK_ID_IB, IB_CHUNK_SIZE / 4, ib_chunk.as_ptr() as u64);
-    write_chunk(&mut chunks[CHUNK_SIZE..], CHUNK_ID_SYNCOBJ_OUT, 1, sem_chunk.as_ptr() as u64);
-
-    let chunk_pointers = [chunks.as_ptr() as u64, chunks[CHUNK_SIZE..].as_ptr() as u64];
+    let mut chunks = vec![[0u8; CHUNK_SIZE]; ibs.len() + 1];
+    for (slot, ib_chunk) in chunks.iter_mut().zip(&ib_chunks) {
+        write_chunk(slot, CHUNK_ID_IB, IB_CHUNK_SIZE / 4, ib_chunk.as_ptr() as u64);
+    }
+    write_chunk(&mut chunks[ibs.len()], CHUNK_ID_SYNCOBJ_OUT, 1, sem_chunk.as_ptr() as u64);
+    let chunk_pointers: Vec<u64> = chunks.iter().map(|chunk| chunk.as_ptr() as u64).collect();
 
     let mut request = [0u8; CS_REQUEST_SIZE];
     put32(&mut request, CS_CTX_ID, context.id());
