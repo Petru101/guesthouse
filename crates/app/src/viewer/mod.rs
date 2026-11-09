@@ -28,6 +28,7 @@ use frames::FrameRoute;
 use gtk::glib;
 use guesthouse_app_core::library::save_thumbnail;
 use guesthouse_app_core::log::write_log;
+use guesthouse_app_core::screen_gpu::memory_frames;
 use guesthouse_app_core::tasks::{State, Status, slot_of};
 use monitors::Monitors;
 use screen::Screen;
@@ -110,6 +111,11 @@ impl ScreenPage {
         this
     }
 
+    fn memory_frames(&self) -> bool {
+        let machine = self.0.machine.borrow();
+        machine.has_gpu() && memory_frames(&self.0.window.context(), &machine)
+    }
+
     fn run_folder(&self) -> std::path::PathBuf {
         let context = self.0.window.context();
         let slot = slot_of(&context, &self.0.machine.borrow());
@@ -128,6 +134,7 @@ impl ScreenPage {
             (FrameRoute::of(&machine), machine.overlay)
         };
         let screen = Screen::new(self.run_folder(), route, overlay, on_capture);
+        screen.set_memory_frames(self.memory_frames());
         self.0.toolbar.set_content(Some(screen.widget()));
         *self.0.screen.borrow_mut() = Some(screen);
     }
@@ -345,6 +352,7 @@ impl ScreenPage {
     pub fn show_hint(&self, status: Option<&Status>) {
         let Some(screen) = self.screen() else { return };
         if let Some(status) = status {
+            screen.set_memory_frames(self.memory_frames());
             screen.follow_machine(self.run_folder(), FrameRoute::now(&self.0.machine.borrow(), status));
         }
         let hint = match status {

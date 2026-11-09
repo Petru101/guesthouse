@@ -10,8 +10,8 @@ use crate::frames::{
     Cursor, FrameLight, GuestSlot, IndirectRing, Landing, LiveRing, Picture, Registering, ReplyWaiting, Slots,
 };
 use guesthouse_backend::{Backend, BackendError, GuestMemory, SlotCopy, SpaceId, StagingStart, SurfaceShape};
-use guesthouse_messages::adapter::DisplayMode;
 use guesthouse_messages::Status;
+use guesthouse_messages::adapter::DisplayMode;
 use guesthouse_messages::indirect::{FrameDone, Look, Outcome, Register, Reply, Request, STAMP_SIZE, Stamp};
 use std::collections::VecDeque;
 use std::os::fd::OwnedFd;
@@ -471,10 +471,12 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         let (Some(indirect), Some(ring)) = (self.frames.indirect.as_ref(), self.frames.ring.as_ref()) else {
             return Status::UNSUCCESSFUL;
         };
-        let (Some(guest), Some(host)) = (indirect.slots.get(slot as usize), ring.memory.get(slot as usize)) else {
+        let (Some(guest), Some(host)) = (indirect.slots.get(slot as usize), ring.memory.get(slot as usize))
+        else {
             return Status::UNSUCCESSFUL;
         };
-        let (allocation, slot_address, picture, own_space) = (guest.allocation, host.address, ring.picture, ring.space);
+        let (allocation, slot_address, picture, own_space) =
+            (guest.allocation, host.address, ring.picture, ring.space);
         let Ok(source_address) = self.surface_address(allocation) else { return Status::UNSUCCESSFUL };
         let source = SurfaceShape {
             width: picture.width,

@@ -7,7 +7,6 @@ use super::import::texture;
 use super::ring::Buffers;
 use gtk::gdk;
 use gtk::prelude::*;
-use guesthouse_app_core::screen_gpu::{DRM_CLASS, wants_memory_frames};
 use guesthouse_frame_socket::{
     CursorMove, Format, Frame, FrameSocket, Hello, Light, Message, Packet, Release, SOCKET_NAME,
 };
@@ -53,13 +52,10 @@ fn formats(display: &gdk::Display, in_memory: bool) -> Vec<Format> {
     in_order(offered.collect())
 }
 
-fn frames_in_memory() -> bool {
-    wants_memory_frames(Path::new(DRM_CLASS))
-}
-
-/// Whether this build and this display can take an HDR frame at all.
+/// Whether this build and this display can take an HDR frame at all. A machine whose frames come in
+/// memory can't, which its start sees to.
 pub fn takes_hdr_frames(display: &gdk::Display) -> bool {
-    formats(display, frames_in_memory()).contains(&HDR_FORMAT)
+    formats(display, false).contains(&HDR_FORMAT)
 }
 
 /// HDR is only offered if the display has it, and it comes early, as the list can be cut short.
@@ -76,10 +72,15 @@ fn in_order(offered: Vec<Format>) -> Vec<Format> {
 }
 
 impl SocketFrames {
-    /// Fails if nothing is offering frames yet.
-    pub fn connect(run_folder: &Path, display: &gdk::Display, refresh_millihertz: u32) -> io::Result<Self> {
+    /// Fails if nothing is offering frames yet. `in_memory` asks for frames in memory here, for a
+    /// screen on another GPU than the guest's card.
+    pub fn connect(
+        run_folder: &Path,
+        display: &gdk::Display,
+        refresh_millihertz: u32,
+        in_memory: bool,
+    ) -> io::Result<Self> {
         let socket = FrameSocket::connect(&run_folder.join(SOCKET_NAME))?;
-        let in_memory = frames_in_memory();
         let hello = Hello {
             formats: formats(display, in_memory),
             refresh_millihertz,

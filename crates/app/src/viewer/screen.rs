@@ -46,6 +46,8 @@ pub(super) struct Inner {
     /// The guest's frames from the GPU, when it has any.
     pub(super) gpu: RefCell<Option<Box<dyn FrameSource>>>,
     pub(super) route: Cell<FrameRoute>,
+    /// The guest's card doesn't draw this desktop, so its frames come in memory.
+    pub(super) memory_frames: Cell<bool>,
     /// An Ubuntu guest's keyboard and pointer, once it's showing its own frames.
     pub(super) forwarded: RefCell<Option<ForwardedInput>>,
     /// QEMU's display, for whatever has no GPU frames to show.
@@ -117,6 +119,7 @@ impl Screen {
             qemu: RefCell::default(),
             booting: Cell::new(true),
             route: Cell::new(route),
+            memory_frames: Cell::new(false),
             forwarded: RefCell::default(),
             input_socket: RefCell::new(run_folder.join(INPUT_SOCKET)),
             run_folder: RefCell::new(run_folder),
@@ -164,6 +167,11 @@ impl Screen {
 
     pub fn capture_asked(&self) -> bool {
         self.0.capture.get().asked()
+    }
+
+    /// Whether the next connection asks for frames in memory. One already made keeps what it has.
+    pub fn set_memory_frames(&self, in_memory: bool) {
+        self.0.memory_frames.set(in_memory);
     }
 
     /// Follows the machine to another slot, or to its GPU, as an install does when it ends in its first
@@ -357,9 +365,16 @@ impl Screen {
             let (folder, display) = (self.0.run_folder.borrow(), WidgetExt::display(&self.0.root));
             *gpu = match self.0.route.get() {
                 FrameRoute::QemuDisplay => None,
-                FrameRoute::FrameSocket => SocketFrames::connect(&folder, &display, self.monitor_refresh())
-                    .ok()
-                    .map(|source| Box::new(source) as Box<dyn FrameSource>),
+                FrameRoute::FrameSocket => {
+                    SocketFrames::connect(
+                        &folder,
+                        &display,
+                        self.monitor_refresh(),
+                        self.0.memory_frames.get(),
+                    )
+                }
+                .ok()
+                .map(|source| Box::new(source) as Box<dyn FrameSource>),
                 FrameRoute::Forwarded => ForwardedFrames::connect(&folder, &display)
                     .ok()
                     .map(|source| Box::new(source) as Box<dyn FrameSource>),

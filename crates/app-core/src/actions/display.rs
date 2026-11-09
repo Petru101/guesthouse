@@ -11,6 +11,7 @@ use crate::display::{
 use crate::failure::Result;
 use crate::log::write_log;
 use crate::machine::REFRESH_RATES;
+use crate::screen_gpu::memory_frames;
 use guesthouse_daemon::display_note::ScreenNote;
 use guesthouse_daemon::gpu_note::read_note as read_gpu_note;
 use std::time::Duration;
@@ -90,7 +91,9 @@ impl Wanted {
             width: width.parse().unwrap_or_default(),
             height: height.parse().unwrap_or_default(),
             hz: machine.refresh_hz,
-            hdr: machine.hdr && screen_hdr(task.context) == ScreenHdr::Shows,
+            hdr: machine.hdr
+                && screen_hdr(task.context) == ScreenHdr::Shows
+                && !memory_frames(task.context, machine),
         }
     }
 
@@ -107,10 +110,19 @@ impl Wanted {
                 screen.width, screen.height, screen.hz
             );
         }
-        let reason = screen_hdr(task.context).sdr_reason().filter(|_| task.machine.hdr);
-        reason.unwrap_or_default().to_owned()
+        if !task.machine.hdr {
+            return String::new();
+        }
+        if memory_frames(task.context, &task.machine) {
+            return MEMORY_FRAMES_SDR.to_owned();
+        }
+        screen_hdr(task.context).sdr_reason().unwrap_or_default().to_owned()
     }
 }
+
+/// Why a machine whose frames come in memory stays in SDR.
+const MEMORY_FRAMES_SDR: &str =
+    "This screen is on another GPU than the machine's card, so Windows stays in SDR.";
 
 fn guest_file(name: &str) -> String {
     format!("{GUEST_FOLDER}\\idd\\{name}")

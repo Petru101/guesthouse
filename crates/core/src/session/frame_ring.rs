@@ -255,7 +255,11 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         }
     }
 
-    pub(super) fn make_host_slot(&mut self, size: u64, space: SpaceId) -> Result<(SlotMemory, OwnedFd), BackendError> {
+    pub(super) fn make_host_slot(
+        &mut self,
+        size: u64,
+        space: SpaceId,
+    ) -> Result<(SlotMemory, OwnedFd), BackendError> {
         let buffer = self.memory.host_buffer(size).map_err(|error| BackendError::new(error.to_string()))?;
         let memory = match self.backend.adopt_host_pages(buffer.host_address, size) {
             Ok(memory) => memory,
