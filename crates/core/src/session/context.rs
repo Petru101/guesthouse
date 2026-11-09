@@ -111,11 +111,21 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             request.answer(message, 0, out);
             return Ok(());
         }
+        let process = MessageHeader::process_of(message)?;
+        let private = message.get(CreateContext::PRIVATE..).unwrap_or_default();
+        let private = &private[..request.private_size.min(private.len())];
+        if !self.backend.context_data_valid(process, request.node, private) {
+            log::info!(
+                "refused a context on node {} whose private data the vendor's driver wouldn't take",
+                request.node
+            );
+            request.answer(message, 0, out);
+            return Ok(());
+        }
         let handle = self.handles.take();
         log::debug!("context {handle:#x} on node {}, hint {:#x}", request.node, request.client_hint);
         self.context_nodes.insert(handle, request.node);
         self.context_hints.insert(handle, request.client_hint);
-        let process = MessageHeader::process_of(message)?;
         self.context_processes.insert(handle, process);
         self.backend.context_made(process, request.node);
         let answer_at = out.len();
@@ -173,7 +183,14 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         self.context_queues.entry(request.context).or_default().push(queue);
         self.queue_progress.insert(progress, fence);
         self.queues_made = self.queues_made.wrapping_add(1);
-        self.backend.finish_queue_data(queue, &mut out[CreateHardwareQueue::PRIVATE..], self.queues_made)?;
+        let finished =
+            self.backend.finish_queue_data(queue, &mut out[CreateHardwareQueue::PRIVATE..], self.queues_made);
+        if let Err(error) = finished {
+            // The guest gets a failure and never names this queue, so nothing of it may stay.
+            self.close_queue(queue);
+            self.queue_progress.remove(&progress);
+            return Err(error.into());
+        }
         CreateHardwareQueue::finish_answer(queue, progress, fence, fence_gpu_address, out);
         Ok(())
     }

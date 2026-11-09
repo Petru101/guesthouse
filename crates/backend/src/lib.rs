@@ -95,6 +95,12 @@ pub trait Backend: Sized {
     /// Reads a vendor driver's private data for a new allocation.
     fn describe_allocation(&mut self, private: &[u8]) -> AllocationShape;
 
+    /// Whether the vendor's kernel driver would take an allocation's private data. If any allocation
+    /// in a call wouldn't be taken, the whole call fails, as nothing has been made yet.
+    fn allocation_data_valid(&mut self, _private: &[u8]) -> bool {
+        true
+    }
+
     /// Fills in what the vendor's kernel driver would write back into an allocation's private data.
     /// `size` is what [`AllocationShape::size`] said.
     fn finish_allocation_data(&mut self, private: &mut [u8], size: u64);
@@ -150,6 +156,12 @@ pub trait Backend: Sized {
     /// The guest has restarted, and its old processes will never say they ended.
     fn all_processes_gone(&mut self) {}
 
+    /// Whether the vendor's kernel driver would take a new context's private data from this process.
+    /// A context it wouldn't take fails the same way as one on a node with no channel.
+    fn context_data_valid(&mut self, _process: u32, _node: u32, _private: &[u8]) -> bool {
+        true
+    }
+
     /// A last look at a new context's private data, which goes back to the guest. Most need nothing.
     fn finish_context_data(&mut self, _node: u32, _private: &mut [u8]) {}
 
@@ -163,8 +175,10 @@ pub trait Backend: Sized {
     /// and the backend has done what the guest would otherwise wait for, except the queue's fence.
     fn start_work(&mut self, host: &mut dyn HostServices, work: &Work<'_>) -> WorkStart;
 
-    /// Lets prepared work run. The core delays this while a queue waits on a fence.
-    fn ring_doorbell(&mut self, queue: u32, doorbell: u64);
+    /// Lets prepared work run. The core delays this while a queue waits on a fence. A backend whose
+    /// submission is a call that can fail says so here: nothing then runs, the core stands in for the
+    /// GPU at the queue's fence, and the queue stops as if [`WorkStart::QueueFailed`] had come back.
+    fn ring_doorbell(&mut self, queue: u32, doorbell: u64) -> Result<(), BackendError>;
 
     /// A hardware queue has gone, so whatever backs it can go too.
     fn close_queue(&mut self, queue: u32);

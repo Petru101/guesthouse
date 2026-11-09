@@ -480,6 +480,30 @@ mod allocations {
     }
 
     #[test]
+    fn private_data_the_vendor_refuses_fails_the_whole_call() {
+        let mut session = session();
+        session.backend_mut().refuse_private_data = true;
+        let reply = send(&mut session, &create_message(0, &[private(0x2000), private(0x2000)]));
+        assert_eq!(status_of(&reply), Status::INVALID_PARAMETER.0);
+        assert!(session.allocations.is_empty());
+        assert_eq!(session.backend().live_memory_blocks(), 0);
+    }
+
+    #[test]
+    fn our_own_records_are_not_offered_to_the_vendor() {
+        let mut session = session();
+        session.backend_mut().refuse_private_data = true;
+        let mut describe = message(Command::DescribeStandardAllocation, 0x40);
+        set_u32(&mut describe, 0x18, 1);
+        set_u32(&mut describe, 0x1C, 32);
+        set_u32(&mut describe, 0x28, 100);
+        set_u32(&mut describe, 0x2C, 10);
+        let record = send(&mut session, &describe)[36..68].to_vec();
+        let reply = send(&mut session, &create_message(0, &[record]));
+        assert_eq!(status_of(&reply), SUCCESS);
+    }
+
+    #[test]
     fn locked_memory_stops_counting_against_the_cap() {
         let mut session = session_with(Some(0x3000));
         let (_, handle) = allocate(&mut session, private(0x2000));
@@ -1314,6 +1338,24 @@ mod queues {
     use super::*;
 
     #[test]
+    fn a_queue_the_vendor_refuses_leaves_nothing_behind() {
+        let mut session = session();
+        let context = create_context(&mut session, 0);
+        session.backend_mut().refuse_private_data = true;
+        let mut request = message(Command::CreateHardwareQueue, 0x48);
+        set_u32(&mut request, 0x38, context);
+        set_u32(&mut request, 0x40, 4);
+        let reply = send(&mut session, &request);
+        assert_ne!(u32_at(&reply, 0), Ok(SUCCESS));
+        assert!(session.queues.is_empty());
+        assert!(session.queue_progress.is_empty());
+        assert!(session.context_queues.values().all(Vec::is_empty));
+        session.backend_mut().refuse_private_data = false;
+        create_queue(&mut session, context);
+        assert_eq!(session.queues.len(), 1);
+    }
+
+    #[test]
     fn the_context_answer_is_its_message_with_a_handle() {
         let mut session = session();
         let context = create_context(&mut session, 3);
@@ -1390,6 +1432,26 @@ mod queues {
         request.extend_from_slice(&value.to_le_bytes());
         request.extend_from_slice(&object.to_le_bytes());
         assert_eq!(status_of(&send(session, &request)), SUCCESS);
+    }
+
+    #[test]
+    fn a_doorbell_that_fails_stands_in_at_the_fence_and_stops_the_queue() {
+        let mut session = session();
+        session.backend_mut().run_work = true;
+        session.backend_mut().fail_rings = true;
+        let context = create_context(&mut session, 0);
+        let (queue, _, fence) = create_queue(&mut session, context);
+        submit(&mut session, queue, 3);
+        assert_eq!(session.memory().read_u64(fence).unwrap(), 3);
+        assert!(session.queues[&queue].failed);
+        assert!(session.backend().doorbells.is_empty());
+        session.backend_mut().fail_rings = false;
+        let mut request = message(Command::SubmitToHardwareQueue, 0x50);
+        set_u32(&mut request, 0x18, queue);
+        set_u64(&mut request, 0x20, 4);
+        send(&mut session, &request);
+        assert!(session.backend().doorbells.is_empty(), "a failed queue runs nothing more");
+        assert_eq!(session.memory().read_u64(fence).unwrap(), 4);
     }
 
     #[test]
@@ -2154,6 +2216,14 @@ mod video_guard {
     fn a_context_on_a_node_with_no_channel_is_refused_with_a_zero_handle() {
         let mut session = session();
         assert_eq!(create_context(&mut session, NODE_WITHOUT_CHANNEL), 0);
+        assert!(session.context_nodes.is_empty());
+    }
+
+    #[test]
+    fn a_context_whose_private_data_is_refused_gets_a_zero_handle() {
+        let mut session = session();
+        session.backend_mut().refuse_private_data = true;
+        assert_eq!(create_context(&mut session, 0), 0);
         assert!(session.context_nodes.is_empty());
     }
 

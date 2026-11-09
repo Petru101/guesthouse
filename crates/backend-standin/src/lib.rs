@@ -70,6 +70,11 @@ pub struct StandIn {
     pub memory_starts: HashMap<MemoryId, Vec<u8>>,
     /// Set to make every export fail.
     pub refuse_exports: bool,
+    /// Set to refuse every allocation's, context's and queue's private data, as a vendor's driver
+    /// would refuse data it can't read.
+    pub refuse_private_data: bool,
+    /// Set to make every doorbell fail, as a submission call can.
+    pub fail_rings: bool,
     /// Addresses taken through [`HostServices`] by the first submission.
     pub channel_address: Option<u64>,
     /// Copies stay under way until a test sets `copy_done`.
@@ -109,7 +114,10 @@ impl StandIn {
             card,
             name: "Stand-in GPU".into(),
             video_memory: 8 << 30,
+            gtt_memory: 0,
+            bar_size: 8 << 30,
             node_count: NODE_COUNT,
+            engines: guesthouse_backend::AdapterEngines::all(),
             guest_driver_version: 0,
         };
         Self::with_facts(facts)
@@ -133,6 +141,8 @@ impl StandIn {
             slot_copy_status: Status::SUCCESS,
             memory_starts: HashMap::new(),
             refuse_exports: false,
+            refuse_private_data: false,
+            fail_rings: false,
             channel_address: None,
             slow_copies: false,
             copy_done: false,
@@ -377,6 +387,9 @@ impl Backend for StandIn {
         private: &mut [u8],
         serial: u32,
     ) -> Result<(), BackendError> {
+        if self.refuse_private_data {
+            return Err(BackendError::new("the stand-in was told to refuse"));
+        }
         if let Some(first) = private.first_mut() {
             *first = serial as u8;
         }
@@ -421,8 +434,12 @@ impl Backend for StandIn {
         WorkStart::Started { doorbell: work.fence_value, work: self.work_per_submission }
     }
 
-    fn ring_doorbell(&mut self, queue: u32, doorbell: u64) {
+    fn ring_doorbell(&mut self, queue: u32, doorbell: u64) -> Result<(), BackendError> {
+        if self.fail_rings {
+            return Err(BackendError::new("the stand-in was told to fail its doorbells"));
+        }
         self.doorbells.push((queue, doorbell));
+        Ok(())
     }
 
     fn close_queue(&mut self, queue: u32) {
@@ -489,6 +506,14 @@ impl Backend for StandIn {
         node != NODE_WITHOUT_CHANNEL
     }
 
+    fn allocation_data_valid(&mut self, _private: &[u8]) -> bool {
+        !self.refuse_private_data
+    }
+
+    fn context_data_valid(&mut self, _process: u32, _node: u32, _private: &[u8]) -> bool {
+        !self.refuse_private_data
+    }
+
     fn unfinished_work_limit(&self) -> Option<u64> {
         self.unfinished_limit
     }
@@ -499,7 +524,19 @@ mod tests {
     use super::*;
 
     fn map(space: SpaceId, memory: MemoryId, address: u64, length: u64) -> MapRequest {
-        MapRequest { space, memory, offset: 0, length, address, small_pages: false, gpu_cached: false }
+        MapRequest {
+            space,
+            memory,
+            offset: 0,
+            length,
+            address,
+            small_pages: false,
+            gpu_cached: false,
+            readable: true,
+            writable: true,
+            executable: false,
+            memory_type: guesthouse_backend::MapMemoryType::Default,
+        }
     }
 
     #[test]

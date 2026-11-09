@@ -33,6 +33,23 @@ pub struct PciCard {
     pub revision: u8,
 }
 
+/// Which engine families a card offers. A second backend needs this to decide what the guest may be
+/// given, and the copy path needs to know a copy engine exists. A vendor fills in what its card has.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct AdapterEngines {
+    pub graphics: bool,
+    pub compute: bool,
+    pub copy: bool,
+    pub video: bool,
+}
+
+impl AdapterEngines {
+    /// A card with the full set, which is what NVIDIA's parts report.
+    pub fn all() -> Self {
+        Self { graphics: true, compute: true, copy: true, video: true }
+    }
+}
+
 /// What the guest is told about the card. All of it is found at startup, and none comes from a
 /// table of cards.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,8 +58,16 @@ pub struct AdapterFacts {
     pub name: String,
     /// The card's dedicated memory in bytes.
     pub video_memory: u64,
+    /// System memory the GPU can reach through its GART, in bytes. Zero when the backend does not
+    /// separate it from dedicated memory.
+    pub gtt_memory: u64,
+    /// The CPU-visible window onto video memory, in bytes. On a card without resizable BAR this is
+    /// much smaller than `video_memory`, and the copy path must stay inside it.
+    pub bar_size: u64,
     /// How many engine nodes the guest sees.
     pub node_count: u32,
+    /// Which engine families the card has.
+    pub engines: AdapterEngines,
     /// The guest driver's version as setup read it, packed the way the guest wants it.
     pub guest_driver_version: u64,
 }
@@ -99,6 +124,21 @@ impl fmt::Display for Refusal {
 
 impl std::error::Error for Refusal {}
 
+/// How the GPU's caches should treat a mapping. A backend whose page tables carry a memory type
+/// reads this; one that does not ignores it, as `gpu_cached` already told it what it needs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MapMemoryType {
+    /// Leave it to the backend's default for the placement.
+    #[default]
+    Default,
+    /// The GPU may cache it without snooping the CPU.
+    NonCoherent,
+    /// Kept coherent with the CPU.
+    Coherent,
+    /// Not cached by the GPU.
+    Uncached,
+}
+
 /// A mapping to make.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MapRequest {
@@ -111,6 +151,12 @@ pub struct MapRequest {
     pub small_pages: bool,
     /// Let the GPU's cache hold host memory mapped here.
     pub gpu_cached: bool,
+    /// Whether the GPU may read, write and run from this mapping. A backend whose page tables carry
+    /// these permissions sets them; one that does not grants its usual access and ignores them.
+    pub readable: bool,
+    pub writable: bool,
+    pub executable: bool,
+    pub memory_type: MapMemoryType,
 }
 
 /// A mapping to remove.
