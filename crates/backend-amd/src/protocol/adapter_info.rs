@@ -171,8 +171,10 @@ pub fn answer(query: &VendorQuery<'_>, info: &DeviceInfo, out: &mut Vec<u8>) -> 
         return None;
     }
     if query.size != BLOCK_SIZE {
+        log::info!("adapter block refused: the guest asked for {} bytes", query.size);
         return Some(Status::INVALID_PARAMETER);
     }
+    log::info!("answered the adapter block");
     out.extend_from_slice(&build(info));
     Some(Status::SUCCESS)
 }
