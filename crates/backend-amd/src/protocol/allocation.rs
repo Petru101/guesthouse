@@ -16,6 +16,12 @@ pub const SECOND_BLOCK_SIZE: usize = 0x114;
 /// The largest buffer the kernel takes, 128 KiB.
 pub const MAX_SIZE: usize = 0x20000;
 
+/// The RDNA1 and RDNA2 driver puts a wrapper of this size before the header. Its first dword is the
+/// size of what follows, which the header gives again as its own [`CLAIMED_SIZE`]. Seen in the
+/// private data driver 32.0.21045 sends; the RDNA3 driver's header starts the buffer.
+const WRAPPER_SIZE: usize = 0x40;
+const WRAPPED_SIZE: usize = 0x00;
+
 // The header.
 /// The guest's own count of the buffer's bytes.
 const CLAIMED_SIZE: usize = 0x00;
@@ -140,8 +146,20 @@ fn surface_at(data: &[u8], index: usize) -> Result<Surface, Refused> {
     Ok(surface)
 }
 
+/// The header and what follows it, past the wrapper if the buffer has one.
+fn unwrapped(data: &[u8]) -> &[u8] {
+    let wrapped = dword(data, WRAPPED_SIZE).map(|size| size as usize);
+    let inner = data.get(WRAPPER_SIZE..).unwrap_or_default();
+    let header_size = dword(inner, CLAIMED_SIZE).map(|size| size as usize);
+    match wrapped {
+        Some(size) if size == inner.len() && header_size == Some(size) => inner,
+        _ => data,
+    }
+}
+
 /// Checks the buffer as the kernel driver would, and reads what it asks for.
 pub fn parse(data: &[u8]) -> Result<Allocation, Refused> {
+    let data = unwrapped(data);
     let field = |at: usize| dword(data, at).ok_or(Refused("the header runs past the end"));
     let claimed = field(CLAIMED_SIZE)? as usize;
     if claimed > MAX_SIZE || claimed > data.len() {
@@ -317,6 +335,29 @@ mod tests {
 
     fn refused(data: &[u8]) -> &'static str {
         parse(data).unwrap_err().0
+    }
+
+    /// The buffer as the RDNA1 and RDNA2 driver sends it, behind its wrapper.
+    fn wrapped(header: &[u8]) -> Vec<u8> {
+        let mut data = vec![0u8; WRAPPER_SIZE];
+        put_dword(&mut data, WRAPPED_SIZE, header.len() as u32);
+        data.extend_from_slice(header);
+        data
+    }
+
+    #[test]
+    fn a_wrapped_buffer_is_read_past_its_wrapper() {
+        let header = Builder { size: 0x1234, second_block: true, ..Builder::default() }.build();
+        assert_eq!(parse(&wrapped(&header)), parse(&header));
+        assert_eq!(parse(&header).unwrap().size, 0x1234);
+    }
+
+    #[test]
+    fn a_wrapper_whose_size_does_not_match_the_header_is_not_taken_for_one() {
+        let header = Builder::default().build();
+        let mut data = wrapped(&header);
+        put_dword(&mut data, WRAPPER_SIZE + CLAIMED_SIZE, header.len() as u32 - 4);
+        assert!(parse(&data).is_err());
     }
 
     #[test]
