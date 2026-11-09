@@ -5,6 +5,7 @@ use super::machine_row::MachineRow;
 use crate::application::APP_ID;
 use adw::prelude::*;
 use gtk::gio;
+use guesthouse_app_core::updates::VERSION;
 
 /// Keys the guest must get while its screen is up, so these actions are off then.
 const HOST_ACCELS: [(&str, &str); 4] = [
@@ -41,6 +42,8 @@ pub fn add_actions(window: &Window) {
     add(window, "setup", Window::show_setup);
     add(window, "log", Window::show_log);
     add(window, "about", show_about);
+    add(window, "check-updates", Window::check_for_updates);
+    add(window, "update", Window::update);
     if let Some(application) = window.widget().application() {
         for (name, keys) in HOST_ACCELS {
             application.set_accels_for_action(&format!("win.{name}"), &[keys]);
@@ -134,6 +137,7 @@ fn show_about(window: &Window) {
     let dialog = adw::AboutDialog::builder()
         .application_name("Guesthouse")
         .application_icon(APP_ID)
+        .version(VERSION)
         .comments("Runs VMs on this PC. With its GPU part, Windows gets NVIDIA's own driver on the card the host keeps using.")
         .license_type(gtk::License::Gpl20)
         .build();

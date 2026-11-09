@@ -382,6 +382,16 @@ async fn whole_flow(window: Window, folder: PathBuf, failures: Rc<Cell<u32>>) {
     shot_after_paint(&window, &folder, "23-stopped").await;
 }
 
+/// A pretend install script says there's a newer release, and the library offers it.
+async fn update_banner(window: Window, context: Arc<Context>, folder: PathBuf, failures: Rc<Cell<u32>>) {
+    let script = context.paths.helper("install.sh");
+    fs::write(&script, "echo update-available 0.3.0 9.9.9\nexit 10\n").unwrap();
+    window.check_for_updates();
+    check(&failures, shows(&window, "Guesthouse 9.9.9 is out").await, "a newer release gets a banner");
+    shot_after_paint(&window, &folder, "06b-update-banner").await;
+    fs::remove_file(&script).unwrap();
+}
+
 async fn walk_pages(window: Window, context: Arc<Context>, folder: PathBuf) {
     let failures = Rc::new(Cell::new(0));
     wizard_pages(window.clone(), folder.clone(), failures.clone()).await;
@@ -390,6 +400,7 @@ async fn walk_pages(window: Window, context: Arc<Context>, folder: PathBuf) {
     glib::timeout_future(LONG).await;
     check(&failures, text_of(&window).contains("Plain VM"), "the library lists the machines");
     shot_after_paint(&window, &folder, "06-library").await;
+    update_banner(window.clone(), context.clone(), folder.clone(), failures.clone()).await;
     settings_pages(window.clone(), folder.clone(), failures.clone(), machines[1].clone()).await;
     window.show_log();
     glib::timeout_future(SETTLE).await;
