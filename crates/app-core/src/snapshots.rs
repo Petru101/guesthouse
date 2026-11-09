@@ -220,6 +220,7 @@ mod tests {
             disk_gib: 1,
             user: String::new(),
             password: String::new(),
+            amd_gpu: None,
         };
         create(context, &new).unwrap()
     }

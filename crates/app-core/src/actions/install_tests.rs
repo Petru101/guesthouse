@@ -239,6 +239,7 @@ fn install_setup(scratch: &Scratch) -> (Context, Machine) {
         disk_gib: 64,
         user: String::new(),
         password: String::new(),
+        amd_gpu: None,
     };
     let vm = crate::library::create(&context, &new).unwrap();
     (context, vm)
