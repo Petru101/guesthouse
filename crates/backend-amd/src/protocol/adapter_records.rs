@@ -11,10 +11,13 @@ pub const ADAPTER_RECORD_SIZE: usize = 0x260;
 const RECORD_SIZE: usize = 0x00;
 /// The sum the guest checks the record against. See [`index_xor_sum`].
 const RECORD_CHECKSUM: usize = 0x0C;
-/// The adapter's registry key in the guest, as ASCII. Left empty: the host can't know which key
-/// Windows gave the device, and the guest's driver reads its settings through the host anyway.
-#[cfg(test)]
+/// The adapter's registry key in the guest, as ASCII. The user-mode driver opens it, and makes no
+/// device if it can't. The host can't know which instance key Windows gave the device, so this is
+/// the display class's own key, which every Windows has. The driver's settings come through the
+/// host's registry answers, so the values under it aren't needed.
 const RECORD_REGISTRY_KEY: usize = 0xE8;
+const DISPLAY_CLASS_KEY: &[u8] =
+    br"\REGISTRY\MACHINE\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}";
 const RECORD_FLAGS: usize = 0x1F4;
 /// Without this bit the user-mode driver stops before it looks the chip up, and makes no device.
 const RECORD_ADAPTER_USABLE: u32 = 1 << 7;
@@ -30,6 +33,8 @@ pub fn adapter_record() -> Vec<u8> {
     let mut record = vec![0u8; ADAPTER_RECORD_SIZE];
     put_dword(&mut record, RECORD_SIZE, ADAPTER_RECORD_SIZE as u32);
     put_dword(&mut record, RECORD_FLAGS, RECORD_ADAPTER_USABLE);
+    record[RECORD_REGISTRY_KEY..RECORD_REGISTRY_KEY + DISPLAY_CLASS_KEY.len()]
+        .copy_from_slice(DISPLAY_CLASS_KEY);
     let sum = index_xor_sum(&record, ADAPTER_RECORD_SIZE / 4, RECORD_CHECKSUM);
     put_dword(&mut record, RECORD_CHECKSUM, sum);
     record
@@ -55,7 +60,9 @@ mod tests {
         assert_eq!(dword(&record, RECORD_FLAGS), Some(0x80));
         let sum = index_xor_sum(&record, ADAPTER_RECORD_SIZE / 4, RECORD_CHECKSUM);
         assert_eq!(dword(&record, RECORD_CHECKSUM), Some(sum));
-        assert_eq!(record[RECORD_REGISTRY_KEY], 0);
+        let key = &record[RECORD_REGISTRY_KEY..];
+        let key = &key[..key.iter().position(|&byte| byte == 0).unwrap()];
+        assert!(key.starts_with(br"\REGISTRY\MACHINE\SYSTEM\"), "{}", String::from_utf8_lossy(key));
     }
 
     #[test]
