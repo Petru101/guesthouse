@@ -7,6 +7,7 @@
 //! The files have to be in the guest, under the host driver store, at the path given here. Nothing
 //! here copies them.
 
+use super::bytes::dword;
 use guesthouse_backend::guest_text::{self, utf16_list, utf16_zero};
 use guesthouse_backend::{RegistryName, RegistryValue, VendorQuery};
 use guesthouse_messages::registry::TYPE_STRING_LIST;
@@ -20,8 +21,15 @@ pub const GUEST_RELEASES: [&str; 2] = ["32.0.32015.12012", "32.0.21045.20006"];
 /// Where the guest is told the driver lives. It rewrites `DriverStore` to its host driver store.
 pub const DRIVER_STORE: &str = "C:\\Windows\\System32\\DriverStore\\FileRepository\\amdxc.inf_amd64_gpupv";
 
-const USER_DRIVER: &str = "amdxc64.dll";
-const USER_DRIVER_32_BIT: &str = "amdxc32.dll";
+/// AMD's user-mode drivers by the Direct3D version the guest asks for, as its INF lists them in
+/// UserModeDriverName: Direct3D 9, 10, 11 and 12. 10 and 11 share a driver.
+const USER_DRIVERS: [&str; 4] = ["atidx9loader64.dll", "amdxx64.dll", "amdxx64.dll", "amdxc64.dll"];
+/// The same for a 32-bit process, from UserModeDriverNameWow.
+const USER_DRIVERS_32_BIT: [&str; 4] = ["atidx9loader32.dll", "amdxx32.dll", "amdxx32.dll", "amdxc32.dll"];
+/// Where the version sits in the query, KMTUMDVERSION: 0 for Direct3D 9 up to 3 for Direct3D 12.
+const VERSION_FIELD: usize = 0;
+/// A version past the list gets the newest driver.
+const NEWEST: usize = USER_DRIVERS.len() - 1;
 const KERNEL_DRIVER: &str = "amdkmdag.sys";
 
 /// What DXCore looks up, by the lower-case name the core asks with. The strings are Microsoft's
@@ -40,7 +48,9 @@ static LOGGED_DRIVER_NAME: AtomicBool = AtomicBool::new(false);
 
 /// Writes the user-mode driver path into `out`, keeping the guest's version dword.
 pub fn write_name(query: &VendorQuery<'_>, out: &mut Vec<u8>) {
-    let name = if query.process_is_32_bit { USER_DRIVER_32_BIT } else { USER_DRIVER };
+    let version = dword(query.data, VERSION_FIELD).map_or(NEWEST, |version| (version as usize).min(NEWEST));
+    let drivers = if query.process_is_32_bit { USER_DRIVERS_32_BIT } else { USER_DRIVERS };
+    let name = drivers[version];
     let path = format!("{DRIVER_STORE}\\{name}");
     // The guest asks again for every process it starts. The first answer is the one that matters.
     if !LOGGED_DRIVER_NAME.swap(true, Ordering::Relaxed) {
@@ -81,34 +91,41 @@ mod tests {
         String::from_utf16_lossy(&units)
     }
 
-    #[test]
-    fn the_driver_name_keeps_the_guests_version_and_names_the_64_bit_driver() {
+    const DIRECT3D_9: u8 = 0;
+    const DIRECT3D_11: u8 = 2;
+    const DIRECT3D_12: u8 = 3;
+
+    fn name_for(version: u8, process_is_32_bit: bool) -> String {
         let mut out = Vec::new();
-        let data = [9, 0, 0, 0, 1, 2, 3, 4];
+        let data = [version, 0, 0, 0, 1, 2, 3, 4];
         let query = VendorQuery {
             kind: guest_text::QUERY_USER_DRIVER_NAME,
             size: data.len(),
             data: &data,
-            process_is_32_bit: false,
+            process_is_32_bit,
         };
         write_name(&query, &mut out);
-        assert_eq!(out[0], 9);
-        let path = name_of(&out);
-        assert!(path.ends_with(USER_DRIVER), "{path}");
-        assert!(path.starts_with(DRIVER_STORE), "{path}");
+        assert_eq!(out[0], version);
+        name_of(&out)
     }
 
     #[test]
-    fn a_32_bit_process_gets_the_32_bit_driver() {
-        let mut out = Vec::new();
-        let query = VendorQuery {
-            kind: guest_text::QUERY_USER_DRIVER_NAME,
-            size: 4,
-            data: &[0; 4],
-            process_is_32_bit: true,
-        };
-        write_name(&query, &mut out);
-        assert!(name_of(&out).ends_with(USER_DRIVER_32_BIT));
+    fn each_direct3d_version_gets_the_driver_amd_lists_for_it() {
+        assert!(name_for(DIRECT3D_12, false).ends_with("\\amdxc64.dll"));
+        assert!(name_for(DIRECT3D_11, false).ends_with("\\amdxx64.dll"));
+        assert!(name_for(DIRECT3D_9, false).ends_with("\\atidx9loader64.dll"));
+        assert!(name_for(DIRECT3D_12, false).starts_with(DRIVER_STORE));
+    }
+
+    #[test]
+    fn a_32_bit_process_gets_the_32_bit_drivers() {
+        assert!(name_for(DIRECT3D_12, true).ends_with("\\amdxc32.dll"));
+        assert!(name_for(DIRECT3D_11, true).ends_with("\\amdxx32.dll"));
+    }
+
+    #[test]
+    fn a_version_past_the_list_gets_the_newest_driver() {
+        assert!(name_for(9, false).ends_with("\\amdxc64.dll"));
     }
 
     #[test]
