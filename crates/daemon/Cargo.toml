@@ -16,7 +16,8 @@ path = "src/main.rs"
 stand-in = ["dep:guesthouse-backend-standin"]
 # The real backend, which opens the host's GPU.
 nvidia = ["dep:guesthouse-backend-nvidia", "dep:serde_json", "dep:guesthouse-sensors"]
-# The AMD backend. Not built together with nvidia: one daemon binary opens one vendor's card.
+# The AMD backend. One daemon binary opens one vendor's card, so with nvidia on as well this is
+# the NVIDIA daemon.
 amd = ["dep:guesthouse-backend-amd", "dep:serde_json"]
 
 [dependencies]

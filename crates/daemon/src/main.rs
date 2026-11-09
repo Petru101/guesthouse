@@ -1,7 +1,8 @@
 //! `guesthouse-daemon [PROJECT_FOLDER]`: serves one VM, named by `GUESTHOUSE_SLOT`.
 //!
-//! The real backend is behind the `nvidia` or `amd` feature, and those two are never built together.
-//! A build with no backend can only say so. The `stand-in` feature answers messages with nothing
+//! The real backend is behind the `nvidia` or `amd` feature. One binary opens one vendor's card, so
+//! a build with both, such as `--all-features`, is the NVIDIA daemon. A build with no backend can
+//! only say so. The `stand-in` feature answers messages with nothing
 //! behind them, to try the sockets by hand.
 
 use guesthouse_daemon::logger;
@@ -33,9 +34,6 @@ fn main() -> ExitCode {
     }
 }
 
-#[cfg(all(feature = "amd", feature = "nvidia"))]
-compile_error!("the amd and nvidia features cannot be built together");
-
 #[cfg(not(any(feature = "stand-in", feature = "nvidia", feature = "amd")))]
 fn serve(_slot: Slot, _project: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     Err("This build has no GPU backend in it, so it cannot run a guest.".into())
@@ -47,12 +45,12 @@ fn serve(slot: Slot, project: PathBuf) -> Result<(), Box<dyn std::error::Error>>
     use guesthouse_backend::Backend;
     use guesthouse_backend_amd::AmdBackend;
     use guesthouse_core::{Config, MemoryLimits, Session};
+    use guesthouse_daemon::amd_setup::read_setup;
     use guesthouse_daemon::environment::{guest_ram, video_cap};
     use guesthouse_daemon::guest_memory::LazySharedMemory;
     use guesthouse_daemon::jail::{Needs, RAM_FILE, WINDOW_FILE, lock_calls, lock_files};
     use guesthouse_daemon::router::Router;
     use guesthouse_daemon::server::Server;
-    use guesthouse_daemon::amd_setup::read_setup;
     use guesthouse_daemon::startup::start_backend;
 
     let setup = read_setup()?;
