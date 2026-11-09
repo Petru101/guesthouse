@@ -2,7 +2,7 @@
 //! gets one end of a socket pair, and sends the open device back through it.
 
 use super::Tap;
-use super::handover::{place, socket_pair};
+use super::handover::{keep_only, place, socket_pair};
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::process::Command;
@@ -47,8 +47,14 @@ fn receive_descriptor(socket: &OwnedFd) -> io::Result<OwnedFd> {
 /// Runs the helper and leaves its device open at the tap's number.
 pub fn open(tap: &Tap) -> io::Result<()> {
     let (ours, theirs) = socket_pair()?;
-    let mut helper = Command::new(&tap.helper)
-        .args([OFFLOADS.to_owned(), format!("--fd={}", theirs.as_raw_fd()), format!("--br={}", tap.bridge)])
+    let mut command = Command::new(&tap.helper);
+    command.args([
+        OFFLOADS.to_owned(),
+        format!("--fd={}", theirs.as_raw_fd()),
+        format!("--br={}", tap.bridge),
+    ]);
+    keep_only(&mut command, theirs.as_raw_fd());
+    let mut helper = command
         .spawn()
         .map_err(|error| io::Error::new(error.kind(), format!("{}: {error}", tap.helper.display())))?;
     drop(theirs);

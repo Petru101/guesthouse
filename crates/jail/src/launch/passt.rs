@@ -9,7 +9,7 @@
 //! few places.
 
 use super::Passt;
-use super::handover::{place, socket_pair};
+use super::handover::{keep_only, place, socket_pair};
 use std::fs;
 use std::io;
 use std::os::fd::AsRawFd;
@@ -38,12 +38,10 @@ pub fn start(passt: &Passt) -> io::Result<()> {
     let (ours, theirs) = socket_pair()?;
     let with_name =
         |error: io::Error| io::Error::new(error.kind(), format!("{}: {error}", passt.program.display()));
-    let mut child = Command::new(&passt.program)
-        .args(&passt.words)
-        .args([FOREGROUND_WORD, SOCKET_WORD, &theirs.as_raw_fd().to_string()])
-        .stdin(Stdio::null())
-        .spawn()
-        .map_err(with_name)?;
+    let mut command = Command::new(&passt.program);
+    command.args(&passt.words).args([FOREGROUND_WORD, SOCKET_WORD, &theirs.as_raw_fd().to_string()]);
+    keep_only(&mut command, theirs.as_raw_fd());
+    let mut child = command.stdin(Stdio::null()).spawn().map_err(with_name)?;
     drop(theirs);
     let stat = fs::read_to_string(format!("/proc/{}/stat", child.id()))?;
     let started = start_time(&stat).ok_or_else(|| io::Error::other("passt's start time can't be read"))?;
