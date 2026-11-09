@@ -341,9 +341,10 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         let reached = self.targets_reached(&registering.targets);
         let late = now >= registering.deadline;
         // Reading a stamp needs the copy engine to itself.
-        if (reached && self.copies.is_empty()) || late {
+        let engine_free = !self.copy_engine_busy();
+        if (reached && engine_free) || late {
             let registering = self.frames.registering.take().expect("looked at above");
-            self.finish_registering(registering, reached && self.copies.is_empty());
+            self.finish_registering(registering, reached && engine_free);
         }
     }
 
@@ -357,8 +358,8 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             }
             let slot = front.slot;
             let in_memory = self.frames.ring.as_ref().is_some_and(|ring| !ring.memory.is_empty());
-            // The copy engine does one thing at a time, and the screen's copies have it.
-            if reached && in_memory && !self.copies.is_empty() {
+            // The copy engine does one thing at a time. A copy to the screen may have it for a moment.
+            if reached && in_memory && self.copy_engine_busy() {
                 return;
             }
             let copied = !reached || !in_memory || self.copy_to_memory_slot(slot) == Status::SUCCESS;

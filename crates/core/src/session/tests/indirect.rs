@@ -365,6 +365,51 @@ fn a_viewer_on_another_gpu_gets_each_frame_copied_into_memory_here() {
 }
 
 #[test]
+fn a_copy_waiting_for_its_frame_doesnt_hold_up_frames_in_memory() {
+    let (mut session, first) = registered();
+    session.backend_mut().run_work = true;
+    session.config.frame_wait = Duration::from_secs(60);
+    session.set_copy_order(crate::CopyOrder::Held);
+    session.viewer_arrived();
+    session.viewer_described(ViewerFacts { wants_memory: true, ..ViewerFacts::default() });
+    let mut sink = Sink::default();
+    turn(&mut session, &mut sink);
+    // Another process's work, as the driver's frames wait on its own process's queues.
+    session.space_for(OTHER_PROCESS).unwrap();
+    let mut request = message(Command::CreateContext, 0x34);
+    set_u32(&mut request, 8, OTHER_PROCESS);
+    let context = u32_at(&send(&mut session, &request), 0x18).unwrap();
+    let mut request = message(Command::CreateHardwareQueue, 0x48);
+    set_u32(&mut request, 8, OTHER_PROCESS);
+    set_u32(&mut request, 0x38, context);
+    set_u32(&mut request, 0x40, 4);
+    let queue = u32_at(&send(&mut session, &request), 0x1C).unwrap();
+    let mut slot = first;
+    for shown in 1..=3 {
+        slot = frame(&mut session, Some(slot)).1.expect("a free slot");
+        // The basic display's copy, waiting on work that hasn't finished, as it always is there.
+        let mut work = message(Command::SubmitToHardwareQueue, 0x50);
+        set_u32(&mut work, 8, OTHER_PROCESS);
+        set_u32(&mut work, 0x18, queue);
+        set_u64(&mut work, 0x20, shown);
+        assert_eq!(send(&mut session, &work), SUCCESS.to_le_bytes());
+        let (_, image) = allocate(&mut session, surface_private(640, 480));
+        let (_, staging) = allocate(&mut session, surface_private(640, 480));
+        let mut copy = message(Command::CopyToStaging, 0x50);
+        set_u32(&mut copy, 0x1C, context);
+        set_u32(&mut copy, 0x20, image);
+        set_u32(&mut copy, 0x24, staging);
+        let mut out = Vec::new();
+        let _ = session.handle_message(&copy, Some(ReplyTicket::default()), &mut out);
+        turn(&mut session, &mut sink);
+        assert_eq!(sink.frames.len(), shown as usize, "frame {shown} reached the viewer");
+        let last = sink.frames[shown as usize - 1];
+        session.slot_released(last.generation, last.slot);
+    }
+    assert!(session.backend().copies.is_empty(), "the screen's copies are still waiting");
+}
+
+#[test]
 fn with_every_slot_with_the_viewer_the_driver_skips_until_one_comes_back() {
     let (mut session, first) = registered();
     session.viewer_arrived();
