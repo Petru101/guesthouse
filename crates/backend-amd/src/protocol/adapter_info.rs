@@ -688,7 +688,9 @@ pub(crate) mod tests {
     fn the_record_and_the_directory_follow_the_header_by_the_size_asked() {
         let info = small_card();
         let header_size = adapter_header::HEADER_SIZE;
-        for (tail, body) in [(ADAPTER_RECORD_SIZE, adapter_record(&info.details)), (DIRECTORY_SIZE, directory())] {
+        for (tail, body) in
+            [(ADAPTER_RECORD_SIZE, adapter_record(&info.details)), (DIRECTORY_SIZE, directory())]
+        {
             let mut out = Vec::new();
             let size = header_size + tail;
             let query = VendorQuery { kind: QUERY_TYPE, size, data: &[], process_is_32_bit: false };

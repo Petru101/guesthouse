@@ -16,6 +16,7 @@
 //! lives in [`submit`] and is proven by the `amd-probe` binary, not by [`Backend::start_work`],
 //! which only checks the guest's private data for now.
 
+mod copy_ib;
 mod device;
 mod info;
 mod ioctl;
@@ -23,6 +24,7 @@ mod memory;
 mod nodes;
 pub mod protocol;
 mod screen_copy;
+mod sdma_copy;
 mod space_vm;
 mod submit;
 
@@ -44,14 +46,16 @@ pub use memory::{
     map as map_buffer, unmap as unmap_buffer,
 };
 
+use copy_ib::CopyIb;
 use guesthouse_backend::{
     AdapterFacts, AllocationShape, Backend, BackendError, CardLabel, DriverFound, DriverSurvey, GpuRange,
     GuestBooks, HostServices, MapRequest, MemoryId, MemoryKind, PciCard, Refusal, RegistryName,
-    RegistryValue, Setup, SpaceId, StagingCopy, StagingStart, Status, UnmapRequest, VendorQuery, Work,
-    WorkStart,
+    RegistryValue, Setup, SpaceId, StagingCopy, StagingStart, Status, SurfaceShape, UnmapRequest,
+    VendorQuery, Work, WorkStart,
 };
 use nodes::nodes;
-use screen_copy::CopyPlan;
+use screen_copy::{CopyPlan, PIXEL_BYTES};
+use sdma_copy::TiledCopy;
 use space_vm::{Origin, Ran, SpaceVm};
 use std::collections::{BTreeMap, HashMap};
 use std::os::fd::OwnedFd;
@@ -93,6 +97,8 @@ pub struct AmdBackend {
     spaces: HashMap<SpaceId, Space>,
     /// CPU mappings of buffers made on the card, kept while the buffer lives, for the screen copy.
     cpu_views: HashMap<GemHandle, Mapping>,
+    /// The DMA engine's commands for copies of tiled surfaces, made at the first.
+    copy_ib: Option<CopyIb>,
 }
 
 impl std::fmt::Debug for AmdBackend {
@@ -115,6 +121,7 @@ impl AmdBackend {
             memory: HashMap::new(),
             spaces: HashMap::new(),
             cpu_views: HashMap::new(),
+            copy_ib: None,
         })
     }
 
@@ -136,6 +143,49 @@ impl AmdBackend {
         // ends, and the two surfaces are different allocations.
         unsafe { plan.run(source, target) };
         Ok(())
+    }
+
+    /// Copies a tiled frame with the DMA engine, which reads tiles as the CPU can't, and waits for it.
+    fn copy_with_dma(&mut self, space: SpaceId, plan: &TiledCopy) -> Result<(), String> {
+        if !matches!(self.device.info().details.gfx_version.0, 10 | 11) {
+            return Err("the DMA copy is written for GFX10 and GFX11".into());
+        }
+        let alignment = self.device.info().va_alignment;
+        if self.copy_ib.is_none() {
+            let made = CopyIb::make(&self.device, alignment)
+                .map_err(|error| format!("its commands' buffer: {error}"))?;
+            self.copy_ib = Some(made);
+        }
+        let ib = self.copy_ib.as_mut().expect("made above");
+        let target_start =
+            (u64::from(plan.to.1) * u64::from(plan.linear_pitch) + u64::from(plan.to.0)) * PIXEL_BYTES;
+        let target_bytes =
+            (u64::from(plan.height - 1) * u64::from(plan.linear_pitch) + u64::from(plan.width)) * PIXEL_BYTES;
+        let target = plan.linear_address + target_start;
+        let Some(space_vm) = self.spaces.get_mut(&space).map(|space| &mut space.vm) else {
+            return Err("no such space".into());
+        };
+        if !space_vm.holds(plan.tiled_address, PIXEL_BYTES) || !space_vm.holds(target, target_bytes) {
+            return Err("a surface isn't mapped in the daemon's space".into());
+        }
+        if ib.mapped_in != Some(space) {
+            let flags = MapFlags {
+                readable: true,
+                writable: false,
+                executable: true,
+                memory_type: MemoryType::Uncached,
+            };
+            space_vm
+                .map(&self.device, ib.handle(), Origin::Made, copy_ib::ADDRESS, 0, ib.size(), flags)
+                .map_err(|error| format!("mapping its commands: {error}"))?;
+            ib.mapped_in = Some(space);
+        }
+        let bytes = ib.write(&plan.commands()).map_err(|error| error.to_string())?;
+        match space_vm.run(HW_IP_DMA, &[Ib { address: copy_ib::ADDRESS, bytes }], RUN_WAIT_MS) {
+            Ok(Ran::Retired) => Ok(()),
+            Ok(Ran::StillRunning) => Err(format!("still running after {RUN_WAIT_MS} ms")),
+            Err(error) => Err(error.to_string()),
+        }
     }
 
     /// Where the CPU reaches `bytes` bytes at a GPU address of a space.
@@ -535,6 +585,15 @@ impl Backend for AmdBackend {
     fn close_queue(&mut self, _queue: u32) {}
 
     fn start_staging_copy(&mut self, _host: &mut dyn HostServices, copy: &StagingCopy) -> StagingStart {
+        if let Some(plan) = TiledCopy::of(copy) {
+            return StagingStart::Finished(match self.copy_with_dma(copy.own_space, &plan) {
+                Ok(()) => Status::SUCCESS,
+                Err(reason) => {
+                    log::warn!("a copy of a tiled surface failed: {reason}");
+                    Status::UNSUCCESSFUL
+                }
+            });
+        }
         StagingStart::Finished(match self.copy_with_cpu(copy) {
             Ok(()) => Status::SUCCESS,
             Err(reason) => {
@@ -542,6 +601,14 @@ impl Backend for AmdBackend {
                 Status::UNSUCCESSFUL
             }
         })
+    }
+
+    /// A tiled surface is copied by the DMA engine, which takes any start inside it.
+    fn tiled_bytes(&self, surface: &SurfaceShape, _x: u64, _y: u64) -> Option<u64> {
+        if !matches!(self.device.info().details.gfx_version.0, 10 | 11) {
+            return None;
+        }
+        sdma_copy::surface_bytes(surface.pitch, surface.height, surface.tiling?)
     }
 
     fn poll_staging_copy(&mut self, _host: &mut dyn HostServices, _now: Instant) -> Option<Status> {

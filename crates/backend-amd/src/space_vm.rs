@@ -129,6 +129,11 @@ impl SpaceVm {
         self.books.locate(address)
     }
 
+    /// Whether `bytes` from `address` lie inside one mapping here.
+    pub fn holds(&self, address: u64, bytes: u64) -> bool {
+        self.books.holds(address, bytes)
+    }
+
     /// The first command buffer not wholly mapped here. The card would fault reading it, and a fault
     /// costs every program on the card a reset.
     pub fn first_unmapped<'a>(&self, ibs: &'a [Ib]) -> Option<&'a Ib> {
