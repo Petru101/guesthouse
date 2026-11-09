@@ -358,6 +358,9 @@ impl Backend for AmdBackend {
             protocol::guest_driver::write_name(query, out);
             return Some(Status::SUCCESS);
         }
+        if let Some(status) = protocol::adapter_registry::answer(query, out) {
+            return Some(status);
+        }
         protocol::adapter_info::answer(query, self.device.info(), out)
     }
 
