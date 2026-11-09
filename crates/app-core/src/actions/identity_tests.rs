@@ -178,6 +178,20 @@ fn a_failed_gpu_start_on_nvidias_number_goes_back_to_microsofts() {
 }
 
 #[test]
+fn a_package_that_cost_a_start_is_not_staged_again() {
+    let scratch = Scratch::new();
+    let rig = Rig::new(&scratch, true, &[STAGED]);
+    let host = RecordingHost::default();
+    let task = Task::new(&rig.context, &host, "start", rig.machine.clone());
+    let state = IdentityState { shown: Shown::Maker, restart_due: true, ..IdentityState::default() };
+    write_state(&rig.context, &rig.machine, &state).unwrap();
+    after_failed_gpu(&task, Failure::new("no GPU"));
+    assert_eq!(rig.boot(), "");
+    assert!(rig.asked().is_empty(), "the next start stays on Microsoft's number");
+    assert_eq!(shown_identity(&rig.context, &rig.machine), MICROSOFT_RENDER);
+}
+
+#[test]
 fn a_build_without_the_script_keeps_microsofts_number_and_says_so() {
     let scratch = Scratch::new();
     let rig = Rig::new(&scratch, true, &[STAGED]);

@@ -115,6 +115,11 @@ pub(super) fn after_failed_gpu(task: &Task, failure: Failure) -> Failure {
     state.restart_due = false;
     state.note.clear();
     state.reason = FELL_BACK.to_owned();
+    // Staging the same package again would end the same way at every start, and no start would
+    // ever finish. A new build's script is tried afresh.
+    if let Ok(script) = guest_script(task.context, SCRIPT) {
+        state.failed_script = script_id(&script);
+    }
     if let Err(problem) = write_state(task.context, &task.machine, &state) {
         let _ = write_log(task.context, &format!("gpu identity: could not fall back: {}", problem.0));
     }
