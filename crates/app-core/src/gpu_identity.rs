@@ -31,21 +31,15 @@ pub const NVIDIA_RENDER: PciIdentity = PciIdentity { vendor: 0x10DE, device: 0x2
 /// AMD's vendor number with a device number AMD has never shipped, far from every range it uses.
 pub const AMD_RENDER: PciIdentity = PciIdentity { vendor: 0x1002, device: 0x7FFE };
 
-/// Whether an AMD machine is shown [`AMD_RENDER`]. Not yet: shown AMD's number, the guest's work
-/// faulted on addresses that weren't mapped and the host reset the card, while the same guest on
-/// NVIDIA's number runs cleanly. Until it's known what in the guest changes on AMD's number, an AMD
-/// machine shows NVIDIA's, which browsers take as a GPU all the same.
-const AMD_MACHINES_SHOW_AMD: bool = false;
-
-/// The number a machine shows once its guest holds the package. A Windows machine stays with one
-/// card maker, so this never changes under a guest.
+/// The number a machine shows once its guest holds the package: its card maker's. A Windows machine
+/// stays with one maker, so this never changes under a guest.
 pub fn maker_identity(machine: &Machine) -> PciIdentity {
-    if AMD_MACHINES_SHOW_AMD && machine.windows_amd_card().is_some() { AMD_RENDER } else { NVIDIA_RENDER }
+    if machine.windows_amd_card().is_some() { AMD_RENDER } else { NVIDIA_RENDER }
 }
 
-/// Whose number [`maker_identity`] is, for what the user hears.
+/// The card maker's name, for what the user hears.
 pub fn maker_name(machine: &Machine) -> &'static str {
-    if maker_identity(machine).vendor == AMD_RENDER.vendor { "AMD" } else { "NVIDIA" }
+    if machine.windows_amd_card().is_some() { "AMD" } else { "NVIDIA" }
 }
 
 impl PciIdentity {

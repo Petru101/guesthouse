@@ -79,20 +79,25 @@ fn a_guest_that_takes_the_package_is_shown_nvidias_number_from_the_next_start() 
 }
 
 #[test]
-fn an_amd_machine_gets_the_package_for_nvidias_number_for_now() {
+fn an_amd_machine_gets_the_package_for_amds_number() {
     let scratch = Scratch::new();
     let rig = Rig::on_amd(&scratch, &["identity staged\r\n"]);
     assert_eq!(rig.boot(), "");
-    assert!(rig.asked()[0].starts_with("$vendor = '10DE'\n$device = '2BFE'\n"));
-    assert_eq!(shown_identity(&rig.context, &rig.machine), NVIDIA_RENDER);
+    assert!(
+        rig.asked()[0].starts_with("$vendor = '1002'\n$device = '7FFE'\n"),
+        "the script gets AMD's numbers"
+    );
+    let state = rig.state();
+    assert_eq!((state.shown, state.package_vendor), (Shown::Maker, 0x1002));
+    assert_eq!(state.note, next_start("AMD"));
+    assert_eq!(shown_identity(&rig.context, &rig.machine), AMD_RENDER);
 }
 
 #[test]
-fn a_package_for_another_number_than_the_machine_s_is_made_again() {
+fn a_package_for_nvidias_number_on_an_amd_machine_is_made_again_for_amds() {
     let scratch = Scratch::new();
     let rig = Rig::on_amd(&scratch, &["identity staged\r\n"]);
-    let old =
-        IdentityState { shown: Shown::Maker, package_vendor: AMD_RENDER.vendor, ..IdentityState::default() };
+    let old = IdentityState { shown: Shown::Maker, ..IdentityState::default() };
     write_state(&rig.context, &rig.machine, &old).unwrap();
     assert_eq!(
         shown_identity(&rig.context, &rig.machine),
@@ -101,7 +106,7 @@ fn a_package_for_another_number_than_the_machine_s_is_made_again() {
     );
     assert_eq!(rig.boot(), "");
     assert_eq!(rig.asked().len(), 1);
-    assert_eq!(shown_identity(&rig.context, &rig.machine), NVIDIA_RENDER);
+    assert_eq!(shown_identity(&rig.context, &rig.machine), AMD_RENDER);
 }
 
 #[test]
