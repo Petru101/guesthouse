@@ -121,13 +121,31 @@ impl Extraction {
     /// Returns the folder holding the files. `progress` gets the percentage done.
     pub fn run(&self, context: &Context, progress: &(impl Fn(u32) + ?Sized)) -> Result<PathBuf> {
         let target = context.paths.setup_folder().join(format!("driver-{WINDOWS_DRIVER}"));
-        let new = crate::settings::with_suffix(&target, ".new");
+        let check = |unpacked: &Path| driver_problem(&unpacked.join(INSTALLER_FOLDER));
+        self.unpack(context, INSTALLER_FOLDER, &target, &check, progress)?;
+        let folder = target.join(INSTALLER_FOLDER);
+        let changes = json!({"driver_version": WINDOWS_DRIVER, "driver_folder": folder});
+        write_setup(context, changes.as_object().cloned().unwrap_or_default())?;
+        Ok(folder)
+    }
+
+    /// Takes `entry` out of the installer into `target`, if `check` finds nothing wrong with what came
+    /// out. Until then the files are beside `target`, which is only replaced at the end.
+    pub(super) fn unpack(
+        &self,
+        context: &Context,
+        entry: &str,
+        target: &Path,
+        check: &dyn Fn(&Path) -> Option<String>,
+        progress: &(impl Fn(u32) + ?Sized),
+    ) -> Result<()> {
+        let new = crate::settings::with_suffix(target, ".new");
         let _ = fs::remove_dir_all(&new);
         fs::create_dir_all(&new)?;
         let mut child = Command::new("7z")
             .args(["x", &self.installer])
             .arg(format!("-o{}", new.display()))
-            .args([INSTALLER_FOLDER, "-y", "-bso0", "-bse1", "-bsp1"])
+            .args([entry, "-y", "-bso0", "-bse1", "-bsp1"])
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -151,7 +169,7 @@ impl Extraction {
             return Err(Failure::new("Stopped."));
         }
         let problem = if code.success() {
-            driver_problem(&new.join(INSTALLER_FOLDER))
+            check(&new)
         } else {
             Some(format!("7z failed: {}", tail(said.trim(), LOOKED_AT)))
         };
@@ -160,12 +178,9 @@ impl Extraction {
             let _ = fs::remove_dir_all(&new);
             return Err(Failure(problem));
         }
-        let _ = fs::remove_dir_all(&target);
-        fs::rename(&new, &target)?;
-        let folder = target.join(INSTALLER_FOLDER);
-        let changes = json!({"driver_version": WINDOWS_DRIVER, "driver_folder": folder});
-        write_setup(context, changes.as_object().cloned().unwrap_or_default())?;
-        Ok(folder)
+        let _ = fs::remove_dir_all(target);
+        fs::rename(&new, target)?;
+        Ok(())
     }
 }
 

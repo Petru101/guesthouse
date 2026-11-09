@@ -28,6 +28,8 @@ pub struct AmdCard {
     /// Its render node, as `/dev/dri/renderD128`.
     pub render_node: PathBuf,
     pub name: String,
+    /// Its PCI device id.
+    pub device: u32,
 }
 
 /// How the guest's 3D reaches the card.
@@ -62,7 +64,8 @@ fn card_of(drm_class: &Path, names: &Path, node: &str) -> Option<AmdCard> {
     let number = hex_number(&sysfs_text(&device.join("device")))?;
     let product =
         product_name(AMD_NAMES_START, number, names).unwrap_or_else(|| format!("card {number:04x}"));
-    Some(AmdCard { pci, render_node: Path::new(RENDER_NODES).join(node), name: format!("AMD {product}") })
+    let render_node = Path::new(RENDER_NODES).join(node);
+    Some(AmdCard { pci, render_node, name: format!("AMD {product}"), device: number })
 }
 
 /// The AMD cards with a render node, by PCI address. Any of them will do, iGPU or not, and so will the

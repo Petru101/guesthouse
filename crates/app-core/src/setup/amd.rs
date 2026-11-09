@@ -3,13 +3,16 @@
 //! machine's own choice, so the file names none.
 
 use crate::context::Context;
+use crate::failure::Result;
 use crate::linux::amd::amd_card;
-use serde_json::Value;
+use crate::settings::write_json;
+use serde_json::{Value, json};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 const AMD_SETUP_FILE: &str = "amd.json";
 const DRIVER_FOLDER_FIELD: &str = "driver_folder";
+const DRIVER_VERSION_FIELD: &str = "driver_version";
 pub const NO_AMD_SETUP: &str = "A Windows machine on an AMD card needs AMD's Windows driver unpacked first, and it \
                                 hasn't been.";
 
@@ -23,6 +26,12 @@ pub fn amd_driver_folder(context: &Context) -> Option<PathBuf> {
     let setup: Value = serde_json::from_str(&text).ok()?;
     let folder = PathBuf::from(setup.get(DRIVER_FOLDER_FIELD)?.as_str()?);
     folder.is_dir().then_some(folder)
+}
+
+/// Writes down where AMD's driver was unpacked, and its version, for the daemon.
+pub fn write_amd_setup(context: &Context, folder: &Path, version: &str) -> Result<()> {
+    let setup = json!({ DRIVER_FOLDER_FIELD: folder, DRIVER_VERSION_FIELD: version });
+    write_json(&amd_setup_file(context), &setup)
 }
 
 /// Why a Windows machine can't start on the AMD card at `pci`, if it can't.

@@ -1,5 +1,6 @@
 //! The dialog that makes a machine from an ISO. Looking inside the ISO decides what it will be.
 
+use crate::amd_driver_row::AmdDriverRow;
 use crate::common::{choose_file, in_background};
 use crate::rows::{choice_row, number_row, row_button};
 use crate::window::Window;
@@ -14,6 +15,7 @@ use guesthouse_app_core::library::{
     MAX_DISK_GIB, MIN_PLAIN_DISK_GIB, MIN_WINDOWS_DISK_GIB, NewMachine, create,
 };
 use guesthouse_app_core::machine::{Kind, MIN_CORES, MIN_RAM_GIB, Machine};
+use guesthouse_app_core::setup::amd::NO_AMD_SETUP;
 use guesthouse_app_core::setup::checks::gpu_warning;
 use guesthouse_app_core::setup::guest_driver::guest_driver;
 use guesthouse_app_core::tasks::no_slot_text;
@@ -32,6 +34,9 @@ const WIDTH: i32 = 520;
 const HEIGHT: i32 = 720;
 const NOTE_MARGIN: i32 = 12;
 const CARD_TITLE: &str = "Card";
+/// Said plainly until a guest on an AMD card has drawn with it.
+const AMD_NOT_FINISHED: &str = "starts on the AMD card. GPU-PV on AMD is not finished, so Windows may have no \
+                                GPU there yet";
 const CARD_NOTE: &str = "Windows is installed for this card's maker. It can move to another card of the same maker \
                          later, but not to another maker's.";
 
@@ -63,6 +68,7 @@ struct Parts {
     /// Which card a Windows machine runs on, there only when this PC has more than one to choose.
     card: adw::ComboRow,
     cards: Vec<CardChoice>,
+    amd_driver: AmdDriverRow,
     note: gtk::Label,
     iso_path: RefCell<Option<String>>,
     iso: RefCell<Option<Iso>>,
@@ -156,6 +162,7 @@ impl NewMachineDialog {
         card.set_selected(default_choice(&context, &cards) as u32);
         card.set_visible(false);
         hardware.add(&card);
+        let amd_driver = AmdDriverRow::new(window, &hardware);
         let note = gtk::Label::builder()
             .wrap(true)
             .xalign(0.0)
@@ -193,6 +200,7 @@ impl NewMachineDialog {
             disk,
             card,
             cards,
+            amd_driver,
             note,
             iso_path: RefCell::default(),
             iso: RefCell::default(),
@@ -223,8 +231,14 @@ impl NewMachineDialog {
         self.0.create_button.connect_clicked(move |_| this.on_create());
         let this = self.clone();
         self.0.card.connect_selected_notify(move |_| this.card_changed());
+        let this = self.clone();
+        self.0.amd_driver.connect_ready(move || this.card_changed());
         let window = self.0.window.clone();
-        self.0.dialog.connect_closed(move |_| window.new_machine_closed());
+        let amd_driver = self.0.amd_driver.clone();
+        self.0.dialog.connect_closed(move |_| {
+            amd_driver.stop();
+            window.new_machine_closed();
+        });
     }
 
     pub fn present(&self) {
@@ -301,6 +315,8 @@ impl NewMachineDialog {
         }
         let missing_driver = if windows { guest_driver(&context, &self.chosen_card()).err() } else { None };
         self.0.no_driver.set(missing_driver.is_some());
+        let amd_driver_missing = missing_driver == Some(NO_AMD_SETUP);
+        self.0.amd_driver.show_for(amd_driver_missing.then(|| self.chosen_device()));
         if let Some(missing) = missing_driver {
             self.show_verdict(&iso.title, missing);
         } else if windows {
@@ -311,7 +327,8 @@ impl NewMachineDialog {
                 .map_or_else(String::new, |text| format!(" {text}"));
             // A build from source has no driver to add, so it says nothing about one.
             let display = DriverPackage::find(&context).map_or("", |_| DISPLAY_DRIVER_NOTE);
-            let said = format!("Installs by itself and starts with GPU-PV. {display}{warning}");
+            let gpu = if on_nvidia { "starts with GPU-PV" } else { AMD_NOT_FINISHED };
+            let said = format!("Installs by itself and {gpu}. {display}{warning}");
             self.show_verdict(&iso.title, said.trim());
         } else {
             self.show_verdict(
@@ -406,6 +423,10 @@ impl NewMachineDialog {
     fn chosen_card_pci(&self) -> String {
         let at = self.0.card.selected() as usize;
         self.0.cards.get(at).map(|choice| choice.pci.clone()).unwrap_or_default()
+    }
+
+    fn chosen_device(&self) -> u32 {
+        self.0.cards.get(self.0.card.selected() as usize).map_or(0, |choice| choice.device)
     }
 
     /// A Windows machine on the card chosen, to ask what it would need.

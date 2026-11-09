@@ -12,19 +12,24 @@ pub struct CardChoice {
     /// What goes in the machine's `amd_gpu`.
     pub pci: String,
     pub label: String,
+    /// The card's PCI device id, 0 where it isn't known.
+    pub device: u32,
 }
 
 /// Every card here a new Windows machine could run on, NVIDIA's first.
 pub fn windows_card_choices(context: &Context) -> Vec<CardChoice> {
     let mut choices = Vec::new();
     if !find_cards(context).is_empty() {
-        let label = card_in_use(context).map_or_else(|| "NVIDIA".to_owned(), |card| card.name);
-        choices.push(CardChoice { pci: String::new(), label });
+        let card = card_in_use(context);
+        let label = card.as_ref().map_or_else(|| "NVIDIA".to_owned(), |card| card.name.clone());
+        choices.push(CardChoice { pci: String::new(), label, device: card.map_or(0, |card| card.device) });
     }
     let amd = amd_cards(context).into_iter();
-    choices.extend(
-        amd.map(|card| CardChoice { label: format!("{} at {}", card.name, card.pci), pci: card.pci }),
-    );
+    choices.extend(amd.map(|card| CardChoice {
+        label: format!("{} at {}", card.name, card.pci),
+        pci: card.pci,
+        device: card.device,
+    }));
     choices
 }
 
@@ -37,7 +42,7 @@ pub fn same_maker_choices(context: &Context, machine: &Machine) -> Vec<CardChoic
         .collect();
     if !choices.iter().any(|choice| choice.pci == machine.amd_gpu) {
         let label = format!("The card at {}, which isn't in this PC now", machine.amd_gpu);
-        choices.push(CardChoice { pci: machine.amd_gpu.clone(), label });
+        choices.push(CardChoice { pci: machine.amd_gpu.clone(), label, device: 0 });
     }
     choices
 }
@@ -77,6 +82,7 @@ mod tests {
         assert_eq!(addresses, ["", IGPU]);
         assert!(choices[0].label.contains("RTX 5090"), "{choices:?}");
         assert!(choices[1].label.ends_with("at 0000:7c:00.0"), "{choices:?}");
+        assert_eq!((choices[0].device, choices[1].device), (0x2B85, 0x13C0));
         assert_eq!(default_choice(&context, &choices), 0);
     }
 

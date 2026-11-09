@@ -1,6 +1,8 @@
 //! What an AMD guest was set up with. The app's `setup.json` stays the NVIDIA card's record, which
-//! this daemon does not read: a Windows guest on the AMD card is described by `setup/amd.json` in
-//! the same store. The app doesn't write that file yet, so for now it is written by hand.
+//! this daemon does not read: AMD's driver for a Windows guest is described by `setup/amd.json` in
+//! the same store, which the app writes when it unpacks AMD's installer. The card is each machine's
+//! own and comes in `GUESTHOUSE_AMD_CARD`; a `pci` in the file is only for a build with no NVIDIA
+//! backend, started by hand.
 
 use crate::store::store;
 use guesthouse_backend::{DriverVersion, PciAddress, Setup};
