@@ -3,7 +3,8 @@
 //! amdgpu gives each open render node one VM. Guest processes place their own reservations, and two
 //! processes often place them at the same addresses, so each space opens the node again and gets a
 //! VM of its own. Memory is made on the backend's first open and taken into a space's open with a
-//! dma-buf before it is mapped there. A buffer taken in is kept while any of its mappings in the space
+//! dma-buf before it is mapped there. amdgpu won't hand out adopted host pages that way, so a space
+//! adopts those pages itself. A buffer taken in is kept while any of its mappings in the space
 //! are, and let go after the last.
 
 use crate::device::Device;
@@ -61,6 +62,15 @@ impl Books {
     }
 }
 
+/// Where a buffer on the backend's first open came from, which says how a space takes it in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Origin {
+    /// Made on the card, and handed over as a dma-buf.
+    Made,
+    /// Host pages adopted at this address, of this size, which a space adopts again.
+    HostPages { address: u64, size: u64 },
+}
+
 /// One space's open of the render node, and what it holds.
 #[derive(Debug)]
 pub struct SpaceVm {
@@ -74,19 +84,24 @@ impl SpaceVm {
     }
 
     /// Maps `length` bytes of `buffer`, a handle on `device`, from `offset`, at `address`.
+    #[allow(clippy::too_many_arguments)]
     pub fn map(
         &mut self,
         device: &Device,
         buffer: GemHandle,
+        origin: Origin,
         address: u64,
         offset: u64,
         length: u64,
         flags: MapFlags,
     ) -> io::Result<()> {
         let fresh = self.books.handle_of(buffer).is_none();
-        let handle = match self.books.handle_of(buffer) {
-            Some(handle) => handle,
-            None => memory::import(&self.file, &memory::export(device, buffer)?)?,
+        let handle = match (self.books.handle_of(buffer), origin) {
+            (Some(handle), _) => handle,
+            (None, Origin::Made) => memory::import(&self.file, &memory::export(device, buffer)?)?,
+            (None, Origin::HostPages { address, size }) => {
+                memory::adopt_userptr(&self.file, address, size, false)?
+            }
         };
         if let Err(error) = memory::map(&self.file, handle, address, offset, length, flags) {
             if fresh {

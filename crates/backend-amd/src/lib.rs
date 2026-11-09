@@ -48,7 +48,7 @@ use guesthouse_backend::{
     RegistryValue, Setup, SpaceId, StagingCopy, StagingStart, Status, UnmapRequest, VendorQuery, Work,
     WorkStart,
 };
-use space_vm::SpaceVm;
+use space_vm::{Origin, SpaceVm};
 use std::collections::{BTreeMap, HashMap};
 use std::os::fd::OwnedFd;
 use std::time::Instant;
@@ -62,6 +62,7 @@ const HOST_BRANCH: &str = "amdgpu";
 #[derive(Debug)]
 struct Bo {
     handle: GemHandle,
+    origin: Origin,
 }
 
 /// A GPU address space, with a VM of its own on amdgpu. The ranges and mappings are kept here too,
@@ -191,7 +192,7 @@ impl Backend for AmdBackend {
             return Err(BackendError::new(format!("GEM_METADATA: {error}")));
         }
         let id = MemoryId(self.new_id());
-        self.memory.insert(id, Bo { handle });
+        self.memory.insert(id, Bo { handle, origin: Origin::Made });
         Ok((id, size))
     }
 
@@ -199,7 +200,7 @@ impl Backend for AmdBackend {
         let handle = memory::adopt_userptr(&self.device, host_address, size, false)
             .map_err(|error| BackendError::new(format!("GEM_USERPTR: {error}")))?;
         let id = MemoryId(self.new_id());
-        self.memory.insert(id, Bo { handle });
+        self.memory.insert(id, Bo { handle, origin: Origin::HostPages { address: host_address, size } });
         Ok(id)
     }
 
@@ -289,7 +290,7 @@ impl Backend for AmdBackend {
         let (address, offset, length) = (request.address, request.offset, request.length);
         space
             .vm
-            .map(&self.device, bo.handle, address, offset, length, flags)
+            .map(&self.device, bo.handle, bo.origin, address, offset, length, flags)
             .map_err(|error| BackendError::new(format!("GEM_VA map: {error}")))?;
         space.mappings.insert(address, length);
         Ok(())
