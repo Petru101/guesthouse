@@ -48,7 +48,7 @@ fn answer(backend: &NvidiaBackend<FakeRm>, kind: u32, size: usize, data: &[u8]) 
 fn the_record_has_not_changed() {
     let backend = fake_backend(FakeRm::new());
     let record = answer(&backend, RECORD_QUERY, GUEST_617.record.size, &[]).unwrap();
-    assert_eq!(digest(&record), 0xe71d_a14b_ed2f_0524);
+    assert_eq!(digest(&record), 0x213c_7536_731e_862c);
     let short = answer(&backend, RECORD_QUERY, CAPS_SIZE, &[0; CAPS_SIZE]).unwrap();
     assert_eq!(digest(&short), 0x51b3_a94e_07b9_5b47);
 }
@@ -63,6 +63,16 @@ fn the_record_carries_the_video_caps() {
     assert_eq!(caps, [1 << 24, 1 << 26, 1 << 20, 0x40_0030]);
     assert_eq!(caps, BLACKWELL.video_record_flags.caps);
     assert_eq!(record[GUEST_617.record.encoder_flags], 0x10);
+}
+
+#[test]
+fn the_record_carries_texture_limits_for_direct3d_9() {
+    let backend = fake_backend(FakeRm::new());
+    let record = answer(&backend, RECORD_QUERY, GUEST_617.record.size, &[]).unwrap();
+    let at = GUEST_617.record.texture_limits;
+    let limits: Vec<u32> =
+        record[at..at + 20].chunks(4).map(|word| u32::from_le_bytes(word.try_into().unwrap())).collect();
+    assert_eq!(limits, [0x8000, 0x8000, 0x2_0000, 0x2_0000, 0x800]);
 }
 
 #[test]

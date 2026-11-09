@@ -52,6 +52,9 @@ pub struct RecordLayout {
     pub decoder_flags: usize,
     /// The same for video encoders.
     pub encoder_flags: usize,
+    /// The largest textures the card takes: width and height in 2D, two larger limits, and the
+    /// 3D extent. Direct3D 9 refuses every surface, even its back buffer, when these are zero.
+    pub texture_limits: usize,
     pub current_clocks: usize,
     pub rated_clocks: usize,
     pub chipset: usize,
@@ -167,6 +170,7 @@ pub const GUEST_617: GuestBranch = GuestBranch {
         video_caps: 0x58,
         decoder_flags: 0x1D5,
         encoder_flags: 0x1D6,
+        texture_limits: 0x94,
         current_clocks: 0xA8,
         rated_clocks: 0xB4,
         chipset: 0xE4,

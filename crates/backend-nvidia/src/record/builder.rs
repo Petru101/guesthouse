@@ -72,6 +72,9 @@ const MAILBOX_SIZE: u32 = 0x10000;
 const MAILBOX_PEERS: u32 = 8;
 const MAILBOX_BAR1_LIMIT: u32 = 0x80_0000;
 
+/// The texture limits the record gives. They are not read from the card.
+const TEXTURE_LIMITS: [u32; 5] = [0x8000, 0x8000, 0x2_0000, 0x2_0000, 0x800];
+
 /// The host can't know which instance key Windows gave the adapter, so the record names the display
 /// class's own key, which every Windows has. The driver keeps its defaults for what isn't under it.
 const DISPLAY_CLASS_KEY: &str =
@@ -339,6 +342,7 @@ pub fn build<R: Rm>(
     let memory_khz = (memory_hertz / 1000) as u32;
     record.words(layout.rated_clocks, &[graphics_khz, memory_khz, graphics_khz, graphics_khz]);
     record.words(layout.current_clocks, &[graphics_khz, memory_khz, graphics_khz]);
+    record.words(layout.texture_limits, &TEXTURE_LIMITS);
     record.words(layout.adapter_id, &ADAPTER_ID);
     let name = card.text(NAME, 4).map_err(card_failed)?;
     record.put(layout.name, &utf16(&name));
