@@ -11,8 +11,8 @@ use crate::frames::{Delivery, Frame, FrameCounts, FrameRing, FrameSink, Picture,
 use crate::frames::{LiveRing, RING_SLOTS, SlotInFlight, SlotMemory};
 use crate::gpu_addresses::{ALLOCATION_ALIGN, AddressUse};
 use guesthouse_backend::{
-    Backend, BackendError, GuestMemory, MapRequest, MemoryKind, SlotCopy, SpaceId, StagingCopy, StagingStart,
-    Status, SurfaceShape, UnmapRequest,
+    Backend, BackendError, GuestMemory, MapRequest, MemoryId, MemoryKind, SlotCopy, SpaceId, StagingCopy,
+    StagingStart, Status, SurfaceShape, UnmapRequest,
 };
 use guesthouse_messages::indirect::Look;
 use guesthouse_messages::wire::align_up;
@@ -58,6 +58,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         self.frames.viewer_facts = ViewerFacts::default();
         self.frames.viewer_wants_cursor = false;
         if self.frames.indirect.is_some() {
+            self.drop_memory_slots();
             self.keep_ring_for_next_viewer();
         } else {
             self.frames.retire_ring();
@@ -232,18 +233,60 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         })
     }
 
-    /// Makes one slot: video memory the GPU can reach, and the file a viewer reads it by.
+    /// Makes one slot: memory the GPU can reach, and the file a viewer reads it by. It's video memory,
+    /// unless the viewer's screen is on another GPU, which can't take the card's buffers. Then it's
+    /// memory here, which the viewer copies from.
     fn make_slot(&mut self, size: u64, space: SpaceId) -> Result<(SlotMemory, OwnedFd), BackendError> {
+        if self.frames.viewer_facts.wants_memory {
+            return self.make_host_slot(size, space);
+        }
         let (memory, given) = self.backend.allocate_video_memory(size, MemoryKind::PLAIN)?;
         if given < size {
             self.backend.release_memory(memory);
             return Err(BackendError::new("the card gave a slot less memory than the picture needs"));
         }
+        let slot = self.place_slot(memory, given, None, space)?;
+        match self.backend.export_memory(memory, given) {
+            Ok(buffer) => Ok((slot, buffer)),
+            Err(error) => {
+                self.free_slot(&slot, space);
+                Err(error)
+            }
+        }
+    }
+
+    pub(super) fn make_host_slot(&mut self, size: u64, space: SpaceId) -> Result<(SlotMemory, OwnedFd), BackendError> {
+        let buffer = self.memory.host_buffer(size).map_err(|error| BackendError::new(error.to_string()))?;
+        let memory = match self.backend.adopt_host_pages(buffer.host_address, size) {
+            Ok(memory) => memory,
+            Err(error) => {
+                self.memory.release_host_buffer(buffer.host_address, size);
+                return Err(error);
+            }
+        };
+        let slot = self.place_slot(memory, size, Some(buffer.host_address), space)?;
+        Ok((slot, buffer.file))
+    }
+
+    /// Maps a slot's memory into the session's own space. On failure the memory is released.
+    fn place_slot(
+        &mut self,
+        memory: MemoryId,
+        given: u64,
+        host_address: Option<u64>,
+        space: SpaceId,
+    ) -> Result<SlotMemory, BackendError> {
+        let release = |session: &mut Self| {
+            session.backend.release_memory(memory);
+            if let Some(at) = host_address {
+                session.memory.release_host_buffer(at, given);
+            }
+        };
         let whole = align_up(given, ALLOCATION_ALIGN);
         let address = match self.gpu_addresses.take(whole, ALLOCATION_ALIGN, AddressUse::FrameRing) {
             Ok(address) => address,
             Err(error) => {
-                self.backend.release_memory(memory);
+                release(self);
                 return Err(error);
             }
         };
@@ -260,24 +303,17 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             executable: false,
             memory_type: guesthouse_backend::MapMemoryType::Default,
         };
-        let slot = SlotMemory { memory, size: given, address };
         if let Err(error) = self.backend.map(&map) {
-            self.backend.release_memory(memory);
+            release(self);
             self.gpu_addresses.give_back(address, whole, ALLOCATION_ALIGN, AddressUse::FrameRing);
             return Err(error);
         }
-        match self.backend.export_memory(memory, given) {
-            Ok(buffer) => Ok((slot, buffer)),
-            Err(error) => {
-                self.free_slot(&slot, space);
-                Err(error)
-            }
-        }
+        Ok(SlotMemory { memory, size: given, address, host_address })
     }
 
     /// Video memory stays while a viewer still holds its file, so this can't pull a picture from
     /// under it.
-    fn free_slot(&mut self, slot: &SlotMemory, space: SpaceId) {
+    pub(super) fn free_slot(&mut self, slot: &SlotMemory, space: SpaceId) {
         let unmap = UnmapRequest { space, memory: slot.memory, address: slot.address, length: slot.size };
         let whole = align_up(slot.size, ALLOCATION_ALIGN);
         match self.backend.unmap(&unmap) {
@@ -287,6 +323,9 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             Err(error) => log::warn!("unmapping a slot: {error}"),
         }
         self.backend.release_memory(slot.memory);
+        if let Some(at) = slot.host_address {
+            self.memory.release_host_buffer(at, slot.size);
+        }
     }
 
     /// Closes the rings nothing is writing. The GPU must have finished with a slot before it goes,

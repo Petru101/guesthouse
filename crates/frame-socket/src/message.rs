@@ -4,7 +4,7 @@
 use std::fmt;
 
 /// Goes up with any change to a message's bytes.
-pub const VERSION: u16 = 1;
+pub const VERSION: u16 = 2;
 /// More slots than a viewer can hold on to is a mistake, and each one is a file descriptor.
 pub const MOST_SLOTS: u32 = 16;
 pub const MOST_FORMATS: usize = 64;
@@ -33,6 +33,9 @@ pub struct Hello {
     pub refresh_millihertz: u32,
     /// The monitor's peak brightness. 0 if it isn't known.
     pub peak_nits: u32,
+    /// The viewer's screen is drawn by another GPU, which can't take the producer's buffers, so it
+    /// wants buffers in memory, and copies them.
+    pub wants_memory: bool,
 }
 
 /// Producer to viewer: a new set of buffers, one file descriptor for each slot alongside.
@@ -327,7 +330,12 @@ fn read_hello(reader: &mut Reader) -> Result<Hello, DecodeError> {
         return Err(DecodeError::Malformed);
     }
     let formats = (0..count).map(|_| reader.format()).collect::<Result<_, _>>()?;
-    Ok(Hello { formats, refresh_millihertz, peak_nits })
+    let wants_memory = match reader.u8()? {
+        0 => false,
+        1 => true,
+        _ => return Err(DecodeError::Malformed),
+    };
+    Ok(Hello { formats, refresh_millihertz, peak_nits, wants_memory })
 }
 
 fn read_ring(reader: &mut Reader) -> Result<Ring, DecodeError> {
@@ -363,6 +371,7 @@ impl Message {
                 writer.u32(hello.peak_nits);
                 writer.u16(hello.formats.len().min(MOST_FORMATS) as u16);
                 hello.formats.iter().take(MOST_FORMATS).for_each(|format| writer.format(*format));
+                writer.u8(u8::from(hello.wants_memory));
             }
             Self::Ring(ring) => {
                 writer.u32(ring.generation);
@@ -448,7 +457,12 @@ mod tests {
 
     fn all() -> [Message; 9] {
         [
-            Message::Hello(Hello { formats: vec![XRGB], refresh_millihertz: 144_000, peak_nits: 400 }),
+            Message::Hello(Hello {
+                formats: vec![XRGB],
+                refresh_millihertz: 144_000,
+                peak_nits: 400,
+                wants_memory: true,
+            }),
             Message::Ring(Ring { generation: 7, slots: 3, size: 1 << 23 }),
             Message::Frame(Frame { generation: 7, slot: 2, sequence: 9, descriptor: descriptor() }),
             Message::Light(Light { generation: 7, slot: 2, sdr_white_nits: 240, mastering: None }),

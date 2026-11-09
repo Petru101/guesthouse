@@ -1,7 +1,7 @@
 //! The frame ring through a session: a screen's copies with the stand-in backend, and a pretend sink.
 
 use super::*;
-use crate::{CopyOrder, Delivery, Frame, FrameRing, FrameSink};
+use crate::{CopyOrder, Delivery, Frame, FrameRing, FrameSink, ViewerFacts};
 use std::os::fd::BorrowedFd;
 
 const WIDTH: u32 = 640;
@@ -250,6 +250,26 @@ fn a_viewer_that_leaves_gives_the_memory_back_and_the_next_gets_its_own() {
     session.offer_frames(&mut next);
     assert!(next.rings[0].generation > sink.rings[0].generation);
     assert_eq!(next.frames.len(), 1);
+}
+
+#[test]
+fn a_viewer_on_another_gpu_gets_slots_in_memory_here_and_they_go_with_it() {
+    let mut session = session();
+    let surfaces = screen(&mut session, WIDTH, HEIGHT);
+    present(&mut session, surfaces);
+    session.backend_mut().refuse_exports = true;
+    session.viewer_arrived();
+    session.viewer_described(ViewerFacts { wants_memory: true, ..ViewerFacts::default() });
+    let mut sink = Sink::new();
+    let _ = session.poll(later());
+    session.offer_frames(&mut sink);
+    assert_eq!(sink.rings.len(), 1, "no slot was exported from the card");
+    assert_eq!(sink.frames.len(), 1);
+    assert_eq!(session.memory().host_buffers.len(), SLOTS);
+    let blocks = session.backend().live_memory_blocks();
+    session.viewer_left();
+    assert!(session.memory().host_buffers.is_empty());
+    assert_eq!(session.backend().live_memory_blocks(), blocks - SLOTS);
 }
 
 #[test]
