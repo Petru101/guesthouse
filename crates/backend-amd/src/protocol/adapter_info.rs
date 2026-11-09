@@ -28,8 +28,11 @@ pub const BLOCK_SIZE: usize = 0x3A00;
 const MAJOR_VERSION: usize = 0x000;
 const MINOR_VERSION: usize = 0x004;
 const BLOCK_VERSION: (u32, u32) = (1, 2);
-// VersionFlags at 0x008 stays zero. Its one known bit says the virtual-memory alignments and IOMMU
-// flags further on are filled in, and they aren't.
+// VersionFlags at 0x008 stays zero. Its one known bit, bit 0, says the second virtual-memory block
+// (alignments at 0x3190 and 0x338C, and the IOMMU flags) is valid. The guest's user-mode driver
+// loads none of those fields, so a clear bit and zero fields match everything it reads. The display
+// minimum alignments at 0x3390 and 0x3398 are read only when bit 2 of the dword at 0x2D50 is set,
+// and that dword is in the range left zero.
 /// The surface descriptor size the kernel expects in allocation private data. The guest steps
 /// through its descriptors by this size only when [`FEATURE_SURFACE_STRIDE_GIVEN`] is set.
 const SURFACE_DESCRIPTOR_SIZE: usize = 0x00C;
@@ -73,8 +76,11 @@ const SUBSYSTEM_ID: usize = 0xA0C;
 const LOCAL_VISIBLE_HEAP: usize = 0xA14;
 const LOCAL_INVISIBLE_HEAP: usize = 0xA1C;
 /// Taken as hertz, as INFO gives kilohertz. Unconfirmed: neither the guest nor the kernel driver
-/// scales it, so its unit isn't shown.
+/// scales it, so its unit isn't shown. The clocks in megahertz are separate words, and amdgpu's
+/// header calls the host's figure kilohertz, but nothing shows the guest's dword is the same.
 const COUNTER_FREQUENCY: usize = 0xA24;
+/// Hertz in a kilohertz, the guess above.
+const COUNTER_HERTZ_PER_KILOHERTZ: u32 = 1000;
 const ENGINE_CLOCK_MHZ: usize = 0xA28;
 const MEMORY_CLOCK_MHZ: usize = 0xA2A;
 const REGISTER_PROTECTION: usize = 0xA2C;
@@ -92,16 +98,19 @@ const GB_ADDR_CONFIG: usize = 0xC00;
 const DISABLED_RB_MASK: usize = 0xC06;
 const CE_RAM_SIZE: usize = 0xC08;
 /// 16-bit masks of active units, two per shader engine, one for each array, with room for four
-/// engines. The guest copies [`SHADER_ENGINES`] times four bytes of them. A unit is a compute unit
-/// before GFX10 and a workgroup processor from GFX10 on.
+/// engines. The guest copies [`SHADER_ENGINES`] times four bytes of them and counts each set bit as
+/// one unit, with no doubling after: a unit is a compute unit before GFX10 and a workgroup
+/// processor from GFX10 on, so a GFX10 count is a workgroup count.
 const ACTIVE_UNITS: usize = 0xC20;
 /// The units kept on all the time, laid out the same way.
 const ALWAYS_ON_UNITS: usize = 0xC30;
 const GRAPHICS_FLAGS: usize = 0xC44;
 /// The counts from [`MAX_VGPRS`] on are filled in.
 const GRAPHICS_COUNTS_VALID: u32 = 1 << 0;
-/// [`ACTIVE_UNITS`] and [`ALWAYS_ON_UNITS`] are filled in. Without it, or the per-engine state
-/// arrays this block leaves empty, the guest reads no unit masks at all.
+/// [`ACTIVE_UNITS`] and [`ALWAYS_ON_UNITS`] are filled in. Without this bit, or the one for the
+/// per-engine state arrays (bit 16, whose arrays this block leaves empty), the guest reads no unit
+/// masks at all. Whether a GFX10.3 card sets bit 16 on a real host isn't known; this bit's path is
+/// the one that reads the masks held here.
 const UNIT_MASKS_VALID: u32 = 1 << 2;
 /// [`TILE_STEERING_OVERRIDE`] is filled in.
 const TILE_STEERING_VALID: u32 = 1 << 4;
@@ -129,8 +138,12 @@ const FEATURE_ALLOCATION_SECOND_BLOCK: u32 = 1 << 3;
 /// The guest steps through surface descriptors by [`SURFACE_DESCRIPTOR_SIZE`]. Clear, it uses a
 /// smaller fixed size that doesn't match the descriptors the kernel checks.
 const FEATURE_SURFACE_STRIDE_GIVEN: u32 = 1 << 20;
-/// Bit 1, render status, stays clear: nothing here answers for it. Further bits the guest tests
-/// (13, 17, 22, 23, 24) stay clear too, as what each one promises isn't known.
+/// Bit 1, render status, stays clear: it promises command-buffer handling of render status that
+/// nothing here does, though the guest doesn't test it. Bit 13 promises a GPU virtual-address
+/// offset in the adapter block, bit 17 that the guest may send fullscreen frame metadata in an
+/// escape, bit 22 a host memory size at 0xA44, bit 23 that allocation private data may need 128K,
+/// and bit 24 a hardware scheduler's queue sizes: this backend honours none of those, so all stay
+/// clear.
 const FEATURES: u32 =
     FEATURE_SEVERAL_SURFACES | FEATURE_ALLOCATION_SECOND_BLOCK | FEATURE_SURFACE_STRIDE_GIVEN;
 
@@ -216,7 +229,7 @@ fn fill_first_gpu(block: &mut [u8], info: &DeviceInfo) {
     put_dword(block, SUBSYSTEM_ID, details.subsystem);
     put_qword(block, LOCAL_VISIBLE_HEAP, info.visible_vram_total);
     put_qword(block, LOCAL_INVISIBLE_HEAP, invisible);
-    put_dword(block, COUNTER_FREQUENCY, info.counter_freq_khz.saturating_mul(1000));
+    put_dword(block, COUNTER_FREQUENCY, info.counter_freq_khz.saturating_mul(COUNTER_HERTZ_PER_KILOHERTZ));
     put_word(block, ENGINE_CLOCK_MHZ, megahertz(details.max_engine_clock_khz));
     put_word(block, MEMORY_CLOCK_MHZ, megahertz(details.max_memory_clock_khz));
     put_dword(block, REGISTER_PROTECTION, REGISTERS_PROTECTED);
@@ -334,6 +347,11 @@ mod tests {
     use super::*;
     use crate::info::{EngineSet, Firmware};
 
+    const VERSION_FLAGS: usize = 0x008;
+    const VM_INFO_ALIGNMENT: usize = 0x3190;
+    const VM_INFO_SIZE_ALIGNMENT: usize = 0x338C;
+    const DISPLAY_ALIGNMENT_FLAGS: usize = 0x2D50;
+
     /// A small RDNA2 part like the host's: one engine, one array of two units.
     fn small_card() -> DeviceInfo {
         let mut cu_bitmap = [[0; 4]; 4];
@@ -403,7 +421,25 @@ mod tests {
     fn the_block_gives_its_version() {
         let block = build(&small_card());
         assert_eq!((dword_at(&block, MAJOR_VERSION), dword_at(&block, MINOR_VERSION)), (1, 2));
-        assert_eq!(dword_at(&block, 0x008), 0);
+        assert_eq!(dword_at(&block, VERSION_FLAGS), 0);
+    }
+
+    #[test]
+    fn only_the_features_this_backend_can_honour_are_set() {
+        let features = dword_at(&build(&small_card()), SOFTWARE_FEATURES);
+        assert_eq!(features, (1 << 2) | (1 << 3) | (1 << 20));
+        for bit in [1, 13, 17, 22, 23, 24] {
+            assert_eq!(features & 1 << bit, 0, "bit {bit}");
+        }
+    }
+
+    #[test]
+    fn the_second_virtual_memory_block_is_not_promised() {
+        let block = build(&small_card());
+        assert_eq!(dword_at(&block, VERSION_FLAGS), 0);
+        for at in [VM_INFO_ALIGNMENT, VM_INFO_SIZE_ALIGNMENT, DISPLAY_ALIGNMENT_FLAGS] {
+            assert_eq!(dword_at(&block, at), 0, "{at:#x}");
+        }
     }
 
     #[test]
