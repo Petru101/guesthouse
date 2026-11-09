@@ -235,7 +235,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
                 pad_to(out, STATUS_SIZE + query.size);
             }
             kind => {
-                log::debug!("adapter query {kind} has no answer");
+                log::debug!("adapter query {kind} has no answer ({} bytes)", query.size);
                 return Ok(Status::NOT_SUPPORTED);
             }
         }

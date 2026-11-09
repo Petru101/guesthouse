@@ -177,6 +177,19 @@ pub fn answer(query: &VendorQuery<'_>, info: &DeviceInfo, out: &mut Vec<u8>) -> 
         log::info!("adapter block refused: the guest asked for {} bytes", query.size);
         return Some(Status::INVALID_PARAMETER);
     }
+    if query.size != BLOCK_SIZE {
+        let head = query.data.chunks(4).take(4).map(|word| {
+            let mut bytes = [0; 4];
+            bytes[..word.len()].copy_from_slice(word);
+            format!("{:#x}", u32::from_le_bytes(bytes))
+        });
+        log::info!(
+            "adapter block ask is {} bytes, with {} bytes of input ({})",
+            query.size,
+            query.data.len(),
+            head.collect::<Vec<_>>().join(", ")
+        );
+    }
     log::info!("answered the adapter block, {} bytes of {BLOCK_SIZE}", query.size);
     out.extend_from_slice(&build(info)[..query.size]);
     Some(Status::SUCCESS)
