@@ -1,8 +1,9 @@
 //! `guesthouse-daemon [PROJECT_FOLDER]`: serves one VM, named by `GUESTHOUSE_SLOT`.
 //!
-//! The real backend is behind the `nvidia` or `amd` feature. One binary opens one vendor's card, so
-//! a build with both, such as `--all-features`, is the NVIDIA daemon. A build with no backend can
-//! only say so. The `stand-in` feature answers messages with nothing
+//! The real backends are behind the `nvidia` and `amd` features. Each run opens one card: the AMD
+//! card named in `GUESTHOUSE_AMD_CARD` if the app named one, and else the NVIDIA card setup chose.
+//! A build with only `amd` takes its card from the AMD setup file when none is named. A build with
+//! no backend can only say so. The `stand-in` feature answers messages with nothing
 //! behind them, to try the sockets by hand.
 
 use guesthouse_daemon::logger;
@@ -39,9 +40,38 @@ fn serve(_slot: Slot, _project: PathBuf) -> Result<(), Box<dyn std::error::Error
     Err("This build has no GPU backend in it, so it cannot run a guest.".into())
 }
 
-/// Starts the AMD backend and serves. This opens the host's AMD card and no other.
-#[cfg(all(feature = "amd", not(feature = "nvidia")))]
+/// Serves on the card the app chose for this guest.
+#[cfg(any(feature = "nvidia", feature = "amd"))]
 fn serve(slot: Slot, project: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+    match guesthouse_daemon::card_choice::amd_card()? {
+        Some(card) => serve_amd(slot, project, Some(card)),
+        None => serve_nvidia(slot, project),
+    }
+}
+
+#[cfg(all(feature = "nvidia", not(feature = "amd")))]
+fn serve_amd(
+    _slot: Slot,
+    _project: PathBuf,
+    _card: Option<guesthouse_backend::PciAddress>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    Err("This daemon was built without the AMD backend, so it cannot run a guest on an AMD card.".into())
+}
+
+/// With no NVIDIA backend, a guest with no card named is on the card in the AMD setup file.
+#[cfg(all(feature = "amd", not(feature = "nvidia")))]
+fn serve_nvidia(slot: Slot, project: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+    serve_amd(slot, project, None)
+}
+
+/// Starts the AMD backend on `card`, or with none, on the card in the AMD setup file, and serves.
+/// This opens that AMD card and no other.
+#[cfg(feature = "amd")]
+fn serve_amd(
+    slot: Slot,
+    project: PathBuf,
+    card: Option<guesthouse_backend::PciAddress>,
+) -> Result<(), Box<dyn std::error::Error>> {
     use guesthouse_backend::Backend;
     use guesthouse_backend_amd::AmdBackend;
     use guesthouse_core::{Config, MemoryLimits, Session};
@@ -53,10 +83,13 @@ fn serve(slot: Slot, project: PathBuf) -> Result<(), Box<dyn std::error::Error>>
     use guesthouse_daemon::server::Server;
     use guesthouse_daemon::startup::start_backend;
 
-    let setup = read_setup()?;
+    let mut setup = read_setup()?;
+    if card.is_some() {
+        setup.card_address = card;
+    }
     let address = setup.card_address.map(|pci| pci.to_string());
     let node = guesthouse_backend_amd::amd_render_node(address.as_deref())
-        .ok_or("No AMD graphics card was found at the address in the AMD setup.")?;
+        .ok_or("No AMD graphics card was found at the address this guest was given.")?;
     log::info!("AMD card at {}", node.display());
     let run_folder = slot.run_folder(&project);
     let needs = Needs::of_amd_card(slot, &project, &setup.driver_folder, node);
@@ -75,9 +108,9 @@ fn serve(slot: Slot, project: PathBuf) -> Result<(), Box<dyn std::error::Error>>
     Ok(())
 }
 
-/// Starts the real backend and serves. This opens the host's GPU.
+/// Starts the NVIDIA backend and serves. This opens the NVIDIA card setup chose.
 #[cfg(feature = "nvidia")]
-fn serve(slot: Slot, project: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+fn serve_nvidia(slot: Slot, project: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     use guesthouse_backend::Backend;
     use guesthouse_backend_nvidia::NvidiaBackend;
     use guesthouse_backend_nvidia::rm::linux::LinuxRm;

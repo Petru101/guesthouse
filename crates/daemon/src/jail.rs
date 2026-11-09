@@ -94,7 +94,7 @@ pub fn gpu_devices(devices: &Path, render_nodes: &Path) -> Vec<PathBuf> {
 pub const WINDOW_FILE: &str = "iomem";
 pub const RAM_FILE: &str = "ram";
 
-#[cfg(all(feature = "amd", not(feature = "nvidia")))]
+#[cfg(feature = "amd")]
 impl Needs {
     /// What the AMD daemon of this slot needs. Only the one render node is granted, so the other
     /// cards' device files are not reachable from this process.
