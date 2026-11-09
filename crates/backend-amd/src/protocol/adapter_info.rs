@@ -1,7 +1,8 @@
 //! The adapter block AMD's Windows driver reads at start, built from the host card.
 //!
-//! The guest asks for it with an adapter query of type 0, the WDK's DXGKQAITYPE_UMDRIVERPRIVATE,
-//! into a buffer of exactly [`BLOCK_SIZE`] bytes. AMD's open interop header calls the structure
+//! The guest asks for it with an adapter query of type 0, the WDK's DXGKQAITYPE_UMDRIVERPRIVATE.
+//! The kernel's answer to that query is [`super::adapter_header`], then this block of [`BLOCK_SIZE`]
+//! bytes when the buffer has room for both. AMD's open interop header calls the structure
 //! ADAPTERINFOEX. All of it is the kernel driver's to fill in, and the guest only reads it, so each
 //! field here is one of three things:
 //!
@@ -12,6 +13,7 @@
 //! Every field not named below is zero. The last dword folded into [`CHECKSUM`] covers the whole
 //! block, so the zeros are part of the answer too.
 
+use super::adapter_header;
 use super::allocation::SURFACE_SIZE;
 use super::bytes::{first_dwords, index_xor_sum, put_dword, put_qword, put_word};
 use crate::info::{CardDetails, DeviceInfo};
@@ -19,7 +21,7 @@ use guesthouse_backend::{Status, VendorQuery};
 
 /// The adapter query type that asks for the block, DXGKQAITYPE_UMDRIVERPRIVATE.
 pub const QUERY_TYPE: u32 = 0;
-/// The guest's buffer must be exactly this size, or the kernel refuses the query.
+/// The block's size. It follows the header in the query's answer.
 pub const BLOCK_SIZE: usize = 0x3A00;
 
 // The block's start. Fixed values.
@@ -170,9 +172,17 @@ pub fn answer(query: &VendorQuery<'_>, info: &DeviceInfo, out: &mut Vec<u8>) -> 
     if query.kind != QUERY_TYPE {
         return None;
     }
-    // The 2400-byte ask seen from Adrenalin 26.10.2 is refused, as the kernel driver refuses it.
-    // Its layout isn't known, and the front of this block was tried and changed nothing.
-    if query.size != BLOCK_SIZE {
+    let header = adapter_header::HEADER_SIZE;
+    // The kernel's answer is the header, then the block if there is room for it. The user-mode
+    // driver opens the adapter with the header alone. A buffer of just the block is answered with
+    // the block, as an older path of the kernel answers it.
+    let answer = match query.size {
+        size if size == header => adapter_header::build(info, size),
+        size if size == header + BLOCK_SIZE => [adapter_header::build(info, size), build(info)].concat(),
+        BLOCK_SIZE => build(info),
+        _ => Vec::new(),
+    };
+    if answer.is_empty() {
         log::info!(
             "adapter block refused: the guest asked for {} bytes, with {} bytes of input ({})",
             query.size,
@@ -181,8 +191,8 @@ pub fn answer(query: &VendorQuery<'_>, info: &DeviceInfo, out: &mut Vec<u8>) -> 
         );
         return Some(Status::INVALID_PARAMETER);
     }
-    log::debug!("answered the adapter block");
-    out.extend_from_slice(&build(info));
+    log::debug!("answered the adapter block, {} bytes", query.size);
+    out.extend_from_slice(&answer);
     Some(Status::SUCCESS)
 }
 
@@ -352,7 +362,7 @@ impl KeyFields {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::info::{EngineSet, Firmware};
 
@@ -362,7 +372,7 @@ mod tests {
     const DISPLAY_ALIGNMENT_FLAGS: usize = 0x2D50;
 
     /// A small RDNA2 part like the host's: one engine, one array of two units.
-    fn small_card() -> DeviceInfo {
+    pub(crate) fn small_card() -> DeviceInfo {
         let mut cu_bitmap = [[0; 4]; 4];
         cu_bitmap[0][0] = 0b11;
         DeviceInfo {
@@ -557,6 +567,17 @@ mod tests {
         let right = VendorQuery { kind: QUERY_TYPE, size: BLOCK_SIZE, data: &[], process_is_32_bit: false };
         assert_eq!(answer(&right, &info, &mut out), Some(Status::SUCCESS));
         assert_eq!(out.len(), BLOCK_SIZE);
+        out.clear();
+        let header_size = adapter_header::HEADER_SIZE;
+        let header = VendorQuery { kind: QUERY_TYPE, size: header_size, data: &[], process_is_32_bit: false };
+        assert_eq!(answer(&header, &info, &mut out), Some(Status::SUCCESS));
+        assert_eq!(out, adapter_header::build(&info, header_size));
+        out.clear();
+        let both_size = header_size + BLOCK_SIZE;
+        let both = VendorQuery { kind: QUERY_TYPE, size: both_size, data: &[], process_is_32_bit: false };
+        assert_eq!(answer(&both, &info, &mut out), Some(Status::SUCCESS));
+        assert_eq!(out[..header_size], adapter_header::build(&info, both_size)[..]);
+        assert_eq!(out[header_size..], build(&info)[..]);
     }
 
     #[test]

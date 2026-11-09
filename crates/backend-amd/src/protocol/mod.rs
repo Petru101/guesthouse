@@ -10,6 +10,7 @@
 //! A field the guest computes is checked and kept as it is. A field the kernel driver would invent
 //! is filled in here.
 
+pub mod adapter_header;
 pub mod adapter_info;
 pub mod adapter_registry;
 pub mod allocation;
