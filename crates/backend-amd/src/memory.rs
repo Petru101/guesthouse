@@ -88,7 +88,7 @@ const PRIME_REQUEST_SIZE: usize = 12;
 const GEM_CLOSE_REQUEST_SIZE: usize = 8;
 
 /// A GEM handle on an open render node. It is only a number until it is given an address.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct GemHandle(pub u32);
 
 /// How much CPU reach a new buffer needs.
@@ -223,6 +223,15 @@ pub fn export(file: &impl AsRawFd, handle: GemHandle) -> io::Result<OwnedFd> {
     let fd = get32(&request, PRIME_FD) as i32;
     // SAFETY: the kernel returned a fresh file descriptor the caller now owns.
     Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+}
+
+/// Takes in a buffer another open file handed out with [`export`], as a handle on `file`. A buffer
+/// already known to `file` comes back under the handle it has there.
+pub fn import(file: &impl AsRawFd, buffer: &impl AsRawFd) -> io::Result<GemHandle> {
+    let mut request = [0u8; PRIME_REQUEST_SIZE];
+    put32(&mut request, PRIME_FD, buffer.as_raw_fd() as u32);
+    ioctl::drm_ioctl(file, call::prime_fd_to_handle(), &mut request)?;
+    Ok(GemHandle(get32(&request, PRIME_HANDLE)))
 }
 
 // GEM_METADATA, a 288-byte request: the handle, the operation, then flags, tiling_info and an opaque

@@ -21,7 +21,7 @@ mod info;
 mod ioctl;
 mod memory;
 pub mod protocol;
-mod shared_vm;
+mod space_vm;
 mod submit;
 
 pub use device::{Device, Mapping};
@@ -48,7 +48,7 @@ use guesthouse_backend::{
     RegistryValue, Setup, SpaceId, StagingCopy, StagingStart, Status, UnmapRequest, VendorQuery, Work,
     WorkStart,
 };
-use shared_vm::{Claim, SharedVm, Unmap};
+use space_vm::SpaceVm;
 use std::collections::{BTreeMap, HashMap};
 use std::os::fd::OwnedFd;
 use std::time::Instant;
@@ -57,20 +57,20 @@ use std::time::Instant;
 /// side is the Linux kernel's amdgpu.
 const HOST_BRANCH: &str = "amdgpu";
 
-/// One buffer object the backend is holding. Where it is mapped is in [`SharedVm`].
+/// One buffer object the backend is holding, on its first open. Where it is mapped is in each
+/// space's [`SpaceVm`].
 #[derive(Debug)]
 struct Bo {
     handle: GemHandle,
 }
 
-/// A GPU address space. On amdgpu every space is backed by the one open render node's VM, so the
-/// ranges and mappings are tracked here in software to catch collisions the way the core expects,
-/// while the hardware sees a single VM, kept in [`SharedVm`]. True per-guest isolation needs one
-/// open file per space and a buffer import on map; that is noted for the protocol work.
-#[derive(Debug, Default)]
+/// A GPU address space, with a VM of its own on amdgpu. The ranges and mappings are kept here too,
+/// to refuse what the core shouldn't ask for before the kernel is asked.
+#[derive(Debug)]
 struct Space {
     ranges: Vec<GpuRange>,
     mappings: BTreeMap<u64, u64>,
+    vm: SpaceVm,
 }
 
 /// See the crate documentation.
@@ -80,7 +80,6 @@ pub struct AmdBackend {
     next_id: u64,
     memory: HashMap<MemoryId, Bo>,
     spaces: HashMap<SpaceId, Space>,
-    vm: SharedVm,
 }
 
 impl std::fmt::Debug for AmdBackend {
@@ -96,14 +95,7 @@ impl AmdBackend {
         let device =
             Device::open(address).map_err(|error| Refusal(format!("opening the AMD card: {error}")))?;
         let facts = facts_from(device.info());
-        Ok(Self {
-            device,
-            facts,
-            next_id: 1,
-            memory: HashMap::new(),
-            spaces: HashMap::new(),
-            vm: SharedVm::default(),
-        })
+        Ok(Self { device, facts, next_id: 1, memory: HashMap::new(), spaces: HashMap::new() })
     }
 
     /// The full device readings, richer than [`AdapterFacts`], for the harness and the report.
@@ -113,13 +105,6 @@ impl AmdBackend {
 
     pub fn device(&self) -> &Device {
         &self.device
-    }
-
-    /// Unmaps what no space holds any more. A failure only leaves addresses taken in the VM.
-    fn take_out_of_vm(&self, unmap: &Unmap) {
-        if let Err(error) = memory::unmap(&self.device, unmap.handle, unmap.address, unmap.length) {
-            log::warn!("GEM_VA unmap at {:#x}: {error}", unmap.address);
-        }
     }
 
     fn new_id(&mut self) -> u64 {
@@ -220,10 +205,9 @@ impl Backend for AmdBackend {
 
     fn release_memory(&mut self, memory: MemoryId) {
         if let Some(bo) = self.memory.remove(&memory) {
-            for unmap in self.vm.release_memory(bo.handle) {
-                self.take_out_of_vm(&unmap);
-                for space in self.spaces.values_mut() {
-                    space.mappings.remove(&unmap.address);
+            for space in self.spaces.values_mut() {
+                for address in space.vm.forget(bo.handle) {
+                    space.mappings.remove(&address);
                 }
             }
             memory::close(&self.device, bo.handle);
@@ -254,15 +238,15 @@ impl Backend for AmdBackend {
             )));
         }
         let space = SpaceId(self.new_id());
-        self.spaces.insert(space, Space { ranges: ranges.to_vec(), mappings: BTreeMap::new() });
+        let vm = SpaceVm::open(&self.device)
+            .map_err(|error| BackendError::new(format!("opening the card for an address space: {error}")))?;
+        self.spaces.insert(space, Space { ranges: ranges.to_vec(), mappings: BTreeMap::new(), vm });
         Ok(space)
     }
 
     fn destroy_address_space(&mut self, space: SpaceId) {
+        // Closing the space's open takes its VM, and all that was mapped in it, with it.
         self.spaces.remove(&space);
-        for unmap in self.vm.release_space(space) {
-            self.take_out_of_vm(&unmap);
-        }
     }
 
     fn map(&mut self, request: &MapRequest) -> Result<(), BackendError> {
@@ -303,15 +287,10 @@ impl Backend for AmdBackend {
             memory_type,
         };
         let (address, offset, length) = (request.address, request.offset, request.length);
-        match self.vm.claim(request.space, bo.handle, address, offset, length) {
-            Claim::Taken => return Err(BackendError::new("another space has these addresses")),
-            Claim::Shared => {}
-            Claim::Free => {
-                memory::map(&self.device, bo.handle, address, offset, length, flags)
-                    .map_err(|error| BackendError::new(format!("GEM_VA map: {error}")))?;
-                self.vm.add(request.space, bo.handle, address, offset, length);
-            }
-        }
+        space
+            .vm
+            .map(&self.device, bo.handle, address, offset, length, flags)
+            .map_err(|error| BackendError::new(format!("GEM_VA map: {error}")))?;
         space.mappings.insert(address, length);
         Ok(())
     }
@@ -320,14 +299,11 @@ impl Backend for AmdBackend {
         if !self.memory.contains_key(&unmap.memory) {
             return Err(BackendError::new("unmapping memory that does not exist"));
         }
-        if let Some(space) = self.spaces.get_mut(&unmap.space) {
-            space.mappings.remove(&unmap.address);
-        }
-        if let Some(last) = self.vm.release(unmap.space, unmap.address) {
-            memory::unmap(&self.device, last.handle, last.address, last.length)
-                .map_err(|error| BackendError::new(format!("GEM_VA unmap: {error}")))?;
-        }
-        Ok(())
+        let Some(space) = self.spaces.get_mut(&unmap.space) else {
+            return Ok(());
+        };
+        space.mappings.remove(&unmap.address);
+        space.vm.unmap(unmap.address).map_err(|error| BackendError::new(format!("GEM_VA unmap: {error}")))
     }
 
     fn describe_allocation(&mut self, private: &[u8]) -> AllocationShape {

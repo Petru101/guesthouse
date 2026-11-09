@@ -29,6 +29,7 @@ const DRM_COMMAND_BASE: u64 = 0x40;
 // Core DRM ioctls, shared by every driver.
 const DRM_GEM_CLOSE: u64 = 0x09;
 const DRM_PRIME_HANDLE_TO_FD: u64 = 0x2D;
+const DRM_PRIME_FD_TO_HANDLE: u64 = 0x2E;
 const DRM_SYNCOBJ_CREATE: u64 = 0xBF;
 const DRM_SYNCOBJ_DESTROY: u64 = 0xC0;
 const DRM_SYNCOBJ_EVENTFD: u64 = 0xCF;
@@ -80,6 +81,9 @@ pub mod call {
     }
     pub fn prime_handle_to_fd() -> u64 {
         number(IOCTL_READ_WRITE, DRM_PRIME_HANDLE_TO_FD, 12)
+    }
+    pub fn prime_fd_to_handle() -> u64 {
+        number(IOCTL_READ_WRITE, DRM_PRIME_FD_TO_HANDLE, 12)
     }
     pub fn syncobj_create() -> u64 {
         number(IOCTL_READ_WRITE, DRM_SYNCOBJ_CREATE, 8)
