@@ -1,5 +1,6 @@
 //! The library of machines: making one, importing the first, and taking them away.
 
+use crate::account;
 use crate::context::Context;
 use crate::failure::{Failure, Result};
 use crate::gpu_support::{NO_GPU_PART, gpu_ready};
@@ -80,11 +81,17 @@ pub struct NewMachine {
     pub cores: u32,
     pub ram_gib: u32,
     pub disk_gib: u32,
+    /// The guest account's name, or empty for the one the scripts have always made.
+    pub user: String,
+    /// Its password, or empty for a random one.
+    pub password: String,
 }
 
 /// Says why this new machine can't be made now.
-pub fn create_problems(context: &Context, machine: &Machine, disk_gib: u32) -> Result<Vec<String>> {
+pub fn create_problems(context: &Context, new: &NewMachine, machine: &Machine) -> Result<Vec<String>> {
     let mut found = machine.problems(crate::settings::max_vram_gib(context));
+    found.extend(account::password_problem(&new.password));
+    let disk_gib = new.disk_gib;
     let least = if machine.kind == Kind::Windows { MIN_WINDOWS_DISK_GIB } else { MIN_PLAIN_DISK_GIB };
     if !(least..=MAX_DISK_GIB).contains(&disk_gib) {
         found.push(format!("The disk must be between {least} and {MAX_DISK_GIB} GiB."));
@@ -161,17 +168,34 @@ pub fn create(context: &Context, new: &NewMachine) -> Result<Machine> {
         tpm: windows,
         mac: unused_mac(context),
         amd_gpu: crate::linux::amd::default_linux_gpu(context),
+        user: if installs { new.user.trim().to_owned() } else { String::new() },
         ..Machine::new(&id, new.name.trim(), &disk.to_string_lossy(), &firmware)
     };
-    if let Some(problem) = create_problems(context, &machine, new.disk_gib)?.into_iter().next() {
+    if let Some(problem) = create_problems(context, new, &machine)?.into_iter().next() {
         return Err(Failure(problem));
     }
     machine.save(context)?;
-    if let Err(failure) = make_disk(context, &machine, new.disk_gib) {
+    let made = if installs && !new.password.is_empty() {
+        store_password(&machine.password_file(context), &new.password)
+    } else {
+        Ok(())
+    };
+    if let Err(failure) = made.and_then(|()| make_disk(context, &machine, new.disk_gib)) {
         let _ = fs::remove_dir_all(&folder);
         return Err(failure);
     }
     Ok(machine)
+}
+
+/// The password the user chose, where the install will look for one and keep it: a file only this
+/// user can read, the same as the random one it would otherwise make.
+fn store_password(file: &Path, password: &str) -> Result<()> {
+    if let Some(folder) = file.parent() {
+        fs::create_dir_all(folder)?;
+    }
+    let mut new = fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(file)?;
+    writeln!(new, "{password}")?;
+    Ok(())
 }
 
 /// Says why this machine's files can't go now. A running VM or task still needs them.
@@ -266,7 +290,16 @@ mod tests {
 
     fn plain(scratch: &Scratch, name: &str, iso: Option<&str>) -> NewMachine {
         let iso = iso.map_or_else(|| scratch.write("linux.iso", "disc").display().to_string(), str::to_owned);
-        NewMachine { name: name.into(), iso, kind: Kind::Plain, cores: 1, ram_gib: 1, disk_gib: 2 }
+        NewMachine {
+            name: name.into(),
+            iso,
+            kind: Kind::Plain,
+            cores: 1,
+            ram_gib: 1,
+            disk_gib: 2,
+            user: String::new(),
+            password: String::new(),
+        }
     }
 
     fn import(scratch: &Scratch, context: &Context) -> Machine {
@@ -282,6 +315,37 @@ mod tests {
             format!("unix:{}/qmp.sock,server=on", context.paths.run_folder(slots::first()).display());
         let drive = format!("file={},format=qcow2", machine.disk);
         fake_process(context, 60, &[&qemu, "-qmp", &socket, "-drive", &drive], &[], "");
+    }
+
+    #[test]
+    fn a_chosen_account_is_kept_for_the_install_and_a_bad_one_refused() {
+        let scratch = Scratch::new();
+        let context = scratch_context(&scratch);
+        let iso = scratch.write("ubuntu.iso", "disc").display().to_string();
+        let new = NewMachine {
+            name: "Ubuntu".into(),
+            iso,
+            kind: Kind::Linux,
+            cores: 2,
+            ram_gib: 2,
+            disk_gib: 20,
+            user: "ana".into(),
+            password: "chosen".into(),
+        };
+        let made = create(&context, &new).unwrap();
+        assert_eq!(made.account(), "ana");
+        let file = made.password_file(&context);
+        assert_eq!(fs::read_to_string(&file).unwrap(), "chosen\n");
+        assert_eq!(fs::metadata(&file).unwrap().mode() & 0o777, 0o600, "the password is this user's alone");
+        let refused = create(&context, &NewMachine { name: "Two".into(), user: "Ana".into(), ..new.clone() });
+        assert!(refused.unwrap_err().0.contains("user name"));
+        let refused =
+            create(&context, &NewMachine { name: "Two".into(), password: "a\nb".into(), ..new.clone() });
+        assert!(refused.unwrap_err().0.contains("password"));
+        assert!(!context.paths.machines.join("two").exists(), "a refused machine leaves nothing");
+        let random =
+            create(&context, &NewMachine { name: "Three".into(), password: String::new(), ..new }).unwrap();
+        assert!(!random.password_file(&context).exists(), "the install makes a random one later");
     }
 
     #[test]
@@ -331,8 +395,16 @@ mod tests {
         context.ram_limit = Some(6);
         fs::create_dir_all(crate::settings::driver_folder(&context)).unwrap();
         let iso = scratch.write("win.iso", "disc").display().to_string();
-        let new =
-            NewMachine { name: "Win".into(), iso, kind: Kind::Windows, cores: 8, ram_gib: 16, disk_gib: 80 };
+        let new = NewMachine {
+            name: "Win".into(),
+            iso,
+            kind: Kind::Windows,
+            cores: 8,
+            ram_gib: 16,
+            disk_gib: 80,
+            user: String::new(),
+            password: String::new(),
+        };
         assert!(create(&context, &new).unwrap_err().0.contains("room for 6 GiB"));
     }
 
@@ -342,7 +414,16 @@ mod tests {
         let mut context = scratch_context(&scratch);
         context.paths.firmware.vars = scratch.path("not-installed");
         let iso = scratch.write("disc.iso", "disc").display().to_string();
-        let new = NewMachine { name: "VM".into(), iso, kind: Kind::Plain, cores: 2, ram_gib: 2, disk_gib: 4 };
+        let new = NewMachine {
+            name: "VM".into(),
+            iso,
+            kind: Kind::Plain,
+            cores: 2,
+            ram_gib: 2,
+            disk_gib: 4,
+            user: String::new(),
+            password: String::new(),
+        };
         assert_eq!(create(&context, &new).unwrap_err().0, NO_FIRMWARE);
     }
 
@@ -353,8 +434,16 @@ mod tests {
         context.install_room = Some(0);
         fs::create_dir_all(crate::settings::driver_folder(&context)).unwrap();
         let iso = scratch.write("win.iso", "disc").display().to_string();
-        let new =
-            NewMachine { name: "Win".into(), iso, kind: Kind::Windows, cores: 2, ram_gib: 4, disk_gib: 64 };
+        let new = NewMachine {
+            name: "Win".into(),
+            iso,
+            kind: Kind::Windows,
+            cores: 2,
+            ram_gib: 4,
+            disk_gib: 64,
+            user: String::new(),
+            password: String::new(),
+        };
         let made = create(&context, &new).unwrap();
         assert!(made.installing && made.tpm && !made.has_gpu());
         assert_eq!(fs::read_to_string(&made.vars).unwrap(), "firmware settings with keys");
@@ -376,8 +465,16 @@ mod tests {
         let scratch = Scratch::new();
         let context = scratch_context(&scratch);
         let iso = scratch.write("server.iso", "disc").display().to_string();
-        let new =
-            NewMachine { name: "Ubuntu".into(), iso, kind: Kind::Linux, cores: 8, ram_gib: 8, disk_gib: 2 };
+        let new = NewMachine {
+            name: "Ubuntu".into(),
+            iso,
+            kind: Kind::Linux,
+            cores: 8,
+            ram_gib: 8,
+            disk_gib: 2,
+            user: String::new(),
+            password: String::new(),
+        };
         let made = create(&context, &new).unwrap();
         assert!(made.installing && !made.tpm && made.vars.is_empty());
         assert!(made.owns_files(&context));
@@ -389,8 +486,16 @@ mod tests {
         let mut context = scratch_context(&scratch);
         context.install_room = Some(0);
         let iso = scratch.write("win.iso", "disc").display().to_string();
-        let new =
-            NewMachine { name: "Win".into(), iso, kind: Kind::Windows, cores: 2, ram_gib: 4, disk_gib: 64 };
+        let new = NewMachine {
+            name: "Win".into(),
+            iso,
+            kind: Kind::Windows,
+            cores: 2,
+            ram_gib: 4,
+            disk_gib: 64,
+            user: String::new(),
+            password: String::new(),
+        };
         assert_eq!(create(&context, &new).unwrap_err().0, NO_DRIVER_FILES);
     }
 

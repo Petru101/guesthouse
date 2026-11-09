@@ -29,10 +29,6 @@ pub fn seed_disc(context: &Context, machine: &Machine) -> PathBuf {
     seed_folder(context, machine).join("cidata.iso")
 }
 
-pub fn password_file(context: &Context, machine: &Machine) -> PathBuf {
-    seed_folder(context, machine).join("desk-password")
-}
-
 fn output(command: &mut Command) -> Result<String> {
     let result = command.output()?;
     if !result.status.success() {
@@ -72,9 +68,9 @@ fn password_hash(file: &Path) -> Result<String> {
     Ok(hash.trim().to_owned())
 }
 
-/// The answers, with this machine's secrets and the kernel on its ISO.
-pub fn fill_template(template: &str, hash: &str, key: &str, kernel_package: &str) -> String {
-    let filled = template.replace("@PASSWORD_HASH@", hash).replace("@SSH_KEY@", key);
+/// The answers, with this machine's account and secrets and the kernel on its ISO.
+pub fn fill_template(template: &str, user: &str, hash: &str, key: &str, kernel_package: &str) -> String {
+    let filled = template.replace("@USER@", user).replace("@PASSWORD_HASH@", hash).replace("@SSH_KEY@", key);
     filled.replace("@KERNEL_PACKAGE@", kernel_package)
 }
 
@@ -107,10 +103,11 @@ pub fn make_seed(context: &Context, machine: &Machine, kernel_package: &str) -> 
     let folder = seed_folder(context, machine);
     fs::create_dir_all(&folder)?;
     let key = ssh_key(&machine.folder(context).join("ssh"))?;
-    let hash = password_hash(&password_file(context, machine))?;
+    let hash = password_hash(&machine.password_file(context))?;
     let template = fs::read_to_string(sources.join(USER_DATA_TEMPLATE))?;
     let user_data = folder.join("user-data");
-    fs::write(&user_data, fill_template(&template, &hash, &key, kernel_package) + "\n")?;
+    let answers = fill_template(&template, machine.account(), &hash, &key, kernel_package);
+    fs::write(&user_data, answers + "\n")?;
     let meta_data = folder.join("meta-data");
     fs::copy(sources.join(META_DATA), &meta_data)?;
     let archive = make_payload(&sources, &folder)?;
@@ -136,7 +133,7 @@ mod tests {
     use std::os::unix::fs::MetadataExt;
 
     fn with_sources(scratch: &Scratch) {
-        let template = "password: \"@PASSWORD_HASH@\"\nkey: \"@SSH_KEY@\"\nkernel: \"@KERNEL_PACKAGE@\"\n";
+        let template = "username: \"@USER@\"\npassword: \"@PASSWORD_HASH@\"\nkey: \"@SSH_KEY@\"\nkernel: \"@KERNEL_PACKAGE@\"\n";
         scratch.write("program/linux/setup/seed/user-data.template", template);
         scratch.write("program/linux/setup/seed/meta-data", "instance-id: nvfwd-1\n");
         scratch.write("program/linux/setup/guest/first-boot.sh", "#!/bin/sh\n");
@@ -156,8 +153,9 @@ mod tests {
 
     #[test]
     fn every_mark_in_the_template_is_filled() {
-        let filled = fill_template("@PASSWORD_HASH@ @SSH_KEY@ @KERNEL_PACKAGE@ @SSH_KEY@", "h", "k", "p");
-        assert_eq!(filled, "h k p k");
+        let filled =
+            fill_template("@USER@ @PASSWORD_HASH@ @SSH_KEY@ @KERNEL_PACKAGE@ @SSH_KEY@", "u", "h", "k", "p");
+        assert_eq!(filled, "u h k p k");
     }
 
     #[test]
@@ -170,11 +168,33 @@ mod tests {
         let answers = String::from_utf8(on_disc(&disc, "/user-data")).unwrap();
         assert!(answers.contains("linux-image-7.0.0-38-generic") && answers.contains("ssh-ed25519"));
         assert!(answers.contains("password: \"$6$"), "only the hash goes in");
+        assert!(answers.contains("username: \"desk\""), "the account the scripts have always made");
         let tar = scratch.path("guest.tar");
         fs::write(&tar, on_disc(&disc, "/nvfwd-guest.tar")).unwrap();
         let listing = Command::new("tar").args(["-tf"]).arg(&tar).output().unwrap().stdout;
         let listing = String::from_utf8_lossy(&listing);
         assert!(listing.contains("./first-boot.sh") && listing.contains("./Xwayland"));
+    }
+
+    #[test]
+    fn a_chosen_account_and_password_reach_the_answers() {
+        let scratch = Scratch::new();
+        let context = scratch_context(&scratch);
+        with_sources(&scratch);
+        let vm = Machine { user: "ana".into(), ..machine(&context) };
+        fs::create_dir_all(vm.password_file(&context).parent().unwrap()).unwrap();
+        fs::write(vm.password_file(&context), "chosen\n").unwrap();
+        let disc = make_seed(&context, &vm, "linux-image-7.0.0-38-generic").unwrap();
+        let answers = String::from_utf8(on_disc(&disc, "/user-data")).unwrap();
+        assert!(answers.contains("username: \"ana\""), "{answers}");
+        let hash = answers.split("password: \"").nth(1).unwrap().split('"').next().unwrap().to_owned();
+        let check = Command::new("openssl")
+            .args(["passwd", "-6", "-salt"])
+            .arg(hash.split('$').nth(2).unwrap())
+            .arg("chosen")
+            .output()
+            .unwrap();
+        assert_eq!(String::from_utf8_lossy(&check.stdout).trim(), hash, "the hash is of the chosen password");
     }
 
     #[test]
@@ -184,7 +204,7 @@ mod tests {
         with_sources(&scratch);
         let vm = machine(&context);
         make_seed(&context, &vm, "linux-image-7.0.0-38-generic").unwrap();
-        let file = password_file(&context, &vm);
+        let file = vm.password_file(&context);
         let password = fs::read_to_string(&file).unwrap();
         let key = fs::read_to_string(vm.folder(&context).join("ssh/id.pub")).unwrap();
         assert_eq!(fs::metadata(&file).unwrap().mode() & 0o777, PRIVATE);

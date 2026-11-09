@@ -19,7 +19,6 @@ pub(super) const SERIAL_FILE: &str = "serial.log";
 const SHARE_SCRIPT_SECONDS: u64 = 40;
 /// Where the guest keeps what the app puts there, and the account its desktop runs as.
 pub(super) const GUEST_FOLDER: &str = "C:\\gpupv";
-pub(super) const GUEST_USER: &str = "gpupv";
 const UPLOAD_SECONDS: u64 = 60;
 const PUT_MARK: &str = "file placed";
 
@@ -100,12 +99,13 @@ fn run_in_session(task: &Task, script: SessionScript) -> Result<String> {
 /// The script is in the guest's folder by now.
 fn run_placed_script(task: &Task, script: SessionScript) -> Result<String> {
     let SessionScript { name, patience, answer_seconds } = script;
+    let user = task.machine.account();
     let (file, result) = (format!("{GUEST_FOLDER}\\{name}.ps1"), format!("{GUEST_FOLDER}\\cap\\{name}.txt"));
     let arguments = format!("-NoProfile -ExecutionPolicy Bypass -File {file}");
     let run = format!(
         "Remove-Item {result} -ea 0; \
          $a=New-ScheduledTaskAction -Execute powershell.exe -Argument \"{arguments}\"; \
-         $p=New-ScheduledTaskPrincipal -UserId {GUEST_USER} -LogonType Interactive; \
+         $p=New-ScheduledTaskPrincipal -UserId '{user}' -LogonType Interactive; \
          Register-ScheduledTask -TaskName gh{name} -Action $a -Principal $p -Force | Out-Null; \
          Start-ScheduledTask gh{name}; $t=0; \
          while(-not (Test-Path {result}) -and $t -lt {patience}){{Start-Sleep 1;$t++}}; \

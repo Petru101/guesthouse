@@ -211,8 +211,16 @@ mod tests {
 
     fn make(context: &Context, scratch: &Scratch) -> Machine {
         let iso = scratch.write("linux.iso", "disc").display().to_string();
-        let new =
-            NewMachine { name: "Snaps".into(), iso, kind: Kind::Plain, cores: 1, ram_gib: 1, disk_gib: 1 };
+        let new = NewMachine {
+            name: "Snaps".into(),
+            iso,
+            kind: Kind::Plain,
+            cores: 1,
+            ram_gib: 1,
+            disk_gib: 1,
+            user: String::new(),
+            password: String::new(),
+        };
         create(context, &new).unwrap()
     }
 

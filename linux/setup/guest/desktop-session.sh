@@ -1,5 +1,5 @@
 #!/bin/bash
-# GNOME on a logind seat, as user desk. With the GPU that is Zink on NVIDIA's Vulkan, on the real
+# GNOME on a logind seat, as the desktop user. With the GPU that is Zink on NVIDIA's Vulkan, on the real
 # nvidia-drm. Without it, plain Mesa on the VM's plain screen.
 here=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 . "$here/common.sh"

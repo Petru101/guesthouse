@@ -1,11 +1,12 @@
 [Unit]
-Description=GNOME for user desk
+Description=GNOME for the desktop user
 # Wants and not Requires: with the GPU step dead the desktop still comes up, plain.
 After=nvfwd-gpu.service systemd-user-sessions.service
 Wants=nvfwd-gpu.service
 Conflicts=getty@tty3.service
 
 [Service]
+# The install's drop-in in /etc names the user it made. A guest from before it keeps this one.
 User=desk
 PAMName=login
 TTYPath=/dev/tty3

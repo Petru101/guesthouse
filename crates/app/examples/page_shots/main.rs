@@ -190,8 +190,16 @@ async fn new_machine(window: Window, folder: PathBuf, failures: Rc<Cell<u32>>) {
 
 fn library_machines(context: &Arc<Context>, window: &Window, folder: &Path) -> Vec<MachineHandle> {
     let iso = make_iso(folder);
-    let new =
-        NewMachine { name: "Tiny Linux".into(), iso, kind: Kind::Plain, cores: 2, ram_gib: 2, disk_gib: 4 };
+    let new = NewMachine {
+        name: "Tiny Linux".into(),
+        iso,
+        kind: Kind::Plain,
+        cores: 2,
+        ram_gib: 2,
+        disk_gib: 4,
+        user: String::new(),
+        password: String::new(),
+    };
     let plain = create(context, &new).unwrap();
     let disk = folder.join("win.qcow2").display().to_string();
     fs::copy(&plain.disk, &disk).unwrap();

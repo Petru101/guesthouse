@@ -18,11 +18,18 @@ guest_files_problem=$root/var/lib/nvfwd/guest-files-problem
 # Written by setup-own.sh, in a guest someone installed by hand. Ubuntu's own install has none.
 own_install=$root/etc/nvfwd/own-install.conf
 own_done_marker=$root/var/lib/nvfwd/own-setup-done
+# Written by Ubuntu's install: the desktop user's name. A guest from before it has the old name.
+account_file=$root/etc/nvfwd/account.conf
 
 # Reads one key from a file of key=value lines.
 value_of() {
     sed -n "s/^$2=//p" "$1" | head -n 1
 }
+
+desk_user=desk
+if [ -e "$account_file" ]; then
+    desk_user=$(value_of "$account_file" user)
+fi
 
 # The package family of a guest installed by hand, or empty for Ubuntu's own install.
 own_family=

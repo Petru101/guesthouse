@@ -1,4 +1,4 @@
-# The session and everything in it open these as desk. A guest has one user, and the host's allow
+# The session and everything in it open these as the desktop user. A guest has one user, and the host's allow
 # list is what guards the GPU, so these stay open.
 KERNEL=="nvidiactl|nvidia[0-9]*|nvidia-uvm|nvidia-modeset", MODE="0666"
 SUBSYSTEM=="drm", KERNEL=="card[0-9]*|renderD[0-9]*", MODE="0666"

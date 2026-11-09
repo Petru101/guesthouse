@@ -3,6 +3,7 @@
 use super::desktop::{BOOT_LINE, SERIAL_FILE, count, wait_for_desktop};
 use super::identity::set_up_identity;
 use super::{KEY_POLL, Task, plan_for, start_if_there_is_room};
+use crate::account::xml_text;
 use crate::agent::{QUICK_SECONDS, guest_script, make_password, make_token};
 use crate::context::Context;
 use crate::disk_image::disk_size_gib;
@@ -50,12 +51,19 @@ const ANSWER_LABEL: &str = "GPUPV_SETUP";
 const SETMODE_FILE: &str = "setmode.ps1";
 const TOKEN_ON_DISC: &str = "token.txt";
 const PASSWORD_MARK: &str = "@PASSWORD@";
+const USER_MARK: &str = "@USER@";
 
-/// The answer file for a host in this IANA zone, with this password. The template says UTC.
-pub fn answer_file(context: &Context, zone: &str, password: &str) -> Result<String> {
+/// The answer file for a host in this IANA zone, making this account. The template says UTC.
+pub fn answer_file(context: &Context, zone: &str, user: &str, password: &str) -> Result<String> {
     let name = zones::windows_zone(zone);
     let template = guest_script(context, "autounattend.xml")?;
-    Ok(template.replace("<TimeZone>UTC<", &format!("<TimeZone>{name}<")).replace(PASSWORD_MARK, password))
+    let filled = template.replace("<TimeZone>UTC<", &format!("<TimeZone>{name}<"));
+    Ok(filled.replace(USER_MARK, &xml_text(user)).replace(PASSWORD_MARK, &xml_text(password)))
+}
+
+/// A guest script that names the account, with this machine's name in it.
+pub(super) fn account_script(task: &Task, name: &str) -> Result<String> {
+    Ok(guest_script(task.context, name)?.replace(USER_MARK, task.machine.account()))
 }
 
 /// An account with the template's own text for a password is one nobody chose, so no disc gets made.
@@ -88,7 +96,8 @@ fn fill_answer_disc(context: &Context, machine: &Machine, files: &Path) -> Resul
     }
     fs::copy(context.paths.guest_files().join(SETMODE_FILE), files.join(SETMODE_FILE))?;
     let password = make_password(context, machine)?;
-    let answers = answer_file(context, &zones::host_zone(zones::HOST_ZONE_LINK), &password)?;
+    let zone = zones::host_zone(zones::HOST_ZONE_LINK);
+    let answers = answer_file(context, &zone, machine.account(), &password)?;
     fs::write(files.join("autounattend.xml"), password_is_filled(answers)?)?;
     fs::write(files.join(TOKEN_ON_DISC), make_token(context, machine)? + "\n")?;
     let path = answer_disc_path(context, machine);
@@ -139,7 +148,7 @@ fn disk_written(machine: &Machine) -> u64 {
 
 /// Waits for the agent, and then for the user account, which Windows makes late.
 pub fn wait_for_setup(task: &mut Task) -> Result<()> {
-    let finish = guest_script(task.context, "finish.ps1")?;
+    let finish = account_script(task, "finish.ps1")?;
     let quiet = Duration::from_secs(INSTALL_QUIET_MINUTES * 60);
     let end = task.now() + Duration::from_secs(INSTALL_HOURS * 3600);
     let mut step = "";
@@ -186,7 +195,7 @@ fn count_files(folder: &Path) -> usize {
 fn check_guest(task: &Task) -> Result<()> {
     task.step("Checking Windows");
     let expected = count_files(&driver_folder(task.context));
-    let script = format!("$expected = {expected}\n{}", guest_script(task.context, "check.ps1")?);
+    let script = format!("$expected = {expected}\n{}", account_script(task, "check.ps1")?);
     let answer = task.ask_guest(&script, CHECK_SCRIPT_SECONDS);
     if !answer.contains("all there") {
         let said = answer.trim();

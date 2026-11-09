@@ -1,9 +1,8 @@
-//! Ubuntu's own settings: its GPU, which is a preview, and the way in if the desktop won't start.
+//! Ubuntu's own settings: its GPU, which is a preview.
 
 use super::Shared;
 use super::gpu_choice::add_gpu_choice;
 use adw::prelude::*;
-use guesthouse_app_core::linux::seed::password_file;
 use guesthouse_app_core::machine::Kind;
 
 const NOTE: &str = "This is a preview, and it has only run on my PC. If it can't start, or with it off, Ubuntu boots \
@@ -27,14 +26,6 @@ impl GpuPreview {
         });
         group.add(&gpu);
         add_gpu_choice(shared, &group);
-        let file = password_file(&shared.window.context(), &machine);
-        let login = adw::ActionRow::builder()
-            .title("Console login")
-            .subtitle(format!("The user is desk, and the password is in {}.", file.display()))
-            .use_markup(false)
-            .subtitle_selectable(true)
-            .build();
-        group.add(&login);
         Self
     }
 }

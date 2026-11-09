@@ -1,4 +1,6 @@
-# Says what a finished install is missing. The host puts $expected, how many driver files it sent, first.
+# Says what a finished install is missing. The host puts $expected, how many driver files it sent, first,
+# and the account's name in.
+$user = '@USER@'
 $missing = @()
 $store = 'C:\Windows\System32\HostDriverStore\FileRepository\nv_dispi.inf_amd64_gpupv'
 $count = @(Get-ChildItem $store -Recurse -File -ea 0).Count
@@ -10,7 +12,8 @@ if (-not ($names -match 'RDPUDD Chained DD')) { $missing += 'the display name Vu
 foreach ($task in 'gpupv-agent', 'gpupv-setmode') {
     if (-not (Get-ScheduledTask $task -ea 0)) { $missing += "the task $task" }
 }
-if (-not (Get-LocalGroupMember Administrators | ? Name -match '\\gpupv$')) { $missing += 'gpupv as an administrator' }
+$isUser = '\\' + [regex]::Escape($user) + '$'
+if (-not (Get-LocalGroupMember Administrators | ? Name -match $isUser)) { $missing += "$user as an administrator" }
 foreach ($path in 'C:\gpupv\cap', 'C:\gpupv\setmode.ps1') {
     if (-not (Test-Path $path)) { $missing += $path }
 }

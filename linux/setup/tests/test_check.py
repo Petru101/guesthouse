@@ -101,6 +101,18 @@ class Verdict(unittest.TestCase):
         self.assertIn("PASS everything", result.stdout)
         self.assertNotIn("FAIL", result.stdout)
 
+    def test_the_user_is_the_one_the_install_named(self):
+        self.guest.file("etc/nvfwd/account.conf", "user=ana\n")
+        self.guest.fake("id", 'echo "$@" >> "$NVFWD_ROOT/id-calls"; [ "$1" = -u ] && echo 1000; exit 0')
+        result = self.guest.run()
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("PASS user ana exists", result.stdout)
+        with open(os.path.join(self.guest.root, "id-calls")) as f:
+            self.assertIn("-u ana", f.read())
+
+    def test_a_guest_from_before_the_setting_keeps_its_user(self):
+        self.assertIn("PASS user desk exists", self.guest.run().stdout)
+
     def test_gpu_off_is_named_and_not_called_a_pass(self):
         self.plain()
         result = self.guest.run()

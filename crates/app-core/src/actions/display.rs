@@ -2,7 +2,7 @@
 //! stop a machine. If the driver won't come up, Windows goes on with the basic display and the row says why.
 
 use super::Task;
-use super::desktop::{GUEST_FOLDER, GUEST_USER, SessionScript, apply_screen, put_file, run_in_session_text};
+use super::desktop::{GUEST_FOLDER, SessionScript, apply_screen, put_file, run_in_session_text};
 use crate::agent::guest_script;
 use crate::display::{
     DisplayState, Driver, DriverPackage, PACKAGE_FILES, RunningScreen, SUPPORT_FILES, ScreenHdr, read_state,
@@ -179,8 +179,8 @@ fn install(task: &Task, package: &DriverPackage, state: &mut DisplayState, found
     let wanted = Wanted::of(task);
     let hz = if REFRESH_RATES.contains(&wanted.hz) { wanted.hz } else { SAFE_HZ };
     let (width, height) = (wanted.width, wanted.height);
-    let script =
-        format!("& {} {folder} {width} {height} {hz} {GUEST_USER}", guest_file("install-take-over.ps1"));
+    let user = task.machine.account();
+    let script = format!("& {} {folder} {width} {height} {hz} '{user}'", guest_file("install-take-over.ps1"));
     task.ask_guest(&script, TAKE_OVER_SECONDS);
     state.driver = Driver::Installed;
     state.package.clone_from(&package.id);
