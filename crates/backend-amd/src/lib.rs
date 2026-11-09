@@ -194,8 +194,20 @@ impl AmdBackend {
         let (buffer, offset) =
             space.vm.locate(address).ok_or_else(|| format!("nothing mapped at {address:#x}"))?;
         let bo = self.memory.values().find(|bo| bo.handle == buffer).ok_or("the buffer has gone")?;
+        let (handle, origin) = (bo.handle, bo.origin);
+        self.cpu_reach(handle, origin, offset, bytes)
+    }
+
+    /// Where the CPU reaches `bytes` bytes at `offset` into a buffer, mapping it on first use.
+    fn cpu_reach(
+        &mut self,
+        buffer: GemHandle,
+        origin: Origin,
+        offset: u64,
+        bytes: u64,
+    ) -> Result<*mut u8, String> {
         let end = offset.checked_add(bytes).ok_or("too long")?;
-        if let Origin::HostPages { address: host, size } = bo.origin {
+        if let Origin::HostPages { address: host, size } = origin {
             if end > size {
                 return Err(format!("{bytes:#x} bytes at {offset:#x} run past the pages"));
             }
@@ -333,6 +345,27 @@ impl Backend for AmdBackend {
         // A move would be an SDMA linear copy between the two buffers, waited on like a submission.
         // Not needed to prove the host path, so left for the submission work that follows.
         Err(BackendError::new("AMD backend does not move allocations yet"))
+    }
+
+    /// Linear buffers are made with CPU access, so the CPU reads them, on a discrete card too. A tiled
+    /// one starts with a tile rather than its first bytes, which no caller wants.
+    fn read_memory_start(
+        &mut self,
+        _host: &mut dyn HostServices,
+        _own_space: SpaceId,
+        memory: MemoryId,
+        out: &mut [u8],
+    ) -> Result<(), BackendError> {
+        if out.len() > PAGE_BYTES {
+            return Err(BackendError::new("more than a page asked for"));
+        }
+        let bo = self.memory.get(&memory).ok_or_else(|| BackendError::new("no such memory"))?;
+        let (handle, origin) = (bo.handle, bo.origin);
+        let start = self.cpu_reach(handle, origin, 0, out.len() as u64).map_err(BackendError::new)?;
+        // SAFETY: `cpu_reach` gave an address good for `out.len()` bytes, and the GPU work that wrote
+        // them has retired, as the caller waited for its queues.
+        unsafe { std::ptr::copy_nonoverlapping(start.cast_const(), out.as_mut_ptr(), out.len()) };
+        Ok(())
     }
 
     /// The core's ranges are its own, not the card's. amdgpu keeps the bottom and top of its address
