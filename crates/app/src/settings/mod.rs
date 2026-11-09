@@ -1,6 +1,7 @@
 //! A machine's settings. Each group of rows is a module of its own, and gets the same three things:
 //! the window, the machine, and this dialog to put its own dialogs over.
 
+mod account;
 mod disk;
 mod display;
 mod forwards;
@@ -59,6 +60,7 @@ struct Parts {
     disk: disk::Disk,
     snapshots: snapshots::Snapshots,
     _token: token::Token,
+    _account: account::Account,
     _gpu_preview: gpu_preview::GpuPreview,
     _jail: jail::Jail,
     linux_gpu: linux_gpu::LinuxGpu,
@@ -87,6 +89,7 @@ impl SettingsDialog {
             network: network::Network::new(&shared, &page),
             usb: usb::Usb::new(&shared, &page),
             _token: token::Token::new(&shared, &page),
+            _account: account::Account::new(&shared, &page),
             _gpu_preview: gpu_preview::GpuPreview::new(&shared, &page),
             _jail: jail::Jail::new(&shared, &page),
             linux_gpu: linux_gpu::LinuxGpu::new(&shared, &page),

@@ -4,6 +4,7 @@ use crate::common::{choose_file, in_background};
 use crate::rows::{number_row, row_button};
 use crate::window::Window;
 use adw::prelude::*;
+use guesthouse_app_core::account::{default_user, name_problem, password_problem};
 use guesthouse_app_core::display::DriverPackage;
 use guesthouse_app_core::gpu_support::{kind_offered, plain_reason, ubuntu_note};
 use guesthouse_app_core::host::{RamField, physical_cores};
@@ -22,8 +23,12 @@ use std::rc::Rc;
 const NO_GPU: &str = "This machine gets no GPU acceleration. It runs on the CPU, with a basic display.";
 const DISPLAY_DRIVER_NOTE: &str =
     "Guesthouse adds its own display driver to Windows, signed with a certificate made on this machine.";
+const WINDOWS_ACCOUNT_NOTE: &str = "Windows signs in by itself. The password is for permission prompts and Remote \
+                                    Desktop. Leave it empty for a random one, kept in the machine's folder.";
+const LINUX_ACCOUNT_NOTE: &str = "For a console login if the desktop won't start. Leave the password empty for a \
+                                  random one, kept in the machine's folder.";
 const WIDTH: i32 = 520;
-const HEIGHT: i32 = 620;
+const HEIGHT: i32 = 720;
 const NOTE_MARGIN: i32 = 12;
 
 /// Sizes to start from. A plain machine is usually something small being tried out.
@@ -45,6 +50,9 @@ struct Parts {
     verdict: adw::ActionRow,
     hardware: adw::PreferencesGroup,
     name: adw::EntryRow,
+    account: adw::PreferencesGroup,
+    user: adw::EntryRow,
+    password: adw::PasswordEntryRow,
     cores: adw::SpinRow,
     ram: adw::SpinRow,
     disk: adw::SpinRow,
@@ -77,6 +85,22 @@ fn keeps_following_the_disc(name: &str, suggested: &str) -> bool {
 
 #[derive(Clone)]
 pub struct NewMachineDialog(Rc<Parts>);
+
+/// The name as the machine keeps it: empty for the default, so a machine made with the default reads
+/// the same as one from before the choice.
+fn account_name(kind: Kind, typed: &str) -> String {
+    if typed == default_user(kind) { String::new() } else { typed.to_owned() }
+}
+
+/// A row with a problem says so, in red and in its tooltip.
+fn mark_problem(row: &gtk::Widget, problem: Option<&str>) {
+    if problem.is_some() {
+        row.add_css_class("error");
+    } else {
+        row.remove_css_class("error");
+    }
+    row.set_tooltip_text(problem);
+}
 
 fn hardware_row(group: &adw::PreferencesGroup, title: &str, lowest: f64, highest: f64) -> adw::SpinRow {
     let row = number_row(title, lowest, lowest, highest);
@@ -112,6 +136,12 @@ impl NewMachineDialog {
         let cores = hardware_row(&hardware, "Cores", 1.0, physical_cores(&context.cpus).max(1).into());
         let ram = hardware_row(&hardware, "RAM in GiB", 1.0, 1.0);
         let disk = hardware_row(&hardware, "Disk in GiB", MIN_PLAIN_DISK_GIB.into(), MAX_DISK_GIB.into());
+        let account = adw::PreferencesGroup::builder().title("Account").visible(false).build();
+        page.add(&account);
+        let user = adw::EntryRow::builder().title("User name").build();
+        account.add(&user);
+        let password = adw::PasswordEntryRow::builder().title("Password").build();
+        account.add(&password);
         let note = gtk::Label::builder()
             .wrap(true)
             .xalign(0.0)
@@ -141,6 +171,9 @@ impl NewMachineDialog {
             verdict,
             hardware,
             name,
+            account,
+            user,
+            password,
             cores,
             ram,
             disk,
@@ -160,6 +193,10 @@ impl NewMachineDialog {
     fn connect(&self, cancel: &gtk::Button, choose: &gtk::Button) {
         let this = self.clone();
         self.0.name.connect_changed(move |_| this.update());
+        let this = self.clone();
+        self.0.user.connect_changed(move |_| this.update());
+        let this = self.clone();
+        self.0.password.connect_changed(move |_| this.update());
         let dialog = self.0.dialog.clone();
         cancel.connect_clicked(move |_| {
             dialog.close();
@@ -300,15 +337,52 @@ impl NewMachineDialog {
             self.0.name.set_text(&suggestion);
         }
         *self.0.suggested.borrow_mut() = suggestion;
+        self.show_account(iso.kind);
         *self.0.iso.borrow_mut() = Some(iso);
         self.0.hardware.set_sensitive(true);
         self.update();
+    }
+
+    /// The account rows, for a disc that installs by itself. The name starts as the one the guest
+    /// scripts have always used, and a name the user typed stays through a change of disc.
+    fn show_account(&self, kind: Kind) {
+        let parts = &self.0;
+        let note = match kind {
+            Kind::Windows => WINDOWS_ACCOUNT_NOTE,
+            Kind::Linux => LINUX_ACCOUNT_NOTE,
+            Kind::Plain => {
+                parts.account.set_visible(false);
+                return;
+            }
+        };
+        let typed = parts.user.text();
+        let was_default = [default_user(Kind::Windows), default_user(Kind::Linux)].contains(&typed.as_str());
+        if typed.is_empty() || was_default {
+            parts.user.set_text(default_user(kind));
+        }
+        parts.account.set_description(Some(note));
+        parts.account.set_visible(true);
+    }
+
+    /// Says on the row what's wrong with its text, if anything, and whether something is.
+    fn account_problems(&self) -> bool {
+        let parts = &self.0;
+        let Some(kind) = parts.iso.borrow().as_ref().map(|iso| iso.kind) else { return false };
+        if kind == Kind::Plain {
+            return false;
+        }
+        let name = name_problem(kind, parts.user.text().trim());
+        let password = password_problem(&parts.password.text());
+        mark_problem(parts.user.upcast_ref(), name.as_deref());
+        mark_problem(parts.password.upcast_ref(), password.as_deref());
+        name.is_some() || password.is_some()
     }
 
     fn update(&self) {
         let parts = &self.0;
         let ready = parts.iso.borrow().is_some()
             && !parts.name.text().trim().is_empty()
+            && !self.account_problems()
             && !parts.vm_running.get()
             && !parts.no_driver.get()
             && !parts.no_room.get();
@@ -328,6 +402,8 @@ impl NewMachineDialog {
             cores: parts.cores.value() as u32,
             ram_gib: parts.ram.value() as u32,
             disk_gib: parts.disk.value() as u32,
+            user: account_name(iso.kind, parts.user.text().trim()),
+            password: parts.password.text().to_string(),
         };
         let context = parts.window.context();
         let working = context.clone();
@@ -366,6 +442,14 @@ mod tests {
     fn a_typed_name_stays() {
         assert!(!keeps_following_the_disc("My VM", "win11-eval"));
         assert!(!keeps_following_the_disc("My VM", ""));
+    }
+
+    #[test]
+    fn the_default_account_is_kept_as_no_choice() {
+        assert_eq!(account_name(Kind::Windows, "gpupv"), "");
+        assert_eq!(account_name(Kind::Linux, "desk"), "");
+        assert_eq!(account_name(Kind::Windows, "ana"), "ana");
+        assert_eq!(account_name(Kind::Linux, "gpupv"), "gpupv");
     }
 
     #[test]

@@ -1,5 +1,6 @@
 //! A machine's settings: one JSON file each, and the rules they must meet whatever the host.
 
+use crate::account;
 use crate::context::Context;
 use crate::failure::{Failure, Result};
 use crate::network::{self, Forward, Mode};
@@ -30,6 +31,7 @@ const MACHINE_FILE: &str = "machine.json";
 const THUMBNAIL_FILE: &str = "thumbnail.png";
 const TOKEN_FILE: &str = "guest.token";
 const PASSWORD_FILE: &str = "windows-password";
+const LINUX_PASSWORD_FILE: &str = "seed/desk-password";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -164,6 +166,11 @@ pub struct Machine {
     /// still read it.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub amd_gpu: String,
+    /// The name of the account the install makes, if the user chose one. Empty is the name the guest
+    /// scripts have always used, which every machine from before this setting has. Left out of the
+    /// file when empty, so an older build can still read it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub user: String,
 }
 
 impl Machine {
@@ -198,6 +205,7 @@ impl Machine {
             linux_gpu: false,
             sound: true,
             amd_gpu: String::new(),
+            user: String::new(),
         }
     }
 
@@ -218,9 +226,18 @@ impl Machine {
         self.folder(context).join(TOKEN_FILE)
     }
 
-    /// The Windows account's password, which the app makes for each machine.
+    /// The guest account's password, which the install reads and the app otherwise keeps for whoever
+    /// wants it. Each kind of guest has kept its own file since before the user could choose one.
     pub fn password_file(&self, context: &Context) -> PathBuf {
-        self.folder(context).join(PASSWORD_FILE)
+        match self.kind {
+            Kind::Linux => self.folder(context).join(LINUX_PASSWORD_FILE),
+            Kind::Windows | Kind::Plain => self.folder(context).join(PASSWORD_FILE),
+        }
+    }
+
+    /// The name of the account the install makes.
+    pub fn account(&self) -> &str {
+        if self.user.is_empty() { account::default_user(self.kind) } else { &self.user }
     }
 
     pub fn has_gpu(&self) -> bool {
@@ -289,6 +306,7 @@ impl Machine {
         if self.name.trim().is_empty() {
             found.push("The machine needs a name.".to_owned());
         }
+        found.extend(account::name_problem(self.kind, &self.user));
         // Windows has its limits, and the daemon needs its share. A plain machine only needs to boot.
         let (least_cores, least_ram) =
             if self.kind == Kind::Windows { (MIN_CORES, MIN_RAM_GIB) } else { (1, 1) };
@@ -544,6 +562,27 @@ mod tests {
         let mut machine = sample();
         machine.network_mode = Mode::Bridged;
         assert!(machine.problems(0).iter().any(|text| text.contains("own MAC")));
+    }
+
+    #[test]
+    fn the_account_is_the_scripts_name_unless_the_user_chose_one() {
+        assert_eq!(sample().account(), "gpupv");
+        assert_eq!(Machine { kind: Kind::Linux, ..sample() }.account(), "desk");
+        assert_eq!(Machine { user: "ana".into(), ..sample() }.account(), "ana");
+        assert!(!serde_json::to_string(&sample()).unwrap().contains("user"), "the default stays out");
+        let named = serde_json::to_string(&Machine { user: "ana".into(), ..sample() }).unwrap();
+        assert_eq!(serde_json::from_str::<Machine>(&named).unwrap().user, "ana");
+        let problems = Machine { user: "ana/b".into(), ..sample() }.problems(32);
+        assert!(problems.iter().any(|problem| problem.contains("user name")), "{problems:?}");
+    }
+
+    #[test]
+    fn each_kind_keeps_the_password_file_it_always_had() {
+        let scratch = Scratch::new();
+        let context = scratch_context(&scratch);
+        assert!(sample().password_file(&context).ends_with("sample/windows-password"));
+        let ubuntu = Machine { kind: Kind::Linux, ..sample() };
+        assert!(ubuntu.password_file(&context).ends_with("sample/seed/desk-password"));
     }
 
     #[test]
