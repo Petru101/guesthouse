@@ -12,6 +12,7 @@
 
 pub mod adapter_header;
 pub mod adapter_info;
+pub mod adapter_records;
 pub mod adapter_registry;
 pub mod allocation;
 pub(crate) mod bytes;

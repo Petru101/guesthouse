@@ -1,16 +1,9 @@
 //! Handing out GPU addresses, and taking them back.
 
+pub use guesthouse_backend::GPU_RANGES;
 use guesthouse_backend::{BackendError, GpuRange};
 use guesthouse_messages::wire::align_up;
 use std::collections::HashMap;
-
-/// The ranges every address space covers. There is a hole around 4 GiB, where real drivers keep
-/// something of their own, and the ranges are big because one process can reserve gigabytes. They
-/// stop at 1 TiB because a ring entry can't reach past it.
-pub const GPU_RANGES: [GpuRange; 2] = [
-    GpuRange { start: 0x400_0000, end: 0x1_0000_0000 },
-    GpuRange { start: 0x1_4000_0000, end: 0x100_0000_0000 },
-];
 
 /// Past the last address any mapping can have, which also makes it more than any size can be.
 pub const ADDRESSES_END: u64 = GPU_RANGES[1].end;

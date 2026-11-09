@@ -106,6 +106,8 @@ const MEM_GTT_TOTAL: usize = 64;
 const HW_IP_SIZE: usize = 40;
 const HW_IP_VERSION_MAJOR: usize = 0;
 const HW_IP_VERSION_MINOR: usize = 4;
+const HW_IP_IB_START_ALIGNMENT: usize = 16;
+const HW_IP_IB_SIZE_ALIGNMENT: usize = 20;
 const HW_IP_AVAILABLE_RINGS: usize = 24;
 /// The block's version from IP discovery: major in bits 23:16, minor in 15:8. The major and minor
 /// above are the kernel's own driver for the block, which reads 10.0 on a GFX10.3 part, so this one
@@ -141,6 +143,8 @@ pub struct DeviceInfo {
     pub counter_freq_khz: u32,
     /// Which of the three engine families have a ring the guest could be given.
     pub engines: EngineSet,
+    /// How each engine family wants its command buffers aligned.
+    pub ib_alignment: IbAlignments,
     /// The rest of what the card reports, which the guest's adapter block is built from.
     pub details: CardDetails,
 }
@@ -220,11 +224,41 @@ fn query(file: &impl AsRawFd, query: u32, reply: &mut [u8]) -> io::Result<()> {
     ioctl::drm_ioctl(file, call::info(), &mut request)
 }
 
-/// One engine family's reply: its version and a mask of the rings it offers.
+/// Where a command buffer may start and how its size must round, both in bytes, as the kernel
+/// checks them for one engine family.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct IbAlignment {
+    pub start: u32,
+    pub size: u32,
+}
+
+/// [`IbAlignment`] for each engine family.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct IbAlignments {
+    pub graphics: IbAlignment,
+    pub compute: IbAlignment,
+    pub dma: IbAlignment,
+}
+
+impl IbAlignments {
+    /// The alignment for an `HW_IP_*` engine family. Nothing is known of any other.
+    pub fn of(&self, ip_type: u32) -> IbAlignment {
+        match ip_type {
+            HW_IP_GFX => self.graphics,
+            HW_IP_COMPUTE => self.compute,
+            HW_IP_DMA => self.dma,
+            _ => IbAlignment::default(),
+        }
+    }
+}
+
+/// One engine family's reply: its version, a mask of the rings it offers, and how its command
+/// buffers must be aligned.
 #[derive(Debug, Clone, Copy, Default)]
 struct HwIp {
     version: (u32, u32),
     rings: u32,
+    ib_alignment: IbAlignment,
 }
 
 fn query_hw_ip(file: &impl AsRawFd, ip_type: u32) -> io::Result<HwIp> {
@@ -242,7 +276,11 @@ fn query_hw_ip(file: &impl AsRawFd, ip_type: u32) -> io::Result<HwIp> {
     } else {
         (get32(&reply, HW_IP_VERSION_MAJOR), get32(&reply, HW_IP_VERSION_MINOR))
     };
-    Ok(HwIp { version, rings: get32(&reply, HW_IP_AVAILABLE_RINGS) })
+    let ib_alignment = IbAlignment {
+        start: get32(&reply, HW_IP_IB_START_ALIGNMENT),
+        size: get32(&reply, HW_IP_IB_SIZE_ALIGNMENT),
+    };
+    Ok(HwIp { version, rings: get32(&reply, HW_IP_AVAILABLE_RINGS), ib_alignment })
 }
 
 /// A firmware's version, or zero if the card has none of that kind.
@@ -377,6 +415,11 @@ pub fn read_device_info(file: &impl AsRawFd, device_folder: Option<&Path>) -> io
         va_alignment: u64::from(get32(&dev, DEV_VA_ALIGN)),
         counter_freq_khz: get32(&dev, DEV_GPU_COUNTER_FREQ),
         engines,
+        ib_alignment: IbAlignments {
+            graphics: gfx.ib_alignment,
+            compute: compute.ib_alignment,
+            dma: dma.ib_alignment,
+        },
         details: read_details(file, &dev, gfx, compute, device_folder),
     })
 }

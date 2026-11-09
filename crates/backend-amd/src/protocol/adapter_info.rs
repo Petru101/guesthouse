@@ -14,10 +14,12 @@
 //! block, so the zeros are part of the answer too.
 
 use super::adapter_header;
+use super::adapter_records::{ADAPTER_RECORD_SIZE, DIRECTORY_SIZE, adapter_record, directory};
 use super::allocation::SURFACE_SIZE;
 use super::bytes::{first_dwords, index_xor_sum, put_dword, put_qword, put_word};
 use crate::info::{CardDetails, DeviceInfo};
-use guesthouse_backend::{Status, VendorQuery};
+use crate::nodes::nodes;
+use guesthouse_backend::{GPU_RANGES, Status, VendorQuery};
 
 /// The adapter query type that asks for the block, DXGKQAITYPE_UMDRIVERPRIVATE.
 pub const QUERY_TYPE: u32 = 0;
@@ -93,6 +95,13 @@ const REGISTERS_PROTECTED: u32 = 1 << 0;
 const LOCAL_VISIBLE_SEGMENT: usize = 0xA30;
 const LOCAL_INVISIBLE_SEGMENT: usize = 0xA38;
 const REVISION_ID: usize = 0xA40;
+/// The host's memory the card can reach, which the guest's driver budgets its system heaps by. Read
+/// only when [`FEATURE_HOST_MEMORY_SIZE_GIVEN`] is set.
+const HOST_MEMORY_SIZE: usize = 0xA44;
+/// The graphics engine's generation. The guest copies it and compares it nowhere that was found.
+const GFX_ENGINE_ID: usize = 0xA10;
+/// What AMD's kernel driver gives every part from GFX9 on.
+const GFX_ENGINE_GFX9_AND_LATER: u32 = 0xD;
 
 // The graphics part of the first GPU's block, the GFX9-and-later member of its family union.
 const GB_ADDR_CONFIG: usize = 0xC00;
@@ -131,6 +140,34 @@ const GS_PRIM_BUFFER_DEPTH: usize = 0xC84;
 const COMPUTE_RINGS: usize = 0xC88;
 const TILE_STEERING_OVERRIDE: usize = 0xCE0;
 
+/// One byte for each of the guest's nodes: AMD's number for the engine behind it, or
+/// [`NO_ENGINE`]. The guest's user-mode driver picks each node's queue type from this.
+const NODE_ENGINES: usize = 0x89C;
+const NODE_SLOTS: usize = 64;
+const NO_ENGINE: u8 = 0xFF;
+
+/// For each node, where its command buffers may start and how their size rounds, in bytes, two
+/// dwords a node. Left zero, the guest's driver takes the card to have no virtual memory, builds its
+/// command buffers in physical memory and fails.
+const NODE_IB_ALIGNMENT: usize = 0x318C;
+const NODE_IB_ALIGNMENT_STRIDE: usize = 8;
+
+/// The card's virtual memory, as the guest's driver lays out its own addresses by it. It needs
+/// at least 28 GiB of span and reserves 4 GiB blocks from it.
+const VM_INFO_VALID: usize = 0x2A00;
+/// The first address and the last one, inclusive.
+const VM_FIRST_ADDRESS: usize = 0x2A08;
+const VM_LAST_ADDRESS: usize = 0x2A10;
+/// The page-table geometry, which is the same on every GFX9 and later card: 8-byte directory and
+/// table entries, 2 MiB under each directory entry and 64 KiB fragments.
+const VM_PDE_SIZE: usize = 0x2A18;
+const VM_PTE_SIZE: usize = 0x2A1C;
+const VM_SPACE_PER_PDE: usize = 0x2A20;
+const VM_FRAGMENT_SIZE: usize = 0x2A24;
+const PAGE_TABLE_ENTRY_BYTES: u32 = 8;
+const SPACE_PER_PDE: u32 = 2 << 20;
+const FRAGMENT_BYTES: u32 = 64 << 10;
+
 /// The software features the kernel offers the guest. Fixed.
 const SOFTWARE_FEATURES: usize = 0x2E00;
 /// Allocation private data may hold more than one surface descriptor.
@@ -140,14 +177,17 @@ const FEATURE_ALLOCATION_SECOND_BLOCK: u32 = 1 << 3;
 /// The guest steps through surface descriptors by [`SURFACE_DESCRIPTOR_SIZE`]. Clear, it uses a
 /// smaller fixed size that doesn't match the descriptors the kernel checks.
 const FEATURE_SURFACE_STRIDE_GIVEN: u32 = 1 << 20;
+/// [`HOST_MEMORY_SIZE`] is filled in.
+const FEATURE_HOST_MEMORY_SIZE_GIVEN: u32 = 1 << 22;
 /// Bit 1, render status, stays clear: it promises command-buffer handling of render status that
 /// nothing here does, though the guest doesn't test it. Bit 13 promises a GPU virtual-address
 /// offset in the adapter block, bit 17 that the guest may send fullscreen frame metadata in an
-/// escape, bit 22 a host memory size at 0xA44, bit 23 that allocation private data may need 128K,
-/// and bit 24 a hardware scheduler's queue sizes: this backend honours none of those, so all stay
-/// clear.
-const FEATURES: u32 =
-    FEATURE_SEVERAL_SURFACES | FEATURE_ALLOCATION_SECOND_BLOCK | FEATURE_SURFACE_STRIDE_GIVEN;
+/// escape, bit 23 that allocation private data may need 128K, and bit 24 a hardware scheduler's
+/// queue sizes: this backend honours none of those, so all stay clear.
+const FEATURES: u32 = FEATURE_SEVERAL_SURFACES
+    | FEATURE_ALLOCATION_SECOND_BLOCK
+    | FEATURE_SURFACE_STRIDE_GIVEN
+    | FEATURE_HOST_MEMORY_SIZE_GIVEN;
 
 /// The sum the guest checks the block against, kept in the block. See [`index_xor_sum`].
 const CHECKSUM: usize = 0x2E20;
@@ -180,6 +220,10 @@ pub fn answer(query: &VendorQuery<'_>, info: &DeviceInfo, out: &mut Vec<u8>) -> 
         size if size == header => adapter_header::build(info, size),
         size if size == header + BLOCK_SIZE => [adapter_header::build(info, size), build(info)].concat(),
         BLOCK_SIZE => build(info),
+        size if size == header + ADAPTER_RECORD_SIZE => {
+            [adapter_header::build(info, size), adapter_record()].concat()
+        }
+        size if size == header + DIRECTORY_SIZE => [adapter_header::build(info, size), directory()].concat(),
         _ => Vec::new(),
     };
     if answer.is_empty() {
@@ -208,11 +252,37 @@ pub fn build(info: &DeviceInfo) -> Vec<u8> {
     fill_firmware(&mut block, info);
     fill_first_gpu(&mut block, info);
     fill_graphics(&mut block, &info.details);
+    fill_nodes(&mut block, info);
+    fill_virtual_memory(&mut block);
     put_dword(&mut block, SOFTWARE_FEATURES, FEATURES);
     put_dword(&mut block, CHECKSUM_VERSION, SUBMISSION_CHECKSUM_VERSION);
     let sum = index_xor_sum(&block, BLOCK_SIZE / 4, CHECKSUM);
     put_dword(&mut block, CHECKSUM, sum);
     block
+}
+
+fn fill_nodes(block: &mut [u8], info: &DeviceInfo) {
+    block[NODE_ENGINES..NODE_ENGINES + NODE_SLOTS].fill(NO_ENGINE);
+    for (index, node) in nodes(&info.engines).into_iter().enumerate() {
+        block[NODE_ENGINES + index] = node.guest_engine;
+        let alignment = info.ib_alignment.of(node.ip_type);
+        let at = NODE_IB_ALIGNMENT + index * NODE_IB_ALIGNMENT_STRIDE;
+        put_dword(block, at, alignment.start);
+        put_dword(block, at + 4, alignment.size);
+    }
+}
+
+/// The range the guest's driver places its own addresses in, which is the upper of the ranges every
+/// space covers. The lower one is below 4 GiB and too small for it.
+fn fill_virtual_memory(block: &mut [u8]) {
+    let range = GPU_RANGES[GPU_RANGES.len() - 1];
+    put_dword(block, VM_INFO_VALID, 1);
+    put_qword(block, VM_FIRST_ADDRESS, range.start);
+    put_qword(block, VM_LAST_ADDRESS, range.end - 1);
+    put_dword(block, VM_PDE_SIZE, PAGE_TABLE_ENTRY_BYTES);
+    put_dword(block, VM_PTE_SIZE, PAGE_TABLE_ENTRY_BYTES);
+    put_dword(block, VM_SPACE_PER_PDE, SPACE_PER_PDE);
+    put_dword(block, VM_FRAGMENT_SIZE, FRAGMENT_BYTES);
 }
 
 fn fill_firmware(block: &mut [u8], info: &DeviceInfo) {
@@ -255,6 +325,8 @@ fn fill_first_gpu(block: &mut [u8], info: &DeviceInfo) {
     put_qword(block, LOCAL_VISIBLE_SEGMENT, info.visible_vram_total);
     put_qword(block, LOCAL_INVISIBLE_SEGMENT, invisible);
     put_dword(block, REVISION_ID, u32::from(info.pci_revision));
+    put_qword(block, HOST_MEMORY_SIZE, info.gtt_total);
+    put_dword(block, GFX_ENGINE_ID, GFX_ENGINE_GFX9_AND_LATER);
 }
 
 /// One unit per two compute units, counted only when both are active, as amdgpu turns them off in
@@ -364,11 +436,9 @@ impl KeyFields {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::info::{EngineSet, Firmware};
+    use crate::info::{EngineSet, Firmware, IbAlignment, IbAlignments};
 
     const VERSION_FLAGS: usize = 0x008;
-    const VM_INFO_ALIGNMENT: usize = 0x3190;
-    const VM_INFO_SIZE_ALIGNMENT: usize = 0x338C;
     const DISPLAY_ALIGNMENT_FLAGS: usize = 0x2D50;
 
     /// A small RDNA2 part like the host's: one engine, one array of two units.
@@ -386,6 +456,11 @@ pub(crate) mod tests {
             gtt_total: 8 << 30,
             counter_freq_khz: 100_000,
             engines: EngineSet { graphics: true, compute: true, dma: true },
+            ib_alignment: IbAlignments {
+                graphics: IbAlignment { start: 32, size: 32 },
+                compute: IbAlignment { start: 32, size: 32 },
+                dma: IbAlignment { start: 256, size: 4 },
+            },
             details: CardDetails {
                 external_revision: 0x9,
                 shader_engines: 1,
@@ -406,6 +481,10 @@ pub(crate) mod tests {
             },
             ..DeviceInfo::default()
         }
+    }
+
+    fn qword_at(block: &[u8], at: usize) -> u64 {
+        u64::from_le_bytes(block[at..at + 8].try_into().unwrap())
     }
 
     fn dword_at(block: &[u8], at: usize) -> u32 {
@@ -446,19 +525,46 @@ pub(crate) mod tests {
     #[test]
     fn only_the_features_this_backend_can_honour_are_set() {
         let features = dword_at(&build(&small_card()), SOFTWARE_FEATURES);
-        assert_eq!(features, (1 << 2) | (1 << 3) | (1 << 20));
-        for bit in [1, 13, 17, 22, 23, 24] {
+        assert_eq!(features, (1 << 2) | (1 << 3) | (1 << 20) | (1 << 22));
+        for bit in [1, 13, 17, 23, 24] {
             assert_eq!(features & 1 << bit, 0, "bit {bit}");
         }
     }
 
     #[test]
-    fn the_second_virtual_memory_block_is_not_promised() {
+    fn each_node_names_its_engine_and_its_command_buffer_alignment() {
+        let block = build(&small_card());
+        assert_eq!(&block[NODE_ENGINES..NODE_ENGINES + 4], &[0, 5, 4, NO_ENGINE]);
+        assert!(block[NODE_ENGINES + 3..NODE_ENGINES + NODE_SLOTS].iter().all(|&byte| byte == NO_ENGINE));
+        let words: Vec<u32> = (0..8).map(|index| dword_at(&block, NODE_IB_ALIGNMENT + index * 4)).collect();
+        assert_eq!(words, [32, 32, 32, 32, 256, 4, 0, 0]);
+    }
+
+    #[test]
+    fn the_virtual_memory_is_the_upper_range_with_gfx9_page_tables() {
+        let block = build(&small_card());
+        assert_eq!(dword_at(&block, VM_INFO_VALID), 1);
+        assert_eq!(qword_at(&block, VM_FIRST_ADDRESS), 0x1_4000_0000);
+        assert_eq!(qword_at(&block, VM_LAST_ADDRESS), 0xFF_FFFF_FFFF);
+        let geometry: Vec<u32> = [VM_PDE_SIZE, VM_PTE_SIZE, VM_SPACE_PER_PDE, VM_FRAGMENT_SIZE]
+            .into_iter()
+            .map(|at| dword_at(&block, at))
+            .collect();
+        assert_eq!(geometry, [8, 8, 0x20_0000, 0x1_0000]);
+    }
+
+    #[test]
+    fn the_host_memory_size_and_the_engine_generation_are_given() {
+        let block = build(&small_card());
+        assert_eq!(qword_at(&block, HOST_MEMORY_SIZE), 8 << 30);
+        assert_eq!(dword_at(&block, GFX_ENGINE_ID), 0xD);
+    }
+
+    #[test]
+    fn the_version_flags_and_display_alignment_stay_unpromised() {
         let block = build(&small_card());
         assert_eq!(dword_at(&block, VERSION_FLAGS), 0);
-        for at in [VM_INFO_ALIGNMENT, VM_INFO_SIZE_ALIGNMENT, DISPLAY_ALIGNMENT_FLAGS] {
-            assert_eq!(dword_at(&block, at), 0, "{at:#x}");
-        }
+        assert_eq!(dword_at(&block, DISPLAY_ALIGNMENT_FLAGS), 0);
     }
 
     #[test]
@@ -482,8 +588,6 @@ pub(crate) mod tests {
         assert!(block[driver_store_path].iter().all(|&byte| byte == 0));
         let apertures = 0x2D54..0x2DA0;
         assert!(block[apertures].iter().all(|&byte| byte == 0));
-        let engine_id = 0xA10;
-        assert_eq!(dword_at(&block, engine_id), 0);
     }
 
     #[test]
@@ -578,6 +682,19 @@ pub(crate) mod tests {
         assert_eq!(answer(&both, &info, &mut out), Some(Status::SUCCESS));
         assert_eq!(out[..header_size], adapter_header::build(&info, both_size)[..]);
         assert_eq!(out[header_size..], build(&info)[..]);
+    }
+
+    #[test]
+    fn the_record_and_the_directory_follow_the_header_by_the_size_asked() {
+        let info = small_card();
+        let header_size = adapter_header::HEADER_SIZE;
+        for (tail, body) in [(ADAPTER_RECORD_SIZE, adapter_record()), (DIRECTORY_SIZE, directory())] {
+            let mut out = Vec::new();
+            let size = header_size + tail;
+            let query = VendorQuery { kind: QUERY_TYPE, size, data: &[], process_is_32_bit: false };
+            assert_eq!(answer(&query, &info, &mut out), Some(Status::SUCCESS));
+            assert_eq!(out[header_size..], body[..]);
+        }
     }
 
     #[test]

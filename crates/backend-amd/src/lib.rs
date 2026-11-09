@@ -20,6 +20,7 @@ mod device;
 mod info;
 mod ioctl;
 mod memory;
+mod nodes;
 pub mod protocol;
 mod space_vm;
 mod submit;
