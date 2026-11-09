@@ -61,7 +61,8 @@ pub fn write_name(query: &VendorQuery<'_>, out: &mut Vec<u8>) {
     guest_text::user_driver_name(query, &path, out);
 }
 
-/// The driver paths, and the attribute list DXCore asks for. Any other registry name has no answer.
+/// The driver paths, the attribute list DXCore asks for, and the values the Vulkan and OpenGL
+/// loaders look up. Any other registry name has no answer.
 pub fn registry(name: &RegistryName) -> Option<RegistryValue> {
     match name {
         RegistryName::DriverStorePath => {
@@ -74,7 +75,7 @@ pub fn registry(name: &RegistryName) -> Option<RegistryValue> {
         RegistryName::Value(name) if name.eq_ignore_ascii_case("dxcoreattributes") => {
             Some(RegistryValue { value_type: Some(TYPE_STRING_LIST), bytes: utf16_list(DXCORE_ATTRIBUTES) })
         }
-        RegistryName::Value(_) => None,
+        RegistryName::Value(name) => super::api_drivers::registry_value(name),
     }
 }
 

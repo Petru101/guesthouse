@@ -430,10 +430,17 @@ impl Backend for AmdBackend {
             protocol::guest_driver::write_name(query, out);
             return Some(Status::SUCCESS);
         }
+        if query.kind == protocol::api_drivers::QUERY_OPENGL {
+            protocol::api_drivers::write_opengl_info(query, out);
+            return Some(Status::SUCCESS);
+        }
         if let Some(status) = protocol::adapter_registry::answer(query, out) {
             return Some(status);
         }
         if let Some(status) = protocol::wddm_caps::answer(query, out) {
+            return Some(status);
+        }
+        if let Some(status) = protocol::gpu_mmu_caps::answer(query, out) {
             return Some(status);
         }
         protocol::adapter_info::answer(query, self.device.info(), out)
