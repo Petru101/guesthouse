@@ -3,8 +3,8 @@
 
 use crate::context::{Context, SLOT_VARIABLE};
 use crate::failure::Result;
-use guesthouse_daemon::jail;
 use guesthouse_daemon::slot::Slot;
+use guesthouse_daemon::{card_choice, jail};
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::fs::{self, File};
@@ -39,6 +39,12 @@ impl DaemonStart {
             base: context.paths.runtime.clone(),
             environment,
         }
+    }
+
+    /// For a guest on an AMD card, which the daemon then opens instead of the NVIDIA card.
+    pub fn on_amd_card(mut self, pci: &str) -> Self {
+        self.environment.insert(card_choice::AMD_CARD_VARIABLE.to_owned(), pci.to_owned());
+        self
     }
 
     /// For a machine allowed to start with no jail, on a PC that can't give it one.
@@ -101,6 +107,16 @@ mod tests {
         );
         assert_eq!(start.base, context.paths.runtime);
         assert_eq!(context.paths.run_folder(slots::number(2)), start.base.join("run-2"));
+    }
+
+    #[test]
+    fn a_guest_on_an_amd_card_names_it_and_one_on_nvidia_names_none() {
+        let scratch = Scratch::new();
+        let context = scratch_context(&scratch);
+        let start = DaemonStart::new(&context, slots::first(), "16G", None);
+        assert!(!start.environment.contains_key("GUESTHOUSE_AMD_CARD"));
+        let start = start.on_amd_card("0000:7c:00.0");
+        assert_eq!(start.environment["GUESTHOUSE_AMD_CARD"], "0000:7c:00.0");
     }
 
     #[test]

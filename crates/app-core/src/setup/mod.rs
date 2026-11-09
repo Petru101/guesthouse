@@ -4,6 +4,7 @@
 //! disturbed. Everything setup makes goes in the store's setup folder, and `setup.json` there says
 //! where.
 
+pub mod amd;
 pub mod cards;
 pub mod checks;
 pub mod driver;
