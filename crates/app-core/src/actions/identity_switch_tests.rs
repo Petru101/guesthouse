@@ -54,11 +54,10 @@ fn a_vm_already_on_nvidias_number_is_not_started_again() {
 }
 
 #[test]
-fn an_amd_machine_moves_to_amds_number_and_stays_there() {
-    let staged = IdentityState { package_vendor: AMD_RENDER.vendor, ..staged() };
-    assert!(new_vm_needed(MICROSOFT_RENDER, &staged, &on_amd()));
-    assert!(new_vm_needed(NVIDIA_RENDER, &staged, &on_amd()), "NVIDIA's number is not AMD's");
-    assert!(!new_vm_needed(AMD_RENDER, &staged, &on_amd()));
+fn an_amd_machine_moves_to_the_number_it_is_shown_and_stays_there() {
+    assert!(new_vm_needed(MICROSOFT_RENDER, &staged(), &on_amd()));
+    assert!(new_vm_needed(AMD_RENDER, &staged(), &on_amd()), "AMD's number isn't shown yet");
+    assert!(!new_vm_needed(NVIDIA_RENDER, &staged(), &on_amd()));
 }
 
 #[test]
