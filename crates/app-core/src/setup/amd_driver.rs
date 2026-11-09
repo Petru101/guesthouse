@@ -198,6 +198,19 @@ mod tests {
         assert!(refused.0.contains("doesn't cover this card"), "{}", refused.0);
     }
 
+    /// AMD's own installer, named in `GUESTHOUSE_AMD_INSTALLER`, with the card in
+    /// `GUESTHOUSE_AMD_DEVICE` as hex. Run by hand, as the installer is a gigabyte and not ours.
+    #[test]
+    #[ignore = "needs AMD's installer"]
+    fn a_real_installer_is_read() {
+        let path = std::env::var("GUESTHOUSE_AMD_INSTALLER").unwrap();
+        let device = u32::from_str_radix(&std::env::var("GUESTHOUSE_AMD_DEVICE").unwrap(), 16).unwrap();
+        match read_amd_installer(&path, device) {
+            Ok(package) => println!("covers {device:04X}: {package:?}"),
+            Err(failure) => println!("refused {device:04X}: {}", failure.0),
+        }
+    }
+
     /// The release is the AMD daemon's, which lives in the backend.
     #[test]
     fn the_release_is_the_one_the_daemon_takes() {
