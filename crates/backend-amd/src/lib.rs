@@ -366,7 +366,7 @@ impl Backend for AmdBackend {
     }
 
     fn adapter_answer(&mut self, query: &VendorQuery<'_>, out: &mut Vec<u8>) -> Option<Status> {
-        if query.kind == protocol::guest_driver::QUERY_NAME {
+        if query.kind == guesthouse_backend::guest_text::QUERY_USER_DRIVER_NAME {
             protocol::guest_driver::write_name(query, out);
             return Some(Status::SUCCESS);
         }

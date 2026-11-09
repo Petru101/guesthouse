@@ -7,12 +7,10 @@
 //! The files have to be in the guest, under the host driver store, at the path given here. Nothing
 //! here copies them.
 
+use guesthouse_backend::guest_text::{self, utf16_list, utf16_zero};
 use guesthouse_backend::{RegistryName, RegistryValue, VendorQuery};
 use guesthouse_messages::registry::TYPE_STRING_LIST;
 use std::sync::atomic::{AtomicBool, Ordering};
-
-/// Query type 1: the user-mode driver's path.
-pub const QUERY_NAME: u32 = 1;
 
 /// The one Adrenalin release these answers were written for. Another release is refused at start.
 pub const GUEST_RELEASE: &str = "32.0.32015.12012";
@@ -23,8 +21,6 @@ pub const DRIVER_STORE: &str = "C:\\Windows\\System32\\DriverStore\\FileReposito
 const USER_DRIVER: &str = "amdxc64.dll";
 const USER_DRIVER_32_BIT: &str = "amdxc32.dll";
 const KERNEL_DRIVER: &str = "amdkmdag.sys";
-/// The version dword the guest sent, which the answer keeps in front of the path.
-const VERSION_FIELD: usize = 4;
 
 /// What DXCore looks up, by the lower-case name the core asks with. The strings are Microsoft's
 /// public attribute GUIDs: a GPU, then Direct3D 11, Direct3D 12, compute, machine learning and media.
@@ -40,10 +36,6 @@ const DXCORE_ATTRIBUTES: &[&str] = &[
 
 static LOGGED_DRIVER_NAME: AtomicBool = AtomicBool::new(false);
 
-fn utf16_zero(text: &str) -> Vec<u8> {
-    text.encode_utf16().chain([0]).flat_map(u16::to_le_bytes).collect()
-}
-
 /// Writes the user-mode driver path into `out`, keeping the guest's version dword.
 pub fn write_name(query: &VendorQuery<'_>, out: &mut Vec<u8>) {
     let name = if query.process_is_32_bit { USER_DRIVER_32_BIT } else { USER_DRIVER };
@@ -54,16 +46,7 @@ pub fn write_name(query: &VendorQuery<'_>, out: &mut Vec<u8>) {
     } else {
         log::debug!("guest asked for the user-mode driver, answered with {name}");
     }
-    let start = out.len();
-    out.extend_from_slice(query.data.get(..VERSION_FIELD).unwrap_or(&[0; VERSION_FIELD]));
-    out.extend(utf16_zero(&path));
-    out.resize((start + query.data.len()).max(out.len()), 0);
-}
-
-fn string_list(values: &[&str]) -> Vec<u8> {
-    let mut bytes: Vec<u8> = values.iter().flat_map(|text| utf16_zero(text)).collect();
-    bytes.extend_from_slice(&[0, 0]);
-    bytes
+    guest_text::user_driver_name(query, &path, out);
 }
 
 /// The driver paths, and the attribute list DXCore asks for. Any other registry name has no answer.
@@ -77,7 +60,7 @@ pub fn registry(name: &RegistryName) -> Option<RegistryValue> {
             Some(RegistryValue { value_type: None, bytes: utf16_zero(&path) })
         }
         RegistryName::Value(name) if name.eq_ignore_ascii_case("dxcoreattributes") => {
-            Some(RegistryValue { value_type: Some(TYPE_STRING_LIST), bytes: string_list(DXCORE_ATTRIBUTES) })
+            Some(RegistryValue { value_type: Some(TYPE_STRING_LIST), bytes: utf16_list(DXCORE_ATTRIBUTES) })
         }
         RegistryName::Value(_) => None,
     }
@@ -86,6 +69,9 @@ pub fn registry(name: &RegistryName) -> Option<RegistryValue> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The guest's version dword, ahead of the path.
+    const VERSION_FIELD: usize = 4;
 
     fn name_of(out: &[u8]) -> String {
         let units = out[VERSION_FIELD..].as_chunks::<2>().0.iter().map(|unit| u16::from_le_bytes(*unit));
@@ -97,7 +83,12 @@ mod tests {
     fn the_driver_name_keeps_the_guests_version_and_names_the_64_bit_driver() {
         let mut out = Vec::new();
         let data = [9, 0, 0, 0, 1, 2, 3, 4];
-        let query = VendorQuery { kind: QUERY_NAME, size: data.len(), data: &data, process_is_32_bit: false };
+        let query = VendorQuery {
+            kind: guest_text::QUERY_USER_DRIVER_NAME,
+            size: data.len(),
+            data: &data,
+            process_is_32_bit: false,
+        };
         write_name(&query, &mut out);
         assert_eq!(out[0], 9);
         let path = name_of(&out);
@@ -108,7 +99,12 @@ mod tests {
     #[test]
     fn a_32_bit_process_gets_the_32_bit_driver() {
         let mut out = Vec::new();
-        let query = VendorQuery { kind: QUERY_NAME, size: 4, data: &[0; 4], process_is_32_bit: true };
+        let query = VendorQuery {
+            kind: guest_text::QUERY_USER_DRIVER_NAME,
+            size: 4,
+            data: &[0; 4],
+            process_is_32_bit: true,
+        };
         write_name(&query, &mut out);
         assert!(name_of(&out).ends_with(USER_DRIVER_32_BIT));
     }
