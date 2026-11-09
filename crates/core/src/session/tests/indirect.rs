@@ -410,6 +410,47 @@ fn a_copy_waiting_for_its_frame_doesnt_hold_up_frames_in_memory() {
 }
 
 #[test]
+fn screen_copies_one_after_another_leave_room_for_frames_in_memory() {
+    let (mut session, first) = registered();
+    session.backend_mut().run_work = true;
+    session.set_copy_order(crate::CopyOrder::Held);
+    session.backend_mut().slow_copies = true;
+    session.backend_mut().quick_slot_copies = true;
+    session.viewer_arrived();
+    session.viewer_described(ViewerFacts { wants_memory: true, ..ViewerFacts::default() });
+    let mut sink = Sink::default();
+    turn(&mut session, &mut sink);
+    session.space_for(OTHER_PROCESS).unwrap();
+    let mut request = message(Command::CreateContext, 0x34);
+    set_u32(&mut request, 8, OTHER_PROCESS);
+    let context = u32_at(&send(&mut session, &request), 0x18).unwrap();
+    let (_, image) = allocate(&mut session, surface_private(640, 480));
+    let (_, staging) = allocate(&mut session, surface_private(640, 480));
+    // The basic display's copies, each ready to run, with the next always queued behind the one running.
+    let screen_copy = |session: &mut TestSession| {
+        let mut copy = message(Command::CopyToStaging, 0x50);
+        set_u32(&mut copy, 0x1C, context);
+        set_u32(&mut copy, 0x20, image);
+        set_u32(&mut copy, 0x24, staging);
+        let mut out = Vec::new();
+        let _ = session.handle_message(&copy, Some(ReplyTicket::default()), &mut out);
+    };
+    screen_copy(&mut session);
+    screen_copy(&mut session);
+    turn(&mut session, &mut sink);
+    let mut slot = first;
+    for shown in 1..=3 {
+        slot = frame(&mut session, Some(slot)).1.expect("a free slot");
+        screen_copy(&mut session);
+        session.backend_mut().copy_done = true;
+        turn(&mut session, &mut sink);
+        assert_eq!(sink.frames.len(), shown as usize, "frame {shown} reached the viewer");
+        let last = sink.frames[shown as usize - 1];
+        session.slot_released(last.generation, last.slot);
+    }
+}
+
+#[test]
 fn with_every_slot_with_the_viewer_the_driver_skips_until_one_comes_back() {
     let (mut session, first) = registered();
     session.viewer_arrived();

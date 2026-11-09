@@ -244,6 +244,10 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         while let Some(mut job) = self.copies.pop_front() {
             let status = if job.running {
                 self.backend.poll_staging_copy(&mut services!(self), now)
+            } else if self.frame_wants_copy_engine() {
+                // A frame from the display driver goes first, or a guest that copies to its basic
+                // display all the time would keep the engine and no frame would land.
+                None
             } else if self.targets_reached(&job.targets) || now >= job.deadline {
                 job.running = true;
                 match self.backend.start_staging_copy(&mut services!(self), &job.copy) {

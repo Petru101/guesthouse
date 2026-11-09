@@ -79,6 +79,8 @@ pub struct StandIn {
     pub channel_address: Option<u64>,
     /// Copies stay under way until a test sets `copy_done`.
     pub slow_copies: bool,
+    /// Copies into a viewer's slots finish at once, even with `slow_copies`.
+    pub quick_slot_copies: bool,
     pub copy_done: bool,
     pub work_per_submission: u32,
     pub unfinished_limit: Option<u64>,
@@ -145,6 +147,7 @@ impl StandIn {
             fail_rings: false,
             channel_address: None,
             slow_copies: false,
+            quick_slot_copies: false,
             copy_done: false,
             work_per_submission: 1,
             unfinished_limit: None,
@@ -459,7 +462,11 @@ impl Backend for StandIn {
     fn start_slot_copy(&mut self, _host: &mut dyn HostServices, copy: &SlotCopy) -> StagingStart {
         self.note_slot_copy(copy);
         self.slot_copies.push(*copy);
-        if self.slow_copies { StagingStart::Running } else { StagingStart::Finished(self.slot_copy_status) }
+        if self.slow_copies && !self.quick_slot_copies {
+            StagingStart::Running
+        } else {
+            StagingStart::Finished(self.slot_copy_status)
+        }
     }
 
     fn copy_pixel_bytes(&self, surface: &SurfaceShape) -> u32 {
