@@ -1,4 +1,4 @@
-//! Depth and stencil surfaces. On Turing and Ada the depth unit only takes memory whose page kind
+//! Depth and stencil surfaces. On Turing, Ampere and Ada the depth unit only takes memory whose page kind
 //! matches the surface's packing, and faults on anything else. The RM picks that kind when it's asked
 //! for depth memory and told the packing, so a depth surface passes on the packing its driver chose.
 //! Blackwell's RM gives such memory the plain kind anyway, so nothing changes there.
@@ -61,7 +61,7 @@ pub enum DepthKinds {
     AsStated,
     /// Every depth surface, found by its usage or its format, as the depth unit faults on any left
     /// plain. Small ones come with no usage, and one that states no packing gets its format's.
-    /// Turing and Ada.
+    /// Turing, Ampere and Ada.
     Always,
 }
 

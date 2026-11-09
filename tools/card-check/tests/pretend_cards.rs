@@ -1,14 +1,14 @@
-//! The program on the pretend Ada and Turing cards: what it finds, what it says, and what never
+//! The program on the pretend Ada, Ampere and Turing cards: what it finds, what it says, and what never
 //! reaches the file. Nothing here goes near a card.
 
 use guesthouse_backend::PciAddress;
-use guesthouse_backend_nvidia::profile::{ADA, BLACKWELL, Generation, HOST_615, TURING};
+use guesthouse_backend_nvidia::profile::{ADA, AMPERE, BLACKWELL, Generation, HOST_615, TURING};
 use guesthouse_backend_nvidia::record::card::UUID;
 use guesthouse_backend_nvidia::rm::classes::{CONTROL_GET_GPU_ID, DEVICE};
 use guesthouse_backend_nvidia::rm::device::Device;
 use guesthouse_backend_nvidia::rm::fake::{Call, FakeGpu, FakeRm};
 use guesthouse_backend_nvidia::rm::fake_card::{
-    FAKE_ADA, FAKE_BLACKWELL, FAKE_TURING, FakeCard, install_card,
+    FAKE_ADA, FAKE_AMPERE, FAKE_BLACKWELL, FAKE_TURING, FakeCard, install_card,
 };
 use guesthouse_backend_nvidia::rm::{Rm, STATUS_INSUFFICIENT_PERMISSIONS};
 use guesthouse_card_check::channels::{Outcome, refusal, run_all, run_on_listed_card};
@@ -30,7 +30,7 @@ struct Expected {
     copy_caps: u32,
 }
 
-const CARDS: [Expected; 2] = [
+const CARDS: [Expected; 3] = [
     Expected {
         card: &FAKE_ADA,
         generation: &ADA,
@@ -38,6 +38,15 @@ const CARDS: [Expected; 2] = [
         shader_set: 0x7005,
         nodes: 15,
         classes: 127,
+        copy_caps: 0x1A0,
+    },
+    Expected {
+        card: &FAKE_AMPERE,
+        generation: &AMPERE,
+        implementation: 0x7,
+        shader_set: 0x7002,
+        nodes: 13,
+        classes: 110,
         copy_caps: 0x1A0,
     },
     Expected {
@@ -136,12 +145,12 @@ fn a_blackwell_card_that_has_not_been_run_is_experimental_and_the_tested_one_is_
 
 #[test]
 fn a_card_with_no_profile_or_an_unknown_sm_is_refused_by_name() {
-    let unknown = FakeCard { architecture: 0x170, ..FAKE_ADA };
+    let unknown = FakeCard { architecture: 0x140, ..FAKE_ADA };
     let findings = findings_on(&unknown);
     assert_eq!(findings.generation, None);
     assert!(findings.nodes.is_empty());
     let Verdict::Refused(reason) = &findings.verdict else { panic!("{:?}", findings.verdict) };
-    assert!(reason.contains("0x170"), "{reason}");
+    assert!(reason.contains("0x140"), "{reason}");
     assert!(!findings.classes.is_empty(), "the classes are still listed");
 
     let odd_sm = FakeCard { sm_version: 0x705, ..FAKE_TURING };

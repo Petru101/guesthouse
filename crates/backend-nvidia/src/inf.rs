@@ -1,9 +1,55 @@
-//! Reading the guest driver's INF file, which setup unpacked from the user's own installer.
+//! Reading the guest driver's INF files, which setup unpacked from the user's own installer.
+//!
+//! Desktop cards are in `nv_dispi.inf`. A laptop's card is only in the INF of the laptop's maker,
+//! once for each laptop, with the subsystem that laptop gives it.
 
 use std::collections::HashMap;
+use std::path::Path;
+use std::{fs, io};
 
 /// The file's name in the driver's folder.
 pub const INF_NAME: &str = "nv_dispi.inf";
+const INF_ENDING: &str = ".inf";
+const SUBSYSTEM_PREFIX: &str = "&subsys_";
+
+/// How well a device list's line fits the card. Better is greater.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Fit {
+    /// The device, for another laptop.
+    OtherSubsystem,
+    /// The device, whatever its subsystem.
+    Device,
+    /// The device and the card's own subsystem.
+    Subsystem,
+}
+
+/// The INFs in a driver's folder: `nv_dispi.inf`, then the others by name.
+pub fn read_infs(folder: &Path) -> io::Result<Vec<Vec<u8>>> {
+    let mut found = vec![fs::read(folder.join(INF_NAME))?];
+    let mut others: Vec<_> = fs::read_dir(folder)?
+        .filter_map(|entry| entry.ok().map(|entry| entry.file_name()))
+        .filter_map(|name| name.into_string().ok())
+        .filter(|name| name.to_lowercase().ends_with(INF_ENDING) && !name.eq_ignore_ascii_case(INF_NAME))
+        .collect();
+    others.sort();
+    for name in others {
+        found.push(fs::read(folder.join(name))?);
+    }
+    Ok(found)
+}
+
+/// The INF that lists the card best, and its section there. The first INF wins a tie.
+pub fn card_section(infs: &[Inf], vendor: u16, device: u16, subsystem: u32) -> Option<(&Inf, String)> {
+    let mut best: Option<(Fit, &Inf, String)> = None;
+    for inf in infs {
+        if let Some((fit, section)) = inf.card_fit(vendor, device, subsystem)
+            && best.as_ref().is_none_or(|(known, _, _)| fit > *known)
+        {
+            best = Some((fit, inf, section));
+        }
+    }
+    best.map(|(_, inf, section)| (inf, section))
+}
 const SERVICE_BINARY: &str = "ServiceBinary";
 const KERNEL_DRIVER_ENDING: &str = ".sys";
 
@@ -81,10 +127,12 @@ impl Inf {
         self.by_name.get(name).map_or(&[], |&index| &self.sections[index].1)
     }
 
-    /// The card's install section, from the device lists. The last list is for the newest Windows.
-    pub fn card_section(&self, vendor: u16, device: u16) -> Option<String> {
+    /// The card's install section, from the device lists, and how well its line fits. The subsystem
+    /// is as the INF writes it, the subsystem's device in the high half. Of lines that fit as well,
+    /// the last wins, as the last list is for the newest Windows.
+    pub fn card_fit(&self, vendor: u16, device: u16, subsystem: u32) -> Option<(Fit, String)> {
         let wanted = format!("pci\\ven_{vendor:04x}&dev_{device:04x}");
-        let mut found = None;
+        let mut found: Option<(Fit, String)> = None;
         for (name, lines) in &self.sections {
             if !name.starts_with("nvidia_devices.") {
                 continue;
@@ -93,8 +141,18 @@ impl Inf {
                 let value = line.split_once('=').map_or("", |(_, value)| value);
                 let mut parts = value.split(',').map(str::trim);
                 let (Some(section), Some(id)) = (parts.next(), parts.next()) else { continue };
-                if id.to_lowercase().starts_with(&wanted) {
-                    found = Some(section.to_lowercase());
+                let id = id.to_lowercase();
+                let Some(rest) = id.strip_prefix(&wanted) else { continue };
+                let fit = match rest.strip_prefix(SUBSYSTEM_PREFIX) {
+                    None if rest.is_empty() || rest.starts_with('&') => Fit::Device,
+                    None => continue,
+                    Some(given) => match given.get(..8).map(|digits| u32::from_str_radix(digits, 16)) {
+                        Some(Ok(given)) if given == subsystem => Fit::Subsystem,
+                        _ => Fit::OtherSubsystem,
+                    },
+                };
+                if found.as_ref().is_none_or(|(known, _)| fit >= *known) {
+                    found = Some((fit, section.to_lowercase()));
                 }
             }
         }
@@ -173,12 +231,51 @@ mod tests {
 
     #[test]
     fn the_last_device_list_wins() {
-        assert_eq!(inf().card_section(VENDOR, 0x1234), Some("section_b".into()));
+        assert_eq!(inf().card_fit(VENDOR, 0x1234, 0), Some((Fit::Device, "section_b".into())));
+    }
+
+    const LAPTOP_TEXT: &str = "[NVIDIA_Devices.NTamd64.10.0...1]\n\
+        %A% = Section_C, PCI\\VEN_10DE&DEV_25A2&SUBSYS_01561558\n\
+        %B% = Section_D, PCI\\VEN_10DE&DEV_25A2&SUBSYS_3A5817AA\n\
+        %C% = Section_E, PCI\\VEN_10DE&DEV_25A20\n";
+
+    #[test]
+    fn a_laptops_card_takes_the_line_for_its_own_subsystem() {
+        let laptop = Inf::parse(LAPTOP_TEXT.as_bytes());
+        assert_eq!(laptop.card_fit(VENDOR, 0x25A2, 0x0156_1558), Some((Fit::Subsystem, "section_c".into())));
+        assert_eq!(laptop.card_fit(VENDOR, 0x25A2, 0x3A58_17AA), Some((Fit::Subsystem, "section_d".into())));
+        let other = laptop.card_fit(VENDOR, 0x25A2, 0x1234_5678);
+        assert_eq!(other, Some((Fit::OtherSubsystem, "section_d".into())));
+        assert_eq!(laptop.card_fit(VENDOR, 0x25A, 0), None, "a longer device number is another card");
+    }
+
+    #[test]
+    fn the_inf_that_fits_best_wins_and_the_first_wins_a_tie() {
+        let infs = [inf(), Inf::parse(LAPTOP_TEXT.as_bytes()), Inf::parse(LAPTOP_TEXT.as_bytes())];
+        let (found, section) = card_section(&infs, VENDOR, 0x25A2, 0x3A58_17AA).unwrap();
+        assert!(std::ptr::eq(found, &infs[1]));
+        assert_eq!(section, "section_d");
+        let (found, section) = card_section(&infs, VENDOR, 0x1234, 0x3A58_17AA).unwrap();
+        assert!(std::ptr::eq(found, &infs[0]));
+        assert_eq!(section, "section_b");
+        assert!(card_section(&infs, VENDOR, 0x9999, 0).is_none());
+    }
+
+    #[test]
+    fn the_folder_gives_nv_dispi_first() {
+        let folder = std::env::temp_dir().join(format!("guesthouse-infs-{}", std::process::id()));
+        fs::create_dir_all(&folder).unwrap();
+        for (name, text) in [("nvlti.inf", "b"), (INF_NAME, "a"), ("nvaci.inf", "c"), ("x.dll", "d")] {
+            fs::write(folder.join(name), text).unwrap();
+        }
+        let found = read_infs(&folder).unwrap();
+        fs::remove_dir_all(&folder).unwrap();
+        assert_eq!(found, [b"a".to_vec(), b"c".to_vec(), b"b".to_vec()]);
     }
 
     #[test]
     fn a_card_not_listed_has_no_section() {
-        assert_eq!(inf().card_section(VENDOR, 0x9999), None);
+        assert_eq!(inf().card_fit(VENDOR, 0x9999, 0), None);
     }
 
     #[test]
