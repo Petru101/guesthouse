@@ -27,7 +27,7 @@ pub use device::{Device, Mapping};
 pub use info::{
     CardDetails, DeviceInfo, EngineSet, Firmware, HW_IP_DMA, HW_IP_GFX, read_device_info, read_gpu_clock,
 };
-pub use ioctl::AMD_VENDOR;
+pub use ioctl::{AMD_VENDOR, amd_render_node};
 pub use memory::{
     CpuAccess, DOMAIN_GTT, DOMAIN_VRAM, GemHandle, MapFlags, MemoryType, set_tiling as set_buffer_tiling,
     tiling as buffer_tiling,
@@ -145,22 +145,20 @@ impl Backend for AmdBackend {
     }
 
     fn survey(setup: &Setup) -> Result<DriverSurvey, Refusal> {
-        // The host side is the Linux amdgpu driver; the guest side will be AMD's Adrenalin. Their
-        // branches can never match the way two NVIDIA drivers do, so `decide_start`'s branch rule
-        // does not fit AMD and will need a tested-pair table (noted in the plan). For the skeleton,
-        // the survey reports what it can without opening the card.
+        // The host is the Linux kernel's amdgpu and the guest is one Adrenalin release. Those are
+        // different drivers on purpose, so the pair is allowed through even though the branch names
+        // differ. Any other guest release has no profile and is refused before the card is opened.
+        let version = setup.guest_driver_version.to_string();
+        let matches = version == protocol::guest_driver::GUEST_RELEASE;
         let host = DriverFound { version: "kernel".into(), branch: HOST_BRANCH.into() };
-        let guest = DriverFound {
-            version: setup.guest_driver_version.to_string(),
-            branch: setup.guest_branch.clone(),
-        };
+        let guest = DriverFound { version, branch: setup.guest_branch.clone() };
         Ok(DriverSurvey {
             host,
             guest,
             host_branch_known: true,
-            guest_branch_known: false,
-            host_version_tested: false,
-            mixed_branches_tested: false,
+            guest_branch_known: matches,
+            host_version_tested: matches,
+            mixed_branches_tested: matches,
             card: CardLabel::Experimental,
         })
     }
@@ -336,7 +334,7 @@ impl Backend for AmdBackend {
     /// The answer is in the escape's own header. The trait has no status to return beside it.
     fn escape(&mut self, process: u32, data: &mut [u8], _books: &GuestBooks<'_>) {
         match protocol::escape::answer(data) {
-            Ok(answered) if answered.done => log::debug!(
+            Ok(answered) if answered.done => log::info!(
                 "escape from {process}: service {} subfunction {:#x}, answered as done",
                 answered.code.service,
                 answered.code.subfunction
@@ -356,11 +354,15 @@ impl Backend for AmdBackend {
     }
 
     fn adapter_answer(&mut self, query: &VendorQuery<'_>, out: &mut Vec<u8>) -> Option<Status> {
+        if query.kind == protocol::guest_driver::QUERY_NAME {
+            protocol::guest_driver::write_name(query, out);
+            return Some(Status::SUCCESS);
+        }
         protocol::adapter_info::answer(query, self.device.info(), out)
     }
 
-    fn registry_value(&mut self, _name: &RegistryName) -> Option<RegistryValue> {
-        None
+    fn registry_value(&mut self, name: &RegistryName) -> Option<RegistryValue> {
+        protocol::guest_driver::registry(name)
     }
 
     fn gpu_clock(&mut self) -> Result<u64, BackendError> {
@@ -426,6 +428,26 @@ impl Backend for AmdBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use guesthouse_backend::{CardLabel, DriverVersion, StartDecision, decide_start};
+
+    fn setup_for(version: &str) -> Setup {
+        Setup {
+            guest_driver_version: DriverVersion::parse(version).unwrap(),
+            guest_branch: version.into(),
+            driver_folder: Default::default(),
+            card: None,
+            card_address: None,
+        }
+    }
+
+    #[test]
+    fn this_guest_release_may_start_and_another_is_refused() {
+        let survey = AmdBackend::survey(&setup_for(protocol::guest_driver::GUEST_RELEASE)).unwrap();
+        assert_eq!(decide_start(&survey), StartDecision::Run);
+        assert_eq!(survey.card, CardLabel::Experimental);
+        let survey = AmdBackend::survey(&setup_for("1.0.0.0")).unwrap();
+        assert!(matches!(decide_start(&survey), StartDecision::Refuse(_)));
+    }
 
     #[test]
     fn address_spaces_stay_inside_the_cards_range() {
