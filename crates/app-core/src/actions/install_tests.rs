@@ -182,6 +182,29 @@ fn the_answer_disc_holds_this_machines_token_and_is_private() {
     assert!(!vm.folder(&context).join("answer-disc.new").exists(), "the files for the disc are gone");
 }
 
+#[test]
+fn a_machine_on_an_amd_card_gets_amds_driver_on_its_disc() {
+    let scratch = Scratch::new();
+    let context = scratch_context(&scratch);
+    with_install_files(&scratch, &context);
+    let amd_driver = scratch.path("amd-driver");
+    fs::create_dir_all(&amd_driver).unwrap();
+    fs::write(amd_driver.join("amdxc64.dll"), "driver").unwrap();
+    fs::create_dir_all(context.paths.setup_folder()).unwrap();
+    fs::write(
+        context.paths.setup_folder().join("amd.json"),
+        json!({"driver_folder": amd_driver}).to_string(),
+    )
+    .unwrap();
+    let vm = Machine { amd_gpu: "0000:7c:00.0".into(), ..machine(&context) };
+    make_answer_disc(&context, &vm).unwrap();
+    let path = answer_disc_path(&context, &vm);
+    let listing = Command::new("isoinfo").args(["-J", "-f", "-i"]).arg(&path).output().unwrap().stdout;
+    let listing = String::from_utf8_lossy(&listing);
+    assert!(listing.lines().any(|line| line == "/amd/amdxc64.dll"), "{listing}");
+    assert!(!listing.contains("/nvidia"), "NVIDIA's driver is not this machine's");
+}
+
 /// Stands in for a guest that installs and shuts down.
 #[derive(Default)]
 struct InstalledGuest;

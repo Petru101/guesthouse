@@ -8,6 +8,7 @@ pub mod amd;
 pub mod cards;
 pub mod checks;
 pub mod driver;
+pub mod guest_driver;
 pub mod guest_files;
 pub mod inf;
 pub mod toolkit;

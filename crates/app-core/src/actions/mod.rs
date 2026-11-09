@@ -194,6 +194,10 @@ fn get_ready(task: &mut Task, shown: PciIdentity) -> Result<()> {
         get_gpu_ready(task)?;
     }
     set_up_desktop(task)?;
+    if task.machine.windows_amd_card().is_some() {
+        // What follows places NVIDIA's files and settings store, which a guest on AMD has no use for.
+        return Ok(());
+    }
     place_driver_files(task)?;
     place_profile_store(task)
 }

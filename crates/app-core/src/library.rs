@@ -8,7 +8,8 @@ use crate::host::{free_gib, host_ram_limit, plain_ram_limit};
 use crate::machine::{Kind, Machine, load_all, sorted_names};
 use crate::monitor::{Command, failed};
 use crate::network;
-use crate::settings::{driver_folder, with_suffix};
+use crate::settings::with_suffix;
+use crate::setup::guest_driver::guest_driver;
 use crate::snapshots::{list_snapshots, snapshots_folder};
 use crate::tasks::{State, slot_of, status};
 use serde_json::json;
@@ -125,8 +126,8 @@ pub fn create_problems(context: &Context, new: &NewMachine, machine: &Machine) -
                 context.install_room_gib()
             ));
         }
-        if !driver_folder(context).is_dir() {
-            found.push(NO_DRIVER_FILES.to_owned());
+        if let Err(missing) = guest_driver(context, machine) {
+            found.push(missing.to_owned());
         }
     }
     Ok(found)

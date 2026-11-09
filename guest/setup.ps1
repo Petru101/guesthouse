@@ -15,9 +15,15 @@ powercfg /change monitor-timeout-ac 0
 powercfg /hibernate off
 # The largest firmware mode wins with this, and the app picks that with the VGA memory size.
 bcdedit /set '{current}' highestmode on
-# Windows looks here for the driver's user-mode half, under the name the daemon gives it.
-$store = 'C:\Windows\System32\HostDriverStore\FileRepository\nv_dispi.inf_amd64_gpupv'
-New-Item -ItemType Directory -Force $store | Out-Null
-robocopy (Join-Path $PSScriptRoot 'nvidia') $store /E /NP /NFL /NDL /NJH /NJS
+# Windows looks here for the driver's user-mode half, under the name the daemon gives it. The disc
+# has one maker's driver, in a folder named for the maker.
+$stores = @{ nvidia = 'nv_dispi.inf_amd64_gpupv'; amd = 'amdxc.inf_amd64_gpupv' }
+foreach ($maker in $stores.Keys) {
+    $from = Join-Path $PSScriptRoot $maker
+    if (-not (Test-Path $from)) { continue }
+    $store = Join-Path 'C:\Windows\System32\HostDriverStore\FileRepository' $stores[$maker]
+    New-Item -ItemType Directory -Force $store | Out-Null
+    robocopy $from $store /E /NP /NFL /NDL /NJH /NJS
+}
 Start-ScheduledTask -TaskName 'gpupv-agent'
 'setup done' | Out-File C:\gpupv\setup.log

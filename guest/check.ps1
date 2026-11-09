@@ -1,8 +1,8 @@
-# Says what a finished install is missing. The host puts $expected, how many driver files it sent, first,
-# and the account's name in.
+# Says what a finished install is missing. The host puts first $expected, how many driver files it
+# sent, and $store_folder, the host driver store folder they went to, and the account's name in.
 $user = '@USER@'
 $missing = @()
-$store = 'C:\Windows\System32\HostDriverStore\FileRepository\nv_dispi.inf_amd64_gpupv'
+$store = Join-Path 'C:\Windows\System32\HostDriverStore\FileRepository' $store_folder
 $count = @(Get-ChildItem $store -Recurse -File -ea 0).Count
 if ($count -ne $expected) { $missing += "driver files: $count of $expected" }
 if (-not (bcdedit /enum '{current}' | Select-String 'highestmode\s+Yes')) { $missing += 'highestmode' }
