@@ -284,7 +284,10 @@ impl Backend for AmdBackend {
         let flags = MapFlags {
             readable: request.readable,
             writable: request.writable,
-            executable: request.executable,
+            // The command processor fetches command buffers through the guest's own mappings, and
+            // amdgpu won't let it without this. The guest never asks for it, so whatever it can
+            // read, the card may run.
+            executable: request.executable || request.readable,
             memory_type,
         };
         let (address, offset, length) = (request.address, request.offset, request.length);
