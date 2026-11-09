@@ -92,7 +92,11 @@ QEMU is started by `guesthouse-jail`, which applies a plan the app writes in `vm
 
 ## Slots
 
-`GUESTHOUSE_SLOT` names the VM, from 0 to 3, and unset means 0. Everything the daemon touches is named from it in `daemon/src/slot.rs`: the run folder, the shared memory files, the ports. Slot 0 has the plain names, and other slots add their number. Anything else in the variable stops the daemon, because a guess could reach another VM's files.
+`GUESTHOUSE_SLOT` names the VM, from 0 to 3, and unset means 0. Everything the daemon touches is named from it in `daemon/src/slot.rs`: the run folder, the guest's memory, the ports. Slot 0 has the plain names, and other slots add their number. Anything else in the variable stops the daemon, because a guess could reach another VM's files.
+
+## The guest's memory
+
+A GPU guest's RAM and its IO window are memfds. The app makes both before QEMU or the daemon starts, and each finds them open at the same descriptor numbers (`daemon/src/handover.rs`). Nothing of the guest is a file anyone can open by name, so `/dev/shm`'s size doesn't limit a machine, and the memory goes back as soon as the last of QEMU and the daemon has gone. Each memfd is named for its slot, as `gpupv-ram-2`, which is how the app tells from `/proc` what each slot holds when it works out how much RAM it can offer.
 
 ## The vendor line
 
@@ -104,7 +108,7 @@ If you find yourself wanting to name a vendor in `core`, something belongs in a 
 
 `backend-nvidia` goes through `rm::Rm` for everything it asks of the host's driver. `rm/linux.rs` is the real one and `rm/fake.rs` plays its part in tests, so the whole crate can be tested with no card.
 
-`backend-amd` goes through amdgpu's render node. Each guest address space gets its own VM on the card, every submission names the buffers its space holds so amdgpu keeps them in place while it runs, and tiled frames reach the screen through a copy on the card's DMA engine. A frame for the viewer's ring goes the same way, as a copy to a surface of the slot's shape.
+`backend-amd` goes through amdgpu's render node. Each guest address space gets its own VM on the card, every submission names the buffers its space holds so amdgpu keeps them in place while it runs, and tiled frames reach the screen through a copy on the card's DMA engine. A frame for the viewer's ring is a copy to a surface of the slot's shape: one plain DMA copy when both have the same pitch, as the CPU reads video memory slowly, and otherwise the screen's way. The display driver's slots are linear buffers made with CPU access, so the CPU reads their stamps.
 
 ## Frames
 
@@ -112,7 +116,7 @@ If you find yourself wanting to name a vendor in `core`, something belongs in a 
 
 The staging surface lies in guest pages, so a viewer can't use it where it is. The daemon keeps its own ring of slots in video memory, exported with `Backend::export_memory`, and each screen frame gets a second copy, into the next free slot. The guest's image is read directly if it's the screen's size, and otherwise the staging surface is, because each slot needs the whole picture. On NVIDIA an export goes through an RM file and a GEM object on the render node, in `rm/dmabuf.rs`.
 
-A viewer whose screen is on another GPU, as on most laptops, can't take the card's buffers. Its hello asks for frames in memory (`wants_memory`; the app decides in `app-core/src/screen_gpu.rs`, by whether a connected screen is on a GPU other than the machine's card, NVIDIA or AMD). Its slots are then sealed memfds here, mapped for the GPU with `Backend::adopt_host_pages`, and the viewer copies each frame out. The screen's copies write them as usual. The indirect display driver's frames are in guest video memory, so each one is copied over when it lands, alone on the copy engine and waited for. Those viewers aren't offered HDR.
+A viewer whose screen is on another GPU, as on most laptops, can't take the card's buffers. Its hello asks for frames in memory (`wants_memory`; the app decides in `app-core/src/screen_gpu.rs`, by whether a connected screen is on a GPU other than the machine's card, NVIDIA or AMD). Its slots are then sealed memfds here, mapped for the GPU with `Backend::adopt_host_pages`, and the viewer copies each frame out. The screen's copies write them as usual. The indirect display driver's frames are in guest video memory, so each one is copied over when it lands, alone on the copy engine and waited for. A finished frame goes before a screen copy that hasn't started yet, as a guest still drawing on its basic display always has the next one queued. Those viewers aren't offered HDR.
 
 The rules:
 
@@ -193,7 +197,7 @@ NVIDIA limits how many encoding sessions a GeForce card runs at once, and this p
 
 ## The app
 
-`app-core` needs no display, so nearly all of the app can be tested alone. Each machine is one JSON file. Anything slow runs as a task: `guesthouse-task` is a process of its own that outlives the app and leaves its steps in a small file, so the app can close at any moment and read where things are when it opens again.
+`app-core` needs no display, so nearly all of the app can be tested alone. Each machine is one JSON file. Anything slow runs as a task: `guesthouse-task` is a process of its own that outlives the app and leaves its steps in a small file, so the app can close at any moment and read where things are when it opens again. The app also updates itself, in `updates.rs`: it runs the installed `install.sh --update --from-app=PID` with every VM off, and pkexec asks for the password in a window if root is needed.
 
 `Context` holds what the code needs from the PC, and tests swap its parts for stand-ins. A VM's QEMU arguments are built as data in `vm_args`. How a VM and the daemon come up is behind `VmHost`, and everything that knows the daemon's start-up is in `daemon.rs`, so a change there stays there.
 
