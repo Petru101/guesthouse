@@ -77,6 +77,10 @@ pub struct RecordLayout {
     pub adapter_id: usize,
     pub name: usize,
     pub short_name: usize,
+    /// The adapter's registry key, as a kernel path in UTF-16. The user-mode driver reads its settings
+    /// from under it, and only sets up its defaults once it has a key. Without them, Direct3D 9 is
+    /// offered nothing newer than its oldest interface and fails to make a device.
+    pub registry_key: usize,
     pub host_bridge: usize,
     pub video_decode_caps: usize,
     pub jpeg_caps: usize,
@@ -187,6 +191,7 @@ pub const GUEST_617: GuestBranch = GuestBranch {
         adapter_id: 0xC46C,
         name: 0xC4B8,
         short_name: 0xC538,
+        registry_key: 0xAF20,
         host_bridge: 0xC578,
         video_decode_caps: 0x144,
         jpeg_caps: 0x18A,
