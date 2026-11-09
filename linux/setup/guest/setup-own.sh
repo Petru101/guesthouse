@@ -1,6 +1,6 @@
 #!/bin/bash
-# Sets up the forwarded GPU in a Linux guest someone installed by hand. Run it once, as root, from the
-# driver image the app attaches when the machine's Linux GPU setting is on:
+# Sets up the forwarded GPU in a Linux guest someone installed by hand, or its AMD card's GPU. Run it
+# once, as root, from the image the app attaches when the machine's Linux GPU setting is on:
 #     sudo mount -o ro LABEL=NVFWD_DRIVER /mnt
 #     sudo bash /mnt/setup/setup-own.sh
 # Run it again after updating the app, to take its new scripts. It installs what the build needs,
@@ -182,10 +182,25 @@ if [ "${1:-}" = --refresh ]; then
     family=$own_family
     kernel=$(uname -r)
     copy_scripts
-    install_settings
-    label_for_selinux
-    systemctl daemon-reload
-    systemctl enable nvfwd-gpu.service nvfwd-desktop-watch.service
+    # An AMD guest has no NVIDIA driver and keeps its own units, so it takes this image's AMD scripts,
+    # units and Mesa hook, not the forwarded GPU's settings, and needs no driver image to do it.
+    if [ -e "$units/nvfwd-amd.service" ]; then
+        . "$here/amd/setup-amd.sh"
+        install_mesa_hook
+        install_amd_units
+    else
+        install_settings
+        label_for_selinux
+        systemctl daemon-reload
+        systemctl enable nvfwd-gpu.service nvfwd-desktop-watch.service
+    fi
+    exit 0
+fi
+
+# The image for an AMD card has no driver: the guest's Mesa is what's set up.
+if [ "$(value_of "$image/manifest" gpu 2>/dev/null)" = amd ]; then
+    . "$here/amd/setup-amd.sh"
+    setup_amd
     exit 0
 fi
 

@@ -45,7 +45,9 @@ install_firefox() {
 }
 
 enable_services() {
-    systemctl enable "$here/units/nvfwd-gpu.service" "$here/units/nvfwd-desktop.service"
+    systemctl enable "$here/units/nvfwd-gpu.service" "$here/units/nvfwd-desktop.service" \
+        "$here/units/nvfwd-amd.service"
+    systemctl link "$here/units/nvfwd-mesa-build.service"
     systemctl set-default graphical.target
 }
 
@@ -61,6 +63,8 @@ refresh() {
     fi
     # Only if the first boot diverted it: the wrapper needs Xwayland.real beside it.
     [ ! -e "$root/usr/bin/Xwayland.real" ] || install -m 755 "$here/Xwayland" "$root/usr/bin/Xwayland"
+    # The AMD hook too, so an AMD card's guest takes its new Mesa trigger the way a first boot installs it.
+    install -D -m 644 "$here/files/hooks/apt-nvfwd-mesa.conf" "$root/etc/apt/apt.conf.d/90nvfwd-mesa"
     ln -sf "$here/check.sh" "$root/usr/local/sbin/nvfwd-check"
     systemctl daemon-reload
     systemctl enable "$here/units/nvfwd-gpu.service" "$here/units/nvfwd-desktop.service"
@@ -70,8 +74,15 @@ if [ "${1:-}" = --refresh ]; then
     refresh
     exit 0
 fi
+
+# On an AMD card, Mesa is built again with native context after each of Ubuntu's updates of it.
+install_mesa_hook() {
+    install -m 644 "$here/files/hooks/apt-nvfwd-mesa.conf" /etc/apt/apt.conf.d/90nvfwd-mesa
+}
+
 install_packages
 install_settings
+install_mesa_hook
 wrap_xwayland
 mask_user_sound
 install_firefox

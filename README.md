@@ -14,7 +14,7 @@ That's Godot's full Forward+ renderer on Vulkan, in Windows, in a VM on Fedora. 
 curl -fsSL https://raw.githubusercontent.com/xnixy/guesthouse/main/install.sh | sh
 ```
 
-It needs x86_64 Linux. For a GPU in a VM you need an NVIDIA card with the open kernel modules, and so far only the RTX 5090 has run this. The 40, 20 and 16 series get experimental support. On anything else it installs with plain VMs only, and says why. [What the installer does](#what-the-installer-does) has the details.
+It needs x86_64 Linux. For a GPU in a VM you need an NVIDIA card with the open kernel modules, and the RTX 5090 and a 40 series card have run this. The 40, 20 and 16 series get experimental support. On anything else it installs with plain VMs only, and says why. [What the installer does](#what-the-installer-does) has the details.
 
 ## Why I'm building this
 
@@ -115,6 +115,8 @@ That's `nvidia-smi` and a small CUDA test of mine, on the guest's own desktop. T
 In theory this route isn't tied to the 5090 the way the Windows one is. It forwards the real driver's calls, so it should work on anything NVIDIA's open driver supports, from the 20 series up, as long as its tables get rebuilt for that driver version. That's only theory for now: it has run on my 5090, on driver 615.78.08, with an AMD CPU, and nothing else.
 
 Delay is where it's behind. A simple app takes about 20 to 30 ms from key press to picture, against about 11.5 on the host, and Godot takes 40 to 100 ms, more on Vulkan than OpenGL.
+
+An AMD card, built in or not, can give a Linux guest its 3D too, through virtio-gpu's native context: the guest runs Mesa's radeonsi and RADV on the real card. Ubuntu sets itself up for it, and a Linux you install yourself has a setup script. This is experimental: it has only run on one integrated Radeon here, so a discrete or older card may not work yet, and if it doesn't the guest falls back or boots without the GPU. Reports welcome. See [`linux/`](linux/README.md#an-amd-card).
 
 ### Keys in the viewer
 
