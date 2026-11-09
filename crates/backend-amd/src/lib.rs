@@ -336,16 +336,20 @@ impl Backend for AmdBackend {
     /// The answer is in the escape's own header. The trait has no status to return beside it.
     fn escape(&mut self, process: u32, data: &mut [u8], _books: &GuestBooks<'_>) {
         match protocol::escape::answer(data) {
-            Ok(code) if code.needed_by_the_guest() => log::warn!(
-                "escape from {process}: service {} subfunction {:#x}, answered as failed; the guest's \
-                 driver can't go on without it",
-                code.service,
-                code.subfunction
+            Ok(answered) if answered.done => log::debug!(
+                "escape from {process}: service {} subfunction {:#x}, answered as done",
+                answered.code.service,
+                answered.code.subfunction
             ),
-            Ok(code) => log::debug!(
+            Ok(answered) if answered.code.needed_by_the_guest() => log::warn!(
+                "escape from {process}: service {} subfunction {:#x}, not shaped as the guest's driver                  sends it, answered as failed; the guest can't go on without it",
+                answered.code.service,
+                answered.code.subfunction
+            ),
+            Ok(answered) => log::debug!(
                 "escape from {process}: service {} subfunction {:#x}, answered as failed",
-                code.service,
-                code.subfunction
+                answered.code.service,
+                answered.code.subfunction
             ),
             Err(refused) => log::info!("an escape from {process} is {}", refused.0),
         }
