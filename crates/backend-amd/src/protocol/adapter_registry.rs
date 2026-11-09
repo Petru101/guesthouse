@@ -27,7 +27,7 @@ pub fn answer(query: &VendorQuery<'_>, out: &mut Vec<u8>) -> Option<Status> {
         log::info!("adapter registry refused: the guest asked for {} bytes", query.size);
         return Some(Status::INVALID_PARAMETER);
     }
-    log::info!("answered the adapter registry, chip type {CHIP_TYPE}");
+    log::debug!("answered the adapter registry, chip type {CHIP_TYPE}");
     let start = out.len();
     for text in [ADAPTER_NAME, "", "", CHIP_TYPE] {
         write_field(out, text);

@@ -13,7 +13,7 @@
 pub mod adapter_info;
 pub mod adapter_registry;
 pub mod allocation;
-mod bytes;
+pub(crate) mod bytes;
 pub mod command_data;
 pub mod context;
 pub mod escape;

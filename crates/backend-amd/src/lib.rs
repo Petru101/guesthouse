@@ -334,7 +334,7 @@ impl Backend for AmdBackend {
     /// The answer is in the escape's own header. The trait has no status to return beside it.
     fn escape(&mut self, process: u32, data: &mut [u8], _books: &GuestBooks<'_>) {
         match protocol::escape::answer(data) {
-            Ok(answered) if answered.done => log::info!(
+            Ok(answered) if answered.done => log::debug!(
                 "escape from {process}: service {} subfunction {:#x}, answered as done",
                 answered.code.service,
                 answered.code.subfunction
@@ -349,19 +349,12 @@ impl Backend for AmdBackend {
                 answered.code.service,
                 answered.code.subfunction
             ),
-            Err(refused) => {
-                let head = data.chunks(4).take(4).map(|word| {
-                    let mut bytes = [0; 4];
-                    bytes[..word.len()].copy_from_slice(word);
-                    format!("{:#x}", u32::from_le_bytes(bytes))
-                });
-                log::info!(
-                    "an escape from {process} is {} ({} bytes: {})",
-                    refused.0,
-                    data.len(),
-                    head.collect::<Vec<_>>().join(", ")
-                );
-            }
+            Err(refused) => log::info!(
+                "an escape from {process} is {} ({} bytes, starting {})",
+                refused.0,
+                data.len(),
+                protocol::bytes::first_dwords(data, 4)
+            ),
         }
     }
 

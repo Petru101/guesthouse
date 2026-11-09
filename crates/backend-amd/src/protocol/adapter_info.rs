@@ -1,8 +1,7 @@
 //! The adapter block AMD's Windows driver reads at start, built from the host card.
 //!
-//! The guest asks for it with an adapter query of type 0, the WDK's DXGKQAITYPE_UMDRIVERPRIVATE.
-//! The block is [`BLOCK_SIZE`] bytes. A guest that asks for fewer gets the front of the same block.
-//! AMD's open interop header calls the structure
+//! The guest asks for it with an adapter query of type 0, the WDK's DXGKQAITYPE_UMDRIVERPRIVATE,
+//! into a buffer of exactly [`BLOCK_SIZE`] bytes. AMD's open interop header calls the structure
 //! ADAPTERINFOEX. All of it is the kernel driver's to fill in, and the guest only reads it, so each
 //! field here is one of three things:
 //!
@@ -14,13 +13,13 @@
 //! block, so the zeros are part of the answer too.
 
 use super::allocation::SURFACE_SIZE;
-use super::bytes::{index_xor_sum, put_dword, put_qword, put_word};
+use super::bytes::{first_dwords, index_xor_sum, put_dword, put_qword, put_word};
 use crate::info::{CardDetails, DeviceInfo};
 use guesthouse_backend::{Status, VendorQuery};
 
 /// The adapter query type that asks for the block, DXGKQAITYPE_UMDRIVERPRIVATE.
 pub const QUERY_TYPE: u32 = 0;
-/// The whole block. A shorter ask is answered with the front of it.
+/// The guest's buffer must be exactly this size, or the kernel refuses the query.
 pub const BLOCK_SIZE: usize = 0x3A00;
 
 // The block's start. Fixed values.
@@ -171,27 +170,19 @@ pub fn answer(query: &VendorQuery<'_>, info: &DeviceInfo, out: &mut Vec<u8>) -> 
     if query.kind != QUERY_TYPE {
         return None;
     }
-    // The bare-metal kernel demands the whole block. This guest asks for a shorter prefix
-    // first, and refusing that ask is where it stops. A longer ask has nowhere to go.
-    if query.size == 0 || query.size > BLOCK_SIZE {
-        log::info!("adapter block refused: the guest asked for {} bytes", query.size);
-        return Some(Status::INVALID_PARAMETER);
-    }
+    // The 2400-byte ask seen from Adrenalin 26.10.2 is refused, as the kernel driver refuses it.
+    // Its layout isn't known, and the front of this block was tried and changed nothing.
     if query.size != BLOCK_SIZE {
-        let head = query.data.chunks(4).take(4).map(|word| {
-            let mut bytes = [0; 4];
-            bytes[..word.len()].copy_from_slice(word);
-            format!("{:#x}", u32::from_le_bytes(bytes))
-        });
         log::info!(
-            "adapter block ask is {} bytes, with {} bytes of input ({})",
+            "adapter block refused: the guest asked for {} bytes, with {} bytes of input ({})",
             query.size,
             query.data.len(),
-            head.collect::<Vec<_>>().join(", ")
+            first_dwords(query.data, 4)
         );
+        return Some(Status::INVALID_PARAMETER);
     }
-    log::info!("answered the adapter block, {} bytes of {BLOCK_SIZE}", query.size);
-    out.extend_from_slice(&build(info)[..query.size]);
+    log::debug!("answered the adapter block");
+    out.extend_from_slice(&build(info));
     Some(Status::SUCCESS)
 }
 
@@ -557,9 +548,8 @@ mod tests {
         let other = VendorQuery { kind: 7, size: BLOCK_SIZE, data: &[], process_is_32_bit: false };
         assert_eq!(answer(&other, &info, &mut out), None);
         let short = VendorQuery { kind: QUERY_TYPE, size: 0x100, data: &[], process_is_32_bit: false };
-        assert_eq!(answer(&short, &info, &mut out), Some(Status::SUCCESS));
-        assert_eq!(out, build(&info)[..0x100]);
-        out.clear();
+        assert_eq!(answer(&short, &info, &mut out), Some(Status::INVALID_PARAMETER));
+        assert!(out.is_empty());
         let too_big =
             VendorQuery { kind: QUERY_TYPE, size: BLOCK_SIZE + 4, data: &[], process_is_32_bit: false };
         assert_eq!(answer(&too_big, &info, &mut out), Some(Status::INVALID_PARAMETER));
