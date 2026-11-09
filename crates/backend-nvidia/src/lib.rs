@@ -42,7 +42,7 @@ use guesthouse_backend::{
     MapRequest, MemoryId, MemoryKind, PciCard, Refusal, RegistryName, RegistryValue, Setup, SlotCopy,
     SpaceId, StagingCopy, StagingStart, Status, SurfaceShape, UnmapRequest, VendorQuery, Work, WorkStart,
 };
-use inf::{INF_NAME, Inf};
+use inf::{INF_NAME, Inf, read_infs};
 use profile::{
     Generation, GuestBranch, HostBranch, generation_for, guest_branch, guest_channel_classes, host_branch,
 };
@@ -57,7 +57,6 @@ use rm::{Handle, Rm, RmError};
 use sensors::SnapshotReader;
 use staging::Copier;
 use std::collections::HashMap;
-use std::fs;
 use std::os::fd::OwnedFd;
 use std::time::Instant;
 
@@ -181,7 +180,7 @@ impl<R: Rm> NvidiaBackend<R> {
         guest: &'static GuestBranch,
         setup: &Setup,
         host: &HostFacts,
-        inf_bytes: &[u8],
+        infs: &[Vec<u8>],
     ) -> Result<Self, Refusal> {
         let failed = |error: RmError| Refusal(format!("Reading the card failed: {error}"));
         let mut card = CardReader::new(&mut device);
@@ -204,6 +203,7 @@ impl<R: Rm> NvidiaBackend<R> {
         let word = |at: usize| u32::from_le_bytes(pci[at..at + 4].try_into().expect("four bytes"));
         let found =
             PciCard { vendor: word(0) as u16, device: (word(0) >> 16) as u16, revision: word(8) as u8 };
+        let subsystem = word(4);
         if let Some(card) = setup.card.filter(|card| card.device != found.device) {
             return Err(Refusal(format!(
                 "Setup chose card {:04x} but the first NVIDIA device is {:04x}. Only the first NVIDIA GPU can \
@@ -213,8 +213,8 @@ impl<R: Rm> NvidiaBackend<R> {
         }
         let pci_card = setup.card.unwrap_or(found);
 
-        let inf = Inf::parse(inf_bytes);
-        let registry = AdapterRegistry::from_inf(&inf, &pci_card)?;
+        let infs: Vec<Inf> = infs.iter().map(|bytes| Inf::parse(bytes)).collect();
+        let registry = AdapterRegistry::from_infs(&infs, &pci_card, subsystem)?;
         let layout = &guest.record;
         let dedicated = record[layout.dedicated..layout.dedicated + 8].try_into().expect("eight bytes");
         let guid_seed: String =
@@ -331,7 +331,8 @@ impl<R: Rm + OpenRm> Backend for NvidiaBackend<R> {
         let host_profile = host_branch(&survey.host.branch).ok_or_else(no_profile)?;
         let guest_profile = guest_branch(&setup.guest_branch).ok_or_else(no_profile)?;
         let inf_path = setup.driver_folder.join(INF_NAME);
-        let inf = fs::read(&inf_path).map_err(|error| Refusal(format!("{}: {error}", inf_path.display())))?;
+        let infs = read_infs(&setup.driver_folder)
+            .map_err(|error| Refusal(format!("{}: {error}", inf_path.display())))?;
         let place =
             listing::place_for(&listing::read_listing(), setup.card_address.as_ref()).map_err(Refusal)?;
         let host = read_host_facts(place.address.as_ref()).map_err(Refusal)?;
@@ -339,7 +340,7 @@ impl<R: Rm + OpenRm> Backend for NvidiaBackend<R> {
         let rm = R::open_rm(&survey.host.version, host_profile, &place).map_err(opened)?;
         let device = Device::open_place(rm, host_profile, &place).map_err(opened)?;
         log::info!("opened the card at {}, device instance {}", place_text(&place), device.instance);
-        let mut backend = Self::start(device, host_profile, guest_profile, setup, &host, &inf)?;
+        let mut backend = Self::start(device, host_profile, guest_profile, setup, &host, &infs)?;
         // Readings are a bonus, so a failure here only means going without.
         match sensors::start(&backend.card_uuid) {
             Ok(snapshot) => backend.set_sensors(Box::new(snapshot)),

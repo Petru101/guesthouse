@@ -1,16 +1,16 @@
-//! `fake_adapter DRIVER_FOLDER OUTPUT_FOLDER [ada|turing]`: writes what the backend works out for a
+//! `fake_adapter DRIVER_FOLDER OUTPUT_FOLDER [ada|ampere|turing]`: writes what the backend works out for a
 //! pretend card, to compare with another implementation of the same rules. It never touches a real
 //! card. The driver's INF has to list the pretend card's device.
 
 use guesthouse_backend::{DriverVersion, PciCard, Setup, Status, VendorQuery};
 use guesthouse_backend_nvidia::NvidiaBackend;
-use guesthouse_backend_nvidia::inf::INF_NAME;
+use guesthouse_backend_nvidia::inf::read_infs;
 use guesthouse_backend_nvidia::profile::{GUEST_617, HOST_615};
 use guesthouse_backend_nvidia::record::read_host_facts_with_clocks;
 use guesthouse_backend_nvidia::rm::device::Device;
 use guesthouse_backend_nvidia::rm::fake::FakeRm;
 use guesthouse_backend_nvidia::rm::fake_card::{
-    FAKE_ADA, FAKE_BLACKWELL, FAKE_TURING, FakeCard, install_card,
+    FAKE_ADA, FAKE_AMPERE, FAKE_BLACKWELL, FAKE_TURING, FakeCard, install_card,
 };
 use std::path::PathBuf;
 use std::{env, fs};
@@ -26,6 +26,7 @@ fn card_named(name: Option<PathBuf>) -> FakeCard {
     match name.as_ref().and_then(|name| name.to_str()) {
         None => FAKE_BLACKWELL,
         Some("ada") => FAKE_ADA,
+        Some("ampere") => FAKE_AMPERE,
         Some("turing") => FAKE_TURING,
         Some(other) => panic!("no pretend card called {other}"),
     }
@@ -46,8 +47,8 @@ fn main() {
         card_address: None,
     };
     let host = read_host_facts_with_clocks(RATED_CLOCKS).unwrap();
-    let inf = fs::read(folder.join(INF_NAME)).unwrap();
-    let backend = NvidiaBackend::start(device, &HOST_615, &GUEST_617, &setup, &host, &inf);
+    let infs = read_infs(&folder).unwrap();
+    let backend = NvidiaBackend::start(device, &HOST_615, &GUEST_617, &setup, &host, &infs);
     let backend = backend.map_err(|refusal| refusal.0).unwrap();
 
     fs::create_dir_all(&output).unwrap();

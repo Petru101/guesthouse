@@ -73,6 +73,8 @@ const BLACKWELL_COMPUTE_B: u32 = 0xCEC0;
 const BLACKWELL_INLINE_TO_MEMORY_A: u32 = 0xCD40;
 const ADA_A: u32 = 0xC997;
 const ADA_COMPUTE_A: u32 = 0xC9C0;
+const AMPERE_B: u32 = 0xC797;
+const AMPERE_COMPUTE_B: u32 = 0xC7C0;
 const AMPERE_DMA_COPY_B: u32 = 0xC7B5;
 const TURING_A: u32 = 0xC597;
 const TURING_COMPUTE_A: u32 = 0xC5C0;
@@ -157,6 +159,14 @@ const ADA_NODES: EngineNodes = EngineNodes {
     jpeg: &[],
     video_runs: false,
 };
+const AMPERE_NODES: EngineNodes = EngineNodes {
+    overlay: Some(OVERLAY_NODE),
+    decode: &[(0, NODE_TYPE_NOT_SET)],
+    encode: &[(0, NODE_TYPE_NOT_SET)],
+    optical_flow: &[(0, 0x21)],
+    jpeg: &[],
+    video_runs: false,
+};
 const TURING_NODES: EngineNodes = EngineNodes {
     overlay: Some(OVERLAY_NODE),
     decode: &[(0, NODE_TYPE_NOT_SET)],
@@ -197,6 +207,37 @@ pub const ADA: Generation = Generation {
     run_on_guest_branches: &[],
 };
 
+/// Ampere's 30 series, the GA10x chips. Experimental. The GA100 has no graphics class, and reports
+/// another SM version, so it's refused.
+pub const AMPERE: Generation = Generation {
+    name: "Ampere",
+    architectures: &[0x170],
+    channel_class: 0xC56F,
+    copy_class: AMPERE_DMA_COPY_B,
+    video_decode_class: 0xC7B0,
+    video_encode_class: 0xC7B7,
+    usermode_class: 0xC561,
+    graphics_classes: &[
+        (AMPERE_B, 16),
+        (AMPERE_COMPUTE_B, 16),
+        (KEPLER_INLINE_TO_MEMORY_B, 16),
+        (FERMI_TWOD_A, 16),
+        (AMPERE_DMA_COPY_B, 8),
+        (DEFERRED_API, 1),
+    ],
+    channel_objects: &[
+        (ChannelObject::InlineToMemory, KEPLER_INLINE_TO_MEMORY_B),
+        (ChannelObject::Graphics, AMPERE_B),
+        (ChannelObject::TwoD, FERMI_TWOD_A),
+    ],
+    shader_sets: &[(0x806, 0x7002)],
+    nodes: AMPERE_NODES,
+    copy_node_flags: None,
+    video_record_flags: NO_VIDEO_FLAGS,
+    depth_kinds: DepthKinds::Always,
+    run_on_guest_branches: &[],
+};
+
 /// Turing, the 20 and 16 series. Experimental. Each SM version needs its own row in `shader_sets`, so
 /// a chip that reports another one is refused. The TU117's encoder has another class, 0xB4B7, which
 /// makes no difference while encoders take no context.
@@ -229,7 +270,7 @@ pub const TURING: Generation = Generation {
     run_on_guest_branches: &[],
 };
 
-const GENERATIONS: [&Generation; 3] = [&BLACKWELL, &ADA, &TURING];
+const GENERATIONS: [&Generation; 4] = [&BLACKWELL, &ADA, &AMPERE, &TURING];
 
 /// The profile for an architecture number, if this build has one.
 pub fn generation_for(architecture: u32) -> Option<&'static Generation> {

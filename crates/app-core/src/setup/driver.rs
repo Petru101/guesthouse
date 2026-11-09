@@ -29,6 +29,21 @@ pub fn read_inf(folder: &Path) -> Result<String> {
     Ok(latin1(&fs::read(folder.join(INF_FILE))?))
 }
 
+/// The driver's INFs, `nv_dispi.inf` first and then the others by name. Laptops' cards are only in
+/// their makers' INFs.
+pub fn read_infs(folder: &Path) -> Result<Vec<String>> {
+    let mut others: Vec<String> = fs::read_dir(folder)?
+        .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
+        .filter(|name| name.to_lowercase().ends_with(".inf") && !name.eq_ignore_ascii_case(INF_FILE))
+        .collect();
+    others.sort();
+    let mut found = vec![read_inf(folder)?];
+    for name in others {
+        found.push(latin1(&fs::read(folder.join(name))?));
+    }
+    Ok(found)
+}
+
 /// The installer's driver version, from the INF inside it, as its name proves nothing.
 pub fn read_installer(path: &str) -> Result<String> {
     if !on_path("7z") {

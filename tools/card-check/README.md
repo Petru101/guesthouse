@@ -1,6 +1,6 @@
 # card-check
 
-Windows guests have only run on an RTX 5090 so far. The 40, 20 and 16 series have profiles now, and nobody has run them on a real card. This program is for anyone with an NVIDIA card on Linux: it reads what the host's driver says about the card, says what Guesthouse would make of it, and then, if you say yes, makes the channels a VM would use and sees whether the card answers. It writes a short text file you can read and then post.
+Windows guests have only run on an RTX 5090 so far. The 40, 30, 20 and 16 series have profiles now, and nobody has run them on a real card. This program is for anyone with an NVIDIA card on Linux: it reads what the host's driver says about the card, says what Guesthouse would make of it, and then, if you say yes, makes the channels a VM would use and sees whether the card answers. It writes a short text file you can read and then post.
 
 Run `guesthouse-card-check` from a terminal. It needs no root, no Rust, no Windows driver and nothing installed. It writes `guesthouse-card-check.txt` in the folder you ran it from, or in your temp folder if it can't write there, and says where. Nothing is sent anywhere.
 
