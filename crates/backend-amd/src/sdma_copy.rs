@@ -1,11 +1,12 @@
-//! Copies a tiled surface into a linear one with the card's DMA engine.
+//! Copies with the card's DMA engine: a tiled surface into a linear one, and frames into the
+//! viewer's slots, which the CPU would read slowly from video memory.
 //!
 //! A guest's OpenGL window draws into a tiled surface and presents it as a copy to a linear one.
 //! The CPU can't read a tiled layout in order, but the DMA engine's sub-window copy can: given the
 //! surface's swizzle mode it walks the tiles itself. The packet is the open one that Mesa's RADV
 //! sends on SDMA 5 and 6 (GFX10 to GFX11), with the engine's default cache policy.
 
-use crate::screen_copy::PIXEL_BYTES;
+use crate::screen_copy::{CopyPlan, PIXEL_BYTES};
 use guesthouse_backend::{StagingCopy, SurfaceShape};
 
 // The packet's header: opcode, sub-opcode, and the direction bit.
@@ -47,6 +48,66 @@ pub fn surface_bytes(pitch_bytes: u32, height: u32, swizzle_mode: u32) -> Option
     let across = (u64::from(pitch_bytes) / PIXEL_BYTES).div_ceil(side);
     let down = u64::from(height).div_ceil(side);
     Some(across * down * side * side * PIXEL_BYTES)
+}
+
+/// A plain copy's sub-opcode: bytes in order, from one address to another.
+const SUB_OPCODE_LINEAR: u32 = 0x0;
+/// The most one plain copy moves. The engine's count field is 22 bits on the oldest of these
+/// engines, so each packet stays under 4 MiB, kept to whole 256-byte blocks.
+const MOST_LINEAR_BYTES: u64 = 0x3f_ff00;
+
+/// A copy of rows between two linear surfaces with the same pitch, which is one run of bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LinearCopy {
+    pub source_address: u64,
+    pub target_address: u64,
+    pub bytes: u64,
+}
+
+impl LinearCopy {
+    /// The copy for a plan whose two surfaces have the same pitch, or `None` if they don't, as rows
+    /// then aren't one run on both sides. The padding between rows goes along, which is harmless:
+    /// it is inside both surfaces.
+    pub fn of(plan: &CopyPlan, source_address: u64, target_address: u64) -> Option<Self> {
+        if plan.source_pitch != plan.target_pitch || plan.rows == 0 {
+            return None;
+        }
+        Some(Self {
+            source_address: source_address + plan.source_start,
+            target_address: target_address + plan.target_start,
+            bytes: plan.source_end() - plan.source_start,
+        })
+    }
+
+    /// The command buffer: one plain copy for each piece, padded to the engine's alignment.
+    pub fn commands(&self) -> Vec<u32> {
+        let header = OPCODE_COPY | SUB_OPCODE_LINEAR << SUB_OPCODE_SHIFT;
+        let mut commands = Vec::new();
+        let mut done = 0;
+        while done < self.bytes {
+            let piece = (self.bytes - done).min(MOST_LINEAR_BYTES);
+            let (from, to) = (self.source_address + done, self.target_address + done);
+            commands.extend([
+                header,
+                (piece - 1) as u32,
+                // No byte swapping on either side.
+                0,
+                from as u32,
+                (from >> 32) as u32,
+                to as u32,
+                (to >> 32) as u32,
+            ]);
+            done += piece;
+        }
+        pad(&mut commands);
+        commands
+    }
+}
+
+fn pad(commands: &mut Vec<u32>) {
+    while !commands.len().is_multiple_of(IB_ALIGNMENT_DWORDS) {
+        commands.push(OPCODE_NOP);
+    }
 }
 
 /// A copy of a rectangle from a tiled surface to a linear one, in pixels.
@@ -136,9 +197,7 @@ impl TiledCopy {
             // The depth of the copy, less one.
             0,
         ];
-        while commands.len() % IB_ALIGNMENT_DWORDS != 0 {
-            commands.push(OPCODE_NOP);
-        }
+        pad(&mut commands);
         commands
     }
 }
@@ -195,6 +254,37 @@ mod tests {
         assert_eq!(commands[11], 640 * 400 - 1);
         assert_eq!(commands[12], 639 | 399 << 16);
         assert!(commands[14..].iter().all(|&word| word == OPCODE_NOP));
+    }
+
+    #[test]
+    fn a_window_of_rows_is_one_run_from_its_first_pixel() {
+        let frame = shape(1920, 1080, None);
+        let plan = CopyPlan::of(&copy(frame, frame)).unwrap();
+        let linear = LinearCopy::of(&plan, 0x1_0000_0000, 0x2_0000_0000).unwrap();
+        assert_eq!(linear.bytes, 399 * 1920 * 4 + 640 * 4);
+        assert_eq!((linear.source_address, linear.target_address), (0x1_0000_0000, 0x2_0000_0000));
+    }
+
+    #[test]
+    fn a_whole_frame_goes_in_pieces_the_engine_takes() {
+        let linear = LinearCopy {
+            source_address: 0x1_0000_0000,
+            target_address: 0x2_0000_0000,
+            bytes: 1920 * 1080 * 4,
+        };
+        let commands = linear.commands();
+        assert_eq!(commands[0..7], [0x1, 0x3f_feff, 0, 0, 0x1, 0, 0x2]);
+        let rest = 1920 * 1080 * 4 - MOST_LINEAR_BYTES;
+        assert_eq!(commands[7..14], [0x1, rest as u32 - 1, 0, 0x3f_ff00, 0x1, 0x3f_ff00, 0x2]);
+        assert_eq!(commands.len(), 16);
+        assert!(commands[14..].iter().all(|&word| word == OPCODE_NOP));
+    }
+
+    #[test]
+    fn surfaces_with_different_pitches_are_left_to_the_cpu() {
+        let target = SurfaceShape { pitch: 1920 * 4 + 64, ..shape(1920, 1080, None) };
+        let plan = CopyPlan::of(&copy(shape(1920, 1080, None), target)).unwrap();
+        assert!(LinearCopy::of(&plan, 0x1_0000_0000, 0x2_0000_0000).is_none());
     }
 
     #[test]
