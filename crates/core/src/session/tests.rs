@@ -105,6 +105,17 @@ fn map(session: &mut TestSession, allocation: u32, address: u64, first_page: u64
     (u64_at(&reply, 0).unwrap(), u32_at(&reply, 16).unwrap())
 }
 
+/// A map the host places, inside the window the guest gives.
+fn map_within(session: &mut TestSession, allocation: u32, lowest: u64, limit: u64) -> (u64, u32) {
+    let mut request = message(Command::MapGpuAddresses, 0x50);
+    set_u64(&mut request, 0x28, lowest);
+    set_u64(&mut request, 0x30, limit);
+    set_u32(&mut request, 0x38, allocation);
+    let reply = send(session, &request);
+
+    (u64_at(&reply, 0).unwrap(), u32_at(&reply, 16).unwrap())
+}
+
 fn lock(session: &mut TestSession, allocation: u32) -> (u32, u64) {
     let mut request = message(Command::LockForCpu, 0x20);
     set_u32(&mut request, 0x1C, allocation);
@@ -2114,6 +2125,28 @@ mod address_reuse {
         session.memory_mut().write_u64(fence, 1).unwrap();
         submit(&mut session, queue, 1);
         assert_eq!(reserve(&mut session, 0x10000), first);
+    }
+
+    #[test]
+    fn a_placed_map_stays_inside_the_guest_s_window() {
+        let mut session = session();
+        let (_, ahead) = allocate(&mut session, private(0x1000));
+        assert_eq!(map_within(&mut session, ahead, 0x2_0000_0000, 0x3_0000_0000), (0x2_0000_0000, SUCCESS));
+        // New addresses now start past that window's first, so this one has to be found in the space.
+        let (resource, behind) = allocate(&mut session, private(0x1000));
+        let (address, status) = map_within(&mut session, behind, 0x800_0000, 0x900_0000);
+        assert_eq!(status, SUCCESS);
+        assert!((0x800_0000..0x900_0000).contains(&address), "{address:#x}");
+        destroy(&mut session, resource, &[]);
+        let (_, again) = allocate(&mut session, private(0x1000));
+        assert_eq!(map_within(&mut session, again, 0x800_0000, 0x900_0000), (address, SUCCESS));
+    }
+
+    #[test]
+    fn a_window_with_no_room_fails_the_map() {
+        let mut session = session();
+        let (_, handle) = allocate(&mut session, private(0x20000));
+        assert_eq!(map_within(&mut session, handle, 0x800_0000, 0x801_0000), (0, Status::UNSUCCESSFUL.0));
     }
 
     #[test]

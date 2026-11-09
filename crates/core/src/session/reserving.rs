@@ -28,7 +28,7 @@ fn in_one_range(base: u64, size: u64) -> bool {
 
 impl<B: Backend, M: GuestMemory> Session<B, M> {
     /// What the guest or the host already has in this space, as (start, end).
-    fn taken_in(&self, space: SpaceId) -> Vec<(u64, u64)> {
+    pub(super) fn taken_in(&self, space: SpaceId) -> Vec<(u64, u64)> {
         let reserved = self.reserved_addresses.iter().filter(|range| range.space == space);
         let mappings = self.allocations.values().flat_map(|allocation| &allocation.mappings);
         let mapped = mappings.filter(|mapping| mapping.space == space);

@@ -153,7 +153,7 @@ impl GpuAddresses {
         if let Some(spare) = self.spare(size, align, usage, window) {
             return Some(spare);
         }
-        let Some(base) = self.next_clear(size, align).filter(|&base| window.holds(base, size)) else {
+        let Some(base) = self.next_clear(size, align, window) else {
             let other = usage.last_resort()?;
             return self.spare(size, align, other, window);
         };
@@ -174,9 +174,10 @@ impl GpuAddresses {
         Some(spares.remove(found))
     }
 
-    /// The first new address with room, past whatever the guest has placed.
-    fn next_clear(&self, size: u64, align: u64) -> Option<u64> {
-        self.hand_out.iter().find_map(|range| first_fit(range, self.next, size, align, &self.placed))
+    /// The first new address with room in `window`, past whatever the guest has placed.
+    fn next_clear(&self, size: u64, align: u64, window: Window) -> Option<u64> {
+        let in_window = self.hand_out.iter().filter_map(|range| window.limit(range));
+        in_window.into_iter().find_map(|range| first_fit(&range, self.next, size, align, &self.placed))
     }
 
     /// Room in `window`, whatever has been handed out, clear of `taken` and of the host's own ranges.
@@ -305,11 +306,20 @@ mod tests {
     }
 
     #[test]
-    fn taking_within_a_window_changes_nothing_if_the_next_address_is_outside() {
+    fn a_window_ahead_of_the_next_address_is_taken_from_its_start() {
         let mut addresses = GpuAddresses::new();
         let window = Window { from: 0x500_0000, to: 0x600_0000 };
-        assert_eq!(addresses.take_within(0x1000, ALLOCATION_ALIGN, HOST, window), None);
-        assert_eq!(addresses.take(0x1000, ALLOCATION_ALIGN, HOST), Ok(0x400_0000));
+        assert_eq!(addresses.take_within(0x1000, ALLOCATION_ALIGN, HOST, window), Some(0x500_0000));
+        assert_eq!(addresses.take(0x1000, ALLOCATION_ALIGN, HOST), Ok(0x501_0000));
+    }
+
+    #[test]
+    fn a_window_behind_the_next_address_has_nothing_new_and_changes_nothing() {
+        let mut addresses = GpuAddresses::new();
+        addresses.take(0x200_0000, ALLOCATION_ALIGN, HOST).unwrap();
+        let window = Window { from: 0x400_0000, to: 0x500_0000 };
+        assert_eq!(addresses.take_within(0x1000, ALLOCATION_ALIGN, AddressUse::Mapped, window), None);
+        assert_eq!(addresses.take(0x1000, ALLOCATION_ALIGN, HOST), Ok(0x600_0000));
     }
 
     #[test]
