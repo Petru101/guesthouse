@@ -4,6 +4,7 @@
 //! directory of [`DIRECTORY_SIZE`] bytes, each after the usual header.
 
 use super::bytes::{index_xor_sum, put_dword};
+use crate::info::CardDetails;
 
 /// The per-adapter record.
 pub const ADAPTER_RECORD_SIZE: usize = 0x260;
@@ -21,6 +22,9 @@ const DISPLAY_CLASS_KEY: &[u8] =
 const RECORD_FLAGS: usize = 0x1F4;
 /// Without this bit the user-mode driver stops before it looks the chip up, and makes no device.
 const RECORD_ADAPTER_USABLE: u32 = 1 << 7;
+/// Render backends: all the card has, then the active ones. Neither may be zero.
+const RECORD_RENDER_BACKENDS: usize = 0x250;
+const RECORD_ACTIVE_RENDER_BACKENDS: usize = 0x254;
 
 /// The directory of the blocks the kernel driver offers.
 pub const DIRECTORY_SIZE: usize = 0x200;
@@ -29,10 +33,20 @@ pub const DIRECTORY_SIZE: usize = 0x200;
 /// found. The two entries after them are optional and left out.
 const DIRECTORY_ENTRIES: [u32; 2] = [0x302, 0x3A01];
 
-pub fn adapter_record() -> Vec<u8> {
+/// The render backends the card has and the ones that work. Neither is ever zero: a card that
+/// draws has one.
+fn render_backends(details: &CardDetails) -> (u32, u32) {
+    let active = details.enabled_rb_mask.count_ones().max(1);
+    (details.rb_pipes.max(active), active)
+}
+
+pub fn adapter_record(details: &CardDetails) -> Vec<u8> {
     let mut record = vec![0u8; ADAPTER_RECORD_SIZE];
     put_dword(&mut record, RECORD_SIZE, ADAPTER_RECORD_SIZE as u32);
     put_dword(&mut record, RECORD_FLAGS, RECORD_ADAPTER_USABLE);
+    let (render_backends, active) = render_backends(details);
+    put_dword(&mut record, RECORD_RENDER_BACKENDS, render_backends);
+    put_dword(&mut record, RECORD_ACTIVE_RENDER_BACKENDS, active);
     record[RECORD_REGISTRY_KEY..RECORD_REGISTRY_KEY + DISPLAY_CLASS_KEY.len()]
         .copy_from_slice(DISPLAY_CLASS_KEY);
     let sum = index_xor_sum(&record, ADAPTER_RECORD_SIZE / 4, RECORD_CHECKSUM);
@@ -53,9 +67,27 @@ mod tests {
     use super::super::bytes::dword;
     use super::*;
 
+    fn details(rb_pipes: u32, enabled_rb_mask: u64) -> CardDetails {
+        CardDetails { rb_pipes, enabled_rb_mask, ..CardDetails::default() }
+    }
+
+    #[test]
+    fn the_record_counts_the_render_backends_and_the_active_ones() {
+        let record = adapter_record(&details(4, 0b1011));
+        assert_eq!(dword(&record, RECORD_RENDER_BACKENDS), Some(4));
+        assert_eq!(dword(&record, RECORD_ACTIVE_RENDER_BACKENDS), Some(3));
+    }
+
+    #[test]
+    fn a_card_that_reports_no_render_backends_still_gets_one() {
+        let record = adapter_record(&details(0, 0));
+        assert_eq!(dword(&record, RECORD_RENDER_BACKENDS), Some(1));
+        assert_eq!(dword(&record, RECORD_ACTIVE_RENDER_BACKENDS), Some(1));
+    }
+
     #[test]
     fn the_record_is_marked_usable_and_its_sum_holds() {
-        let record = adapter_record();
+        let record = adapter_record(&details(1, 1));
         assert_eq!(dword(&record, RECORD_SIZE), Some(0x260));
         assert_eq!(dword(&record, RECORD_FLAGS), Some(0x80));
         let sum = index_xor_sum(&record, ADAPTER_RECORD_SIZE / 4, RECORD_CHECKSUM);

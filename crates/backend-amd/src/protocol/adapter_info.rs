@@ -221,7 +221,7 @@ pub fn answer(query: &VendorQuery<'_>, info: &DeviceInfo, out: &mut Vec<u8>) -> 
         size if size == header + BLOCK_SIZE => [adapter_header::build(info, size), build(info)].concat(),
         BLOCK_SIZE => build(info),
         size if size == header + ADAPTER_RECORD_SIZE => {
-            [adapter_header::build(info, size), adapter_record()].concat()
+            [adapter_header::build(info, size), adapter_record(&info.details)].concat()
         }
         size if size == header + DIRECTORY_SIZE => [adapter_header::build(info, size), directory()].concat(),
         _ => Vec::new(),
@@ -688,7 +688,7 @@ pub(crate) mod tests {
     fn the_record_and_the_directory_follow_the_header_by_the_size_asked() {
         let info = small_card();
         let header_size = adapter_header::HEADER_SIZE;
-        for (tail, body) in [(ADAPTER_RECORD_SIZE, adapter_record()), (DIRECTORY_SIZE, directory())] {
+        for (tail, body) in [(ADAPTER_RECORD_SIZE, adapter_record(&info.details)), (DIRECTORY_SIZE, directory())] {
             let mut out = Vec::new();
             let size = header_size + tail;
             let query = VendorQuery { kind: QUERY_TYPE, size, data: &[], process_is_32_bit: false };
