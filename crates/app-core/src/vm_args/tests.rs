@@ -41,8 +41,6 @@ fn a_gpu_vms_arguments_stay_word_for_word_the_same() {
     let plan = VmPlan {
         qemu_files: Some("/x/p/qemu/pc-bios".into()),
         firmware: Firmware::fedora(),
-        ram_file: "/dev/shm/gpupv-ram".into(),
-        io_file: "/dev/shm/gpupv-iomem".into(),
         run_folder,
         ..plan
     };
@@ -88,7 +86,10 @@ fn a_gpu_vm_has_its_devices() {
     let arguments = plan.qemu_arguments();
     assert!(arguments.iter().any(|word| word.starts_with("gpupv-render,")));
     assert!(has(&arguments, "usb-mouse,bus=xhci.0"), "for games");
-    assert!(arguments.iter().any(|word| word.contains(&plan.ram_file.display().to_string())));
+    assert!(
+        arguments.iter().any(|word| word.contains("mem-path=/proc/self/fd/13,")),
+        "the memfd it's handed"
+    );
 }
 
 /// A machine shows Microsoft's identity until its folder says it holds the package for NVIDIA's.
@@ -111,7 +112,6 @@ fn the_slot_sets_every_name() {
     let arguments = plan.qemu_arguments();
     assert!(value_after(&arguments, "-nic").contains("hostfwd=tcp:127.0.0.1:18767-:8765"));
     assert!(arguments.iter().any(|word| word.contains("/run-2/qmp.sock,")));
-    assert!(arguments.iter().any(|word| word.contains("gpupv-iomem-2,")));
 }
 
 #[test]

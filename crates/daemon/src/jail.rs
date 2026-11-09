@@ -1,5 +1,6 @@
 //! The daemon's jail, which it puts itself in. A guest that takes the daemon over gets what's here
-//! and nothing more: the card, this VM's memory and run folder, and the system's libraries.
+//! and nothing more: the card, this VM's memory and run folder, and the system's libraries. The
+//! memory comes open from the app, so no rule names it.
 //!
 //! It goes on in two steps. The files come first, before any thread exists, as Landlock covers only
 //! the thread that applies it. The calls come once the card is open and the sockets are bound, as
@@ -43,7 +44,7 @@ const SYSTEM: [(Grant, &str); 5] = [
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Needs {
     pub run_folder: PathBuf,
-    /// Files it reads and writes but doesn't make: the guest's memory and the sensors' snapshot.
+    /// Files it reads and writes but doesn't make, as the sensors' snapshot.
     pub shared_files: Vec<PathBuf>,
     /// The GPU's device files, which the stand-in has no use for.
     pub devices: Vec<PathBuf>,
@@ -90,10 +91,6 @@ pub fn gpu_devices(devices: &Path, render_nodes: &Path) -> Vec<PathBuf> {
     found
 }
 
-/// The shared memory files QEMU and the daemon both map, by their slot's names.
-pub const WINDOW_FILE: &str = "iomem";
-pub const RAM_FILE: &str = "ram";
-
 #[cfg(feature = "amd")]
 impl Needs {
     /// What the AMD daemon of this slot needs. Only the one render node is granted, so the other
@@ -106,7 +103,7 @@ impl Needs {
     ) -> Self {
         Self {
             run_folder: slot.run_folder(project),
-            shared_files: vec![slot.shared_file(WINDOW_FILE), slot.shared_file(RAM_FILE)],
+            shared_files: Vec::new(),
             devices: vec![render_node],
             driver_folder: Some(driver_folder.to_owned()),
         }
@@ -120,7 +117,7 @@ impl Needs {
         let snapshot = guesthouse_sensors::snapshot_path();
         Self {
             run_folder: slot.run_folder(project),
-            shared_files: vec![slot.shared_file(WINDOW_FILE), slot.shared_file(RAM_FILE), snapshot],
+            shared_files: vec![snapshot],
             devices: host_gpu_devices(),
             driver_folder: Some(driver_folder.to_owned()),
         }
@@ -140,8 +137,8 @@ pub fn host_gpu_devices() -> Vec<PathBuf> {
     gpu_devices(Path::new(DEVICES), Path::new(RENDER_NODES))
 }
 
-/// A rule can only name a file that's there. QEMU makes the window's file when it starts, after the
-/// daemon, and takes one that's there already, so it's made here, empty, if it isn't yet.
+/// A rule can only name a file that's there, so one another process fills later is made here, empty,
+/// if it isn't yet.
 pub fn make_if_missing(path: &Path) -> io::Result<()> {
     let made = OpenOptions::new().write(true).create_new(true).mode(OWNER_ONLY).open(path);
     match made {
@@ -231,7 +228,7 @@ mod tests {
     fn its_own_folder_is_the_only_one_it_can_change() {
         let needs = Needs {
             run_folder: "/run/user/1000/guesthouse/run-2".into(),
-            shared_files: vec!["/dev/shm/gpupv-ram-2".into()],
+            shared_files: vec!["/dev/shm/gpupv-sensors-1000-2".into()],
             devices: vec!["/dev/nvidiactl".into()],
             driver_folder: Some("/store/driver".into()),
         };
@@ -239,7 +236,7 @@ mod tests {
         let owned: Vec<_> = plan.paths.iter().filter(|(grant, _)| *grant == Grant::Own).collect();
         assert_eq!(owned, [&(Grant::Own, PathBuf::from("/run/user/1000/guesthouse/run-2"))]);
         assert!(
-            plan.paths.contains(&(Grant::Write, "/dev/shm/gpupv-ram-2".into())),
+            plan.paths.contains(&(Grant::Write, "/dev/shm/gpupv-sensors-1000-2".into())),
             "the file, not /dev/shm"
         );
         assert!(!plan.paths.iter().any(|(_, path)| path == Path::new("/dev/shm")));
@@ -248,9 +245,9 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_window_file_is_made_and_one_that_is_there_is_kept() {
-        let folder = scratch("window");
-        let path = folder.join("gpupv-iomem-3");
+    fn a_missing_file_is_made_and_one_that_is_there_is_kept() {
+        let folder = scratch("snapshot");
+        let path = folder.join("gpupv-sensors-1000-3");
         make_if_missing(&path).unwrap();
         fs::write(&path, "held").unwrap();
         make_if_missing(&path).unwrap();

@@ -104,7 +104,7 @@ pub fn scratch_context(scratch: &Scratch) -> Context {
     fs::create_dir_all(&context.processes).unwrap();
     // A test's PC has no card unless it makes one, whatever cards this PC has.
     context.drm_class = scratch.path("drm");
-    context.reserve_memory = |_, _| Ok(());
+    context.reserve_memory = crate::guest_memory::GuestMemory::sized;
     // A test's pretend programs are shell scripts, which no jail would let run as they do.
     context.jail_offer = |_| crate::jailing::Offer::nothing();
     context.ram_limit = Some(PLENTY_OF_GIB);

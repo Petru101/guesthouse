@@ -14,6 +14,7 @@ use guesthouse_app_core::tasks::{State, Status, launch, status};
 use guesthouse_app_core::text::base64_decode;
 use guesthouse_app_core::vm_args::{PASST_PID_FILE, passt_installed};
 use guesthouse_app_core::vm_host::LocalHost;
+use guesthouse_daemon::handover::Part;
 use serde_json::{Value, json};
 use std::env;
 use std::fs;
@@ -33,6 +34,8 @@ const POLL: Duration = Duration::from_millis(200);
 const PRETEND_LIFE: Duration = Duration::from_secs(120);
 /// The first forward on QEMU's user network is the agent's.
 const AGENT_FORWARD: &str = "hostfwd=tcp:127.0.0.1:";
+/// How the guest's memfds show in `/proc`.
+const GUEST_MEMORY: &str = "/memfd:gpupv-";
 
 fn serve_monitor(mut stream: UnixStream) {
     let _ = stream.write_all(b"{\"QMP\": {}}\n");
@@ -124,6 +127,9 @@ fn pretend_qemu(arguments: &[String]) {
             let target = fs::read_link(format!("/proc/self/fd/{fd}")).unwrap_or_default();
             assert!(target.to_string_lossy().starts_with("socket:"), "passt's end is a socket: {target:?}");
         }
+        if pair[0] == "-object" && pair[1].starts_with("memory-backend-file,") {
+            open_guest_memory(&pair[1]);
+        }
         if (pair[0] == "-nic" || pair[0] == "-netdev") && pair[1].contains(AGENT_FORWARD) {
             let port = pair[1].split(AGENT_FORWARD).nth(1).unwrap().split('-').next().unwrap();
             serve_agent(port.parse().unwrap());
@@ -132,8 +138,27 @@ fn pretend_qemu(arguments: &[String]) {
     thread::sleep(PRETEND_LIFE);
 }
 
+/// Opens a part of the guest's memory as QEMU does, from inside its jail, and checks it's the memfd
+/// the app made for it.
+fn open_guest_memory(object: &str) {
+    let path = object.split(',').find_map(|part| part.strip_prefix("mem-path=")).unwrap();
+    let opened = fs::OpenOptions::new().read(true).write(true).open(path);
+    assert!(opened.is_ok(), "QEMU can open {path}: {opened:?}");
+    let target = fs::read_link(path).unwrap_or_default();
+    assert!(target.to_string_lossy().starts_with(GUEST_MEMORY), "{path} is the guest's memory: {target:?}");
+}
+
+/// Where the daemon finds the guest's memory, which the app makes as memfds.
+fn holds_guest_memory() -> bool {
+    Part::ALL.iter().all(|part| {
+        let target = fs::read_link(format!("/proc/self/fd/{}", part.descriptor())).unwrap_or_default();
+        target.to_string_lossy().starts_with(GUEST_MEMORY)
+    })
+}
+
 /// Makes the sockets QEMU connects to, as the daemon does once it's ready.
 fn pretend_daemon(base: &str) {
+    assert!(holds_guest_memory(), "the daemon is handed the guest's memory");
     let folder = Path::new(base).join("run");
     let _sockets = ["vgpu.sock", "global.sock"].map(|name| UnixListener::bind(folder.join(name)).unwrap());
     thread::sleep(PRETEND_LIFE);
@@ -228,8 +253,8 @@ fn inner() {
     fs::create_dir_all(driver_folder(&context)).unwrap();
     write_setup(&context, json!({"card": {"device": 1}}).as_object().cloned().unwrap()).unwrap();
     start_and_stop(&context, &windows);
-    let daemons = context.paths.shared_file("ram", context.slot);
-    assert!(!daemons.exists(), "the shared memory has been given back");
+    let shared_memory = fs::read_dir(&context.paths.shared_memory).unwrap().count();
+    assert_eq!(shared_memory, 0, "nothing of the guest's is left in shared memory");
     if passt_installed() {
         let on_passt = Machine { passt: true, ..windows };
         on_passt.save(&context).unwrap();
@@ -295,7 +320,7 @@ fn task_with_room(arguments: &[String]) {
     let mut context = Context::from_process().unwrap();
     context.meminfo = env::var_os(MEMINFO_VARIABLE).unwrap().into();
     context.ram_limit = Some(PLENTY_OF_GIB);
-    context.reserve_memory = |_, _| Ok(());
+    context.reserve_memory = guesthouse_app_core::guest_memory::GuestMemory::sized;
     // The flow reads each task's file, as the app does, so the exit code is left to the real task.
     let _ = run_task(&context, &LocalHost { context: &context }, action, machine, rest);
 }

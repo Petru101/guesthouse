@@ -3,6 +3,7 @@
 
 use crate::context::{Context, SLOT_VARIABLE};
 use crate::failure::Result;
+use crate::guest_memory::GuestMemory;
 use guesthouse_daemon::slot::Slot;
 use guesthouse_daemon::{card_choice, jail};
 use std::collections::BTreeMap;
@@ -53,9 +54,12 @@ impl DaemonStart {
         self
     }
 
-    pub fn spawn(&self, run_folder: &Path) -> Result<Child> {
+    /// Starts it with the guest's memory open, where it looks for it.
+    pub fn spawn(&self, run_folder: &Path, memory: &GuestMemory) -> Result<Child> {
         let output = File::create(run_folder.join(OUTPUT_FILE))?;
-        let spawned = detached(Command::new(&self.program).arg(&self.base))
+        let mut command = Command::new(&self.program);
+        memory.hand_to(&mut command);
+        let spawned = detached(command.arg(&self.base))
             .envs(&self.environment)
             .stdin(Stdio::null())
             .stdout(output.try_clone()?)

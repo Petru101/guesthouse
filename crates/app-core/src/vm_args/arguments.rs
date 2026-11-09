@@ -2,7 +2,9 @@
 
 use super::{Boot, DISPLAY_SOCKET, Sound, VmPlan};
 use crate::firmware::format_of;
+use crate::guest_memory::WINDOW_GIB;
 use crate::text::qemu_value;
+use guesthouse_daemon::handover::Part;
 
 const HYPERV_FEATURES: &str = "hv-relaxed,hv-vapic,hv-spinlocks=0x1fff,hv-vpindex,hv-runtime,hv-time,hv-synic,\
                                hv-stimer,hv-stimer-direct,hv-frequencies,hv-reset,hv-ipi,hv-tlbflush";
@@ -15,7 +17,6 @@ const VGPU_INSTANCE: &str = "7a1e2f30-4c55-4d6e-9f10-0123456789ab";
 const GLOBAL_INSTANCE: &str = "711dad3a-73ce-468b-90a9-ede6906841b2";
 const VMBUS_WINDOW_BASE: &str = "0x10000000000";
 const VMBUS_WINDOW_SIZE: &str = "0x1000000000";
-const IO_MEMORY_SIZE: &str = "64G";
 /// Bit 0 makes the guest list the pages the GPU maps instead of using a GPADL.
 const HOST_CAPABILITIES: u32 = 1;
 const MIB: u64 = 1 << 20;
@@ -160,11 +161,11 @@ impl VmPlan {
             "hv-timesync",
             "-chardev",
             &self.client_socket("gpg", "global.sock"),
-            // On tmpfs, because the GPU pins these pages.
+            // The app's memfds, which the daemon has too: see `guesthouse_daemon::handover`.
             "-object",
             &format!(
-                "memory-backend-file,id=gpio,size={IO_MEMORY_SIZE},mem-path={},share=on",
-                self.io_file.display()
+                "memory-backend-file,id=gpio,size={WINDOW_GIB}G,mem-path={},share=on",
+                Part::Window.path_for_qemu().display()
             ),
             "-device",
             &format!(
@@ -179,7 +180,7 @@ impl VmPlan {
             &format!(
                 "memory-backend-file,id=ram0,size={},mem-path={},share=on",
                 self.ram,
-                self.ram_file.display()
+                Part::Ram.path_for_qemu().display()
             ),
             "-machine",
             "memory-backend=ram0",

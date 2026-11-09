@@ -3,22 +3,19 @@
 use crate::context::Context;
 use crate::failure::Result;
 use crate::guest_memory::NO_ROOM_WORDS;
+use crate::held_memory::used_by_others;
 use crate::machine::{Machine, sorted_names};
-use crate::slots;
 use guesthouse_daemon::slot::Slot;
 use rustix::fs::statvfs;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
 pub const GIB: u64 = 1 << 30;
-/// What a GPU guest's IO space is counted at, on the same tmpfs as RAM and in the PC's RAM. It fills
-/// only as far as the guest's locked allocations go, which on Windows desktops was 130 to 270 MiB.
-/// Games can lock more, and a full tmpfs stops the VM, so this keeps several times that.
+/// What a GPU guest's IO space is counted at in the PC's RAM. It fills only as far as the guest's
+/// locked allocations go, which on Windows desktops was 130 to 270 MiB. Games can lock more, so this
+/// keeps several times that.
 pub const IO_SPACE_GIB: u64 = 2;
-/// Running out of tmpfs kills QEMU with SIGBUS, so stop short of it.
-pub const TMPFS_SPARE_GIB: u64 = 1;
 /// The host keeps a share of its RAM for itself, never less than the least and never more than the
 /// most. A guest's RAM is claimed whole and the GPU pins what it uses, so swap can't make room later.
 const HOST_SHARE_DIVISOR: u64 = 4;
@@ -30,9 +27,6 @@ pub const HOST_KEEPS_MOST_GIB: u64 = 16;
 /// with nothing the moment the guest's RAM is claimed.
 pub const FREE_AT_START_GIB: u64 = 2;
 const KIB: u64 = 1024;
-/// The files QEMU keeps in shared memory.
-pub const QEMU_FILES: [&str; 2] = ["ram", "iomem"];
-const FILE_BLOCK: u64 = 512;
 
 /// The numbers of `cpuN` folders.
 fn cpu_numbers(root: &Path) -> Vec<u32> {
@@ -88,43 +82,29 @@ pub fn host_keeps(total: u64) -> u64 {
     (total / HOST_SHARE_DIVISOR).clamp(HOST_KEEPS_LEAST_GIB * GIB, HOST_KEEPS_MOST_GIB * GIB)
 }
 
-/// What a PC offers a GPU machine, and why, all in bytes. It comes from the PC's RAM, the tmpfs and
-/// what the other VMs hold, which only change when a VM starts or stops, so it stays the same while
-/// programs come and go.
+/// What a PC offers a GPU machine, and why, all in bytes. It comes from the PC's RAM and what the
+/// other VMs hold, which only change when a VM starts or stops, so it stays the same while programs
+/// come and go.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RamOffer {
     pub total: u64,
     pub keeps: u64,
     /// What the VMs in the other slots hold.
     pub others: u64,
-    /// What the tmpfs leaves for guest RAM, which past its limit kills QEMU.
-    pub tmpfs_room: u64,
-    pub tmpfs_size: u64,
 }
 
 impl RamOffer {
-    /// From the tmpfs's size and use, what this slot's VM has on it now, the PC's RAM, and what
-    /// the other VMs hold.
-    pub fn new(tmpfs_size: u64, tmpfs_used: u64, ours: u64, total: u64, others: u64) -> Self {
-        let held_by_others = tmpfs_used.saturating_sub(ours);
-        let tmpfs_room = tmpfs_size.saturating_sub(held_by_others + (IO_SPACE_GIB + TMPFS_SPARE_GIB) * GIB);
-        Self { total, keeps: host_keeps(total), others, tmpfs_room, tmpfs_size }
-    }
-
-    fn ram_room(&self) -> u64 {
-        self.total.saturating_sub(self.keeps + IO_SPACE_GIB * GIB + self.others)
+    /// From the PC's RAM and what the other VMs hold.
+    pub fn new(total: u64, others: u64) -> Self {
+        Self { total, keeps: host_keeps(total), others }
     }
 
     /// The most RAM a GPU machine can have, in GiB.
     pub fn limit_gib(&self) -> u64 {
-        self.ram_room().min(self.tmpfs_room) / GIB
+        self.total.saturating_sub(self.keeps + IO_SPACE_GIB * GIB + self.others) / GIB
     }
 
-    fn tmpfs_binds(&self) -> bool {
-        self.tmpfs_room < self.ram_room()
-    }
-
-    /// Where the RAM goes, as a sentence or two.
+    /// Where the RAM goes, as a sentence.
     fn reasons(&self) -> String {
         let mut text = format!(
             "This PC has {} GiB of RAM and keeps {} GiB for itself",
@@ -134,15 +114,7 @@ impl RamOffer {
         if self.others >= GIB / 2 {
             text += &format!(", and the VMs running hold {} GiB", self.others.div_ceil(GIB));
         }
-        text += ".";
-        if self.tmpfs_binds() {
-            text += &format!(
-                " Guest memory lives in /dev/shm, which holds {} GiB and keeps {} GiB of that for the GPU's IO space and a margin.",
-                self.tmpfs_size / GIB,
-                IO_SPACE_GIB + TMPFS_SPARE_GIB
-            );
-        }
-        text
+        text + "."
     }
 
     /// What a RAM setting says under it, for a machine that needs at least `least` GiB.
@@ -151,13 +123,10 @@ impl RamOffer {
         if limit >= least {
             return format!("Up to {limit} GiB. {}", self.reasons());
         }
-        let way_out = if self.tmpfs_binds() {
-            let taken = (self.tmpfs_size - self.tmpfs_room).div_ceil(GIB);
-            format!("Make it larger: sudo mount -o remount,size={}G /dev/shm", least + taken)
-        } else if self.others >= GIB / 2 {
-            "Stop another VM to make room.".to_owned()
+        let way_out = if self.others >= GIB / 2 {
+            "Stop another VM to make room."
         } else {
-            "A GPU machine needs a PC with more RAM.".to_owned()
+            "A GPU machine needs a PC with more RAM."
         };
         format!(
             "A GPU machine needs at least {least} GiB, and this PC can give one {limit} GiB. {} {way_out}",
@@ -188,12 +157,13 @@ impl RamField {
 
     /// The setting for a GPU machine in `slot`.
     pub fn for_gpu(context: &Context, slot: Slot, least: u64, wanted: u64) -> Self {
-        let offer = match context.ram_limit {
-            Some(limit) => Ok((limit, format!("Up to {limit} GiB."))),
-            None => ram_offer(context, slot).map(|offer| (offer.limit_gib(), offer.explanation(least))),
+        let (limit, explanation) = match context.ram_limit {
+            Some(limit) => (limit, format!("Up to {limit} GiB.")),
+            None => {
+                let offer = ram_offer(context, slot);
+                (offer.limit_gib(), offer.explanation(least))
+            }
         };
-        let (limit, explanation) =
-            offer.unwrap_or_else(|error| (0, format!("This PC's memory can't be read: {error}")));
         Self::new(limit, least, wanted, explanation)
     }
 
@@ -202,11 +172,6 @@ impl RamField {
         let limit = plain_ram_limit(context);
         Self::new(limit, least, wanted, format!("Up to {limit} GiB."))
     }
-}
-
-pub fn shared_memory_used(context: &Context, slot: Slot, names: &[&str]) -> u64 {
-    let used = |name: &&str| fs::metadata(context.paths.shared_file(name, slot));
-    names.iter().filter_map(|name| used(name).ok()).map(|found| found.blocks() * FILE_BLOCK).sum()
 }
 
 fn meminfo_bytes(context: &Context, field: &str) -> u64 {
@@ -225,15 +190,8 @@ pub fn total_ram(context: &Context) -> u64 {
 }
 
 /// What this PC offers a GPU machine in `slot`. Its own memory, if it's running, counts as free.
-pub fn ram_offer(context: &Context, slot: Slot) -> Result<RamOffer> {
-    let disk = statvfs(&context.paths.shared_memory).map_err(std::io::Error::from)?;
-    let ours = shared_memory_used(context, slot, &QEMU_FILES);
-    let others = slots::all()
-        .filter(|other| *other != slot)
-        .map(|other| shared_memory_used(context, other, &QEMU_FILES))
-        .sum();
-    let (size, free) = (disk.f_blocks * disk.f_frsize, disk.f_bfree * disk.f_frsize);
-    Ok(RamOffer::new(size, size - free, ours, total_ram(context), others))
+pub fn ram_offer(context: &Context, slot: Slot) -> RamOffer {
+    RamOffer::new(total_ram(context), used_by_others(context, slot))
 }
 
 /// Whether `ram_bytes` of guest RAM fits in what's really free now. The page cache and the programs
@@ -248,7 +206,7 @@ pub fn fits_now(context: &Context, ram_bytes: u64) -> Option<String> {
     (needed > available).then(|| short_now(ram_bytes, available))
 }
 
-fn short_now(ram_bytes: u64, available: u64) -> String {
+pub fn short_now(ram_bytes: u64, available: u64) -> String {
     format!(
         "This machine needs {} GiB of RAM, and {} {NO_ROOM_WORDS} right now, with {} GiB of that kept for the \
          GPU and the PC. Close some programs, like a browser or a game, or stop another VM, and start it \
@@ -263,7 +221,7 @@ fn short_now(ram_bytes: u64, available: u64) -> String {
 pub fn host_ram_limit(context: &Context) -> Result<u64> {
     match context.ram_limit {
         Some(limit) => Ok(limit),
-        None => Ok(ram_offer(context, context.slot)?.limit_gib()),
+        None => Ok(ram_offer(context, context.slot).limit_gib()),
     }
 }
 
@@ -282,7 +240,7 @@ pub fn ram_limit_for(context: &Context, machine: &Machine) -> Result<u64> {
         return Ok(limit);
     }
     let slot = crate::tasks::slot_of(context, machine).unwrap_or(context.slot);
-    Ok(ram_offer(context, slot)?.limit_gib())
+    Ok(ram_offer(context, slot).limit_gib())
 }
 
 pub fn free_gib(path: &Path) -> Result<f64> {
@@ -340,11 +298,6 @@ mod tests {
         gib * GIB * 97 / 100
     }
 
-    /// A PC as Linux sets it up: `/dev/shm` holds half its RAM, and nothing else is on it.
-    fn usual(total: u64) -> RamOffer {
-        RamOffer::new(total / 2, 0, 0, total, 0)
-    }
-
     #[test]
     fn the_host_keeps_a_quarter_but_never_less_than_a_desktop_needs_or_more_than_it_did() {
         assert_eq!(host_keeps(sold_with(16)), HOST_KEEPS_LEAST_GIB * GIB);
@@ -353,40 +306,32 @@ mod tests {
     }
 
     #[test]
-    fn what_a_pc_offers_follows_its_ram_and_its_tmpfs() {
-        assert_eq!(usual(sold_with(16)).limit_gib(), 4, "a 16 GB PC, held to its 7.8 GiB tmpfs");
-        assert_eq!(RamOffer::new(16 * GIB, 65 << 20, 0, 30 * GIB, 0).limit_gib(), 12, "issue 9's PC");
-        assert_eq!(usual(sold_with(32)).limit_gib(), 12);
-        assert_eq!(
-            RamOffer::new(46 * GIB, 0, 0, 91 * GIB, 0).limit_gib(),
-            43,
-            "the tmpfs, less the IO space"
-        );
-        assert_eq!(RamOffer::new(46 * GIB, 0, 0, 40 * GIB, 0).limit_gib(), 28, "the host keeps its share");
-        assert_eq!(usual(sold_with(8)).limit_gib(), 0);
+    fn what_a_pc_offers_follows_its_ram() {
+        assert_eq!(RamOffer::new(sold_with(16), 0).limit_gib(), 7, "a 16 GB PC");
+        assert_eq!(RamOffer::new(30 * GIB, 0).limit_gib(), 20, "issue 9's PC");
+        assert_eq!(RamOffer::new(sold_with(32), 0).limit_gib(), 21);
+        assert_eq!(RamOffer::new(91 * GIB, 0).limit_gib(), 73);
+        assert_eq!(RamOffer::new(40 * GIB, 0).limit_gib(), 28, "the host keeps its share");
+        assert_eq!(RamOffer::new(sold_with(8), 0).limit_gib(), 0);
     }
 
     #[test]
     fn a_low_offer_says_why_and_what_to_do() {
-        let small = RamOffer::new(32 * GIB, 0, 0, sold_with(8), 0).explanation(4);
+        let small = RamOffer::new(sold_with(8), 0).explanation(4);
         assert!(
             small.starts_with("A GPU machine needs at least 4 GiB, and this PC can give one 0 GiB."),
             "{small}"
         );
         assert!(small.contains("This PC has 7 GiB of RAM and keeps 6 GiB for itself."), "{small}");
         assert!(small.ends_with("needs a PC with more RAM."), "{small}");
-        let crowded = RamOffer::new(46 * GIB, 0, 0, 16 * GIB, 6 * GIB).explanation(4);
+        let crowded = RamOffer::new(16 * GIB, 6 * GIB).explanation(4);
         assert!(
             crowded.contains("the VMs running hold 6 GiB")
                 && crowded.ends_with("Stop another VM to make room.")
         );
-        let tmpfs = RamOffer::new(5 * GIB, 0, 0, 32 * GIB, 0).explanation(4);
-        assert!(
-            tmpfs.contains("/dev/shm, which holds 5 GiB") && tmpfs.ends_with("remount,size=7G /dev/shm"),
-            "{tmpfs}"
-        );
-        let fine = RamOffer::new(16 * GIB, 65 << 20, 0, 30 * GIB, 0).explanation(4);
-        assert!(fine.starts_with("Up to 12 GiB. This PC has 30 GiB of RAM and keeps 8 GiB"), "{fine}");
+        let fine = RamOffer::new(30 * GIB, 0).explanation(4);
+        assert!(fine.starts_with("Up to 20 GiB. This PC has 30 GiB of RAM and keeps 8 GiB"), "{fine}");
+        assert!(!fine.contains("/dev/shm"), "{fine}");
     }
 
     #[test]
@@ -408,8 +353,7 @@ mod tests {
         assert!(!field.fits && field.subtitle.starts_with("A GPU machine needs at least 4 GiB"), "{field:?}");
         context.meminfo = scratch.write("meminfo", "MemTotal: 31457280 kB\nMemAvailable: 1000000 kB\n");
         let field = RamField::for_gpu(&context, crate::slots::first(), 4, 16);
-        assert!(field.fits, "{field:?}");
-        assert_eq!(field.lower, 4);
+        assert_eq!((field.fits, field.upper, field.value), (true, 20, 16), "{field:?}");
     }
 
     #[test]
@@ -430,11 +374,8 @@ mod tests {
     }
 
     #[test]
-    fn the_other_vms_count_and_this_slots_own_does_not() {
-        let alone = RamOffer::new(46 * GIB, 17 * GIB, 17 * GIB, 91 * GIB, 0);
-        assert_eq!(alone.limit_gib(), 43, "the VM's own files do not count");
-        let beside = RamOffer::new(46 * GIB, 17 * GIB, 0, 91 * GIB, 17 * GIB);
-        assert_eq!(beside.limit_gib(), 26, "another VM's do, on the tmpfs and in RAM");
-        assert_eq!(RamOffer::new(46 * GIB, 0, 0, 40 * GIB, 20 * GIB).limit_gib(), 8);
+    fn the_other_vms_count() {
+        assert_eq!(RamOffer::new(91 * GIB, 17 * GIB).limit_gib(), 56);
+        assert_eq!(RamOffer::new(40 * GIB, 20 * GIB).limit_gib(), 8);
     }
 }

@@ -124,8 +124,6 @@ pub struct VmPlan {
     /// What the virtual render device shows Windows it is.
     pub render_identity: PciIdentity,
     pub network: NetworkPlan,
-    pub ram_file: PathBuf,
-    pub io_file: PathBuf,
     /// The tools disc from the first hand-built guest, if this store has one. Nothing makes it now.
     pub tools_disc: Option<PathBuf>,
     /// Sound goes to the host's default output, or the sink named, if PipeWire can be reached. QEMU
@@ -192,8 +190,6 @@ impl VmPlan {
                 forwards: machine.forwards.clone(),
                 resolver: if passt { host_resolver() } else { None },
             },
-            ram_file: context.paths.shared_file("ram", slot),
-            io_file: context.paths.shared_file("iomem", slot),
             tools_disc: tools.is_file().then_some(tools),
             sound: None,
             jail: None,

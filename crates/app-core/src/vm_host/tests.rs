@@ -278,7 +278,7 @@ fn no_qemu_at_all_says_so() {
 fn memory_that_doesnt_fit_stops_a_start_before_anything_runs() {
     let scratch = Scratch::new();
     let mut context = scratch_context(&scratch);
-    context.reserve_memory = |_, _| Err(crate::Failure::new("no room for it"));
+    context.reserve_memory = |_, _, _| Err(crate::Failure::new("no room for it"));
     context.paths.binaries = scratch.path("bin");
     let marker = scratch.path("ran");
     let daemon = format!("#!/bin/sh\ntouch {}\n", marker.display());
@@ -351,7 +351,6 @@ fn a_jailed_start_runs_qemu_through_the_launcher_with_a_clean_environment() {
     assert_eq!(started, Ok(()));
     assert!(environment.contains("PATH=/usr/bin"), "{environment}");
     assert!(!environment.contains("HOME="), "the app's environment stays behind: {environment}");
-    assert!(plan.io_file.exists(), "the window's file is there for the jail to name");
     let note = crate::jailing::read_note(&plan.run_folder).unwrap();
     assert!(note.starts_with("Jailed, without namespaces"), "{note}");
 }

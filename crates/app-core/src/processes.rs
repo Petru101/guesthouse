@@ -2,7 +2,7 @@
 
 use crate::context::Context;
 use crate::daemon::is_own_daemon;
-use crate::host::QEMU_FILES;
+use crate::held_memory::holders;
 use crate::machine::{Machine, sorted_names};
 use crate::monitor::MAIN_SOCKET;
 use crate::slots;
@@ -15,6 +15,9 @@ use std::fs;
 use std::os::unix::fs::MetadataExt;
 
 type Words = Vec<Vec<u8>>;
+
+/// The RAM's file in shared memory, for a version before the memfds.
+const OLD_RAM_FILE: &str = "ram";
 
 fn process_words(context: &Context, pid: u32) -> Option<Words> {
     let data = fs::read(context.processes.join(pid.to_string()).join("cmdline")).ok()?;
@@ -90,36 +93,27 @@ pub fn uses_disk(context: &Context, pid: u32, machine: &Machine) -> bool {
     process_words(context, pid).is_some_and(|words| words.iter().any(|word| opens_disk(word, machine)))
 }
 
-/// Whether another VM on this PC has a slot's shared memory. The names there are the same for every
-/// install, so a clone or a test run can hold them while this install's VM is off. Each line must end
-/// in the name, or slot 1's file would count for slot 0 as well. A daemon of ours for this slot
-/// doesn't count, as it holds the memory until it's told to stop.
+/// Whether another VM on this PC has a slot's memory. See [`crate::held_memory`]. A daemon of ours
+/// for this slot doesn't count, as it holds the memory until it's told to stop.
 pub fn memory_taken(context: &Context, slot: Option<Slot>) -> bool {
     let slot = slot.unwrap_or(context.slot);
-    let path = context.paths.shared_file(QEMU_FILES[0], slot);
-    if !path.exists() {
-        return false;
-    }
-    let (plain, deleted) = (path.display().to_string(), format!("{} (deleted)", path.display()));
-    pids(context).iter().any(|pid| {
-        let pid = pid.to_string();
-        // It has gone, or belongs to another user.
-        let Ok(maps) = fs::read(context.processes.join(&pid).join("maps")) else { return false };
-        let maps = String::from_utf8_lossy(&maps);
-        let held = maps.lines().any(|line| line.ends_with(&plain) || line.ends_with(&deleted));
-        held && !is_own_daemon(context, &pid, slot)
-    })
+    holders(context, slot).iter().any(|(pid, _)| !is_own_daemon(context, &pid.to_string(), slot))
 }
 
-/// Identifies what a VM left behind if the guest shut it down, as nothing cleaned up then. Only QEMU
-/// makes this file, so without QEMU it's stale unless a stop is just getting to it. The caller waits
-/// to see the same file again, and the daemon is still holding it all pinned.
+/// Identifies what a VM left behind if the guest shut it down, as nothing cleaned up then: the
+/// memory our daemon for the slot still holds, all pinned, or a file a version before the memfds
+/// left in shared memory. Without QEMU either is stale unless a stop is just getting to it, so the
+/// caller waits to see the same one again.
 pub fn leftovers(context: &Context, slot: Option<Slot>) -> Option<u64> {
-    if context.second_instance() || qemu_pid(context, slot).is_some() || memory_taken(context, slot) {
+    let slot = slot.unwrap_or(context.slot);
+    if context.second_instance()
+        || qemu_pid(context, Some(slot)).is_some()
+        || memory_taken(context, Some(slot))
+    {
         return None;
     }
-    let path = context.paths.shared_file(QEMU_FILES[0], slot.unwrap_or(context.slot));
-    fs::metadata(path).ok().map(|found| found.ino())
+    let old_file = fs::metadata(context.paths.shared_file(OLD_RAM_FILE, slot)).ok().map(|found| found.ino());
+    old_file.or_else(|| holders(context, slot).first().map(|(_, inode)| *inode))
 }
 
 /// Each slot's leftovers, by slot number, for this install to clear up. Another install's VM can be in
@@ -238,6 +232,20 @@ mod tests {
             BTreeMap::from([(1, fs::metadata(&memory_1).unwrap().ino())]),
             "each slot for itself"
         );
+    }
+
+    #[test]
+    fn a_memfd_our_daemon_still_holds_is_a_leftover_and_anyone_elses_a_taken_slot() {
+        let scratch = Scratch::new();
+        let context = scratch_context(&scratch);
+        let slot = slots::number(1);
+        fake_daemon(&context, 100, 1, "/memfd:gpupv-iomem-1 (deleted)");
+        assert!(!memory_taken(&context, Some(slot)));
+        assert_eq!(leftovers(&context, Some(slot)), Some(42), "nothing else frees it once QEMU has gone");
+        assert_eq!(leftovers(&context, Some(slots::first())), None);
+        fake_process(&context, 200, &["/other/qemu"], &[], "/memfd:gpupv-ram-1 (deleted)");
+        assert!(memory_taken(&context, Some(slot)), "another install's VM is in the slot");
+        assert_eq!(leftovers(&context, Some(slot)), None);
     }
 
     #[test]

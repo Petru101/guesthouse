@@ -22,6 +22,7 @@ pub mod gpu_identity;
 pub mod gpu_sample;
 pub mod gpu_support;
 pub mod guest_memory;
+pub mod held_memory;
 pub mod host;
 pub mod host_sensors;
 pub mod input;

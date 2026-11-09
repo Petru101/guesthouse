@@ -24,10 +24,7 @@ fn main() -> ExitCode {
     };
     let project = env::args_os().nth(1).map_or_else(|| PathBuf::from("."), PathBuf::from);
     match serve(slot, project) {
-        Ok(()) => {
-            slot.remove_shared_files();
-            ExitCode::SUCCESS
-        }
+        Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("{error}");
             ExitCode::FAILURE
@@ -77,8 +74,8 @@ fn serve_amd(
     use guesthouse_core::{Config, MemoryLimits, Session};
     use guesthouse_daemon::amd_setup::read_setup;
     use guesthouse_daemon::environment::{guest_ram, video_cap};
-    use guesthouse_daemon::guest_memory::LazySharedMemory;
-    use guesthouse_daemon::jail::{Needs, RAM_FILE, WINDOW_FILE, lock_calls, lock_files};
+    use guesthouse_daemon::guest_memory::SharedMemory;
+    use guesthouse_daemon::jail::{Needs, lock_calls, lock_files};
     use guesthouse_daemon::router::Router;
     use guesthouse_daemon::server::Server;
     use guesthouse_daemon::startup::start_backend;
@@ -92,6 +89,7 @@ fn serve_amd(
         .ok_or("No AMD graphics card was found at the address this guest was given.")?;
     log::info!("AMD card at {}", node.display());
     let run_folder = slot.run_folder(&project);
+    let memory = SharedMemory::inherited(slot)?;
     let needs = Needs::of_amd_card(slot, &project, &setup.driver_folder, node);
     needs.prepare()?;
     let locked = lock_files(&needs)?;
@@ -99,7 +97,6 @@ fn serve_amd(
     let (ram, cap) = (env::var("GUESTHOUSE_RAM").ok(), env::var("GUESTHOUSE_VRAM").ok());
     let limits = MemoryLimits::new(backend.facts(), video_cap(cap.as_deref()), guest_ram(ram.as_deref()));
     let config = Config::new(limits);
-    let memory = LazySharedMemory::new(slot.shared_file(WINDOW_FILE), slot.shared_file(RAM_FILE));
     let mut session = Session::new(backend, memory, config);
     session.timings_mut().set_enabled(env::var_os("GUESTHOUSE_TIMING").is_some());
     let mut server = Server::bind(&run_folder, Router::new(session))?;
@@ -116,8 +113,8 @@ fn serve_nvidia(slot: Slot, project: PathBuf) -> Result<(), Box<dyn std::error::
     use guesthouse_backend_nvidia::rm::linux::LinuxRm;
     use guesthouse_core::{Config, MemoryLimits, Session};
     use guesthouse_daemon::environment::{guest_ram, video_cap};
-    use guesthouse_daemon::guest_memory::LazySharedMemory;
-    use guesthouse_daemon::jail::{Needs, RAM_FILE, WINDOW_FILE, lock_calls, lock_files};
+    use guesthouse_daemon::guest_memory::SharedMemory;
+    use guesthouse_daemon::jail::{Needs, lock_calls, lock_files};
     use guesthouse_daemon::router::Router;
     use guesthouse_daemon::server::Server;
     use guesthouse_daemon::setup::read_setup;
@@ -125,6 +122,7 @@ fn serve_nvidia(slot: Slot, project: PathBuf) -> Result<(), Box<dyn std::error::
 
     let setup = read_setup()?;
     let run_folder = slot.run_folder(&project);
+    let memory = SharedMemory::inherited(slot)?;
     let needs = Needs::of_card(slot, &project, &setup.driver_folder);
     needs.prepare()?;
     let locked = lock_files(&needs)?;
@@ -135,7 +133,6 @@ fn serve_nvidia(slot: Slot, project: PathBuf) -> Result<(), Box<dyn std::error::
     let (ram, cap) = (env::var("GUESTHOUSE_RAM").ok(), env::var("GUESTHOUSE_VRAM").ok());
     let limits = MemoryLimits::new(backend.facts(), video_cap(cap.as_deref()), guest_ram(ram.as_deref()));
     let config = Config::new(limits);
-    let memory = LazySharedMemory::new(slot.shared_file(WINDOW_FILE), slot.shared_file(RAM_FILE));
     let mut session = Session::new(backend, memory, config);
     session.timings_mut().set_enabled(env::var_os("GUESTHOUSE_TIMING").is_some());
     if env::var_os("GUESTHOUSE_HELD_COPIES").is_some() {
@@ -165,6 +162,7 @@ fn serve(slot: Slot, project: PathBuf) -> Result<(), Box<dyn std::error::Error>>
     use guesthouse_core::{Config, MemoryLimits, Session};
     use guesthouse_daemon::environment::{guest_ram, video_cap};
     use guesthouse_daemon::guest_memory::WINDOW_BASE;
+    use guesthouse_daemon::handover::Part;
     use guesthouse_daemon::jail::{Needs, lock_calls, lock_files};
     use guesthouse_daemon::router::Router;
     use guesthouse_daemon::server::Server;
@@ -173,6 +171,12 @@ fn serve(slot: Slot, project: PathBuf) -> Result<(), Box<dyn std::error::Error>>
     const WINDOW_SIZE: u64 = 8 << 30;
 
     let run_folder = slot.run_folder(&project);
+    // It keeps nothing in them, but holds them as the real one does, so a start from the app is
+    // the same from outside. By hand there are none, which is fine here.
+    let handed: Vec<_> = Part::ALL.iter().filter_map(|part| part.inherited(slot).ok()).collect();
+    if handed.is_empty() {
+        log::warn!("no guest memory was handed over");
+    }
     let needs = Needs { run_folder: run_folder.clone(), ..Needs::default() };
     needs.prepare()?;
     let locked = lock_files(&needs)?;
