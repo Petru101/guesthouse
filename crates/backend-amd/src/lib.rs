@@ -55,7 +55,7 @@ use guesthouse_backend::{
 };
 use nodes::nodes;
 use screen_copy::{CopyPlan, PIXEL_BYTES};
-use sdma_copy::TiledCopy;
+use sdma_copy::{LinearCopy, TiledCopy};
 use space_vm::{Origin, Ran, SpaceVm};
 use std::collections::{BTreeMap, HashMap};
 use std::os::fd::OwnedFd;
@@ -147,6 +147,17 @@ impl AmdBackend {
 
     /// Copies a tiled frame with the DMA engine, which reads tiles as the CPU can't, and waits for it.
     fn copy_with_dma(&mut self, space: SpaceId, plan: &TiledCopy) -> Result<(), String> {
+        let target_start =
+            (u64::from(plan.to.1) * u64::from(plan.linear_pitch) + u64::from(plan.to.0)) * PIXEL_BYTES;
+        let target_bytes =
+            (u64::from(plan.height - 1) * u64::from(plan.linear_pitch) + u64::from(plan.width)) * PIXEL_BYTES;
+        let reaches = [(plan.tiled_address, PIXEL_BYTES), (plan.linear_address + target_start, target_bytes)];
+        self.run_dma(space, &reaches, &plan.commands())
+    }
+
+    /// Runs commands on the DMA engine in the daemon's space, and waits for them. `reaches` are the
+    /// ranges they touch, each of which must be mapped there.
+    fn run_dma(&mut self, space: SpaceId, reaches: &[(u64, u64)], commands: &[u32]) -> Result<(), String> {
         if !matches!(self.device.info().details.gfx_version.0, 10 | 11) {
             return Err("the DMA copy is written for GFX10 and GFX11".into());
         }
@@ -157,15 +168,10 @@ impl AmdBackend {
             self.copy_ib = Some(made);
         }
         let ib = self.copy_ib.as_mut().expect("made above");
-        let target_start =
-            (u64::from(plan.to.1) * u64::from(plan.linear_pitch) + u64::from(plan.to.0)) * PIXEL_BYTES;
-        let target_bytes =
-            (u64::from(plan.height - 1) * u64::from(plan.linear_pitch) + u64::from(plan.width)) * PIXEL_BYTES;
-        let target = plan.linear_address + target_start;
         let Some(space_vm) = self.spaces.get_mut(&space).map(|space| &mut space.vm) else {
             return Err("no such space".into());
         };
-        if !space_vm.holds(plan.tiled_address, PIXEL_BYTES) || !space_vm.holds(target, target_bytes) {
+        if !reaches.iter().all(|&(address, bytes)| space_vm.holds(address, bytes)) {
             return Err("a surface isn't mapped in the daemon's space".into());
         }
         if ib.mapped_in != Some(space) {
@@ -180,11 +186,30 @@ impl AmdBackend {
                 .map_err(|error| format!("mapping its commands: {error}"))?;
             ib.mapped_in = Some(space);
         }
-        let bytes = ib.write(&plan.commands()).map_err(|error| error.to_string())?;
+        let bytes = ib.write(commands).map_err(|error| error.to_string())?;
         match space_vm.run(HW_IP_DMA, &[Ib { address: copy_ib::ADDRESS, bytes }], RUN_WAIT_MS) {
             Ok(Ran::Retired) => Ok(()),
             Ok(Ran::StillRunning) => Err(format!("still running after {RUN_WAIT_MS} ms")),
             Err(error) => Err(error.to_string()),
+        }
+    }
+
+    /// Copies a frame into a viewer's slot. The guest's surface is in video memory, which the CPU
+    /// reads slowly, so a run of rows goes by the DMA engine, and anything else the way the screen's
+    /// copies go.
+    fn copy_to_slot(&mut self, staging: &StagingCopy) -> Result<(), String> {
+        let linear = CopyPlan::of(staging)
+            .and_then(|plan| LinearCopy::of(&plan, staging.source_address, staging.target_address));
+        let Some(linear) = linear else { return self.copy_staging(staging) };
+        let reaches = [(linear.source_address, linear.bytes), (linear.target_address, linear.bytes)];
+        self.run_dma(staging.own_space, &reaches, &linear.commands())
+    }
+
+    /// A copy to the screen or a slot: tiled surfaces by the DMA engine, rows by the CPU.
+    fn copy_staging(&mut self, copy: &StagingCopy) -> Result<(), String> {
+        match TiledCopy::of(copy) {
+            Some(plan) => self.copy_with_dma(copy.own_space, &plan),
+            None => self.copy_with_cpu(copy),
         }
     }
 
@@ -585,16 +610,7 @@ impl Backend for AmdBackend {
     fn close_queue(&mut self, _queue: u32) {}
 
     fn start_staging_copy(&mut self, _host: &mut dyn HostServices, copy: &StagingCopy) -> StagingStart {
-        if let Some(plan) = TiledCopy::of(copy) {
-            return StagingStart::Finished(match self.copy_with_dma(copy.own_space, &plan) {
-                Ok(()) => Status::SUCCESS,
-                Err(reason) => {
-                    log::warn!("a copy of a tiled surface failed: {reason}");
-                    Status::UNSUCCESSFUL
-                }
-            });
-        }
-        StagingStart::Finished(match self.copy_with_cpu(copy) {
+        StagingStart::Finished(match self.copy_staging(copy) {
             Ok(()) => Status::SUCCESS,
             Err(reason) => {
                 log::warn!("a copy to the screen failed: {reason}");
@@ -603,12 +619,18 @@ impl Backend for AmdBackend {
         })
     }
 
-    /// Goes the way a copy to the screen does, and is finished when it returns.
-    fn start_slot_copy(&mut self, host: &mut dyn HostServices, copy: &SlotCopy) -> StagingStart {
-        match screen_copy::slot_as_staging(copy) {
-            Some(staging) => self.start_staging_copy(host, &staging),
-            None => StagingStart::Finished(Status::UNSUCCESSFUL),
-        }
+    /// Finished when it returns.
+    fn start_slot_copy(&mut self, _host: &mut dyn HostServices, copy: &SlotCopy) -> StagingStart {
+        let Some(staging) = screen_copy::slot_as_staging(copy) else {
+            return StagingStart::Finished(Status::UNSUCCESSFUL);
+        };
+        StagingStart::Finished(match self.copy_to_slot(&staging) {
+            Ok(()) => Status::SUCCESS,
+            Err(reason) => {
+                log::warn!("a copy to a viewer's slot failed: {reason}");
+                Status::UNSUCCESSFUL
+            }
+        })
     }
 
     /// A tiled surface is copied by the DMA engine, which takes any start inside it.
