@@ -1,8 +1,8 @@
 #!/bin/bash
 # Installs a real release on the oldest systems it promises to run on, in throwaway containers made from
-# images already on this PC. The user runs install.sh and has no rights and no sudo. What it says root
-# must do is then run word for word by the container's own root, so this tests the package names too,
-# which means these containers download those packages.
+# images already on this PC. The user runs install.sh and has no rights but sudo, with no password, so
+# the installer runs its own root step, the way it does for a real user: the packages, which tests their
+# names too and means these containers download them, and QEMU's bridge helper.
 #
 # Usage: tests/install/real-in-containers.sh RELEASE_FOLDER
 # ENGINE says which of docker and podman holds the images, and docker is the default.
@@ -14,6 +14,8 @@ RELEASE=$(CDPATH='' cd -- "$1" && pwd)
 ENGINE=${ENGINE:-docker}
 IMAGES='ubuntu:24.04 debian:13'
 USER_ID=1000:1000
+# Install's question and uninstall's, each typed when it's asked, as the root step's apt-get reads the
+# terminal too and would take any answer typed ahead.
 ANSWERS='yes\nyes\n'
 LONGEST_SECONDS=3600
 failed=0
@@ -26,13 +28,17 @@ script_in() {
     "$ENGINE" exec "$@"
 }
 
-# What a desktop would have already, and these images don't, and GTK's display for a PC with none.
+# What a desktop would have already, and these images don't, and GTK's display for a PC with none. The
+# user needs a name for sudo to take it, and some images have none for 1000.
 add_basics() {
-    as_root 'apt-get update -q && apt-get install -y -q --no-install-recommends xz-utils libgtk-4-bin' >/dev/null
+    as_root 'apt-get update -q && apt-get install -y -q --no-install-recommends xz-utils libgtk-4-bin sudo' >/dev/null &&
+        as_root "getent passwd ${USER_ID%:*} >/dev/null || useradd -m -u ${USER_ID%:*} tester" &&
+        as_root "printf '#${USER_ID%:*} ALL=(ALL:ALL) NOPASSWD: ALL\\n' >/etc/sudoers.d/guesthouse-test &&
+            chmod 440 /etc/sudoers.d/guesthouse-test"
 }
 
 run_on() {
-    local image=$1 plan root_command devices=()
+    local image=$1 plan devices=()
     name=guesthouse-real-$$
     [ ! -e /dev/kvm ] || devices=(--device /dev/kvm)
     printf '\n===== %s\n' "$image"
@@ -44,12 +50,7 @@ run_on() {
         return 1
     }
     printf '%s\n' "$plan"
-    root_command=$(printf '%s\n' "$plan" | sed -n "s/^  sudo sh -c '\(.*\)'\$/\1/p")
-    if [ -n "$root_command" ]; then
-        as_root "$root_command" >/dev/null || return 1
-        printf 'root ran that, and it worked\n'
-    fi
-    python3 -I "$HERE/tty.py" "$ANSWERS" "$ENGINE" exec -it -u "$USER_ID" "$name" \
+    TTY_ANSWER_ON='Type yes: ' python3 -I "$HERE/tty.py" "$ANSWERS" "$ENGINE" exec -it -u "$USER_ID" "$name" \
         sh "$HERE/real-in-container.sh" run "$REPO" "$RELEASE"
 }
 

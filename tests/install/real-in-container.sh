@@ -1,9 +1,11 @@
 #!/bin/sh
-# A real install and uninstall of a release on the distro this runs on, as a user with no rights. It's
-# meant for a throwaway container, and real-in-containers.sh starts those. Only curl is a stand-in.
+# A real install and uninstall of a release on the distro this runs on, as a user whose only right is
+# sudo. It's meant for a throwaway container, and real-in-containers.sh starts those. Only curl is a
+# stand-in.
 #
 # Usage: real-in-container.sh plan|run REPO RELEASE_FOLDER
-# `plan` shows what root must do. `run` needs that done, and reads two answers from the terminal.
+# `plan` shows what root must do. `run` does it, through the installer's own sudo, and reads two
+# answers from the terminal.
 set -eu
 
 step=$1
@@ -13,6 +15,7 @@ here=$repo/tests/install
 T=/tmp/guesthouse-test
 H=$T/home
 HDR_GTK=4.16
+HELPER=/usr/local/libexec/guesthouse/qemu-bridge-helper
 VM_SECONDS=8
 APP_SECONDS=6
 BROADWAY_DISPLAY_NUMBER=:5
@@ -80,6 +83,15 @@ check_programs() {
     "$current/guesthouse" --help | head -n 2
 }
 
+# Root put it there, so it has to be root's, setuid, and the release's.
+check_helper() {
+    [ -u "$HELPER" ] || fail "the bridge helper isn't there, or isn't setuid"
+    [ "$(stat -c %u:%g "$HELPER")" = 0:0 ] || fail "the bridge helper isn't root's"
+    want=$(sha256sum "$current/qemu/build/qemu-bridge-helper" | cut -d ' ' -f 1)
+    [ "$(sha256sum "$HELPER" | cut -d ' ' -f 1)" = "$want" ] || fail "the bridge helper isn't the release's"
+    printf 'the bridge helper is root'"'"'s, setuid, and the release'"'"'s: %s\n' "$want"
+}
+
 boot_plain_vm() {
     if [ ! -w /dev/kvm ]; then
         echo "no KVM in this container, so no VM"
@@ -139,6 +151,7 @@ fi
 listing >"$T/before"
 sh "$T/install.sh" </dev/null
 export GUESTHOUSE_PROGRAM="$current"
+check_helper
 check_app
 check_libraries
 check_programs
@@ -146,5 +159,7 @@ start_the_app
 boot_plain_vm
 unset GUESTHOUSE_PROGRAM
 sh "$current/uninstall.sh" </dev/null
+[ ! -e "${HELPER%/*}" ] || fail "the uninstall left ${HELPER%/*}"
+echo "the uninstall removed the bridge helper and its folder"
 [ "$(listing)" = "$(cat "$T/before")" ] || fail "HOME isn't what it was"
 echo "HOME is as it began"
