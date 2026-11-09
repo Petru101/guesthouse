@@ -17,9 +17,9 @@ const NVIDIA_NAMES_START: &str = "\n10de  ";
 const DISPLAY_CLASS: &str = "0x03";
 /// The card this has been run on.
 const TESTED_CARDS: [u32; 1] = [0x2B85];
-/// Consumer 50, 40, 20 and 16 series, from pci.ids, which may be used under the 3-clause BSD licence. The workstation cards on these chips don't count, as nothing
-/// says their answers are the same. The 30 series has no profile, so it isn't here.
-const CONSUMER_CARDS: [(&str, &[u32]); 15] = [
+/// Consumer 50, 40, 30, 20 and 16 series, desktop and laptop, from pci.ids, which may be used under the 3-clause BSD licence. The workstation cards on these
+/// chips don't count, as nothing says their answers are the same, except the one in `CHECKED_WORKSTATION_CARDS`.
+const CONSUMER_CARDS: [(&str, &[u32]); 20] = [
     ("GB202", &[0x2B85, 0x2B87, 0x2B8C]),
     ("GB203", &[0x2C02, 0x2C05, 0x2C09, 0x2C18, 0x2C19, 0x2C58, 0x2C59]),
     ("GB205", &[0x2F04, 0x2F06, 0x2F18, 0x2F58]),
@@ -30,6 +30,29 @@ const CONSUMER_CARDS: [(&str, &[u32]); 15] = [
     ("AD104", &[0x2782, 0x2783, 0x2786, 0x2788, 0x27A0, 0x27E0]),
     ("AD106", &[0x2803, 0x2805, 0x2808, 0x2820, 0x2822, 0x2860]),
     ("AD107", &[0x2882, 0x28A0, 0x28A1, 0x28A3, 0x28E0, 0x28E1, 0x28E3]),
+    ("GA102", &[0x2203, 0x2204, 0x2205, 0x2206, 0x2207, 0x2208, 0x220A, 0x2216]),
+    ("GA103", &[0x2414, 0x2420, 0x2460]),
+    (
+        "GA104",
+        &[
+            0x2482, 0x2484, 0x2486, 0x2487, 0x2488, 0x2489, 0x248C, 0x248D, 0x248E, 0x249C, 0x249D, 0x24A0,
+            0x24C7, 0x24C8, 0x24C9, 0x24DC, 0x24DD, 0x24E0,
+        ],
+    ),
+    (
+        "GA106",
+        &[
+            0x2501, 0x2503, 0x2504, 0x2507, 0x2508, 0x2509, 0x2520, 0x2521, 0x2523, 0x2544, 0x2560, 0x2561,
+            0x2563,
+        ],
+    ),
+    (
+        "GA107",
+        &[
+            0x2582, 0x2583, 0x2584, 0x25A0, 0x25A2, 0x25A5, 0x25A9, 0x25AB, 0x25AC, 0x25AD, 0x25E0, 0x25E2,
+            0x25E5, 0x25EC, 0x25ED,
+        ],
+    ),
     ("TU102", &[0x1E03, 0x1E04, 0x1E07]),
     (
         "TU104",
@@ -116,8 +139,12 @@ fn remember_card_with(context: &Context, memory_of: impl Fn(&str) -> Option<u64>
     write_setup(context, changes.as_object().cloned().unwrap_or_default())
 }
 
+/// Workstation cards whose card check gave the same answers as a consumer card on the same chip.
+const CHECKED_WORKSTATION_CARDS: [(&str, &[u32]); 1] = [("GA107", &[0x25B9])];
+
 fn chip_of(device: u32) -> &'static str {
-    CONSUMER_CARDS.iter().find(|(_, devices)| devices.contains(&device)).map_or("", |found| found.0)
+    let mut tables = CONSUMER_CARDS.iter().chain(&CHECKED_WORKSTATION_CARDS);
+    tables.find(|(_, devices)| devices.contains(&device)).map_or("", |found| found.0)
 }
 
 fn support_of(device: u32) -> Support {
@@ -330,8 +357,11 @@ mod tests {
     }
 
     #[test]
-    fn the_30_series_has_no_profile_and_stays_unsupported() {
-        assert_eq!(support_of(0x2204), Support::Unsupported);
+    fn the_30_series_and_its_laptops_are_experimental() {
+        assert_eq!((chip_of(0x2204), support_of(0x2204)), ("GA102", Support::Experimental));
+        assert_eq!((chip_of(0x25A2), support_of(0x25A2)), ("GA107", Support::Experimental));
+        assert_eq!((chip_of(0x25B9), support_of(0x25B9)), ("GA107", Support::Experimental));
+        assert_eq!(support_of(0x2230), Support::Unsupported, "an RTX A6000 hasn't been checked");
     }
 
     #[test]
