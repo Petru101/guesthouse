@@ -127,6 +127,13 @@ async fn shot_after_paint(window: &Window, folder: &Path, name: &str) {
     clock.disconnect(handler);
 }
 
+/// Turns the settings to one of their pages.
+fn show_page(window: &Window, name: &str) {
+    if let Some(dialog) = all_of::<adw::PreferencesDialog>(window).last() {
+        dialog.set_visible_page_name(name);
+    }
+}
+
 /// Scrolls the topmost scrolled area until this title is near the top.
 fn scroll_to(window: &Window, title: &str) {
     let groups = all_of::<adw::PreferencesGroup>(window);
@@ -212,12 +219,20 @@ fn library_machines(context: &Arc<Context>, window: &Window, folder: &Path) -> V
 async fn settings_pages(window: Window, folder: PathBuf, failures: Rc<Cell<u32>>, machine: MachineHandle) {
     window.show_settings(machine);
     glib::timeout_future(LONG).await;
-    check(&failures, text_of(&window).contains("Hardware"), "settings open");
+    check(&failures, shows(&window, "Hardware").await, "settings open");
     shot_after_paint(&window, &folder, "07-settings-hardware").await;
-    scroll_to(&window, "Snapshots");
+    show_page(&window, "display");
     glib::timeout_future(SETTLE).await;
+    check(&failures, text_of(&window).contains("Viewer"), "the display page has the viewer's settings");
+    shot_after_paint(&window, &folder, "07b-settings-display").await;
+    show_page(&window, "storage");
+    glib::timeout_future(SETTLE).await;
+    check(&failures, !text_of(&window).contains("Cores"), "one page at a time");
     shot_after_paint(&window, &folder, "08-settings-disk-snapshots").await;
-    scroll_to(&window, "Network");
+    show_page(&window, "devices");
+    glib::timeout_future(SETTLE).await;
+    shot_after_paint(&window, &folder, "08b-settings-devices").await;
+    show_page(&window, "network");
     glib::timeout_future(SETTLE).await;
     shot_after_paint(&window, &folder, "09-settings-network-nat").await;
     let combos = all_of::<adw::ComboRow>(&window);
