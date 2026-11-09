@@ -38,6 +38,11 @@ const HINTS_LIMIT: u32 = 0x40000;
 /// The low bits of the hints count the heap type bytes that follow.
 const HEAP_COUNT_MASK: u32 = 0b111;
 const HEAP_TYPES: usize = 0x20;
+// The kernel maps a heap type to a memory segment: type 1 to segment 0, or 5 when the host
+// aperture stands in; 2 to 1; 3, 4, 5, 7 and 8 to 2; 9 to 4; 0 and 6 to none. Only segment 0 is
+// named, the CPU-visible local video memory, so type 1 is the only one that says where memory
+// goes. The other segments aren't named local, aperture or cacheable, and until they are, no heap
+// type picks a memory domain here.
 /// Each heap type is a number below this.
 const HEAP_TYPE_LIMIT: u8 = 0xA;
 const SIZE_64: usize = 0x68;
@@ -59,9 +64,13 @@ const SURFACE_SWIZZLE_MODE: usize = 0x08;
 /// 0 to 3. 1, 2 and 3 are 1D, 2D and 3D.
 const SURFACE_DIMENSIONS: usize = 0x0C;
 const MAX_DIMENSIONS: u32 = 3;
+/// The guest's own format number. Nothing converts it to a byte size anywhere that was read, so
+/// the host side takes it as an opaque number.
 const SURFACE_FORMAT: usize = 0x10;
 const SURFACE_WIDTH: usize = 0x14;
 const SURFACE_HEIGHT: usize = 0x18;
+/// The pitch's unit isn't known: the kernel fills it from the address library's own first output.
+/// It must be nonzero unless the shape check is skipped.
 const SURFACE_PITCH: usize = 0x1C;
 
 /// The second block's own size field.
