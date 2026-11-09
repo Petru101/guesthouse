@@ -223,6 +223,12 @@ pub fn parse(data: &[u8]) -> Result<Allocation, Refused> {
     Ok(Allocation { size, alignment, heap_types, surfaces, has_second_block })
 }
 
+/// The WDK's D3DKMDT_FREQUENCY_NOTSPECIFIED. AMD's private data carries no refresh rate, and the
+/// guest's kernel compares a primary's rate with the display mode's: any rate that isn't the mode's
+/// fails setting the mode, over and over. Not specified matches any mode, and is what the kernel
+/// gives its own primaries.
+const REFRESH_NOT_SPECIFIED: u32 = 0xFFFF_FFFE;
+
 /// The shape the core makes the allocation in. Data the kernel would refuse gets a page, and
 /// [`parse`] then refuses the call before anything is made.
 pub fn shape(data: &[u8]) -> AllocationShape {
@@ -247,7 +253,7 @@ pub fn shape(data: &[u8]) -> AllocationShape {
             format: surface.format,
             pitch: surface.pitch,
             tiling: (surface.swizzle_mode != 0).then_some(surface.swizzle_mode),
-            refresh: (0, 1),
+            refresh: (REFRESH_NOT_SPECIFIED, REFRESH_NOT_SPECIFIED),
             samples: (1, 0),
             colour: surface.format,
         }),
@@ -389,6 +395,7 @@ mod tests {
         let shape = shape(&data);
         let surface = shape.surface.unwrap();
         assert_eq!((surface.width, surface.height, surface.tiling), (1920, 1080, Some(27)));
+        assert_eq!(surface.refresh, (0xFFFF_FFFE, 0xFFFF_FFFE));
         assert_eq!(shape.kind, MemoryKind(27));
     }
 
