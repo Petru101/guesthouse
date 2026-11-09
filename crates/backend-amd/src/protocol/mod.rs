@@ -21,3 +21,4 @@ pub mod escape;
 pub mod guest_driver;
 pub mod hw_queue;
 pub mod tiling;
+pub mod wddm_caps;

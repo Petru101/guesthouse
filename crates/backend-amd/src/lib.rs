@@ -372,6 +372,9 @@ impl Backend for AmdBackend {
         if let Some(status) = protocol::adapter_registry::answer(query, out) {
             return Some(status);
         }
+        if let Some(status) = protocol::wddm_caps::answer(query, out) {
+            return Some(status);
+        }
         protocol::adapter_info::answer(query, self.device.info(), out)
     }
 
