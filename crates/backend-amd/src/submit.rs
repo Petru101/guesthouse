@@ -6,11 +6,14 @@
 //! eventfd armed on that sync object. That is the shape AMD forces on the backend trait, which today
 //! expects a doorbell and polls fence memory.
 //!
-//! Buffers that have a GPU address in this file's address space are resident for the submission
-//! already, so no explicit buffer list is sent. A backend that maps many buffers will want the
-//! `BO_HANDLES` chunk, whose data is a `drm_amdgpu_bo_list_in` descriptor, not a raw handle array.
+//! A buffer with a GPU address in this file's VM is not kept there for a submission by that alone:
+//! only buffers made for the VM itself are, and a space's are taken in from another open. amdgpu can
+//! move any other buffer out while the work runs, and the card then faults on its addresses. So a
+//! submission names the buffers it may use in a `BO_HANDLES` chunk, which makes amdgpu bring them in
+//! first and keep them in until the work retires.
 
 use crate::ioctl::{self, call, get64, put32, put64};
+use crate::memory::GemHandle;
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 
@@ -25,6 +28,7 @@ const CTX_REQUEST_SIZE: usize = 16;
 // Chunk ids.
 const CHUNK_ID_IB: u32 = 0x01;
 const CHUNK_ID_SYNCOBJ_OUT: u32 = 0x05;
+const CHUNK_ID_BO_HANDLES: u32 = 0x06;
 
 // drm_amdgpu_cs_chunk: id, length in dwords, pointer to the chunk's data.
 const CHUNK_ID: usize = 0;
@@ -39,6 +43,14 @@ const IB_IP_TYPE: usize = 20;
 const IB_IP_INSTANCE: usize = 24;
 const IB_RING: usize = 28;
 const IB_CHUNK_SIZE: usize = 32;
+
+// drm_amdgpu_bo_list_in, 24 bytes, pointing at drm_amdgpu_bo_list_entry records of 8 bytes: a
+// handle and a priority, left at 0.
+const BO_LIST_NUMBER: usize = 8;
+const BO_LIST_ENTRY_SIZE: usize = 12;
+const BO_LIST_ENTRIES: usize = 16;
+const BO_LIST_SIZE: usize = 24;
+const BO_ENTRY_SIZE: usize = 8;
 
 // drm_amdgpu_cs in/out, 24 bytes.
 const CS_CTX_ID: usize = 0;
@@ -149,7 +161,8 @@ pub struct Ib {
 }
 
 /// Submits one IB and asks the kernel to signal `signal` when it retires. The IB is already at
-/// `ib_va` in this file's address space, `ib_bytes` long, for the engine family `ip_type`.
+/// `ib_va` in this file's address space, `ib_bytes` long, for the engine family `ip_type`. No
+/// buffers are named, which suits a probe whose buffers are small and just made.
 pub fn submit(
     file: &impl AsRawFd,
     context: &Context,
@@ -158,16 +171,17 @@ pub fn submit(
     ib_bytes: u32,
     signal: &Syncobj,
 ) -> io::Result<u64> {
-    submit_all(file, context, ip_type, &[Ib { address: ib_va, bytes: ib_bytes }], signal)
+    submit_all(file, context, ip_type, &[Ib { address: ib_va, bytes: ib_bytes }], &[], signal)
 }
 
 /// Submits IBs to run in order on one engine, and asks the kernel to signal `signal` when the last
-/// retires.
+/// retires. `buffers`, handles on `file`, are kept in place until then.
 pub fn submit_all(
     file: &impl AsRawFd,
     context: &Context,
     ip_type: u32,
     ibs: &[Ib],
+    buffers: &[GemHandle],
     signal: &Syncobj,
 ) -> io::Result<u64> {
     let mut ib_chunks = vec![[0u8; IB_CHUNK_SIZE]; ibs.len()];
@@ -181,11 +195,22 @@ pub fn submit_all(
     let mut sem_chunk = [0u8; 4];
     put32(&mut sem_chunk, 0, signal.handle());
 
+    let entries = bo_entries(buffers);
+    let mut bo_list = [0u8; BO_LIST_SIZE];
+    put32(&mut bo_list, BO_LIST_NUMBER, buffers.len() as u32);
+    put32(&mut bo_list, BO_LIST_ENTRY_SIZE, BO_ENTRY_SIZE as u32);
+    put64(&mut bo_list, BO_LIST_ENTRIES, entries.as_ptr() as u64);
+
     let mut chunks = vec![[0u8; CHUNK_SIZE]; ibs.len() + 1];
     for (slot, ib_chunk) in chunks.iter_mut().zip(&ib_chunks) {
         write_chunk(slot, CHUNK_ID_IB, IB_CHUNK_SIZE / 4, ib_chunk.as_ptr() as u64);
     }
     write_chunk(&mut chunks[ibs.len()], CHUNK_ID_SYNCOBJ_OUT, 1, sem_chunk.as_ptr() as u64);
+    if !buffers.is_empty() {
+        let mut slot = [0u8; CHUNK_SIZE];
+        write_chunk(&mut slot, CHUNK_ID_BO_HANDLES, BO_LIST_SIZE / 4, bo_list.as_ptr() as u64);
+        chunks.push(slot);
+    }
     let chunk_pointers: Vec<u64> = chunks.iter().map(|chunk| chunk.as_ptr() as u64).collect();
 
     let mut request = [0u8; CS_REQUEST_SIZE];
@@ -195,6 +220,15 @@ pub fn submit_all(
     put64(&mut request, CS_CHUNKS, chunk_pointers.as_ptr() as u64);
     ioctl::drm_ioctl(file, call::cs(), &mut request)?;
     Ok(get64(&request, CS_OUT_HANDLE))
+}
+
+/// The list entries for `buffers`, each at the default priority.
+fn bo_entries(buffers: &[GemHandle]) -> Vec<u8> {
+    let mut entries = vec![0u8; buffers.len() * BO_ENTRY_SIZE];
+    for (entry, buffer) in entries.as_chunks_mut::<BO_ENTRY_SIZE>().0.iter_mut().zip(buffers) {
+        put32(entry, 0, buffer.0);
+    }
+    entries
 }
 
 fn write_chunk(slot: &mut [u8], id: u32, length_dw: usize, data: u64) {
@@ -236,5 +270,11 @@ mod tests {
         assert_eq!(ib[3], 0, "count is dwords minus one");
         assert_eq!(ib[4], 0xCAFE_D00D);
         assert_eq!(ib.len() % SDMA_IB_ALIGNMENT_DWORDS, 0, "padded to the engine's alignment");
+    }
+
+    #[test]
+    fn each_buffer_is_listed_by_its_handle_at_the_default_priority() {
+        let entries = bo_entries(&[GemHandle(3), GemHandle(9)]);
+        assert_eq!(entries, [3, 0, 0, 0, 0, 0, 0, 0, 9, 0, 0, 0, 0, 0, 0, 0]);
     }
 }

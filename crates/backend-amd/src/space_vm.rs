@@ -66,6 +66,11 @@ impl Books {
         Some(Unmapping { handle, address, length, last_use })
     }
 
+    /// The handles here of every buffer taken in.
+    pub fn handles(&self) -> Vec<GemHandle> {
+        self.taken_in.values().map(|&(handle, _)| handle).collect()
+    }
+
     /// Every mapping of `buffer` here.
     pub fn addresses_of(&self, buffer: GemHandle) -> Vec<u64> {
         let of_buffer = self.mappings.iter().filter(|(_, placed)| placed.buffer == buffer);
@@ -140,7 +145,9 @@ impl SpaceVm {
             }
         };
         let signal = Syncobj::create(&self.file).map_err(|error| step("making a sync object", error))?;
-        let retired = submit::submit_all(&self.file, context, ip_type, ibs, &signal)
+        // The guest doesn't say which buffers the work uses, so it may use any mapped here.
+        let buffers = self.books.handles();
+        let retired = submit::submit_all(&self.file, context, ip_type, ibs, &buffers, &signal)
             .map_err(|error| step("submitting", error))
             .and_then(|_| signal.arm_eventfd(&self.file).map_err(|error| step("arming the eventfd", error)))
             .and_then(|event| submit::wait_eventfd(&event, timeout_ms));
@@ -245,6 +252,17 @@ mod tests {
         books.add(BUFFER, HERE, AT, 0, SIZE);
         books.add(GemHandle(8), GemHandle(4), AT + SIZE, 0, SIZE);
         assert_eq!(books.addresses_of(BUFFER), vec![AT]);
+    }
+
+    #[test]
+    fn a_buffer_mapped_twice_is_listed_once() {
+        let mut books = Books::default();
+        books.add(BUFFER, HERE, AT, 0, SIZE);
+        books.add(BUFFER, HERE, AT + SIZE, SIZE, SIZE);
+        books.add(GemHandle(8), GemHandle(4), AT + 2 * SIZE, 0, SIZE);
+        let mut handles = books.handles();
+        handles.sort_by_key(|handle| handle.0);
+        assert_eq!(handles, vec![HERE, GemHandle(4)]);
     }
 
     #[test]
