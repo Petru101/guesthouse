@@ -235,7 +235,7 @@ struct TestViewer {
 
 impl TestViewer {
     fn hello(&self, formats: Vec<Format>) {
-        let hello = Hello { formats, refresh_millihertz: 60_000, peak_nits: 0 };
+        let hello = Hello { formats, refresh_millihertz: 60_000, peak_nits: 0, wants_memory: false };
         self.socket.send(&Message::Hello(hello), &[]).unwrap();
     }
 

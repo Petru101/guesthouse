@@ -20,7 +20,8 @@ const STATUS_STALE: u32 = 1;
 const STATUS_REFUSED: u32 = 2;
 const ESCAPE_SIZE_AT: usize = HEADER_SIZE + 16;
 const ESCAPE_HEADER: usize = HEADER_SIZE + 24;
-const HDR_VIEWER: ViewerFacts = ViewerFacts { shows_hdr: true, refresh_millihertz: 240_000, peak_nits: 1000 };
+const HDR_VIEWER: ViewerFacts =
+    ViewerFacts { shows_hdr: true, refresh_millihertz: 240_000, peak_nits: 1000, wants_memory: false };
 
 #[derive(Default)]
 struct Sink {
@@ -323,6 +324,44 @@ fn the_next_viewer_gets_the_same_slots_and_the_last_picture() {
 
     session.slot_released(sink.rings[0].generation, first);
     assert!(!session.frames.ring.as_ref().unwrap().slots.has_free() || frame(&mut session, None).1.is_some());
+}
+
+#[test]
+fn a_viewer_on_another_gpu_gets_each_frame_copied_into_memory_here() {
+    let (mut session, first) = registered();
+    frame(&mut session, Some(first));
+    let _ = session.poll(Instant::now());
+    session.backend_mut().refuse_exports = true;
+    session.viewer_arrived();
+    session.viewer_described(ViewerFacts { wants_memory: true, ..ViewerFacts::default() });
+    let mut sink = Sink::default();
+    turn(&mut session, &mut sink);
+    turn(&mut session, &mut sink);
+    assert_eq!(sink.rings.len(), 1, "nothing was exported from the card");
+    assert_eq!(session.memory().host_buffers.len(), SLOTS as usize);
+    assert_eq!(sink.frames.len(), 1, "the frame already waiting was copied over");
+    assert_eq!(session.backend().slot_copies.len(), 1);
+
+    let next = frame(&mut session, None).1.expect("a free slot");
+    frame(&mut session, Some(next));
+    turn(&mut session, &mut sink);
+    assert_eq!(sink.frames.len(), 2);
+    let copy = *session.backend().slot_copies.last().unwrap();
+    let ring = session.frames.ring.as_ref().unwrap();
+    assert_eq!(copy.slot_address, ring.memory[next as usize].address);
+    assert_eq!((copy.width, copy.height, copy.slot_pitch, copy.source.pitch), (WIDTH, HEIGHT, PITCH, PITCH));
+
+    session.viewer_left();
+    assert!(session.memory().host_buffers.is_empty(), "the old viewer's slots go with it");
+    session.viewer_arrived();
+    session.viewer_described(ViewerFacts { wants_memory: true, ..ViewerFacts::default() });
+    let mut again = Sink::default();
+    turn(&mut session, &mut again);
+    turn(&mut session, &mut again);
+    assert_eq!((again.rings.len(), again.frames.len()), (1, 1));
+    assert_eq!(session.memory().host_buffers.len(), SLOTS as usize);
+    session.guest_reset();
+    assert!(session.memory().host_buffers.is_empty());
 }
 
 #[test]

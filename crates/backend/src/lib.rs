@@ -19,7 +19,7 @@ pub use driver::{
 };
 pub use guesthouse_messages::Status;
 pub use guesthouse_messages::registry::RegistryName;
-pub use memory::{GuestMemory, MemoryError, PagesView, WINDOW_BASE, in_window};
+pub use memory::{GuestMemory, HostBuffer, MemoryError, PagesView, WINDOW_BASE, in_window};
 pub use pci_address::PciAddress;
 pub use types::*;
 

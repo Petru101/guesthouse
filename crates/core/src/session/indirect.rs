@@ -9,8 +9,9 @@ use super::{Handled, HeldReply, Session, services};
 use crate::frames::{
     Cursor, FrameLight, GuestSlot, IndirectRing, Landing, LiveRing, Picture, Registering, ReplyWaiting, Slots,
 };
-use guesthouse_backend::{Backend, BackendError, GuestMemory, SpaceId};
+use guesthouse_backend::{Backend, BackendError, GuestMemory, SlotCopy, SpaceId, StagingStart, SurfaceShape};
 use guesthouse_messages::adapter::DisplayMode;
+use guesthouse_messages::Status;
 use guesthouse_messages::indirect::{FrameDone, Look, Outcome, Register, Reply, Request, STAMP_SIZE, Stamp};
 use std::collections::VecDeque;
 use std::os::fd::OwnedFd;
@@ -275,6 +276,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
     pub(super) fn end_indirect_ring(&mut self, why: &str) {
         if self.frames.indirect.take().is_some() {
             log::info!("the display driver's ring has ended: {why}");
+            self.drop_memory_slots();
             self.frames.ring = None;
             self.frames.behind = true;
         }
@@ -353,12 +355,22 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             if !reached && now < front.deadline {
                 return;
             }
+            let slot = front.slot;
+            let in_memory = self.frames.ring.as_ref().is_some_and(|ring| !ring.memory.is_empty());
+            // The copy engine does one thing at a time, and the screen's copies have it.
+            if reached && in_memory && !self.copies.is_empty() {
+                return;
+            }
+            let copied = !reached || !in_memory || self.copy_to_memory_slot(slot) == Status::SUCCESS;
             let frames = &mut self.frames;
             let (Some(indirect), Some(ring)) = (frames.indirect.as_mut(), frames.ring.as_mut()) else {
                 return;
             };
             let Some(landing) = indirect.landing.pop_front() else { return };
-            if reached {
+            if reached && !copied {
+                ring.slots.abandoned(landing.slot);
+                frames.complain("a frame couldn't be copied for a viewer on another GPU");
+            } else if reached {
                 frames.sequence += 1;
                 let replaced = ring.slots.finished(landing.slot, frames.sequence);
                 indirect.light[landing.slot as usize] = Some(landing.light);
@@ -382,6 +394,10 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         if !wanted {
             return;
         }
+        if self.frames.viewer_facts.wants_memory {
+            self.make_memory_slots();
+            return;
+        }
         let Some(indirect) = self.frames.indirect.as_ref() else { return };
         let slots = indirect.slots.clone();
         let buffers: Result<Vec<OwnedFd>, BackendError> =
@@ -397,6 +413,91 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
                 log::warn!("the display driver's slots can't be exported: {error}");
                 indirect.export_refused = true;
             }
+        }
+    }
+
+    /// Slots in memory here, one for each of the guest's, for a viewer whose screen is on another
+    /// GPU. That GPU can't take the card's buffers, so each frame is copied over as it lands. A frame
+    /// that's already waiting is copied now, as a still desktop sends no more.
+    fn make_memory_slots(&mut self) {
+        let (Some(indirect), Some(ring)) = (self.frames.indirect.as_ref(), self.frames.ring.as_ref()) else {
+            return;
+        };
+        let sizes: Vec<u64> = indirect.slots.iter().map(|slot| slot.size).collect();
+        let space = ring.space;
+        let mut memory = Vec::new();
+        let mut buffers = Vec::new();
+        for size in sizes {
+            match self.make_host_slot(size, space) {
+                Ok((slot, buffer)) => {
+                    memory.push(slot);
+                    buffers.push(buffer);
+                }
+                Err(error) => {
+                    log::warn!("no slots in memory for the viewer: {error}");
+                    memory.iter().for_each(|slot| self.free_slot(slot, space));
+                    if let Some(indirect) = self.frames.indirect.as_mut() {
+                        indirect.export_refused = true;
+                    }
+                    return;
+                }
+            }
+        }
+        let (Some(indirect), Some(ring)) = (self.frames.indirect.as_mut(), self.frames.ring.as_mut()) else {
+            return;
+        };
+        ring.memory = memory;
+        ring.unsent = Some(buffers);
+        indirect.needs_export = false;
+        let waiting = ring.slots.pending().map(|(slot, _)| slot);
+        if let Some(slot) = waiting
+            && self.copy_to_memory_slot(slot) != Status::SUCCESS
+            && let Some(ring) = self.frames.ring.as_mut()
+        {
+            ring.slots.abandoned(slot);
+        }
+    }
+
+    /// The viewer's slots in memory go. Copies here are waited for, so none is writing them.
+    pub(super) fn drop_memory_slots(&mut self) {
+        let Some(ring) = self.frames.ring.as_mut() else { return };
+        let (memory, space) = (std::mem::take(&mut ring.memory), ring.space);
+        memory.iter().for_each(|slot| self.free_slot(slot, space));
+    }
+
+    /// Copies the frame in one of the guest's slots to the viewer's slot in memory. It has the copy
+    /// engine to itself, and waits, as a frame is one short copy.
+    fn copy_to_memory_slot(&mut self, slot: u32) -> Status {
+        let (Some(indirect), Some(ring)) = (self.frames.indirect.as_ref(), self.frames.ring.as_ref()) else {
+            return Status::UNSUCCESSFUL;
+        };
+        let (Some(guest), Some(host)) = (indirect.slots.get(slot as usize), ring.memory.get(slot as usize)) else {
+            return Status::UNSUCCESSFUL;
+        };
+        let (allocation, slot_address, picture, own_space) = (guest.allocation, host.address, ring.picture, ring.space);
+        let Ok(source_address) = self.surface_address(allocation) else { return Status::UNSUCCESSFUL };
+        let source = SurfaceShape {
+            width: picture.width,
+            height: picture.height,
+            format: 0,
+            pitch: picture.pitch,
+            tiling: None,
+            refresh: (0, 1),
+            samples: (1, 0),
+            colour: 0,
+        };
+        let copy = SlotCopy {
+            source,
+            source_address,
+            slot_address,
+            slot_pitch: picture.pitch,
+            width: picture.width,
+            height: picture.height,
+            own_space,
+        };
+        match self.backend.start_slot_copy(&mut services!(self), &copy) {
+            StagingStart::Running => self.wait_for_copy(),
+            StagingStart::Finished(status) => status,
         }
     }
 }

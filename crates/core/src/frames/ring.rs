@@ -27,6 +27,8 @@ pub(crate) struct SlotMemory {
     /// What the backend really gave, which is what's mapped.
     pub size: u64,
     pub address: u64,
+    /// Where it is in this process, for a slot in memory here rather than on the card.
+    pub host_address: Option<u64>,
 }
 
 /// A ring that exists.
@@ -80,6 +82,8 @@ pub struct ViewerFacts {
     pub refresh_millihertz: u32,
     /// 0 if not known.
     pub peak_nits: u32,
+    /// Its screen is on another GPU, so it wants its frames in memory here.
+    pub wants_memory: bool,
 }
 
 /// See the module documentation.

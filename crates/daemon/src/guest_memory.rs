@@ -3,7 +3,8 @@
 use crate::handover::Part;
 use crate::slot::Slot;
 pub use guesthouse_backend::WINDOW_BASE;
-use guesthouse_backend::{GuestMemory, MemoryError, PagesView, in_window};
+use guesthouse_backend::{GuestMemory, HostBuffer, MemoryError, PagesView, in_window};
+use guesthouse_frame_socket::sized_buffer;
 use std::fs::File;
 use std::io;
 use std::ops::Range;
@@ -32,6 +33,24 @@ pub fn ram_offset(address: u64) -> Option<u64> {
 
 fn check(result: *mut libc::c_void) -> io::Result<*mut libc::c_void> {
     if result == libc::MAP_FAILED { Err(io::Error::last_os_error()) } else { Ok(result) }
+}
+
+const HOST_BUFFER_NAME: &str = "frame-slot";
+
+/// A new file in memory, mapped here for the GPU to write and a viewer to read.
+fn map_host_buffer(size: u64) -> io::Result<HostBuffer> {
+    let file = sized_buffer(HOST_BUFFER_NAME, size)?;
+    let protection = libc::PROT_READ | libc::PROT_WRITE;
+    // SAFETY: the kernel picks the address, and the file is `size` bytes long and sealed so.
+    let at = check(unsafe {
+        libc::mmap(ptr::null_mut(), size as usize, protection, libc::MAP_SHARED, file.as_raw_fd(), 0)
+    })?;
+    Ok(HostBuffer { file, host_address: at as u64 })
+}
+
+fn unmap_host_buffer(address: u64, size: u64) {
+    // SAFETY: the buffer came from `map_host_buffer`, and the caller has stopped using it.
+    unsafe { libc::munmap(address as *mut libc::c_void, size as usize) };
 }
 
 /// The window mapped here, and the RAM ready to map from.
@@ -180,6 +199,14 @@ impl GuestMemory for SharedMemory {
             // is atomic because the GPU can be reading these pages.
             unsafe { AtomicU32::from_ptr(at).store(value, Ordering::Release) };
         }
+    }
+
+    fn host_buffer(&mut self, size: u64) -> io::Result<HostBuffer> {
+        map_host_buffer(size)
+    }
+
+    fn release_host_buffer(&mut self, address: u64, size: u64) {
+        unmap_host_buffer(address, size);
     }
 }
 

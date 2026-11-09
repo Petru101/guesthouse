@@ -7,6 +7,7 @@ use super::import::texture;
 use super::ring::Buffers;
 use gtk::gdk;
 use gtk::prelude::*;
+use guesthouse_app_core::screen_gpu::{DRM_CLASS, wants_memory_frames};
 use guesthouse_frame_socket::{
     CursorMove, Format, Frame, FrameSocket, Hello, Light, Message, Packet, Release, SOCKET_NAME,
 };
@@ -38,8 +39,12 @@ pub struct SocketFrames {
 }
 
 /// What this display can show, in the producer's order of preference. The message holds a limited
-/// number and a display can offer hundreds, so the formats a guest's desktop uses go first.
-fn formats(display: &gdk::Display) -> Vec<Format> {
+/// number and a display can offer hundreds, so the formats a guest's desktop uses go first. Frames
+/// in memory are copied, which only works for the copyable formats.
+fn formats(display: &gdk::Display, in_memory: bool) -> Vec<Format> {
+    if in_memory {
+        return COPYABLE.map(|fourcc| Format { fourcc, modifier: LINEAR }).to_vec();
+    }
     let dmabuf = display.dmabuf_formats();
     let offered = (0..dmabuf.n_formats()).map(|index| {
         let (fourcc, modifier) = dmabuf.format(index);
@@ -48,9 +53,13 @@ fn formats(display: &gdk::Display) -> Vec<Format> {
     in_order(offered.collect())
 }
 
+fn frames_in_memory() -> bool {
+    wants_memory_frames(Path::new(DRM_CLASS))
+}
+
 /// Whether this build and this display can take an HDR frame at all.
 pub fn takes_hdr_frames(display: &gdk::Display) -> bool {
-    formats(display).contains(&HDR_FORMAT)
+    formats(display, frames_in_memory()).contains(&HDR_FORMAT)
 }
 
 /// HDR is only offered if the display has it, and it comes early, as the list can be cut short.
@@ -70,7 +79,13 @@ impl SocketFrames {
     /// Fails if nothing is offering frames yet.
     pub fn connect(run_folder: &Path, display: &gdk::Display, refresh_millihertz: u32) -> io::Result<Self> {
         let socket = FrameSocket::connect(&run_folder.join(SOCKET_NAME))?;
-        let hello = Hello { formats: formats(display), refresh_millihertz, peak_nits: 0 };
+        let in_memory = frames_in_memory();
+        let hello = Hello {
+            formats: formats(display, in_memory),
+            refresh_millihertz,
+            peak_nits: 0,
+            wants_memory: in_memory,
+        };
         socket.send(&Message::Hello(hello), &[])?;
         socket.send(&Message::CursorWanted, &[])?;
         socket.set_nonblocking(true)?;
