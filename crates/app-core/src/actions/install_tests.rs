@@ -100,11 +100,11 @@ fn the_answer_file_gets_the_hosts_zone() {
     let context = scratch_context(&scratch);
     scratch.write("program/guest/autounattend.xml", "<a><TimeZone>UTC</TimeZone></a>");
     assert_eq!(
-        answer_file(&context, "Asia/Tokyo", "secret").unwrap(),
+        answer_file(&context, "Asia/Tokyo", "gpupv", "secret").unwrap(),
         "<a><TimeZone>Tokyo Standard Time</TimeZone></a>"
     );
     assert_eq!(
-        answer_file(&context, "Mars/Olympus_Mons", "secret").unwrap(),
+        answer_file(&context, "Mars/Olympus_Mons", "gpupv", "secret").unwrap(),
         "<a><TimeZone>UTC</TimeZone></a>"
     );
 }
@@ -115,8 +115,19 @@ fn the_answer_file_gets_the_machines_password() {
     let context = scratch_context(&scratch);
     scratch.write("program/guest/autounattend.xml", "<Value>@PASSWORD@</Value><Value>@PASSWORD@</Value>");
     assert_eq!(
-        answer_file(&context, "Asia/Tokyo", "secret").unwrap(),
+        answer_file(&context, "Asia/Tokyo", "gpupv", "secret").unwrap(),
         "<Value>secret</Value><Value>secret</Value>"
+    );
+}
+
+#[test]
+fn the_answer_file_gets_the_account_as_xml() {
+    let scratch = Scratch::new();
+    let context = scratch_context(&scratch);
+    scratch.write("program/guest/autounattend.xml", "<Name>@USER@</Name><Value>@PASSWORD@</Value>");
+    assert_eq!(
+        answer_file(&context, "UTC", "Ana B", "a<b>&c").unwrap(),
+        "<Name>Ana B</Name><Value>a&lt;b&gt;&amp;c</Value>"
     );
 }
 
@@ -203,6 +214,8 @@ fn install_setup(scratch: &Scratch) -> (Context, Machine) {
         cores: 2,
         ram_gib: 4,
         disk_gib: 64,
+        user: String::new(),
+        password: String::new(),
     };
     let vm = crate::library::create(&context, &new).unwrap();
     (context, vm)

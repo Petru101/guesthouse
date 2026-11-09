@@ -40,6 +40,18 @@ fn the_answer_file_holds_no_password() {
 }
 
 #[test]
+fn the_account_is_named_by_the_host_everywhere_the_scripts_need_it() {
+    let answers = fs::read_to_string(guest_file("autounattend.xml")).unwrap();
+    assert_eq!(answers.matches("@USER@").count(), 4, "full name, name, display name and the sign-in");
+    assert!(!answers.contains(">gpupv<"), "the default name belongs to the app, not the template");
+    for name in ["finish.ps1", "check.ps1"] {
+        let script = fs::read_to_string(guest_file(name)).unwrap();
+        assert!(script.contains("$user = '@USER@'"), "{name} takes the name from the host");
+        assert!(!script.contains("gpupv$"), "{name} still matches the default name by hand");
+    }
+}
+
+#[test]
 fn the_only_key_is_the_published_one_that_activates_nothing() {
     let answers = fs::read_to_string(guest_file("autounattend.xml")).unwrap();
     assert_eq!(answers.matches("<ProductKey>").count(), 1);
