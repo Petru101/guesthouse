@@ -460,6 +460,10 @@ impl<R: Rm + OpenRm> Backend for NvidiaBackend<R> {
         self.device.guest_clock.restart();
     }
 
+    fn adapter_opened(&mut self, guest_adapter_id: u64) {
+        self.answers.set_adapter_id(guest_adapter_id);
+    }
+
     fn escape(&mut self, process: u32, data: &mut [u8], books: &GuestBooks<'_>) {
         log::debug!("escape {:02x?}, {} bytes", data.get(0x10..0x14), data.len());
         let live = self.sensors.as_ref().and_then(|sensors| sensors.latest());

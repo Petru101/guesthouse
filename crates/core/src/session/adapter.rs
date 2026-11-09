@@ -9,7 +9,7 @@ use guesthouse_backend::{
 use guesthouse_messages::adapter::{
     ASYNC_MESSAGES, AdapterQuery, CapsQuery, DRIVER_MODEL_NUMBER, DisplayMode, FLIP_QUEUE_ANSWER_SIZE,
     IdentityAnswer, SetIoSpace, adapter_identity, description_answer, driver_caps, flip_queue,
-    node_description, node_of, physical_adapter_ids, segment_sizes,
+    guest_adapter_id, node_description, node_of, open_adapter, physical_adapter_ids, segment_sizes,
 };
 use guesthouse_messages::address::{
     ReservationRequest, available_for_reservation, memory_answer, memory_group,
@@ -51,6 +51,15 @@ fn memory_by_process(allocations: &HashMap<u32, Allocation>, pids: &HashMap<u32,
 }
 
 impl<B: Backend, M: GuestMemory> Session<B, M> {
+    pub(super) fn open_adapter(&mut self, message: &[u8], out: &mut Vec<u8>) -> Handled {
+        if let Some(id) = guest_adapter_id(message) {
+            log::debug!("the guest calls the adapter {id:#x}");
+            self.backend.adapter_opened(id);
+        }
+        open_adapter(message, out)?;
+        Ok(())
+    }
+
     pub(super) fn adapter_identity(&self, out: &mut Vec<u8>) {
         let facts = self.backend.facts();
         let answer = IdentityAnswer {
