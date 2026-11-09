@@ -2,7 +2,7 @@ use super::*;
 use crate::actions::tests::{machine, plain_task_context};
 use crate::agent::stand_in::ScriptedAgent;
 use crate::context::Context;
-use crate::gpu_identity::{MICROSOFT_RENDER, shown_identity};
+use crate::gpu_identity::{AMD_RENDER, MICROSOFT_RENDER, NVIDIA_RENDER, shown_identity};
 use crate::machine::Machine;
 use crate::testing::Scratch;
 use crate::vm_host::stand_in::RecordingHost;
@@ -37,6 +37,13 @@ impl Rig {
         Self { context, agent, machine }
     }
 
+    /// The same, for a machine on an AMD card.
+    fn on_amd(scratch: &Scratch, answers: &[&str]) -> Self {
+        let mut rig = Self::new(scratch, true, answers);
+        rig.machine.amd_gpu = "0000:7c:00.0".into();
+        rig
+    }
+
     fn boot(&self) -> String {
         let host = RecordingHost::default();
         let mut task = Task::new(&self.context, &host, "start", self.machine.clone());
@@ -64,11 +71,42 @@ fn a_guest_that_takes_the_package_is_shown_nvidias_number_from_the_next_start() 
     assert!(asked[0].starts_with("$vendor = '10DE'\n$device = '2BFE'\n"), "the script gets the numbers");
     assert!(asked[0].ends_with(SCRIPT_TEXT));
     let state = rig.state();
-    assert_eq!(state.shown, Shown::Nvidia);
+    assert_eq!(state.shown, Shown::Maker);
     assert_eq!(state.reason, "");
-    assert_eq!(state.note, NEXT_START);
+    assert_eq!(state.note, next_start("NVIDIA"));
     assert!(state.restarts_windows(), "the next start restarts Windows once");
     assert_eq!(shown_identity(&rig.context, &rig.machine), NVIDIA_RENDER);
+}
+
+#[test]
+fn an_amd_machine_gets_the_package_for_amds_number() {
+    let scratch = Scratch::new();
+    let rig = Rig::on_amd(&scratch, &["identity staged\r\n"]);
+    assert_eq!(rig.boot(), "");
+    assert!(
+        rig.asked()[0].starts_with("$vendor = '1002'\n$device = '7FFE'\n"),
+        "the script gets AMD's numbers"
+    );
+    let state = rig.state();
+    assert_eq!((state.shown, state.package_vendor), (Shown::Maker, 0x1002));
+    assert_eq!(state.note, next_start("AMD"));
+    assert_eq!(shown_identity(&rig.context, &rig.machine), AMD_RENDER);
+}
+
+#[test]
+fn a_package_for_nvidias_number_on_an_amd_machine_is_made_again_for_amds() {
+    let scratch = Scratch::new();
+    let rig = Rig::on_amd(&scratch, &["identity staged\r\n"]);
+    let old = IdentityState { shown: Shown::Maker, ..IdentityState::default() };
+    write_state(&rig.context, &rig.machine, &old).unwrap();
+    assert_eq!(
+        shown_identity(&rig.context, &rig.machine),
+        MICROSOFT_RENDER,
+        "never a number with no package"
+    );
+    assert_eq!(rig.boot(), "");
+    assert_eq!(rig.asked().len(), 1);
+    assert_eq!(shown_identity(&rig.context, &rig.machine), AMD_RENDER);
 }
 
 #[test]
@@ -96,7 +134,7 @@ fn a_guest_that_says_nothing_useful_keeps_microsofts_number_too() {
     assert_eq!(rig.boot(), "");
     let state = rig.state();
     assert_eq!(state.shown, Shown::Microsoft);
-    assert_eq!(state.reason, DID_NOT_STAGE);
+    assert_eq!(state.reason, did_not_stage("NVIDIA"));
 }
 
 #[test]
@@ -107,19 +145,18 @@ fn a_qemu_without_the_properties_keeps_microsofts_number_without_asking() {
     assert_eq!(rig.asked().len(), 0);
     let state = rig.state();
     assert_eq!(state.shown, Shown::Microsoft);
-    assert_eq!(state.reason, QEMU_WITHOUT);
+    assert_eq!(state.reason, qemu_without("NVIDIA"));
 }
 
 #[test]
 fn a_machine_on_nvidias_number_is_left_alone_and_its_note_goes() {
     let scratch = Scratch::new();
     let rig = Rig::new(&scratch, true, &[STAGED]);
-    let state =
-        IdentityState { shown: Shown::Nvidia, note: NEXT_START.to_owned(), ..IdentityState::default() };
+    let state = IdentityState { shown: Shown::Maker, note: next_start("NVIDIA"), ..IdentityState::default() };
     write_state(&rig.context, &rig.machine, &state).unwrap();
     assert_eq!(rig.boot(), "");
     assert_eq!(rig.asked().len(), 0);
-    assert_eq!(rig.state(), IdentityState { shown: Shown::Nvidia, ..IdentityState::default() });
+    assert_eq!(rig.state(), IdentityState { shown: Shown::Maker, ..IdentityState::default() });
 }
 
 #[test]
@@ -130,7 +167,7 @@ fn a_failed_gpu_start_on_nvidias_number_goes_back_to_microsofts() {
     let task = Task::new(&rig.context, &host, "start", rig.machine.clone());
     let same = after_failed_gpu(&task, Failure::new("no GPU"));
     assert_eq!(same.0, "no GPU", "a machine on Microsoft's number has nothing to go back to");
-    let state = IdentityState { shown: Shown::Nvidia, restart_due: true, ..IdentityState::default() };
+    let state = IdentityState { shown: Shown::Maker, restart_due: true, ..IdentityState::default() };
     write_state(&rig.context, &rig.machine, &state).unwrap();
     let said = after_failed_gpu(&task, Failure::new("no GPU"));
     assert_eq!(said.0, format!("no GPU {FELL_BACK}"));
@@ -147,5 +184,5 @@ fn a_build_without_the_script_keeps_microsofts_number_and_says_so() {
     fs::remove_file(rig.context.paths.guest_files().join("gpu-identity.ps1")).unwrap();
     assert_eq!(rig.boot(), "");
     assert_eq!(rig.asked().len(), 0);
-    assert_eq!(rig.state().reason, NO_SCRIPT);
+    assert_eq!(rig.state().reason, no_script("NVIDIA"));
 }

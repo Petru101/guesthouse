@@ -4,7 +4,7 @@
 use super::Task;
 use crate::daemon;
 use crate::failure::{Failure, Result};
-use crate::gpu_identity::{MICROSOFT_RENDER, NVIDIA_RENDER};
+use crate::gpu_identity::{AMD_RENDER, MICROSOFT_RENDER, NVIDIA_RENDER};
 use std::fs;
 use std::time::Duration;
 
@@ -16,9 +16,9 @@ const CHECK_ANSWER_SECONDS: u64 = 15;
 const NO_GPU: &str = "Windows started without its GPU, so the VM was turned off.";
 const DAEMON_ERROR_MARK: &str = "ERROR ";
 
-/// The virtual render device, under either identity the QEMU patch can give it.
+/// The virtual render device, under any identity the QEMU patch can give it.
 fn is_render_device() -> String {
-    let patterns = [MICROSOFT_RENDER, NVIDIA_RENDER].map(|identity| identity.windows_pattern());
+    let patterns = [MICROSOFT_RENDER, NVIDIA_RENDER, AMD_RENDER].map(|identity| identity.windows_pattern());
     patterns.map(|pattern| format!("$_.PNPDeviceID -like '{pattern}'")).join(" -or ")
 }
 

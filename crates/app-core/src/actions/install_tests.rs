@@ -307,7 +307,7 @@ fn an_install_has_windows_take_nvidias_package_before_its_shutdown() {
     let mut task = Task::new(&context, &host, "install", vm.clone());
     assert!(install(&mut task).is_err(), "the stand-in VM never shuts down");
     let state = read_state(&context, &vm);
-    assert_eq!(state.shown, Shown::Nvidia, "so the first start shows NVIDIA's number in its first VM");
+    assert_eq!(state.shown, Shown::Maker, "so the first start shows NVIDIA's number in its first VM");
     assert!(state.restart_due, "and restarts Windows once");
 }
 

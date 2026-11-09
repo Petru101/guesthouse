@@ -1,4 +1,4 @@
-//! The first start on NVIDIA's vendor number. Windows installs the render device again under its new
+//! The first start on the card maker's vendor number. Windows installs the render device again under its new
 //! hardware id while it boots, and until it has started once more, Direct3D 12 can't make a device on
 //! the GPU, so Edge and games would find no Direct3D 12. Direct3D 11, Vulkan and CUDA are fine. So that
 //! one start restarts Windows by itself before the machine counts as ready.
@@ -8,11 +8,14 @@ use super::desktop::{boots, wait_for_desktop};
 use super::gpu_check::check_gpu;
 use super::identity::after_failed_gpu;
 use crate::failure::{Failure, Result};
-use crate::gpu_identity::{read_state, write_state};
+use crate::gpu_identity::{maker_name, read_state, write_state};
 use crate::log::write_log;
+use crate::machine::Machine;
 use std::time::Duration;
 
-pub(super) const RESTARTING: &str = "Restarting Windows once for NVIDIA's vendor ID";
+pub(super) fn restarting(machine: &Machine) -> String {
+    format!("Restarting Windows once for {}'s vendor ID", maker_name(machine))
+}
 pub(super) const RESTART_SCRIPT: &str = "shutdown.exe /r /t 0; 'restarting'";
 const RESTART_ANSWER_SECONDS: u64 = 10;
 /// Windows took about 20 seconds from being asked to the firmware's next boot line.
@@ -34,13 +37,13 @@ fn wait_for_new_boot(task: &Task, before: usize) -> bool {
     false
 }
 
-/// Restarts Windows if this is its first start on NVIDIA's number, and waits for the desktop again.
+/// Restarts Windows if this is its first start on its maker's number, and waits for the desktop again.
 pub(super) fn restart_after_switch(task: &mut Task) -> Result<()> {
     let mut state = read_state(task.context, &task.machine);
     if !state.restarts_windows() {
         return Ok(());
     }
-    task.step(RESTARTING);
+    task.step(&restarting(&task.machine));
     let before = boots(task.context, None);
     task.ask_guest(RESTART_SCRIPT, RESTART_ANSWER_SECONDS);
     let restarted = wait_for_new_boot(task, before);

@@ -100,7 +100,7 @@ pub struct Status {
     pub screen: String,
     /// Why the screen isn't what was asked for.
     pub display_problem: String,
-    /// What stands in the way of NVIDIA's vendor ID, or when it comes.
+    /// What stands in the way of the card maker's vendor ID, or when it comes.
     pub identity_note: String,
     /// What the running machine's jail is missing, if anything.
     pub jail_note: String,

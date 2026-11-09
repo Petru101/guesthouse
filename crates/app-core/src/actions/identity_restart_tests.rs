@@ -71,13 +71,13 @@ impl Rig {
 }
 
 fn switching() -> IdentityState {
-    IdentityState { shown: Shown::Nvidia, restart_due: true, ..IdentityState::default() }
+    IdentityState { shown: Shown::Maker, restart_due: true, ..IdentityState::default() }
 }
 
 #[test]
 fn only_the_first_start_on_nvidias_number_restarts_windows() {
     assert!(switching().restarts_windows());
-    let settled = IdentityState { shown: Shown::Nvidia, ..IdentityState::default() };
+    let settled = IdentityState { shown: Shown::Maker, ..IdentityState::default() };
     assert!(!settled.restarts_windows());
     assert!(!IdentityState::default().restarts_windows());
     let back = IdentityState { shown: Shown::Microsoft, restart_due: true, ..IdentityState::default() };
@@ -96,7 +96,7 @@ fn the_switching_start_restarts_windows_and_waits_for_its_desktop_and_gpu() {
     assert_eq!(asked[0], RESTART_SCRIPT);
     assert!(asked[1].contains("explorer"), "then the desktop is waited for");
     assert!(asked[2].contains("Win32_VideoController"), "and the GPU checked again");
-    assert_eq!(rig.state(), IdentityState { shown: Shown::Nvidia, ..IdentityState::default() });
+    assert_eq!(rig.state(), IdentityState { shown: Shown::Maker, ..IdentityState::default() });
 
     let (result, _) = rig.start();
     assert_eq!(result, Ok(()));
@@ -106,7 +106,7 @@ fn the_switching_start_restarts_windows_and_waits_for_its_desktop_and_gpu() {
 #[test]
 fn a_start_on_nvidias_number_that_has_settled_asks_nothing() {
     let scratch = Scratch::new();
-    let settled = IdentityState { shown: Shown::Nvidia, ..IdentityState::default() };
+    let settled = IdentityState { shown: Shown::Maker, ..IdentityState::default() };
     let rig = Rig::new(&scratch, settled.clone(), true, &[]);
     assert_eq!(rig.start(), (Ok(()), String::new()));
     assert!(rig.asked().is_empty());

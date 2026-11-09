@@ -246,7 +246,7 @@ pub fn install(task: &mut Task) -> Result<()> {
         return Err(Failure::new("Windows installed, but its desktop never came up."));
     }
     check_guest(task)?;
-    // Here, so the first start is already on NVIDIA's vendor number and needs no second VM.
+    // Here, so the first start is already on the card maker's vendor number and needs no second VM.
     set_up_identity(task);
     task.step("Shutting down Windows");
     task.ask_guest("Stop-Computer -Force", QUICK_SECONDS);
