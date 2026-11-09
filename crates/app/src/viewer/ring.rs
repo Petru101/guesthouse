@@ -16,11 +16,15 @@ pub fn file_size(file: impl AsFd) -> Option<u64> {
     seek(file, SeekFrom::End(0)).ok()
 }
 
+/// Whether a file is a buffer on a GPU, rather than a file in memory.
+pub fn is_dmabuf(file: &OwnedFd) -> bool {
+    fstatfs(file).is_ok_and(|filesystem| filesystem.f_type == DMA_BUF_MAGIC)
+}
+
 /// Whether a file will stay as long as it is now: a dmabuf, or a file in memory sealed against
 /// shrinking. A mapping past a file's end would bring the whole app down.
 fn cannot_shrink(file: &OwnedFd) -> bool {
-    let is_dmabuf = fstatfs(file).is_ok_and(|filesystem| filesystem.f_type == DMA_BUF_MAGIC);
-    is_dmabuf || fcntl_get_seals(file).is_ok_and(|seals| seals.contains(SealFlags::SHRINK))
+    is_dmabuf(file) || fcntl_get_seals(file).is_ok_and(|seals| seals.contains(SealFlags::SHRINK))
 }
 
 /// One generation of buffers. Textures hold on to their slot's file, so an old ring's last picture

@@ -1,7 +1,8 @@
 //! Turning a slot into a texture. A dmabuf goes to GTK as it is, and stays in video memory. A display
 //! with no way to take one, like Broadway, gets a copy, if the buffer is something that can be read.
+//! A slot in memory, for a screen on another GPU, is always copied.
 
-use super::ring::read_pixels;
+use super::ring::{is_dmabuf, read_pixels};
 use gtk::prelude::*;
 use gtk::{gdk, glib};
 #[cfg(feature = "hdr")]
@@ -102,6 +103,11 @@ pub fn texture(
     descriptor: &Descriptor,
     released: Box<dyn FnOnce() + Send>,
 ) -> Option<gdk::Texture> {
+    if !is_dmabuf(&file) {
+        let copy = copied_texture(&file, descriptor).ok();
+        released();
+        return copy;
+    }
     let reading = file.clone();
     match dmabuf_texture(display, file, descriptor, released) {
         Ok(texture) => Some(texture),

@@ -82,6 +82,23 @@ pub const FAKE_ADA: FakeCard = FakeCard {
     copy_caps: 0x1FF,
 };
 
+/// A pretend 30-series card, a laptop's 3050, with the engines and copy caps such a card lists.
+pub const FAKE_AMPERE: FakeCard = FakeCard {
+    name: "Fake Ampere Card",
+    device: 0x25A2,
+    architecture: 0x170,
+    implementation: Some(0x7),
+    sm_version: 0x806,
+    engines: &[0x01, 0x09, 0x0A, 0x0B, 0x0C, 0x13, 0x1B, 0x22, 0x33],
+    graphics_copy: 0x09,
+    classes: &[
+        0x902D, 0xA140, 0xC36F, 0xC361, 0xC46F, 0xC461, 0xC56F, 0xC561, 0xC797, 0xC7B0, 0xC7B5, 0xC7B7,
+        0xC7C0,
+    ],
+    class_count: 110,
+    copy_caps: 0x1A0,
+};
+
 /// A pretend 16-series card, as the one above.
 pub const FAKE_TURING: FakeCard = FakeCard {
     name: "Fake Turing Card",

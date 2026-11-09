@@ -279,6 +279,12 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         self.run_parked();
     }
 
+    /// Whether a copy is on the copy engine now. One still waiting for its frame hasn't started, and
+    /// a guest that copies to its basic display all the time always has one of those.
+    pub(super) fn copy_engine_busy(&self) -> bool {
+        self.copies.iter().any(|job| job.running)
+    }
+
     /// Whether a running or waiting copy uses this allocation.
     pub(super) fn copy_uses(&self, handle: u32) -> bool {
         self.copies.iter().any(|job| job.handles.contains(&handle))

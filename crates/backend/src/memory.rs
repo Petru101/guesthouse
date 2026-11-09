@@ -4,6 +4,7 @@ use crate::BackendError;
 use std::fmt;
 use std::io;
 use std::ops::Range;
+use std::os::fd::OwnedFd;
 
 /// Where QEMU places the shared window in guest physical memory.
 pub const WINDOW_BASE: u64 = 1 << 40;
@@ -83,4 +84,20 @@ pub trait GuestMemory {
     /// A 32-bit field in a view, as a single store for the same reason as [`Self::write_u32`].
     /// Does nothing past the end of the view.
     fn write_view_u32(&mut self, view: PagesView, offset: u64, value: u32);
+
+    /// Memory of this process that a viewer can share: a file of `size` bytes, and where it's mapped
+    /// here. A viewer whose screen is on another GPU gets its frames in these.
+    fn host_buffer(&mut self, _size: u64) -> io::Result<HostBuffer> {
+        Err(io::ErrorKind::Unsupported.into())
+    }
+
+    /// Unmaps a buffer from [`Self::host_buffer`]. The file stays for whoever still holds it.
+    fn release_host_buffer(&mut self, _address: u64, _size: u64) {}
+}
+
+/// Memory from [`GuestMemory::host_buffer`].
+#[derive(Debug)]
+pub struct HostBuffer {
+    pub file: OwnedFd,
+    pub host_address: u64,
 }

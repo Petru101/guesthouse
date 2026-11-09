@@ -73,7 +73,7 @@ pub fn start_on_card(mut rm: FakeRm, card: &FakeCard, chosen: u16) -> Result<Nvi
         cpu_megahertz: 4300,
         rated_clocks: (3_000_000_000, 14_000_000_000),
     };
-    NvidiaBackend::start(device, &HOST_615, &GUEST_617, &setup, &host, inf(card.device).as_bytes())
+    NvidiaBackend::start(device, &HOST_615, &GUEST_617, &setup, &host, &[inf(card.device).into_bytes()])
 }
 
 /// A message with room for `size` bytes, and its command and process filled in.

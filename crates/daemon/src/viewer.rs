@@ -119,13 +119,18 @@ impl ViewerPort {
     ) -> bool {
         match packet.message {
             Message::Hello(hello) if !viewer.greeted && can_show(&hello) => {
-                log::info!("the viewer offers {} formats", hello.formats.len());
+                log::info!(
+                    "the viewer offers {} formats{}",
+                    hello.formats.len(),
+                    if hello.wants_memory { ", and wants its frames in memory" } else { "" }
+                );
                 viewer.greeted = true;
                 session.viewer_arrived();
                 session.viewer_described(ViewerFacts {
                     shows_hdr: hello.formats.contains(&HDR_FORMAT),
                     refresh_millihertz: hello.refresh_millihertz,
                     peak_nits: hello.peak_nits,
+                    wants_memory: hello.wants_memory,
                 });
                 true
             }

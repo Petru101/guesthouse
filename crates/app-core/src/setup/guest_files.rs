@@ -2,17 +2,20 @@
 //! has only the driver's folder, so a program that looks for one of these by name doesn't find it.
 //! This holds file names only, and they come from the user's own driver.
 
-use super::driver::read_inf;
+use super::driver::read_infs;
 use crate::context::Context;
 use crate::failure::{Failure, Result};
 use crate::settings::{driver_folder, read_setup};
+use crate::usb::sysfs_text;
 use regex::Regex;
+use std::path::Path;
 
 /// Destinations as an INF writes them: 11 is System32, and 10 is Windows.
 const WINDOWS_FOLDERS: [(&str, &str); 2] = [("11", "System32"), ("10,syswow64", "SysWOW64")];
 const SECTION_HEADER: &str = r"^\[(.+?)\]\s*(;.*)?$";
 const DEVICE_LIST_PREFIX: &str = "nvidia_devices.";
 const DEFAULT_DESTINATION: &str = "defaultdestdir";
+const SUBSYSTEM_PREFIX: &str = "&subsys_";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GuestFile {
@@ -52,18 +55,32 @@ impl Sections {
         self.0.iter().find(|section| section.0 == name).map_or(&[], |section| &section.1)
     }
 
-    /// The card's install section.
-    fn card_section(&self, device: u32) -> Option<String> {
+    /// The card's install section, and how well its line fits: 2 for the card's own subsystem, 1 for
+    /// a line with none, and 0 for another laptop's. Of lines that fit as well, the last wins.
+    fn card_section(&self, device: u32, subsystem: u32) -> Option<(u8, String)> {
         let wanted = format!("pci\\ven_10de&dev_{device:04x}");
         let lists = self.0.iter().filter(|section| section.0.starts_with(DEVICE_LIST_PREFIX));
         let lines = lists.flat_map(|section| &section.1);
-        let mut sections = lines.filter_map(|line| {
+        let sections = lines.filter_map(|line| {
             let (_, value) = line.split_once('=')?;
             let mut parts = value.split(',').map(str::trim);
             let section = parts.next()?;
-            parts.next()?.to_lowercase().starts_with(&wanted).then(|| section.to_lowercase())
+            let id = parts.next()?.to_lowercase();
+            let rest = id.strip_prefix(&wanted)?;
+            let fit = match rest.strip_prefix(SUBSYSTEM_PREFIX) {
+                None if rest.is_empty() || rest.starts_with('&') => 1,
+                None => return None,
+                Some(given) => {
+                    let given = given.get(..8).and_then(|digits| u32::from_str_radix(digits, 16).ok());
+                    if given == Some(subsystem) { 2 } else { 0 }
+                }
+            };
+            Some((fit, section.to_lowercase()))
         });
-        sections.next_back()
+        sections.fold(None, |best: Option<(u8, String)>, found| match best {
+            Some(known) if known.0 > found.0 => Some(known),
+            _ => Some(found),
+        })
     }
 
     /// Where a copy section goes. Sections not named go to the default.
@@ -103,10 +120,20 @@ fn guest_file(folder: &str, line: &str) -> GuestFile {
     GuestFile { folder: folder.to_owned(), source: (*source).to_owned(), name: fields[0].to_owned() }
 }
 
-/// What the card's section copies to System32 and SysWOW64. `None` if the INF doesn't list the card.
-pub fn guest_files(text: &str, device: u32) -> Option<Vec<GuestFile>> {
-    let sections = Sections::read(text);
-    let section = sections.card_section(device)?;
+/// What the card's section copies to System32 and SysWOW64, from the INF that lists the card best.
+/// Desktop cards are in the first, `nv_dispi.inf`, and a laptop's card only in its maker's, by the
+/// subsystem the laptop gives it. The first INF wins a tie. `None` if no INF lists the card.
+pub fn guest_files(texts: &[String], device: u32, subsystem: u32) -> Option<Vec<GuestFile>> {
+    let mut best: Option<(u8, Sections, String)> = None;
+    for text in texts {
+        let sections = Sections::read(text);
+        if let Some((fit, section)) = sections.card_section(device, subsystem)
+            && best.as_ref().is_none_or(|known| fit > known.0)
+        {
+            best = Some((fit, sections, section));
+        }
+    }
+    let (_, sections, section) = best?;
     let mut files = Vec::new();
     for name in sections.copy_sections(&section) {
         // Anything else is the driver's own folder, or a place with no use in a guest.
@@ -115,6 +142,19 @@ pub fn guest_files(text: &str, device: u32) -> Option<Vec<GuestFile>> {
         }
     }
     Some(files)
+}
+
+/// A card's subsystem as an INF writes it, the subsystem's device in the high half. Zero if sysfs
+/// doesn't say.
+fn card_subsystem(device_folder: &Path) -> u32 {
+    let read = |field: &str| {
+        let text = sysfs_text(&device_folder.join(field));
+        u32::from_str_radix(text.trim_start_matches("0x"), 16).ok()
+    };
+    match (read("subsystem_vendor"), read("subsystem_device")) {
+        (Some(vendor), Some(device)) => device << 16 | vendor,
+        _ => 0,
+    }
 }
 
 /// The list the guest's script reads: folder, source and name, split by tabs.
@@ -127,9 +167,11 @@ pub fn guest_file_list(context: &Context) -> Result<String> {
     let setup = read_setup(context);
     let device = setup.get("card").and_then(|card| card.get("device")).and_then(|device| device.as_u64());
     let device = device.ok_or_else(|| Failure::new("Setup doesn't know the card yet."))? as u32;
-    let files = guest_files(&read_inf(&driver_folder(context))?, device);
+    let pci = setup.get("card").and_then(|card| card.get("pci")).and_then(|pci| pci.as_str());
+    let subsystem = pci.map_or(0, |pci| card_subsystem(&context.pci_devices.join(pci)));
+    let files = guest_files(&read_infs(&driver_folder(context))?, device, subsystem);
     let files =
-        files.ok_or_else(|| Failure(format!("The driver's INF doesn't list this card ({device:04x}).")))?;
+        files.ok_or_else(|| Failure(format!("The driver's INFs don't list this card ({device:04x}).")))?;
     Ok(file_list(&files))
 }
 
@@ -176,7 +218,7 @@ mod tests {
     use super::*;
 
     fn places(device: u32) -> Vec<(String, String, String)> {
-        let files = guest_files(FILES_INF, device).unwrap();
+        let files = guest_files(&[FILES_INF.to_owned()], device, 0).unwrap();
         files.into_iter().map(|file| (file.folder, file.source, file.name)).collect()
     }
 
@@ -199,7 +241,46 @@ mod tests {
 
     #[test]
     fn a_card_the_inf_lacks_is_none() {
-        assert_eq!(guest_files(FILES_INF, 0x2C02), None);
+        assert_eq!(guest_files(&[FILES_INF.to_owned()], 0x2C02, 0), None);
+    }
+
+    const LAPTOP_INF: &str = r#"[DestinationDirs]
+DefaultDestDir = 11
+[NVIDIA_Devices.NTamd64.10.0...26200]
+%NVIDIA_DEV.25A2.0156.1558% = Section_A, PCI\VEN_10DE&DEV_25A2&SUBSYS_01561558
+%NVIDIA_DEV.25A2.3A58.17AA% = Section_B, PCI\VEN_10DE&DEV_25A2&SUBSYS_3A5817AA
+[Section_A]
+CopyFiles = a_files
+[Section_B]
+CopyFiles = b_files
+[a_files]
+a.dll
+[b_files]
+b.dll
+"#;
+
+    fn names(texts: &[String], device: u32, subsystem: u32) -> Vec<String> {
+        guest_files(texts, device, subsystem).unwrap().into_iter().map(|file| file.name).collect()
+    }
+
+    #[test]
+    fn a_laptops_card_is_found_in_its_makers_inf_by_subsystem() {
+        let texts = [FILES_INF.to_owned(), LAPTOP_INF.to_owned()];
+        assert_eq!(names(&texts, 0x25A2, 0x0156_1558), ["a.dll"]);
+        assert_eq!(names(&texts, 0x25A2, 0x3A58_17AA), ["b.dll"]);
+        assert_eq!(names(&texts, 0x25A2, 0x1111_2222), ["b.dll"], "another laptop's line will do");
+        assert_eq!(names(&texts, 0x2B85, 0x3A58_17AA).len(), 4, "a desktop card stays in the first");
+    }
+
+    #[test]
+    fn the_subsystem_is_read_as_an_inf_writes_it() {
+        let scratch = crate::testing::Scratch::new();
+        let folder = scratch.path("pci/0000:01:00.0");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("subsystem_vendor"), "0x17aa\n").unwrap();
+        std::fs::write(folder.join("subsystem_device"), "0x3a58\n").unwrap();
+        assert_eq!(card_subsystem(&folder), 0x3A58_17AA);
+        assert_eq!(card_subsystem(&scratch.path("pci/none")), 0);
     }
 
     #[test]

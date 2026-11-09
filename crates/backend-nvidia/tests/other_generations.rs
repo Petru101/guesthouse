@@ -1,4 +1,4 @@
-//! A pretend Ada card and a pretend Turing card, and what a guest should be told about each chip.
+//! A pretend Ada card, a pretend Ampere card and a pretend Turing card, and what a guest should be told about each chip.
 //! This shows the tables and the code around them agree with those values, and nothing about a real
 //! card. The engines the pretend cards list are only there to make the nodes come out.
 
@@ -7,13 +7,13 @@ use guesthouse_backend_nvidia::NvidiaBackend;
 use guesthouse_backend_nvidia::channel::{AREA_SIZE, Channel, ChannelPlace, Engine};
 use guesthouse_backend_nvidia::fake_guest::{message, start_on_card};
 use guesthouse_backend_nvidia::profile::{
-    ADA, GUEST_617, Generation, HOST_615, TURING, generation_for, guest_channel_classes,
+    ADA, AMPERE, GUEST_617, Generation, HOST_615, TURING, generation_for, guest_channel_classes,
 };
 use guesthouse_backend_nvidia::pushbuffer::{RingEntry, ring_entry};
 use guesthouse_backend_nvidia::record::card::COPY_ENGINE_CAPS;
 use guesthouse_backend_nvidia::rm::device::Device;
 use guesthouse_backend_nvidia::rm::fake::FakeRm;
-use guesthouse_backend_nvidia::rm::fake_card::{FAKE_ADA, FAKE_TURING, FakeCard};
+use guesthouse_backend_nvidia::rm::fake_card::{FAKE_ADA, FAKE_AMPERE, FAKE_TURING, FakeCard};
 use guesthouse_backend_standin::SparseMemory;
 use guesthouse_core::{Answer, Config, MemoryLimits, ReplyTicket, Session};
 use guesthouse_messages::wire::{set_u32, set_u64, u32_at, u64_at};
@@ -179,8 +179,42 @@ const GTX_1660_SUPER: Expected = Expected {
     copy_caps: 0x120,
 };
 
-const CARDS: [(&FakeCard, &Generation, &Expected); 2] =
-    [(&FAKE_ADA, &ADA, &RTX_4080), (&FAKE_TURING, &TURING, &GTX_1660_SUPER)];
+/// A laptop's 3050. Its RM lists no security engine, so it gets no security nodes.
+const RTX_3050_LAPTOP: Expected = Expected {
+    device: 0x25A2,
+    architecture: 0x170,
+    implementation: 0x7,
+    sm_version: 0x806,
+    shader_set: 0x7002,
+    classes: 110,
+    used_classes: [0xC797, 0xC7C0, 0xC56F, 0xC7B5, 0xC561, 0xA140, 0x902D],
+    nodes: &[
+        "3D", "overlay", "decode", "copy", "copy", "copy", "encode", "OFA_0", "VR", "copy", "copy", "copy",
+        "copy",
+    ],
+    entries: &[
+        GRAPHICS,
+        OVERLAY,
+        NO_TYPE,
+        copy(0x0B, 0, 4, 0x10, 0x0A),
+        copy(0x0C, 1, 32, 0x10, 0x0B),
+        copy(0x0D, 1, 32, 0x10, 0x0C),
+        NO_TYPE,
+        plain(0x21),
+        VR,
+        copy(0x1D, 0, 4, 0x02, 0x0A),
+        copy(0x0E, 0, 4, 0x10, 0x0A),
+        copy(0x0F, 0, 4, 0x10, 0x0A),
+        copy(0x10, 0, 4, 0x10, 0x0A),
+    ],
+    copy_caps: 0x1A0,
+};
+
+const CARDS: [(&FakeCard, &Generation, &Expected); 3] = [
+    (&FAKE_ADA, &ADA, &RTX_4080),
+    (&FAKE_AMPERE, &AMPERE, &RTX_3050_LAPTOP),
+    (&FAKE_TURING, &TURING, &GTX_1660_SUPER),
+];
 
 fn started(card: &FakeCard) -> NvidiaBackend<FakeRm> {
     let backend = start_on_card(FakeRm::new(), card, card.device as u16);
@@ -438,13 +472,22 @@ fn a_guests_first_submission_runs_on_a_channel_of_this_generation() {
 
 #[test]
 fn a_card_with_no_profile_is_refused_by_name() {
-    for architecture in [0x170, 0x180] {
+    for architecture in [0x140, 0x180] {
         let card = FakeCard { architecture, ..FAKE_ADA };
         let Err(refusal) = start_on_card(FakeRm::new(), &card, card.device as u16) else {
             panic!("{architecture:#x} has no profile");
         };
         assert_eq!(refusal.0, format!("This build has no profile for GPU architecture {architecture:#x}."));
     }
+}
+
+#[test]
+fn ampere_takes_the_30_series_sm_version_and_refuses_the_ga100s() {
+    let card = FakeCard { sm_version: 0x800, ..FAKE_AMPERE };
+    let Err(refusal) = start_on_card(FakeRm::new(), &card, card.device as u16) else {
+        panic!("0x800 has no shader set");
+    };
+    assert!(refusal.0.contains("SM 0x800"), "{}", refusal.0);
 }
 
 #[test]
@@ -459,6 +502,7 @@ fn a_chip_with_an_sm_version_nobody_has_reported_is_refused() {
 #[test]
 fn these_generations_have_not_been_run_with_any_guest_branch() {
     assert!(ADA.run_on_guest_branches.is_empty());
+    assert!(AMPERE.run_on_guest_branches.is_empty());
     assert!(TURING.run_on_guest_branches.is_empty());
 }
 

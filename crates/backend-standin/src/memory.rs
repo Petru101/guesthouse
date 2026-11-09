@@ -1,7 +1,8 @@
 //! A guest memory that stores only what was written to it.
 
-use guesthouse_backend::{GuestMemory, MemoryError, PagesView, WINDOW_BASE, in_window};
+use guesthouse_backend::{GuestMemory, HostBuffer, MemoryError, PagesView, WINDOW_BASE, in_window};
 use std::collections::BTreeMap;
+use std::fs::File;
 use std::io;
 use std::ops::Range;
 
@@ -13,6 +14,8 @@ pub struct SparseMemory {
     next_view: u64,
     /// Views still mapped, to catch one being lost or unmapped twice.
     pub views: Vec<PagesView>,
+    /// Host buffers still mapped, by (address, size), for the same reason.
+    pub host_buffers: Vec<(u64, u64)>,
 }
 
 const FIRST_VIEW: u64 = 0x7000_0000_0000;
@@ -22,7 +25,13 @@ const HALF_WORD: u64 = 4;
 
 impl SparseMemory {
     pub fn new(window_end: u64) -> Self {
-        Self { words: BTreeMap::new(), window_end, next_view: FIRST_VIEW, views: Vec::new() }
+        Self {
+            words: BTreeMap::new(),
+            window_end,
+            next_view: FIRST_VIEW,
+            views: Vec::new(),
+            host_buffers: Vec::new(),
+        }
     }
 }
 
@@ -116,6 +125,19 @@ impl GuestMemory for SparseMemory {
         if offset + 4 <= view.size {
             let _ = self.write_u32(view.host_address + offset, value);
         }
+    }
+
+    /// A file that holds nothing, at an address of its own, as the core only passes both on.
+    fn host_buffer(&mut self, size: u64) -> io::Result<HostBuffer> {
+        let host_address = self.next_view;
+        self.next_view += size.div_ceil(PAGE_SIZE) * PAGE_SIZE;
+        self.host_buffers.push((host_address, size));
+        Ok(HostBuffer { file: File::open("/dev/null")?.into(), host_address })
+    }
+
+    fn release_host_buffer(&mut self, address: u64, size: u64) {
+        let at = self.host_buffers.iter().position(|&buffer| buffer == (address, size));
+        self.host_buffers.remove(at.expect("a host buffer released twice or never made"));
     }
 }
 

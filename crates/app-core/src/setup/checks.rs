@@ -29,8 +29,8 @@ const QEMU_LIBRARIES_FIX: &str = "On Fedora: sudo dnf install pixman libslirp li
                                   Debian or Ubuntu: sudo apt install libpixman-1-0 libslirp0 libfdt1 libusb-1.0-0 \
                                   libpipewire-0.3-0. On Arch: sudo pacman -S pixman libslirp dtc libusb pipewire.";
 const BRANCH_FIX: &str = "GPU machines stay off until the branches match. Plain VMs still run.";
-const CARD_FIX: &str = "GPU-PV needs an RTX 5090. Other consumer RTX 50 and 40 series cards, and the 20 and 16 \
-                        series, are experimental. The 30 series isn't supported yet.";
+const CARD_FIX: &str = "GPU-PV needs an RTX 5090. Other consumer RTX 50, 40, 30 and 20 series cards, and the \
+                        16 series, are experimental.";
 const EXPERIMENTAL_FIX: &str = "Only the RTX 5090 has been tested, so this card may not work.";
 /// The Linux driver this has been run on. The guest's graphics depend on the exact version.
 pub const TESTED_DRIVER: &str = "615.78.08";

@@ -20,5 +20,5 @@ pub use message::{
     Colour, CursorMove, CursorShape, DecodeError, Descriptor, Format, Frame, Hello, Light, MOST_FORMATS,
     MOST_SLOTS, Mastering, Message, Release, Ring, VERSION,
 };
-pub use shared::sealed_bytes;
+pub use shared::{sealed_bytes, sized_buffer};
 pub use socket::{FrameListener, FrameSocket, Packet, SOCKET_NAME};

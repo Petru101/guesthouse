@@ -1,6 +1,6 @@
 //! The adapter's registry values, which apps look up to find their drivers.
 
-use crate::inf::{Inf, InfValue};
+use crate::inf::{Inf, InfValue, card_section};
 use guesthouse_backend::guest_text::{utf16_list, utf16_zero};
 use guesthouse_backend::{PciCard, Refusal, RegistryName, RegistryValue};
 use guesthouse_messages::registry::{TYPE_NUMBER, TYPE_STRING, TYPE_STRING_LIST};
@@ -44,10 +44,11 @@ pub struct AdapterRegistry {
 }
 
 impl AdapterRegistry {
-    /// Reads the values the INF adds for this card. All of them are needed, so a missing one refuses.
-    pub fn from_inf(inf: &Inf, card: &PciCard) -> Result<Self, Refusal> {
-        let section = inf.card_section(card.vendor, card.device).ok_or_else(|| {
-            Refusal(format!("The driver's INF does not list this card ({:04x}).", card.device))
+    /// Reads the values the INF that lists this card adds for it. All of them are needed, so a
+    /// missing one refuses. The subsystem picks a laptop's line, and is as an INF writes it.
+    pub fn from_infs(infs: &[Inf], card: &PciCard, subsystem: u32) -> Result<Self, Refusal> {
+        let (inf, section) = card_section(infs, card.vendor, card.device, subsystem).ok_or_else(|| {
+            Refusal(format!("The driver's INFs do not list this card ({:04x}).", card.device))
         })?;
         let mut found = inf.adapter_values(&section, DRIVER_STORE);
         let mut values = HashMap::new();
@@ -109,7 +110,7 @@ mod tests {
     }
 
     fn registry() -> AdapterRegistry {
-        AdapterRegistry::from_inf(&Inf::parse(inf_text().as_bytes()), &CARD).unwrap()
+        AdapterRegistry::from_infs(&[Inf::parse(inf_text().as_bytes())], &CARD, 0).unwrap()
     }
 
     #[test]
@@ -129,14 +130,14 @@ mod tests {
     #[test]
     fn a_missing_value_refuses_and_says_which() {
         let text = inf_text().replace("OpenCLDriverNameWow", "Other");
-        let error = AdapterRegistry::from_inf(&Inf::parse(text.as_bytes()), &CARD).unwrap_err();
+        let error = AdapterRegistry::from_infs(&[Inf::parse(text.as_bytes())], &CARD, 0).unwrap_err();
         assert!(error.0.contains("OpenCLDriverNameWow"));
     }
 
     #[test]
     fn a_card_not_in_the_inf_refuses() {
         let card = PciCard { device: 0x9999, ..CARD };
-        assert!(AdapterRegistry::from_inf(&Inf::parse(inf_text().as_bytes()), &card).is_err());
+        assert!(AdapterRegistry::from_infs(&[Inf::parse(inf_text().as_bytes())], &card, 0).is_err());
     }
 
     #[test]

@@ -39,6 +39,7 @@ pub mod overlay;
 pub mod paths;
 pub mod processes;
 pub mod random;
+pub mod screen_gpu;
 pub mod settings;
 pub mod setup;
 pub mod share;

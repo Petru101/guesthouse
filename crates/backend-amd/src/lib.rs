@@ -50,7 +50,7 @@ use copy_ib::CopyIb;
 use guesthouse_backend::{
     AdapterFacts, AllocationShape, Backend, BackendError, CardLabel, DriverFound, DriverSurvey, GpuRange,
     GuestBooks, HostServices, MapRequest, MemoryId, MemoryKind, PciCard, Refusal, RegistryName,
-    RegistryValue, Setup, SpaceId, StagingCopy, StagingStart, Status, SurfaceShape, UnmapRequest,
+    RegistryValue, Setup, SlotCopy, SpaceId, StagingCopy, StagingStart, Status, SurfaceShape, UnmapRequest,
     VendorQuery, Work, WorkStart,
 };
 use nodes::nodes;
@@ -634,6 +634,14 @@ impl Backend for AmdBackend {
                 Status::UNSUCCESSFUL
             }
         })
+    }
+
+    /// Goes the way a copy to the screen does, and is finished when it returns.
+    fn start_slot_copy(&mut self, host: &mut dyn HostServices, copy: &SlotCopy) -> StagingStart {
+        match screen_copy::slot_as_staging(copy) {
+            Some(staging) => self.start_staging_copy(host, &staging),
+            None => StagingStart::Finished(Status::UNSUCCESSFUL),
+        }
     }
 
     /// A tiled surface is copied by the DMA engine, which takes any start inside it.

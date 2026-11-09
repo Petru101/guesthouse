@@ -2,7 +2,7 @@
 
 ## What a machine needs
 
-A Windows machine on NVIDIA needs NVIDIA's kernel module loaded, with `/dev/nvidiactl` and the card's own `/dev/nvidiaN`, and `nvidia-smi` on your PATH. It has run on my RTX 5090, with NVIDIA 615.78.08 on the host and 617.42 in Windows 11 Pro, build 26300, and on a tester's RTX 4080 with the same host driver. The tester's PC also has a GTX 1660 SUPER, and Windows ran on the 4080.
+A Windows machine on NVIDIA needs NVIDIA's kernel module loaded, with `/dev/nvidiactl` and the card's own `/dev/nvidiaN`, and `nvidia-smi` on your PATH. It has run on my RTX 5090, with NVIDIA 615.78.08 on the host and 617.42 in Windows 11 Pro, build 26300, and on a tester's RTX 4080 with the same host driver. The tester's PC also has a GTX 1660 SUPER, and Windows ran on the 4080. The 30, 20 and 16 series have profiles too, and nobody has run them yet. A laptop's card uses the same driver installer, which lists it under the laptop maker.
 
 A Windows machine on AMD needs the card on amdgpu, and AMD's Windows installer for that card, which the app unpacks. It has run on an integrated RDNA2 Radeon with driver 32.0.21045.20006. See [AMD](amd.md).
 
