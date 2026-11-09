@@ -52,6 +52,9 @@ pub struct RecordLayout {
     pub decoder_flags: usize,
     /// The same for video encoders.
     pub encoder_flags: usize,
+    /// The largest textures the card takes: width and height in 2D, two larger limits, and the
+    /// 3D extent. Direct3D 9 refuses every surface, even its back buffer, when these are zero.
+    pub texture_limits: usize,
     pub current_clocks: usize,
     pub rated_clocks: usize,
     pub chipset: usize,
@@ -77,6 +80,10 @@ pub struct RecordLayout {
     pub adapter_id: usize,
     pub name: usize,
     pub short_name: usize,
+    /// The adapter's registry key, as a kernel path in UTF-16. The user-mode driver reads its settings
+    /// from under it, and only sets up its defaults once it has a key. Without them, Direct3D 9 is
+    /// offered nothing newer than its oldest interface and fails to make a device.
+    pub registry_key: usize,
     pub host_bridge: usize,
     pub video_decode_caps: usize,
     pub jpeg_caps: usize,
@@ -163,6 +170,7 @@ pub const GUEST_617: GuestBranch = GuestBranch {
         video_caps: 0x58,
         decoder_flags: 0x1D5,
         encoder_flags: 0x1D6,
+        texture_limits: 0x94,
         current_clocks: 0xA8,
         rated_clocks: 0xB4,
         chipset: 0xE4,
@@ -187,6 +195,7 @@ pub const GUEST_617: GuestBranch = GuestBranch {
         adapter_id: 0xC46C,
         name: 0xC4B8,
         short_name: 0xC538,
+        registry_key: 0xAF20,
         host_bridge: 0xC578,
         video_decode_caps: 0x144,
         jpeg_caps: 0x18A,

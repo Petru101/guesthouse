@@ -35,7 +35,7 @@ use answers::adapter::{AdapterAnswers, Inputs};
 use answers::nodes::{ENGINE_VIDEO_ENCODE, Node, node_list};
 use answers::perf_data;
 use answers::registry::AdapterRegistry;
-use channel::VideoEngine;
+use channel::{ListChannel, VideoEngine};
 use encode_sessions::EncodeSessions;
 use guesthouse_backend::{
     AdapterFacts, AllocationShape, Backend, BackendError, DriverSurvey, GpuRange, GuestBooks, HostServices,
@@ -79,9 +79,23 @@ const VIDEO_CONTEXT_WORD: usize = 0xD7C;
 const RECORD_QUEUE_TOKEN: usize = 0x40;
 const RECORD_QUEUE_HEAP: usize = 0x5C;
 const QUEUE_HEAP_SIZE: u64 = 1 << 32;
+/// A queue that brings no ring of its own asks here how many entries a list it sends may have, and
+/// reads the answer from the second field. Direct3D 9 makes no device if it gets fewer than it asked.
+const QUEUE_LIST_ENTRIES_ASKED: usize = 0x14;
+const QUEUE_LIST_ENTRIES: usize = 0x50;
 
 pub(crate) fn memory_error(error: RmError) -> BackendError {
     BackendError::new(error.to_string())
+}
+
+/// Gives a queue without a ring of its own the list length it asked for, as far as the ring here
+/// takes one. `None` if the private data is too short to hold the answer.
+fn grant_list_entries(private: &mut [u8]) -> Option<()> {
+    let asked = private.get(QUEUE_LIST_ENTRIES_ASKED..QUEUE_LIST_ENTRIES_ASKED + 4)?;
+    let asked = u32::from_le_bytes(asked.try_into().ok()?);
+    let granted = asked.min(ListChannel::LONGEST_LIST);
+    private.get_mut(QUEUE_LIST_ENTRIES..QUEUE_LIST_ENTRIES + 4)?.copy_from_slice(&granted.to_le_bytes());
+    Some(())
 }
 
 fn handle_of(memory: MemoryId) -> Handle {
@@ -441,8 +455,11 @@ impl<R: Rm + OpenRm> Backend for NvidiaBackend<R> {
     /// Each queue gets a number of its own, which can't be zero, and the guest needs a heap size.
     fn finish_queue_data(&mut self, queue: u32, private: &mut [u8], serial: u32) -> Result<(), BackendError> {
         let too_short = || BackendError::new("a queue's private data is too short");
-        if let Some(ring) = GuestRing::of_queue(private) {
-            self.guest_rings.insert(queue, ring);
+        match GuestRing::of_queue(private) {
+            Some(ring) => {
+                self.guest_rings.insert(queue, ring);
+            }
+            None => grant_list_entries(private).ok_or_else(too_short)?,
         }
         let token = serial.wrapping_add(1).max(1);
         let field = private.get_mut(RECORD_QUEUE_TOKEN..RECORD_QUEUE_TOKEN + 4).ok_or_else(too_short)?;
@@ -568,5 +585,42 @@ impl<R: Rm + OpenRm> Backend for NvidiaBackend<R> {
             return None;
         }
         tiling::surface_bytes(surface.pitch, surface.height, surface.tiling?)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn asking(entries: u32) -> Vec<u8> {
+        let mut private = vec![0; 0xB4];
+        private[QUEUE_LIST_ENTRIES_ASKED..QUEUE_LIST_ENTRIES_ASKED + 4]
+            .copy_from_slice(&entries.to_le_bytes());
+        private
+    }
+
+    fn granted(private: &[u8]) -> u32 {
+        u32::from_le_bytes(private[QUEUE_LIST_ENTRIES..QUEUE_LIST_ENTRIES + 4].try_into().unwrap())
+    }
+
+    #[test]
+    fn a_queue_gets_the_list_length_it_asks_for() {
+        let mut private = asking(0x1000);
+        assert_eq!(grant_list_entries(&mut private), Some(()));
+        assert_eq!(granted(&private), 0x1000);
+    }
+
+    #[test]
+    fn a_queue_gets_no_longer_lists_than_the_ring_takes() {
+        let mut private = asking(u32::MAX);
+        assert_eq!(grant_list_entries(&mut private), Some(()));
+        assert_eq!(granted(&private), ListChannel::LONGEST_LIST);
+    }
+
+    #[test]
+    fn private_data_too_short_for_the_answer_is_refused() {
+        let mut private = asking(0x1000);
+        private.truncate(QUEUE_LIST_ENTRIES + 3);
+        assert_eq!(grant_list_entries(&mut private), None);
     }
 }

@@ -85,6 +85,9 @@ pub struct ListChannel {
 
 impl ListChannel {
     pub const RING_ENTRIES: u32 = RING_ENTRIES;
+    /// The most entries one list may have. It shares the ring with the entry ahead of it and its
+    /// fence's release, one entry always stays free, and the last release stays until its fence moves.
+    pub const LONGEST_LIST: u32 = RING_ENTRIES - 4;
 
     /// The GPU address of the ring, given where the host area goes.
     pub fn ring_address(area_address: u64) -> u64 {
@@ -135,10 +138,11 @@ impl ListChannel {
     ) -> Result<u32, ListFull> {
         self.reclaim(finished);
         // The list, the entry ahead of it and the release after it.
-        let needed = entries.len().div_ceil(ENTRY_SIZE) as u32 + 2;
-        if needed > RING_ENTRIES - 1 {
+        let listed = entries.len().div_ceil(ENTRY_SIZE) as u32;
+        if listed > Self::LONGEST_LIST {
             return Err(ListFull::TooLong);
         }
+        let needed = listed + 2;
         if needed > self.free_entries() {
             return Err(ListFull::ForNow);
         }
@@ -247,6 +251,16 @@ mod tests {
         assert!(list.add(&long, FENCE, 1, 0).is_ok());
         assert_eq!(list.add(&[0; 8], FENCE, 2, 0), Err(ListFull::ForNow));
         assert!(list.add(&[0; 8], FENCE, 2, 1).is_ok());
+    }
+
+    #[test]
+    fn the_longest_list_fits_and_one_more_entry_never_does() {
+        let mut list = list();
+        let too_long = vec![0; (ListChannel::LONGEST_LIST as usize + 1) * ENTRY_SIZE];
+        assert_eq!(list.add(&too_long, FENCE, 1, 0), Err(ListFull::TooLong));
+        let longest = vec![0; ListChannel::LONGEST_LIST as usize * ENTRY_SIZE];
+        assert!(list.add(&longest, FENCE, 1, 0).is_ok());
+        assert!(list.add(&longest, FENCE, 2, 1).is_ok());
     }
 
     #[test]

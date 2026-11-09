@@ -72,6 +72,14 @@ const MAILBOX_SIZE: u32 = 0x10000;
 const MAILBOX_PEERS: u32 = 8;
 const MAILBOX_BAR1_LIMIT: u32 = 0x80_0000;
 
+/// The texture limits the record gives. They are not read from the card.
+const TEXTURE_LIMITS: [u32; 5] = [0x8000, 0x8000, 0x2_0000, 0x2_0000, 0x800];
+
+/// The host can't know which instance key Windows gave the adapter, so the record names the display
+/// class's own key, which every Windows has. The driver keeps its defaults for what isn't under it.
+const DISPLAY_CLASS_KEY: &str =
+    r"\REGISTRY\MACHINE\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}";
+
 const UUID_AS_BINARY: u32 = 2;
 const ECID_LOW: u32 = 1;
 const ECID_HIGH: u32 = 2;
@@ -334,13 +342,18 @@ pub fn build<R: Rm>(
     let memory_khz = (memory_hertz / 1000) as u32;
     record.words(layout.rated_clocks, &[graphics_khz, memory_khz, graphics_khz, graphics_khz]);
     record.words(layout.current_clocks, &[graphics_khz, memory_khz, graphics_khz]);
+    record.words(layout.texture_limits, &TEXTURE_LIMITS);
     record.words(layout.adapter_id, &ADAPTER_ID);
     let name = card.text(NAME, 4).map_err(card_failed)?;
-    let name: Vec<u8> = name.encode_utf16().flat_map(u16::to_le_bytes).collect();
-    record.put(layout.name, &name);
+    record.put(layout.name, &utf16(&name));
     record.put(layout.short_name, card.text(SHORT_NAME, 0).map_err(card_failed)?.as_bytes());
+    record.put(layout.registry_key, &utf16(DISPLAY_CLASS_KEY));
     record.word(layout.size_field, layout.size as u32);
     Ok(record.data)
+}
+
+fn utf16(text: &str) -> Vec<u8> {
+    text.encode_utf16().flat_map(u16::to_le_bytes).collect()
 }
 
 #[cfg(test)]
