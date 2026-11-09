@@ -7,6 +7,7 @@ mod library_page;
 mod machine_row;
 mod refresh;
 mod screen_hdr;
+mod updates;
 
 pub use machine_row::{MachineHandle, MachineRow};
 
@@ -26,7 +27,6 @@ use guesthouse_app_core::machine::{Machine, load_all};
 use guesthouse_app_core::settings::{Fields, read_prefs, write_prefs};
 use guesthouse_app_core::setup::setup_done;
 use guesthouse_app_core::tasks::launch;
-use guesthouse_app_core::update_check::newer_release;
 use guesthouse_daemon::slot::Slot;
 use library_page::LibraryPage;
 use refresh::RefreshState;
@@ -60,6 +60,8 @@ struct Inner {
     host_key_down: Cell<bool>,
     refresh: RefCell<RefreshState>,
     screen_watch: OnceCell<Option<Rc<screen_hdr::ScreenWatch>>>,
+    /// A newer release, once a check has found one.
+    newer: RefCell<Option<String>>,
 }
 
 /// A handle to the window, which any page can hold.
@@ -101,6 +103,7 @@ impl Window {
             host_key_down: Cell::new(false),
             refresh: RefCell::default(),
             screen_watch: OnceCell::new(),
+            newer: RefCell::default(),
         }));
         this.add_style();
         this.0.library.connect_new_machine(&this);
@@ -297,24 +300,19 @@ impl Window {
         }
     }
 
-    /// Setup is all about the GPU, so with no GPU support there's nothing it could finish.
-    /// Asked once as the app opens. This is the only thing it does on the network by itself.
     pub fn say_if_there_is_an_update(&self) {
-        let context = self.0.context.clone();
-        let asking = context.clone();
-        let this = self.clone();
-        in_background(
-            &context,
-            move || Ok(newer_release(&asking)),
-            move |found| {
-                if let Ok(Some(version)) = found {
-                    let text = format!("Guesthouse {version} is out. Run install.sh --update to get it.");
-                    this.toast(&text, adw::ToastPriority::Normal);
-                }
-            },
-        );
+        updates::check_at_start(self);
     }
 
+    pub fn check_for_updates(&self) {
+        updates::check_now(self);
+    }
+
+    pub fn update(&self) {
+        updates::ask_to_update(self);
+    }
+
+    /// Setup is all about the GPU, so with no GPU support there's nothing it could finish.
     pub fn show_setup(&self) {
         if gpu_ready(&self.0.context) {
             wizard::show(self);

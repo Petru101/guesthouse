@@ -127,6 +127,13 @@ async fn shot_after_paint(window: &Window, folder: &Path, name: &str) {
     clock.disconnect(handler);
 }
 
+/// Turns the settings to one of their pages.
+fn show_page(window: &Window, name: &str) {
+    if let Some(dialog) = all_of::<adw::PreferencesDialog>(window).last() {
+        dialog.set_visible_page_name(name);
+    }
+}
+
 /// Scrolls the topmost scrolled area until this title is near the top.
 fn scroll_to(window: &Window, title: &str) {
     let groups = all_of::<adw::PreferencesGroup>(window);
@@ -212,12 +219,20 @@ fn library_machines(context: &Arc<Context>, window: &Window, folder: &Path) -> V
 async fn settings_pages(window: Window, folder: PathBuf, failures: Rc<Cell<u32>>, machine: MachineHandle) {
     window.show_settings(machine);
     glib::timeout_future(LONG).await;
-    check(&failures, text_of(&window).contains("Hardware"), "settings open");
+    check(&failures, shows(&window, "Hardware").await, "settings open");
     shot_after_paint(&window, &folder, "07-settings-hardware").await;
-    scroll_to(&window, "Snapshots");
+    show_page(&window, "display");
     glib::timeout_future(SETTLE).await;
+    check(&failures, text_of(&window).contains("Viewer"), "the display page has the viewer's settings");
+    shot_after_paint(&window, &folder, "07b-settings-display").await;
+    show_page(&window, "storage");
+    glib::timeout_future(SETTLE).await;
+    check(&failures, !text_of(&window).contains("Cores"), "one page at a time");
     shot_after_paint(&window, &folder, "08-settings-disk-snapshots").await;
-    scroll_to(&window, "Network");
+    show_page(&window, "devices");
+    glib::timeout_future(SETTLE).await;
+    shot_after_paint(&window, &folder, "08b-settings-devices").await;
+    show_page(&window, "network");
     glib::timeout_future(SETTLE).await;
     shot_after_paint(&window, &folder, "09-settings-network-nat").await;
     let combos = all_of::<adw::ComboRow>(&window);
@@ -382,6 +397,16 @@ async fn whole_flow(window: Window, folder: PathBuf, failures: Rc<Cell<u32>>) {
     shot_after_paint(&window, &folder, "23-stopped").await;
 }
 
+/// A pretend install script says there's a newer release, and the library offers it.
+async fn update_banner(window: Window, context: Arc<Context>, folder: PathBuf, failures: Rc<Cell<u32>>) {
+    let script = context.paths.helper("install.sh");
+    fs::write(&script, "echo update-available 0.3.0 9.9.9\nexit 10\n").unwrap();
+    window.check_for_updates();
+    check(&failures, shows(&window, "Guesthouse 9.9.9 is out").await, "a newer release gets a banner");
+    shot_after_paint(&window, &folder, "06b-update-banner").await;
+    fs::remove_file(&script).unwrap();
+}
+
 async fn walk_pages(window: Window, context: Arc<Context>, folder: PathBuf) {
     let failures = Rc::new(Cell::new(0));
     wizard_pages(window.clone(), folder.clone(), failures.clone()).await;
@@ -390,6 +415,7 @@ async fn walk_pages(window: Window, context: Arc<Context>, folder: PathBuf) {
     glib::timeout_future(LONG).await;
     check(&failures, text_of(&window).contains("Plain VM"), "the library lists the machines");
     shot_after_paint(&window, &folder, "06-library").await;
+    update_banner(window.clone(), context.clone(), folder.clone(), failures.clone()).await;
     settings_pages(window.clone(), folder.clone(), failures.clone(), machines[1].clone()).await;
     window.show_log();
     glib::timeout_future(SETTLE).await;

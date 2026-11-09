@@ -74,7 +74,7 @@ make_toolbox() {
     for tool in $TOOLS; do
         ln -s "$(command -v "$tool")" "$T/bin/$tool"
     done
-    for stand_in in curl sudo ldconfig chown; do
+    for stand_in in curl sudo pkexec ldconfig chown; do
         ln -s "$HERE/stand-ins/$stand_in" "$T/bin/$stand_in"
     done
     for manager in dnf apt-get pacman zypper usermod gpasswd; do

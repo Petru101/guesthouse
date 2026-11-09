@@ -18,6 +18,8 @@ BRIDGE_HELPER=$BRIDGE_HELPER_FOLDER/qemu-bridge-helper
 DRY_RUN=no
 DELETE_MACHINES=no
 OLD_VERSIONS=no
+# The app's own process, when an update the app started tidies up after itself.
+FROM_APP=""
 
 say() {
     printf '%s\n' "$*"
@@ -39,6 +41,7 @@ Usage: uninstall.sh [OPTION]
   --dry-run          Show what would be removed, and stop
   --delete-machines  Also delete your machines' folder, once you've typed its name
   --old-versions     Remove only versions that `current` doesn't point to, as an update does
+  --from-app=PID     The app, which is PID, is updating itself, so it may be running
   --help             Show this
 EOF
 }
@@ -49,6 +52,7 @@ parse_arguments() {
             --dry-run) DRY_RUN=yes ;;
             --delete-machines) DELETE_MACHINES=yes ;;
             --old-versions) OLD_VERSIONS=yes ;;
+            --from-app=*) FROM_APP=${argument#--from-app=} ;;
             --help)
                 usage
                 exit 0
@@ -59,6 +63,9 @@ parse_arguments() {
                 ;;
         esac
     done
+    case $FROM_APP in
+        *[!0-9]*) die "--from-app takes the app's process number." ;;
+    esac
 }
 
 refuse_root() {
@@ -125,6 +132,7 @@ real_folder() {
 list_running() {
     real_root=$(real_folder "$LIB_ROOT")
     for folder in /proc/[0-9]*; do
+        [ "${folder#/proc/}" != "$FROM_APP" ] || continue
         program=$(readlink "$folder/exe" 2>/dev/null) ||
             program=$(tr '\0' '\n' 2>/dev/null <"$folder/cmdline" | head -n 1)
         case $program in

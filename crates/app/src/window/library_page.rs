@@ -5,6 +5,7 @@ use crate::application::APP_ID;
 use crate::rows::name_for_readers;
 use adw::prelude::*;
 use gtk::gio;
+use guesthouse_app_core::updates::VERSION;
 
 const COLUMN_SPACING: i32 = 12;
 const COLUMN_MARGIN: i32 = 24;
@@ -18,12 +19,14 @@ pub struct LibraryPage {
     stack: gtk::Stack,
     add: gtk::Button,
     start: gtk::Button,
+    update: adw::Banner,
 }
 
 fn main_menu() -> gio::Menu {
     let setup_items = gio::Menu::new();
     setup_items.append(Some("Run Setup Again"), Some("win.setup"));
     setup_items.append(Some("Show Log"), Some("win.log"));
+    setup_items.append(Some("Check for Updates"), Some("win.check-updates"));
     let about_items = gio::Menu::new();
     about_items.append(Some("Keyboard Shortcuts"), Some("win.shortcuts"));
     about_items.append(Some("About Guesthouse"), Some("win.about"));
@@ -68,6 +71,7 @@ impl LibraryPage {
         stack.add_named(&empty, Some("empty"));
         let add = gtk::Button::builder().icon_name("list-add-symbolic").tooltip_text("New Machine").build();
         let header = adw::HeaderBar::new();
+        header.set_title_widget(Some(&adw::WindowTitle::new("Guesthouse", VERSION)));
         name_for_readers(&add, "New Machine");
         header.pack_start(&add);
         let menu = gtk::MenuButton::builder()
@@ -81,8 +85,10 @@ impl LibraryPage {
         let toolbar = adw::ToolbarView::new();
         toolbar.set_content(Some(&stack));
         toolbar.add_top_bar(&header);
+        let update = adw::Banner::builder().button_label("Update").action_name("win.update").build();
+        toolbar.add_top_bar(&update);
         let page = adw::NavigationPage::builder().title("Guesthouse").tag("library").child(&toolbar).build();
-        Self { page, list, problems, stack, add, start }
+        Self { page, list, problems, stack, add, start, update }
     }
 
     pub fn connect_new_machine(&self, window: &Window) {
@@ -90,6 +96,11 @@ impl LibraryPage {
             let window = window.clone();
             button.connect_clicked(move |_| window.show_new_machine());
         }
+    }
+
+    pub fn offer_update(&self, version: &str) {
+        self.update.set_title(&format!("Guesthouse {version} is out. You have {VERSION}."));
+        self.update.set_revealed(true);
     }
 
     pub fn add(&self, row: &adw::ActionRow) {

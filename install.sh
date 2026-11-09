@@ -50,6 +50,8 @@ DRY_RUN=no
 UPDATE=no
 CHECK_UPDATE=no
 FROM_SOURCE=no
+# The app's own process, when the app runs this: it's the one thing from this install that may be running.
+FROM_APP=""
 
 STAGING=""
 CREATED_DIRS=""
@@ -85,6 +87,8 @@ updates to that one.
 
   --update        Bring an install to the latest release, whichever copy of this script you run
   --check-update  Say whether a newer release exists, and change nothing
+  --from-app=PID  For the app, which is PID: it has asked already, so this doesn't ask, and root's
+                  password is asked for in a window
   --dry-run       Check everything, download and verify, show the plan, and stop
   --from-source   Build the release's source on this PC, and install that
   --help          Show this
@@ -98,6 +102,7 @@ parse_arguments() {
             --update) UPDATE=yes ;;
             --check-update) CHECK_UPDATE=yes ;;
             --from-source) FROM_SOURCE=yes ;;
+            --from-app=*) FROM_APP=${argument#--from-app=} ;;
             --help)
                 usage
                 exit 0
@@ -108,6 +113,9 @@ parse_arguments() {
                 ;;
         esac
     done
+    case $FROM_APP in
+        *[!0-9]*) die "--from-app takes the app's process number." ;;
+    esac
 }
 
 # Everything goes in the user's own folders, and a root install would put it in root's.
@@ -249,6 +257,7 @@ real_folder() {
 list_running() {
     real_root=$(real_folder "$LIB_ROOT")
     for folder in /proc/[0-9]*; do
+        [ "${folder#/proc/}" != "$FROM_APP" ] || continue
         program=$(readlink "$folder/exe" 2>/dev/null) ||
             program=$(tr '\0' '\n' 2>/dev/null <"$folder/cmdline" | head -n 1)
         case $program in
@@ -733,6 +742,7 @@ print_root_plan() {
 
 # Piped into a shell, stdin is this script, so the answer has to come from the terminal itself.
 confirm() {
+    [ -z "$FROM_APP" ] || return 0
     (: </dev/tty) 2>/dev/null || die "I need a terminal to ask you, so nothing was installed. Download this script and run it in one."
     printf 'Go ahead? Type yes: ' >/dev/tty
     IFS= read -r answer </dev/tty || answer=""
@@ -744,9 +754,21 @@ confirm() {
 
 run_root_work() {
     [ -n "$ROOT_COMMAND" ] || return 0
+    if [ -n "$FROM_APP" ]; then
+        run_root_work_in_a_window
+        return
+    fi
     command -v sudo >/dev/null 2>&1 ||
         die "this needs sudo, and it's not here. Run this as root yourself, then run me again: $ROOT_COMMAND"
     sudo sh -c "$ROOT_COMMAND" </dev/tty || die "that command failed, so I'm stopping. Nothing of Guesthouse's was installed."
+    [ "$IMMUTABLE" = yes ] || PACKAGES_ADDED=$PACKAGES
+}
+
+# The app has no terminal for sudo to ask in, so pkexec asks in a window. It shows the command too.
+run_root_work_in_a_window() {
+    command -v pkexec >/dev/null 2>&1 ||
+        die "this update needs root, and there's no pkexec to ask for it in a window. Run install.sh --update in a terminal."
+    pkexec sh -c "$ROOT_COMMAND" </dev/null || die "root's part didn't run, so I'm stopping. Nothing of Guesthouse's was changed."
     [ "$IMMUTABLE" = yes ] || PACKAGES_ADDED=$PACKAGES
 }
 
@@ -1030,7 +1052,7 @@ old_versions_listed() {
 # It can only fail to tidy up here, and then the new version still works and the old one is still listed.
 remove_old_versions() {
     old_versions_listed || return 0
-    sh "$CURRENT_LINK/uninstall.sh" --old-versions ||
+    sh "$CURRENT_LINK/uninstall.sh" --old-versions ${FROM_APP:+"--from-app=$FROM_APP"} ||
         warn "the old version couldn't be removed. It's harmless, and uninstall.sh knows about it."
 }
 
