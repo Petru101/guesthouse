@@ -1,0 +1,8 @@
+#!/bin/sh
+# Stands in for pkexec, as sudo's stand-in does: it writes down what it was asked and runs nothing as
+# root.
+printf 'pkexec' >>"$STAND_IN_LOG"
+printf ' %s' "$@" >>"$STAND_IN_LOG"
+printf '\n' >>"$STAND_IN_LOG"
+[ -z "${SUDO_FAILS:-}" ] || exit 1
+exec "$@"
