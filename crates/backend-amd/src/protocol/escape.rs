@@ -5,6 +5,11 @@
 //! client`. The kernel driver rewrites a few codes before it dispatches them, and answers in the
 //! header's ulEscapeReturnCode, where the guest's user-mode driver takes only zero as done.
 //!
+//! The user-mode driver sends each escape inside a wrapper of [`WRAPPER_SIZE`] bytes, which starts
+//! with [`WRAPPER_KIND`] and [`WRAPPER_VERSION`]. The header and payload follow it unchanged, and the
+//! guest copies them back and reads only them, so the wrapper is skipped and left as it came. A bare
+//! header starts with its own size, never as little as [`WRAPPER_KIND`], so the two can't be mixed up.
+//!
 //! The payload after the header is a dword byte count, that many bytes of input, a dword byte count
 //! and that many bytes of output. Three escapes the guest's user-mode driver sends at start and
 //! can't go on without are answered as done, with an output of zeros and a status index of zero:
@@ -16,6 +21,15 @@ use super::bytes::{dword, put_dword};
 
 /// sizeof(ATI_LHESCAPE_HDR). The payload, if any, follows it.
 pub const HEADER_SIZE: usize = 0x80;
+
+/// The wrapper in front of the header. Its size field at 0x48 is not read: it holds the inner size
+/// from one sender and the whole size from another, and the inner escape is the rest of the buffer.
+pub const WRAPPER_SIZE: usize = 0x4C;
+/// The wrapper's first dword.
+pub const WRAPPER_KIND: u32 = 2;
+/// The wrapper's second dword.
+pub const WRAPPER_VERSION: u32 = 0x0001_0002;
+const WRAPPER_VERSION_AT: usize = 0x04;
 
 // ATI_LHESCAPE_HDR.
 const SIZE: usize = 0x00;
@@ -184,9 +198,18 @@ fn reply(data: &mut [u8], needed: &Needed) -> bool {
     true
 }
 
-/// Answers an escape in place. Returns how, or why it couldn't be read; an escape too short for
-/// its header has nowhere to put an answer and goes back untouched.
+/// The escape inside its wrapper, or the whole buffer when it came without one.
+pub fn unwrapped(data: &mut [u8]) -> &mut [u8] {
+    let wrapped = data.len() >= WRAPPER_SIZE
+        && dword(data, 0) == Some(WRAPPER_KIND)
+        && dword(data, WRAPPER_VERSION_AT) == Some(WRAPPER_VERSION);
+    if wrapped { &mut data[WRAPPER_SIZE..] } else { data }
+}
+
+/// Answers an escape in place, inside its wrapper if it has one. Returns how, or why it couldn't be
+/// read; an escape too short for its header has nowhere to put an answer and goes back untouched.
 pub fn answer(data: &mut [u8]) -> Result<Answered, Refused> {
+    let data = unwrapped(data);
     let code = match parse(data) {
         Ok(code) => code,
         Err(refused) => {
@@ -356,6 +379,46 @@ mod tests {
         // The same subfunction under another service is something else.
         assert!(!EscapeCode::from_code(0x0200_5D03).needed_by_the_guest());
         assert!(!EscapeCode::from_code(0x0100_5B03).optional_for_the_guest());
+    }
+
+    fn wrapped(inner: &[u8]) -> Vec<u8> {
+        let mut data = vec![0u8; WRAPPER_SIZE];
+        put_dword(&mut data, 0, WRAPPER_KIND);
+        put_dword(&mut data, WRAPPER_VERSION_AT, WRAPPER_VERSION);
+        put_dword(&mut data, 0x48, inner.len() as u32);
+        data.extend_from_slice(inner);
+        data
+    }
+
+    #[test]
+    fn a_wrapped_escape_is_answered_inside_and_the_wrapper_is_left_alone() {
+        for subfunction in [0x5D, 0x62, 0x6C] {
+            let mut bare = needed_escape(subfunction);
+            let mut data = wrapped(&bare);
+            let wrapper_before = data[..WRAPPER_SIZE].to_vec();
+            assert!(answer(&mut data).unwrap().done);
+            assert!(answer(&mut bare).unwrap().done);
+            assert_eq!(data[WRAPPER_SIZE..], bare[..]);
+            assert_eq!(data[..WRAPPER_SIZE], wrapper_before[..], "{subfunction:#x}");
+        }
+    }
+
+    /// The first escape a boot showed: 724 bytes, a 256-byte input and a 256-byte output.
+    #[test]
+    fn the_wrapped_escape_from_the_boot_is_read_and_answered_as_failed() {
+        let mut inner = vec![0u8; 0x288];
+        put_dword(&mut inner, SIZE, HEADER_SIZE as u32);
+        put_dword(&mut inner, HEADER_VERSION, LEAST_HEADER_VERSION);
+        put_dword(&mut inner, ESCAPE_CODE, 0x0300_7E03);
+        put_dword(&mut inner, HEADER_SIZE, 0x100);
+        put_dword(&mut inner, HEADER_SIZE + COUNT_SIZE + 0x100, 0x100);
+        let mut data = wrapped(&inner);
+        assert_eq!(data.len(), 724);
+        let answered = answer(&mut data).unwrap();
+        assert_eq!(answered.code, EscapeCode { service: 3, subfunction: 0x7E, client: USER_MODE_CLIENT });
+        assert!(!answered.done);
+        assert_eq!(dword(&data, WRAPPER_SIZE + RETURN_CODE), Some(RETURN_FAILED));
+        assert_eq!(dword(&data, 0), Some(WRAPPER_KIND));
     }
 
     #[test]

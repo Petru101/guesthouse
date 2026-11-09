@@ -340,7 +340,8 @@ impl Backend for AmdBackend {
                 answered.code.subfunction
             ),
             Ok(answered) if answered.code.needed_by_the_guest() => log::warn!(
-                "escape from {process}: service {} subfunction {:#x}, not shaped as the guest's driver                  sends it, answered as failed; the guest can't go on without it",
+                "escape from {process}: service {} subfunction {:#x}, not shaped as the guest's driver \
+                 sends it, answered as failed; the guest can't go on without it",
                 answered.code.service,
                 answered.code.subfunction
             ),
