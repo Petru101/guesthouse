@@ -104,7 +104,7 @@ If you find yourself wanting to name a vendor in `core`, something belongs in a 
 
 `backend-nvidia` goes through `rm::Rm` for everything it asks of the host's driver. `rm/linux.rs` is the real one and `rm/fake.rs` plays its part in tests, so the whole crate can be tested with no card.
 
-`backend-amd` goes through amdgpu's render node. Each guest address space gets its own VM on the card, every submission names the buffers its space holds so amdgpu keeps them in place while it runs, and tiled frames reach the screen through a copy on the card's DMA engine.
+`backend-amd` goes through amdgpu's render node. Each guest address space gets its own VM on the card, every submission names the buffers its space holds so amdgpu keeps them in place while it runs, and tiled frames reach the screen through a copy on the card's DMA engine. A frame for the viewer's ring goes the same way, as a copy to a surface of the slot's shape.
 
 ## Frames
 

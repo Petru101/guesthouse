@@ -4,7 +4,7 @@
 //! is the guest's staging surface. A frame is a few megabytes, which the CPU moves in well under a
 //! frame's time, and it needs no queue of the daemon's own on the card.
 
-use guesthouse_backend::{StagingCopy, SurfaceShape};
+use guesthouse_backend::{SlotCopy, StagingCopy, SurfaceShape};
 
 /// The bytes of one pixel of every format this copy takes.
 pub const PIXEL_BYTES: u64 = 4;
@@ -84,6 +84,34 @@ impl CopyPlan {
     }
 }
 
+/// A copy of a whole picture into a slot of the frame ring, as a copy to a surface of the slot's
+/// shape, so that it goes the way the screen's copies do: by the CPU from rows in order, and by the
+/// DMA engine from tiles. `None` for numbers that don't fit an `i32`.
+pub fn slot_as_staging(copy: &SlotCopy) -> Option<StagingCopy> {
+    let target = SurfaceShape {
+        width: copy.width,
+        height: copy.height,
+        pitch: copy.slot_pitch,
+        tiling: None,
+        ..copy.source
+    };
+    Some(StagingCopy {
+        source: copy.source,
+        target,
+        source_address: copy.source_address,
+        target_address: copy.slot_address,
+        left: 0,
+        top: 0,
+        right: i32::try_from(copy.width).ok()?,
+        bottom: i32::try_from(copy.height).ok()?,
+        target_left: 0,
+        target_top: 0,
+        target_guest_address: None,
+        is_screen: false,
+        own_space: copy.own_space,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -149,5 +177,47 @@ mod tests {
         let frame = shape(1920, 1080, 7680);
         let plan = CopyPlan::of(&copy(frame, frame, [0, 0, 1920, 1080], (0, 0))).unwrap();
         assert_eq!((plan.source_end(), plan.target_end()), (7680 * 1080, 7680 * 1080));
+    }
+
+    fn slot(source: SurfaceShape, width: u32, height: u32, slot_pitch: u32) -> SlotCopy {
+        SlotCopy {
+            source,
+            source_address: 0x1000_0000,
+            slot_address: 0x2000_0000,
+            slot_pitch,
+            width,
+            height,
+            own_space: SpaceId(1),
+        }
+    }
+
+    #[test]
+    fn a_slot_copy_of_rows_in_order_moves_the_whole_picture() {
+        let staging = slot_as_staging(&slot(shape(1920, 1080, 7680), 1920, 1080, 7936)).unwrap();
+        assert_eq!((staging.source_address, staging.target_address), (0x1000_0000, 0x2000_0000));
+        let plan = CopyPlan::of(&staging).unwrap();
+        assert_eq!(
+            (plan.source_pitch, plan.target_pitch, plan.row_bytes, plan.rows),
+            (7680, 7936, 7680, 1080)
+        );
+        assert_eq!(plan.target_end(), 1079 * 7936 + 7680);
+    }
+
+    #[test]
+    fn a_slot_bigger_than_its_source_is_refused() {
+        let staging = slot_as_staging(&slot(shape(1280, 720, 5120), 1920, 1080, 7680)).unwrap();
+        assert_eq!(CopyPlan::of(&staging), None);
+    }
+
+    #[test]
+    fn a_tiled_source_goes_to_the_dma_engine() {
+        let tiled = SurfaceShape { tiling: Some(27), ..shape(1920, 1080, 1920) };
+        let staging = slot_as_staging(&slot(tiled, 1920, 1080, 7680)).unwrap();
+        assert_eq!(CopyPlan::of(&staging), None);
+        let plan = crate::sdma_copy::TiledCopy::of(&staging).unwrap();
+        assert_eq!(
+            (plan.linear_address, plan.linear_pitch, plan.width, plan.height),
+            (0x2000_0000, 1920, 1920, 1080)
+        );
     }
 }
