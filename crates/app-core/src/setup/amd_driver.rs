@@ -1,10 +1,11 @@
 //! AMD's Windows driver, for Windows machines on an AMD card: checking AMD's installer, and taking its
 //! display driver out.
 //!
-//! AMD ships more than one package of a release, each for a range of cards, so the installer is judged
-//! by whether its INF lists the user's card as well as by its version. The display driver is the
-//! folder of the INF under `Packages/Drivers/Display`. The user-mode driver the guest loads sits in a
-//! folder inside that, and that folder is the one the guest gets.
+//! AMD ships a release as more than one display driver, each for a range of cards: in the combined
+//! package, `Packages/Drivers/Display` is for RDNA3 and later and `Display2` for RDNA1 and RDNA2.
+//! The driver taken is the one whose INF lists the user's card, and it must be a version the AMD
+//! daemon takes. The user-mode driver the guest loads sits in a folder inside the INF's folder, and
+//! that folder is the one the guest gets.
 
 use super::amd::write_amd_setup;
 use super::driver::Extraction;
@@ -16,9 +17,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// The Adrenalin release the AMD daemon was written for, which refuses any other.
-pub const AMD_WINDOWS_DRIVER: &str = "32.0.32015.12012";
-const DISPLAY_FOLDER: &str = "Packages/Drivers/Display";
+/// The Adrenalin release, by the name AMD sells it under.
+pub const AMD_RELEASE: &str = "26.10.2";
+/// The display drivers of that release the AMD daemon takes, which refuses any other.
+pub const AMD_WINDOWS_DRIVERS: [&str; 2] = ["32.0.32015.12012", "32.0.21045.20006"];
+/// The display drivers' folders start with this: `Display`, `Display2`.
+const DISPLAY_FOLDERS: &str = "Packages/Drivers/Display";
 const USER_DRIVER: &str = "amdxc64.dll";
 const PATH_LINE: &str = "Path = ";
 const READ_SECONDS: &str = "120";
@@ -33,16 +37,16 @@ pub struct AmdPackage {
     pub version: String,
 }
 
-/// The INF of the display driver among the archive's paths: the one file ending in `.inf` in a
-/// folder of its own directly under the display folder.
-fn display_inf(paths: &str) -> Option<&str> {
-    paths.lines().filter_map(|line| line.strip_prefix(PATH_LINE)).find(|path| {
-        let Some(inside) = path.strip_prefix(DISPLAY_FOLDER).and_then(|rest| rest.strip_prefix('/')) else {
-            return false;
-        };
-        let parts: Vec<&str> = inside.split('/').collect();
-        parts.len() == 2 && parts[1].to_lowercase().ends_with(".inf")
-    })
+/// The display drivers' INFs among the archive's paths: in each display folder, the file ending in
+/// `.inf` in a folder of its own.
+fn display_infs(paths: &str) -> Vec<&str> {
+    let is_display_inf = |path: &&str| {
+        let Some(rest) = path.strip_prefix(DISPLAY_FOLDERS) else { return false };
+        let parts: Vec<&str> = rest.split('/').collect();
+        let numbered = parts[0].chars().all(|letter| letter.is_ascii_digit());
+        numbered && parts.len() == 3 && parts[2].to_lowercase().ends_with(".inf")
+    };
+    paths.lines().filter_map(|line| line.strip_prefix(PATH_LINE)).filter(is_display_inf).collect()
 }
 
 /// Whether the INF has a line for this AMD device, whatever its subsystem and revision.
@@ -57,16 +61,16 @@ pub fn package_problem(inf: &str, device: u32) -> Option<String> {
         Ok(version) => version,
         Err(failure) => return Some(failure.0),
     };
-    if version != AMD_WINDOWS_DRIVER {
+    if !AMD_WINDOWS_DRIVERS.contains(&version.as_str()) {
         return Some(format!(
-            "This is AMD's driver {version}. Guesthouse was built for {AMD_WINDOWS_DRIVER}, so get that release \
-             from AMD."
+            "This is AMD's driver {version}. Guesthouse was built for Adrenalin {AMD_RELEASE}, so get that \
+             release from AMD."
         ));
     }
     (!lists_device(inf, device)).then(|| {
         format!(
             "This package of AMD's driver doesn't cover this card, device {device:04X}. AMD makes more than \
-             one package of each release; get the one for this card."
+             one package of each release; the combined one covers every Radeon generation."
         )
     })
 }
@@ -88,14 +92,24 @@ fn seven_zip(args: &[&str]) -> Result<Vec<u8>> {
 /// Reads AMD's installer at `path`, and says whether it will do for the card `device`.
 pub fn read_amd_installer(path: &str, device: u32) -> Result<AmdPackage> {
     let listing = String::from_utf8_lossy(&seven_zip(&["l", "-ba", "-slt", path])?).into_owned();
-    let inf_path =
-        display_inf(&listing).ok_or_else(|| Failure::new("This file is not AMD's driver installer."))?;
-    let inf = latin1(&seven_zip(&["e", "-so", path, inf_path])?);
-    if let Some(problem) = package_problem(&inf, device) {
-        return Err(Failure(problem));
+    let infs = display_infs(&listing);
+    if infs.is_empty() {
+        return Err(Failure::new("This file is not AMD's driver installer."));
     }
-    let driver_entry = inf_path.rsplit_once('/').map_or(inf_path, |(folder, _)| folder).to_owned();
-    Ok(AmdPackage { driver_entry, version: AMD_WINDOWS_DRIVER.to_owned() })
+    let mut problem = None;
+    for inf_path in infs {
+        let inf = latin1(&seven_zip(&["e", "-so", path, inf_path])?);
+        // A driver for other cards says less than one for this card that is the wrong version.
+        if problem.is_some() && !lists_device(&inf, device) {
+            continue;
+        }
+        problem = package_problem(&inf, device);
+        if problem.is_none() {
+            let driver_entry = inf_path.rsplit_once('/').map_or(inf_path, |(folder, _)| folder).to_owned();
+            return Ok(AmdPackage { driver_entry, version: inf_driver_version(&inf)? });
+        }
+    }
+    Err(Failure(problem.unwrap_or_default()))
 }
 
 /// The folder inside the display driver that holds the user-mode driver.
@@ -130,6 +144,8 @@ mod tests {
     use std::process::Stdio;
 
     const IGPU: u32 = 0x13C0;
+    const NEWER: &str = AMD_WINDOWS_DRIVERS[0];
+    const OLDER: &str = AMD_WINDOWS_DRIVERS[1];
 
     fn inf(version: &str, devices: &[u32]) -> String {
         let mut text = format!("[Version]\nDriverVer=10/28/2026, {version}\n[ATI.Mfg.NTamd64]\n");
@@ -139,12 +155,15 @@ mod tests {
         text
     }
 
-    /// An archive laid out like AMD's installer, which 7z can read.
+    /// An archive laid out like AMD's combined installer, which 7z can read: the newer cards' driver,
+    /// listing `devices`, and the older cards' listing the iGPU.
     fn make_installer(scratch: &Scratch, devices: &[u32]) -> String {
-        let driver = "source/Packages/Drivers/Display/WT6A_INF";
-        scratch.write(&format!("{driver}/u0205499.inf"), inf(AMD_WINDOWS_DRIVER, devices));
-        scratch.write(&format!("{driver}/B026716/{USER_DRIVER}"), "user-mode driver");
-        scratch.write(&format!("{driver}/B026716/amdkmdag.sys"), "kernel driver");
+        for (folder, version, devices) in [("Display", NEWER, devices), ("Display2", OLDER, &[IGPU][..])] {
+            let driver = format!("source/Packages/Drivers/{folder}/WT6A_INF");
+            scratch.write(&format!("{driver}/u0205499.inf"), inf(version, devices));
+            scratch.write(&format!("{driver}/B026716/{USER_DRIVER}"), version);
+            scratch.write(&format!("{driver}/B026716/amdkmdag.sys"), "kernel driver");
+        }
         scratch.write("source/Packages/Apps/not-needed.msi", "x");
         let path = scratch.path("amd.exe");
         let done = Command::new("7z")
@@ -160,8 +179,9 @@ mod tests {
 
     #[test]
     fn a_package_is_judged_by_its_version_and_by_listing_the_card() {
-        assert_eq!(package_problem(&inf(AMD_WINDOWS_DRIVER, &[0x7550, IGPU]), IGPU), None);
-        let other_cards = package_problem(&inf(AMD_WINDOWS_DRIVER, &[0x7550]), IGPU).unwrap();
+        assert_eq!(package_problem(&inf(NEWER, &[0x7550, IGPU]), IGPU), None);
+        assert_eq!(package_problem(&inf(OLDER, &[IGPU]), IGPU), None);
+        let other_cards = package_problem(&inf(NEWER, &[0x7550]), IGPU).unwrap();
         assert!(other_cards.contains("device 13C0"), "{other_cards}");
         let older = package_problem(&inf("32.0.21001.1", &[IGPU]), IGPU).unwrap();
         assert!(older.contains("32.0.21001.1"), "{older}");
@@ -169,32 +189,44 @@ mod tests {
     }
 
     #[test]
-    fn the_display_inf_is_the_one_in_a_folder_of_its_own() {
+    fn the_display_infs_are_the_ones_in_folders_of_their_own() {
         let listing = "Path = Packages/Drivers/Display/WT6A_INF/B026716/amdxe.inf\n\
                        Path = Packages/Drivers/Display/WT6A_INF/u0205499.inf\n\
+                       Path = Packages/Drivers/Display2/WT6A_INF/u0205498.inf\n\
+                       Path = Packages/Drivers/DisplayAudio/WT6A_INF/x.inf\n\
                        Path = Packages/Drivers/Audio/x.inf\n";
-        assert_eq!(display_inf(listing), Some("Packages/Drivers/Display/WT6A_INF/u0205499.inf"));
-        assert_eq!(display_inf("Path = Packages/Drivers/Audio/x.inf\n"), None);
+        let found = display_infs(listing);
+        assert_eq!(
+            found,
+            [
+                "Packages/Drivers/Display/WT6A_INF/u0205499.inf",
+                "Packages/Drivers/Display2/WT6A_INF/u0205498.inf"
+            ]
+        );
+        assert!(display_infs("Path = Packages/Drivers/Audio/x.inf\n").is_empty());
     }
 
     #[test]
-    fn an_installer_for_the_card_is_unpacked_and_written_down() {
+    fn the_driver_for_the_card_is_unpacked_and_written_down() {
         let scratch = Scratch::new();
         let context = scratch_context(&scratch);
-        let installer = make_installer(&scratch, &[IGPU]);
-        let package = read_amd_installer(&installer, IGPU).unwrap();
-        assert_eq!(package.driver_entry, "Packages/Drivers/Display/WT6A_INF");
-        let folder = unpack_amd(&Extraction::new(&installer), &context, &package, &|_| {}).unwrap();
-        assert!(folder.join(USER_DRIVER).is_file());
-        assert_eq!(amd_driver_folder(&context), Some(folder));
-        assert!(!scratch.path("store/setup").join("amd-driver-32.0.32015.12012/Packages/Apps").exists());
+        let installer = make_installer(&scratch, &[0x7550]);
+        let newer = read_amd_installer(&installer, 0x7550).unwrap();
+        assert_eq!(newer.driver_entry, "Packages/Drivers/Display/WT6A_INF");
+        let older = read_amd_installer(&installer, IGPU).unwrap();
+        assert_eq!(older.driver_entry, "Packages/Drivers/Display2/WT6A_INF", "the iGPU's own driver");
+        assert_eq!(older.version, OLDER);
+        let folder = unpack_amd(&Extraction::new(&installer), &context, &older, &|_| {}).unwrap();
+        assert_eq!(fs::read_to_string(folder.join(USER_DRIVER)).unwrap(), OLDER);
+        assert_eq!(amd_driver_folder(&context), Some(folder.clone()));
+        assert!(!folder.ancestors().any(|above| above.join("Packages/Apps").exists()), "only the driver");
     }
 
     #[test]
     fn an_installer_for_other_cards_is_refused_before_unpacking() {
         let scratch = Scratch::new();
         let installer = make_installer(&scratch, &[0x7550]);
-        let refused = read_amd_installer(&installer, IGPU).unwrap_err();
+        let refused = read_amd_installer(&installer, 0x7480).unwrap_err();
         assert!(refused.0.contains("doesn't cover this card"), "{}", refused.0);
     }
 
@@ -211,11 +243,12 @@ mod tests {
         }
     }
 
-    /// The release is the AMD daemon's, which lives in the backend.
+    /// The drivers are the AMD daemon's, which lives in the backend.
     #[test]
-    fn the_release_is_the_one_the_daemon_takes() {
+    fn the_drivers_are_the_ones_the_daemon_takes() {
         let path = format!("{}/../backend-amd/src/protocol/guest_driver.rs", env!("CARGO_MANIFEST_DIR"));
         let text = fs::read_to_string(path).unwrap();
-        assert!(text.contains(&format!("GUEST_RELEASE: &str = \"{AMD_WINDOWS_DRIVER}\"")));
+        let [newer, older] = AMD_WINDOWS_DRIVERS;
+        assert!(text.contains(&format!("GUEST_RELEASES: [&str; 2] = [\"{newer}\", \"{older}\"]")));
     }
 }

@@ -149,7 +149,7 @@ impl Backend for AmdBackend {
         // different drivers on purpose, so the pair is allowed through even though the branch names
         // differ. Any other guest release has no profile and is refused before the card is opened.
         let version = setup.guest_driver_version.to_string();
-        let matches = version == protocol::guest_driver::GUEST_RELEASE;
+        let matches = protocol::guest_driver::GUEST_RELEASES.contains(&version.as_str());
         let host = DriverFound { version: "kernel".into(), branch: HOST_BRANCH.into() };
         let guest = DriverFound { version, branch: setup.guest_branch.clone() };
         Ok(DriverSurvey {
@@ -450,10 +450,12 @@ mod tests {
     }
 
     #[test]
-    fn this_guest_release_may_start_and_another_is_refused() {
-        let survey = AmdBackend::survey(&setup_for(protocol::guest_driver::GUEST_RELEASE)).unwrap();
-        assert_eq!(decide_start(&survey), StartDecision::Run);
-        assert_eq!(survey.card, CardLabel::Experimental);
+    fn these_guest_drivers_may_start_and_another_is_refused() {
+        for release in protocol::guest_driver::GUEST_RELEASES {
+            let survey = AmdBackend::survey(&setup_for(release)).unwrap();
+            assert_eq!(decide_start(&survey), StartDecision::Run);
+            assert_eq!(survey.card, CardLabel::Experimental);
+        }
         let survey = AmdBackend::survey(&setup_for("1.0.0.0")).unwrap();
         assert!(matches!(decide_start(&survey), StartDecision::Refuse(_)));
     }

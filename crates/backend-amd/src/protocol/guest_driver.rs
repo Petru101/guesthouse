@@ -12,8 +12,10 @@ use guesthouse_backend::{RegistryName, RegistryValue, VendorQuery};
 use guesthouse_messages::registry::TYPE_STRING_LIST;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-/// The one Adrenalin release these answers were written for. Another release is refused at start.
-pub const GUEST_RELEASE: &str = "32.0.32015.12012";
+/// The Adrenalin drivers these answers are for. AMD ships one release as two drivers, the first for
+/// RDNA3 and later cards and the second for RDNA1 and RDNA2, so each has its own version. Any other
+/// is refused at start.
+pub const GUEST_RELEASES: [&str; 2] = ["32.0.32015.12012", "32.0.21045.20006"];
 
 /// Where the guest is told the driver lives. It rewrites `DriverStore` to its host driver store.
 pub const DRIVER_STORE: &str = "C:\\Windows\\System32\\DriverStore\\FileRepository\\amdxc.inf_amd64_gpupv";

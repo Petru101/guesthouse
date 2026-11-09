@@ -7,7 +7,7 @@ use crate::window::Window;
 use adw::prelude::*;
 use gtk::glib;
 use guesthouse_app_core::Failure;
-use guesthouse_app_core::setup::amd_driver::{AMD_WINDOWS_DRIVER, read_amd_installer, unpack_amd};
+use guesthouse_app_core::setup::amd_driver::{AMD_RELEASE, read_amd_installer, unpack_amd};
 use guesthouse_app_core::setup::driver::Extraction;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -64,7 +64,7 @@ impl AmdDriverRow {
         parts.row.set_visible(device.is_some());
         if let Some(device) = device {
             parts.device.set(device);
-            parts.row.set_subtitle(&ASK.replace("{release}", AMD_WINDOWS_DRIVER));
+            parts.row.set_subtitle(&ASK.replace("{release}", AMD_RELEASE));
         }
     }
 
