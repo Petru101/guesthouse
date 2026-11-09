@@ -8,8 +8,8 @@ autoinstall:
     layout: us
   identity:
     hostname: nvfwd
-    username: desk
-    realname: Desk
+    username: "@USER@"
+    realname: "@USER@"
     password: "@PASSWORD_HASH@"
   ssh:
     install-server: true
@@ -47,5 +47,9 @@ autoinstall:
     - install -d -m 700 /target/root/.ssh
     - echo "@SSH_KEY@" > /target/root/.ssh/authorized_keys
     - chmod 600 /target/root/.ssh/authorized_keys
+    # The desktop's unit and the guest's scripts learn the account's name from these.
+    - mkdir -p /target/etc/nvfwd /target/etc/systemd/system/nvfwd-desktop.service.d
+    - echo "user=@USER@" > /target/etc/nvfwd/account.conf
+    - printf '[Service]\nUser=@USER@\n' > /target/etc/systemd/system/nvfwd-desktop.service.d/account.conf
     - curtin in-target -- systemctl enable /usr/lib/nvfwd/units/nvfwd-first-boot.service
     - echo nvfwd-install-finished > /dev/ttyS0

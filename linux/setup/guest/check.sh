@@ -29,7 +29,7 @@ check_install() {
         dpkg-query -W -f '${Status}' "$package" 2>/dev/null | grep -q 'ok installed' || missing+=("$package")
     done
     if [ ${#missing[@]} = 0 ]; then pass 'all packages installed'; else fail "packages missing: ${missing[*]}"; fi
-    check 'user desk exists' id desk
+    check "user $desk_user exists" id "$desk_user"
     check 'GPU step enabled' systemctl is-enabled nvfwd-gpu.service
     check 'desktop enabled' systemctl is-enabled nvfwd-desktop.service
     check 'starts to the graphical target' test "$(systemctl get-default)" = graphical.target
@@ -120,10 +120,10 @@ check_gpu() {
 
 in_session() {
     local file
-    file=$root/run/user/$(id -u desk)/nvfwd-session.env
+    file=$root/run/user/$(id -u "$desk_user")/nvfwd-session.env
     [ -e "$file" ] || return 1
     # shellcheck disable=SC2046  # the file is key=value lines from the session
-    runuser -u desk -- env $(cat "$file") "$@"
+    runuser -u "$desk_user" -- env $(cat "$file") "$@"
 }
 
 shell_eval() {
@@ -156,7 +156,7 @@ check_desktop_gpu() {
     check 'nvidia-drm has a connected screen' sh -c "grep -q '^connected' $connector-*/status"
     # Mutter keeps Xwayland's key in the runtime folder, and any client needs it.
     local authority
-    authority=$(ls "$root/run/user/$(id -u desk)"/.mutter-Xwaylandauth.* 2>/dev/null | head -n 1)
+    authority=$(ls "$root/run/user/$(id -u "$desk_user")"/.mutter-Xwaylandauth.* 2>/dev/null | head -n 1)
     if in_session env DISPLAY=:0 XAUTHORITY="$authority" timeout 20 glxinfo -B 2>&1 | grep -q zink; then
         pass 'X11 GL through Xwayland reports Zink'
     else
