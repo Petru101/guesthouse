@@ -388,6 +388,14 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         }
     }
 
+    /// The display driver's next frame is finished and waits only for the copy engine, to be copied
+    /// into a viewer's slot in memory.
+    pub(super) fn frame_wants_copy_engine(&self) -> bool {
+        let in_memory = self.frames.ring.as_ref().is_some_and(|ring| !ring.memory.is_empty());
+        let front = self.frames.indirect.as_ref().and_then(|ring| ring.landing.front());
+        in_memory && front.is_some_and(|front| self.targets_reached(&front.targets))
+    }
+
     /// Gives a viewer its own descriptors for the guest's buffers.
     fn export_for_viewer(&mut self) {
         let wanted = self.frames.viewer
