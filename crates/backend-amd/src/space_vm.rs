@@ -78,6 +78,15 @@ impl Books {
         let (&start, placed) = self.mappings.range(..=address).next_back()?;
         (address - start < placed.length).then_some((placed.buffer, placed.offset + (address - start)))
     }
+
+    /// Whether `bytes` from `address` lie inside one mapping here.
+    pub fn holds(&self, address: u64, bytes: u64) -> bool {
+        let Some((&start, placed)) = self.mappings.range(..=address).next_back() else {
+            return false;
+        };
+        let end = start.saturating_add(placed.length);
+        address.checked_add(bytes).is_some_and(|wanted| wanted <= end)
+    }
 }
 
 /// Where a buffer on the backend's first open came from, which says how a space takes it in.
@@ -113,6 +122,12 @@ impl SpaceVm {
     /// The buffer behind an address here, by its handle on the first open, and the offset into it.
     pub fn locate(&self, address: u64) -> Option<(GemHandle, u64)> {
         self.books.locate(address)
+    }
+
+    /// The first command buffer not wholly mapped here. The card would fault reading it, and a fault
+    /// costs every program on the card a reset.
+    pub fn first_unmapped<'a>(&self, ibs: &'a [Ib]) -> Option<&'a Ib> {
+        ibs.iter().find(|ib| !self.books.holds(ib.address, u64::from(ib.bytes)))
     }
 
     /// Runs command buffers already mapped here on the engine family `ip_type`, in order, and waits
@@ -240,5 +255,17 @@ mod tests {
         assert_eq!(books.locate(AT + 0x10), Some((BUFFER, 0x3010)));
         assert_eq!(books.locate(AT + SIZE), None);
         assert_eq!(books.locate(AT - 1), None);
+    }
+
+    #[test]
+    fn a_range_is_held_only_inside_one_mapping() {
+        let mut books = Books::default();
+        books.add(BUFFER, HERE, AT, 0, SIZE);
+        assert!(books.holds(AT, SIZE));
+        assert!(books.holds(AT + 0x100, 0x100));
+        assert!(!books.holds(AT + 0x100, SIZE));
+        assert!(!books.holds(AT - 0x100, 0x200));
+        assert!(!books.holds(AT + SIZE, 4));
+        assert!(!books.holds(u64::MAX - 1, 4));
     }
 }

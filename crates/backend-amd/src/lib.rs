@@ -264,6 +264,7 @@ impl Backend for AmdBackend {
             self.cpu_views.remove(&bo.handle);
             for space in self.spaces.values_mut() {
                 for address in space.vm.forget(bo.handle) {
+                    log::debug!("unmapped {address:#x} as its memory was freed");
                     space.mappings.remove(&address);
                 }
             }
@@ -298,12 +299,14 @@ impl Backend for AmdBackend {
         let vm = SpaceVm::open(&self.device)
             .map_err(|error| BackendError::new(format!("opening the card for an address space: {error}")))?;
         self.spaces.insert(space, Space { ranges: ranges.to_vec(), mappings: BTreeMap::new(), vm });
+        log::debug!("address space {space:?} opened");
         Ok(space)
     }
 
     fn destroy_address_space(&mut self, space: SpaceId) {
         // Closing the space's open takes its VM, and all that was mapped in it, with it.
         self.spaces.remove(&space);
+        log::debug!("address space {space:?} closed");
     }
 
     fn map(&mut self, request: &MapRequest) -> Result<(), BackendError> {
@@ -352,6 +355,7 @@ impl Backend for AmdBackend {
             .map(&self.device, bo.handle, bo.origin, address, offset, length, flags)
             .map_err(|error| BackendError::new(format!("GEM_VA map: {error}")))?;
         space.mappings.insert(address, length);
+        log::debug!("mapped {address:#x} for {length:#x} in space {:?}", request.space);
         Ok(())
     }
 
@@ -363,6 +367,7 @@ impl Backend for AmdBackend {
             return Ok(());
         };
         space.mappings.remove(&unmap.address);
+        log::debug!("unmap {:#x} in space {:?}", unmap.address, unmap.space);
         space.vm.unmap(unmap.address).map_err(|error| BackendError::new(format!("GEM_VA unmap: {error}")))
     }
 
@@ -488,6 +493,18 @@ impl Backend for AmdBackend {
             log::warn!("work for a space that isn't here");
             return WorkStart::QueueFailed;
         };
+        if let Some(ib) = space.vm.first_unmapped(&ibs) {
+            log::warn!(
+                "work on engine family {} in space {:?} reads {:#x} for {:#x} bytes, which isn't mapped \
+                 there, so it isn't run",
+                node.ip_type,
+                work.space,
+                ib.address,
+                ib.bytes
+            );
+            return WorkStart::QueueFailed;
+        }
+        log::debug!("run on engine family {} in space {:?}: {:x?}", node.ip_type, work.space, ibs);
         // The run is waited for here, so the core then completes the fence as for finished work. A
         // completion that arrives on its own, as amdgpu's eventfd allows, would free this thread.
         match space.vm.run(node.ip_type, &ibs, RUN_WAIT_MS) {
