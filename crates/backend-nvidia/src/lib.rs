@@ -8,6 +8,7 @@
 
 pub mod answers;
 pub mod channel;
+mod context_room;
 mod depth;
 pub mod encode_sessions;
 pub mod escape;
@@ -399,8 +400,8 @@ impl<R: Rm + OpenRm> Backend for NvidiaBackend<R> {
     }
 
     fn create_address_space(&mut self, ranges: &[GpuRange]) -> Result<SpaceId, BackendError> {
-        let pairs: Vec<(u64, u64)> = ranges.iter().map(|range| (range.start, range.end)).collect();
-        let space = self.device.create_address_space(&pairs).map_err(memory_error)?;
+        let space =
+            self.device.create_address_space(&context_room::without_room(ranges)).map_err(memory_error)?;
         let id = SpaceId(self.next_space);
         self.next_space += 1;
         self.spaces.insert(id, space);
@@ -470,7 +471,7 @@ impl<R: Rm + OpenRm> Backend for NvidiaBackend<R> {
     }
 
     fn kept_gpu_ranges(&self) -> &'static [GpuRange] {
-        &[escape::RUNTIME_GPU_RANGE, escape::RUNTIME_PLACED_RANGE]
+        &[escape::RUNTIME_GPU_RANGE, escape::RUNTIME_PLACED_RANGE, context_room::CONTEXT_BUFFER_ROOM]
     }
 
     fn guest_restarted(&mut self) {
