@@ -112,7 +112,7 @@ If you find yourself wanting to name a vendor in `core`, something belongs in a 
 
 The staging surface lies in guest pages, so a viewer can't use it where it is. The daemon keeps its own ring of slots in video memory, exported with `Backend::export_memory`, and each screen frame gets a second copy, into the next free slot. The guest's image is read directly if it's the screen's size, and otherwise the staging surface is, because each slot needs the whole picture. On NVIDIA an export goes through an RM file and a GEM object on the render node, in `rm/dmabuf.rs`.
 
-A viewer whose screen is on another GPU, as on most laptops, can't take the card's buffers. Its hello asks for frames in memory (`wants_memory`; the app decides in `app-core/src/screen_gpu.rs`). Its slots are then sealed memfds here, mapped for the GPU with `Backend::adopt_host_pages`, and the viewer copies each frame out. The screen's copies write them as usual. The indirect display driver's frames are in guest video memory, so each one is copied over when it lands, alone on the copy engine and waited for. Those viewers aren't offered HDR.
+A viewer whose screen is on another GPU, as on most laptops, can't take the card's buffers. Its hello asks for frames in memory (`wants_memory`; the app decides in `app-core/src/screen_gpu.rs`, by whether a connected screen is on a GPU other than the machine's card, NVIDIA or AMD). Its slots are then sealed memfds here, mapped for the GPU with `Backend::adopt_host_pages`, and the viewer copies each frame out. The screen's copies write them as usual. The indirect display driver's frames are in guest video memory, so each one is copied over when it lands, alone on the copy engine and waited for. Those viewers aren't offered HDR.
 
 The rules:
 
