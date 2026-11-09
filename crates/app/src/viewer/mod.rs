@@ -133,8 +133,7 @@ impl ScreenPage {
             let machine = self.0.machine.borrow();
             (FrameRoute::of(&machine), machine.overlay)
         };
-        let screen = Screen::new(self.run_folder(), route, overlay, on_capture);
-        screen.set_memory_frames(self.memory_frames());
+        let screen = Screen::new(self.run_folder(), route, self.memory_frames(), overlay, on_capture);
         self.0.toolbar.set_content(Some(screen.widget()));
         *self.0.screen.borrow_mut() = Some(screen);
     }

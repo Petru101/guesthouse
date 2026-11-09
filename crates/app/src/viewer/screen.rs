@@ -77,9 +77,12 @@ pub(super) struct Inner {
 pub struct Screen(pub(super) Rc<Inner>);
 
 impl Screen {
+    /// `memory_frames` is whether to ask for frames in memory. It has to be known before the first
+    /// connection, which can be made here, when the daemon already has a ring.
     pub fn new(
         run_folder: PathBuf,
         route: FrameRoute,
+        memory_frames: bool,
         show_overlay: bool,
         capture_changed: impl Fn() + 'static,
     ) -> Self {
@@ -119,7 +122,7 @@ impl Screen {
             qemu: RefCell::default(),
             booting: Cell::new(true),
             route: Cell::new(route),
-            memory_frames: Cell::new(false),
+            memory_frames: Cell::new(memory_frames),
             forwarded: RefCell::default(),
             input_socket: RefCell::new(run_folder.join(INPUT_SOCKET)),
             run_folder: RefCell::new(run_folder),
