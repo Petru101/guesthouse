@@ -417,7 +417,12 @@ impl Backend for AmdBackend {
         let buffer = |id| self.memory.get(&id).copied().ok_or_else(|| BackendError::new("no such memory"));
         let (from, to) = (buffer(from)?, buffer(to)?);
         let moved = if self.dma_known() {
-            self.move_with_dma(own_space, from, to, size)
+            // A lock that fails is worse for the guest than a slow one, so the CPU has a go when the
+            // engine refuses.
+            self.move_with_dma(own_space, from, to, size).or_else(|reason| {
+                log::warn!("the DMA engine didn't move {size:#x} bytes ({reason}), so the CPU does");
+                self.move_with_cpu(from, to, size)
+            })
         } else {
             self.move_with_cpu(from, to, size)
         };
