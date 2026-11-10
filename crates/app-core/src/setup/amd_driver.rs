@@ -5,9 +5,10 @@
 //! package, `Packages/Drivers/Display` is for RDNA3 and later and `Display2` for RDNA1 and RDNA2.
 //! The driver taken is the one whose INF lists the user's card, and it must be a version the AMD
 //! daemon takes. The user-mode driver the guest loads sits in a folder inside the INF's folder, and
-//! that folder is the one the guest gets.
+//! that folder, with what `amd_guest_folder` adds to it, is the one the guest gets.
 
 use super::amd::write_amd_setup;
+use super::amd_guest_folder::{add_components, folder_problem};
 use super::driver::Extraction;
 use super::inf::{inf_driver_version, latin1};
 use crate::context::Context;
@@ -128,8 +129,15 @@ pub fn unpack_amd(
 ) -> Result<PathBuf> {
     let target = context.paths.setup_folder().join(format!("amd-driver-{}", package.version));
     let missing = || format!("{USER_DRIVER} is not in AMD's display driver.");
-    let check =
-        |unpacked: &Path| user_driver_folder(&unpacked.join(&package.driver_entry)).is_none().then(missing);
+    let check = |unpacked: &Path| {
+        let Some(folder) = user_driver_folder(&unpacked.join(&package.driver_entry)) else {
+            return Some(missing());
+        };
+        match add_components(&folder) {
+            Ok(()) => folder_problem(&folder),
+            Err(failure) => Some(format!("AMD's Vulkan and OpenGL could not be added: {}", failure.0)),
+        }
+    };
     extraction.unpack(context, &package.driver_entry, &target, &check, progress)?;
     let folder = user_driver_folder(&target.join(&package.driver_entry)).ok_or_else(|| Failure(missing()))?;
     write_amd_setup(context, &folder, &package.version)?;
@@ -140,12 +148,16 @@ pub fn unpack_amd(
 mod tests {
     use super::*;
     use crate::setup::amd::amd_driver_folder;
+    use crate::setup::amd_guest_folder::missing_files;
+    use crate::setup::amd_guest_folder::stand_in::lay_out_driver;
     use crate::testing::{Scratch, scratch_context};
     use std::process::Stdio;
 
     const IGPU: u32 = 0x13C0;
     const NEWER: &str = AMD_WINDOWS_DRIVERS[0];
     const OLDER: &str = AMD_WINDOWS_DRIVERS[1];
+    const NEWER_FOLDER: &str = "B026716";
+    const OLDER_FOLDER: &str = "B026715";
 
     fn inf(version: &str, devices: &[u32]) -> String {
         let mut text = format!("[Version]\nDriverVer=10/28/2026, {version}\n[ATI.Mfg.NTamd64]\n");
@@ -156,13 +168,16 @@ mod tests {
     }
 
     /// An archive laid out like AMD's combined installer, which 7z can read: the newer cards' driver,
-    /// listing `devices`, and the older cards' listing the iGPU.
+    /// listing `devices`, with Vulkan and OpenGL in folders of their own, and the older cards',
+    /// listing the iGPU, with everything in one folder.
     fn make_installer(scratch: &Scratch, devices: &[u32]) -> String {
-        for (folder, version, devices) in [("Display", NEWER, devices), ("Display2", OLDER, &[IGPU][..])] {
-            let driver = format!("source/Packages/Drivers/{folder}/WT6A_INF");
+        let packages =
+            [("Display", NEWER, devices, NEWER_FOLDER), ("Display2", OLDER, &[IGPU][..], OLDER_FOLDER)];
+        for (display, version, devices, folder) in packages {
+            let driver = format!("source/Packages/Drivers/{display}/WT6A_INF");
             scratch.write(&format!("{driver}/u0205499.inf"), inf(version, devices));
-            scratch.write(&format!("{driver}/B026716/{USER_DRIVER}"), version);
-            scratch.write(&format!("{driver}/B026716/amdkmdag.sys"), "kernel driver");
+            lay_out_driver(scratch, &driver, folder, display == "Display2");
+            scratch.write(&format!("{driver}/{folder}/{USER_DRIVER}"), version);
         }
         scratch.write("source/Packages/Apps/not-needed.msi", "x");
         let path = scratch.path("amd.exe");
@@ -220,6 +235,24 @@ mod tests {
         assert_eq!(fs::read_to_string(folder.join(USER_DRIVER)).unwrap(), OLDER);
         assert_eq!(amd_driver_folder(&context), Some(folder.clone()));
         assert!(!folder.ancestors().any(|above| above.join("Packages/Apps").exists()), "only the driver");
+        assert_eq!(missing_files(&folder), Vec::<String>::new());
+    }
+
+    /// The newer cards' package keeps Vulkan and OpenGL beside the user-mode driver, and the guest
+    /// gets only that one folder.
+    #[test]
+    fn the_newer_cards_driver_comes_out_with_vulkan_and_opengl_in_the_guests_folder() {
+        let scratch = Scratch::new();
+        let context = scratch_context(&scratch);
+        let installer = make_installer(&scratch, &[0x744C]);
+        let newer = read_amd_installer(&installer, 0x744C).unwrap();
+        let folder = unpack_amd(&Extraction::new(&installer), &context, &newer, &|_| {}).unwrap();
+        assert!(folder.ends_with(NEWER_FOLDER));
+        assert_eq!(missing_files(&folder), Vec::<String>::new());
+        for name in ["amd-vulkan64.json", "amdvlk64.dll", "amdvlk32.dll", "atio6axx.dll", "atioglxx.dll"] {
+            assert!(folder.join(name).is_file(), "{name}");
+        }
+        assert_eq!(amd_driver_folder(&context), Some(folder));
     }
 
     #[test]
@@ -241,6 +274,28 @@ mod tests {
             Ok(package) => println!("covers {device:04X}: {package:?}"),
             Err(failure) => println!("refused {device:04X}: {}", failure.0),
         }
+    }
+
+    /// The same, unpacked as setup does it, which has to leave the guest's folder with every file
+    /// Windows is told to load. It needs room for the driver in the temporary folder.
+    #[test]
+    #[ignore = "needs AMD's installer"]
+    fn a_real_installer_unpacks_with_every_file_windows_is_told_to_load() {
+        let path = std::env::var("GUESTHOUSE_AMD_INSTALLER").unwrap();
+        let device = u32::from_str_radix(&std::env::var("GUESTHOUSE_AMD_DEVICE").unwrap(), 16).unwrap();
+        let scratch = Scratch::new();
+        let context = scratch_context(&scratch);
+        let package = read_amd_installer(&path, device).unwrap();
+        let folder = unpack_amd(&Extraction::new(&path), &context, &package, &|_| {}).unwrap();
+        println!("{device:04X}: {}", folder.display());
+        let mut names: Vec<String> = fs::read_dir(&folder)
+            .unwrap()
+            .flatten()
+            .map(|file| file.file_name().display().to_string())
+            .collect();
+        names.sort();
+        println!("{}", names.join("\n"));
+        assert_eq!(missing_files(&folder), Vec::<String>::new());
     }
 
     /// The drivers are the AMD daemon's, which lives in the backend.
