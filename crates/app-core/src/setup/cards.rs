@@ -18,7 +18,7 @@ const DISPLAY_CLASS: &str = "0x03";
 /// The card this has been run on.
 const TESTED_CARDS: [u32; 1] = [0x2B85];
 /// Consumer 50, 40, 30, 20 and 16 series, desktop and laptop, from pci.ids, which may be used under the 3-clause BSD licence. The workstation cards on these
-/// chips don't count, as nothing says their answers are the same, except the one in `CHECKED_WORKSTATION_CARDS`.
+/// chips don't count, as nothing says their answers are the same, except the ones in `CHECKED_WORKSTATION_CARDS`.
 const CONSUMER_CARDS: [(&str, &[u32]); 20] = [
     ("GB202", &[0x2B85, 0x2B87, 0x2B8C]),
     ("GB203", &[0x2C02, 0x2C05, 0x2C09, 0x2C18, 0x2C19, 0x2C58, 0x2C59]),
@@ -139,8 +139,9 @@ fn remember_card_with(context: &Context, memory_of: impl Fn(&str) -> Option<u64>
     write_setup(context, changes.as_object().cloned().unwrap_or_default())
 }
 
-/// Workstation cards whose card check gave the same answers as a consumer card on the same chip.
-const CHECKED_WORKSTATION_CARDS: [(&str, &[u32]); 1] = [("GA107", &[0x25B9])];
+/// Workstation cards whose card check gave the same answers as a consumer card on the same chip, or that
+/// a tester has started Windows on.
+const CHECKED_WORKSTATION_CARDS: [(&str, &[u32]); 2] = [("GA103", &[0x2438]), ("GA107", &[0x25B9])];
 
 fn chip_of(device: u32) -> &'static str {
     let mut tables = CONSUMER_CARDS.iter().chain(&CHECKED_WORKSTATION_CARDS);
@@ -361,6 +362,7 @@ mod tests {
         assert_eq!((chip_of(0x2204), support_of(0x2204)), ("GA102", Support::Experimental));
         assert_eq!((chip_of(0x25A2), support_of(0x25A2)), ("GA107", Support::Experimental));
         assert_eq!((chip_of(0x25B9), support_of(0x25B9)), ("GA107", Support::Experimental));
+        assert_eq!((chip_of(0x2438), support_of(0x2438)), ("GA103", Support::Experimental));
         assert_eq!(support_of(0x2230), Support::Unsupported, "an RTX A6000 hasn't been checked");
     }
 
