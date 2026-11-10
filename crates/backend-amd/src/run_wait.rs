@@ -27,6 +27,10 @@ pub struct Patience {
 
 impl Patience {
     pub const RUN: Self = Self { slow: SLOW_RUN, hung: HUNG_RUN };
+    /// For the runs after one that hung. The kernel didn't answer for that one, so every program in
+    /// the guest would wait the long time over again at each run it sends. A run gets only as long
+    /// as a slow one until one retires again.
+    pub const AFTER_A_HANG: Self = Self { slow: SLOW_RUN, hung: SLOW_RUN };
 }
 
 /// How a wait for a run ended.
@@ -44,12 +48,16 @@ pub fn wait_for_run(event: &impl AsRawFd, patience: Patience, engine: u32) -> io
     if wait_eventfd(event, millis(patience.slow))? {
         return Ok(Waited::Retired { slow: None });
     }
+    let longer = patience.hung.saturating_sub(patience.slow);
+    if longer.is_zero() {
+        return Ok(Waited::Hung);
+    }
     log::warn!(
         "work on engine family {engine} still running after {} ms, so it's waited for until it \
          finishes or the kernel resets it",
         patience.slow.as_millis()
     );
-    if wait_eventfd(event, millis(patience.hung.saturating_sub(patience.slow)))? {
+    if wait_eventfd(event, millis(longer))? {
         let took = started.elapsed();
         log::warn!("work on engine family {engine} finished after {} ms", took.as_millis());
         return Ok(Waited::Retired { slow: Some(took) });
@@ -103,6 +111,16 @@ mod tests {
         late.join().unwrap();
         let Waited::Retired { slow: Some(took) } = waited else { panic!("{waited:?}") };
         assert!(took >= Duration::from_millis(100));
+    }
+
+    #[test]
+    fn after_a_hang_a_run_gets_no_longer_than_a_slow_one() {
+        assert_eq!(Patience::AFTER_A_HANG.hung, Patience::RUN.slow);
+        let event = eventfd();
+        let short = Duration::from_millis(20);
+        let started = Instant::now();
+        assert_eq!(wait_for_run(&event, Patience { slow: short, hung: short }, 0).unwrap(), Waited::Hung);
+        assert!(started.elapsed() < Duration::from_millis(500));
     }
 
     #[test]

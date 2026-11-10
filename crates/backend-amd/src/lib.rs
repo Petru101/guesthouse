@@ -60,6 +60,7 @@ use screen_copy::{CopyPlan, PIXEL_BYTES};
 use sdma_copy::{LinearCopy, TiledCopy};
 use space_vm::{Origin, Ran, SpaceVm};
 use std::collections::{BTreeMap, HashMap};
+use std::io;
 use std::os::fd::OwnedFd;
 use std::time::Instant;
 use submit::Ib;
@@ -98,6 +99,8 @@ pub struct AmdBackend {
     cpu_views: HashMap<GemHandle, Mapping>,
     /// The DMA engine's commands for copies of tiled surfaces, made at the first.
     copy_ib: Option<CopyIb>,
+    /// How long the next run is waited for, which is less after one that hung.
+    patience: Patience,
 }
 
 impl std::fmt::Debug for AmdBackend {
@@ -121,6 +124,7 @@ impl AmdBackend {
             spaces: HashMap::new(),
             cpu_views: HashMap::new(),
             copy_ib: None,
+            patience: Patience::RUN,
         })
     }
 
@@ -186,11 +190,22 @@ impl AmdBackend {
             ib.mapped_in = Some(space);
         }
         let bytes = ib.write(commands).map_err(|error| error.to_string())?;
-        match space_vm.run(HW_IP_DMA, &[Ib { address: copy_ib::ADDRESS, bytes }], Patience::RUN) {
+        let ran = space_vm.run(HW_IP_DMA, &[Ib { address: copy_ib::ADDRESS, bytes }], self.patience);
+        self.note_how_it_ran(&ran);
+        match ran {
             Ok(Ran::Retired) => Ok(()),
             Ok(Ran::Refused) => Err("amdgpu kept saying try again".into()),
             Ok(Ran::Hung) => Err("it never finished".into()),
             Err(error) => Err(error.to_string()),
+        }
+    }
+
+    /// Keeps the patience for the next run in step with how this one ended.
+    fn note_how_it_ran(&mut self, ran: &io::Result<Ran>) {
+        match ran {
+            Ok(Ran::Retired) => self.patience = Patience::RUN,
+            Ok(Ran::Hung) => self.patience = Patience::AFTER_A_HANG,
+            Ok(Ran::Refused) | Err(_) => {}
         }
     }
 
@@ -622,7 +637,9 @@ impl Backend for AmdBackend {
         log::debug!("run on engine family {} in space {:?}: {:x?}", node.ip_type, work.space, ibs);
         // The run is waited for here, so the core then completes the fence as for finished work. A
         // completion that arrives on its own, as amdgpu's eventfd allows, would free this thread.
-        match space.vm.run(node.ip_type, &ibs, Patience::RUN) {
+        let ran = space.vm.run(node.ip_type, &ibs, self.patience);
+        self.note_how_it_ran(&ran);
+        match ran {
             Ok(Ran::Retired) => WorkStart::Finished,
             // Nothing ran, so the guest's submission waits and comes again, and the guest never
             // hears of it.
