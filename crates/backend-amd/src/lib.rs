@@ -188,6 +188,7 @@ impl AmdBackend {
         let bytes = ib.write(commands).map_err(|error| error.to_string())?;
         match space_vm.run(HW_IP_DMA, &[Ib { address: copy_ib::ADDRESS, bytes }], Patience::RUN) {
             Ok(Ran::Retired) => Ok(()),
+            Ok(Ran::Refused) => Err("amdgpu kept saying try again".into()),
             Ok(Ran::Hung) => Err("it never finished".into()),
             Err(error) => Err(error.to_string()),
         }
@@ -623,6 +624,9 @@ impl Backend for AmdBackend {
         // completion that arrives on its own, as amdgpu's eventfd allows, would free this thread.
         match space.vm.run(node.ip_type, &ibs, Patience::RUN) {
             Ok(Ran::Retired) => WorkStart::Finished,
+            // Nothing ran, so the guest's submission waits and comes again, and the guest never
+            // hears of it.
+            Ok(Ran::Refused) => WorkStart::Busy,
             Ok(Ran::Hung) => {
                 log::error!(
                     "work on engine family {} never finished, and the kernel didn't reset it",

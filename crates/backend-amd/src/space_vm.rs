@@ -117,6 +117,8 @@ pub struct SpaceVm {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Ran {
     Retired,
+    /// amdgpu kept saying try again, so nothing ran, and the work can come again later.
+    Refused,
     /// The kernel neither finished nor reset it in time.
     Hung,
 }
@@ -155,6 +157,7 @@ impl SpaceVm {
         // The guest doesn't say which buffers the work uses, so it may use any mapped here.
         let buffers = self.books.handles();
         let ran = match submit::submit_all(&self.file, context, ip_type, ibs, &buffers, &signal) {
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(Ran::Refused),
             Err(error) => Err(step("submitting", error)),
             Ok(_) => signal
                 .arm_eventfd(&self.file)
