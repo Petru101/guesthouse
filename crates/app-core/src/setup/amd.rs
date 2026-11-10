@@ -2,6 +2,7 @@
 //! version. The daemon reads them from `amd.json` in the setup folder. The card itself is the
 //! machine's own choice, so the file names none.
 
+use super::amd_guest_folder::{add_components, folder_problem};
 use crate::context::Context;
 use crate::failure::Result;
 use crate::linux::amd::amd_card;
@@ -26,6 +27,21 @@ pub fn amd_driver_folder(context: &Context) -> Option<PathBuf> {
     let setup: Value = serde_json::from_str(&text).ok()?;
     let folder = PathBuf::from(setup.get(DRIVER_FOLDER_FIELD)?.as_str()?);
     folder.is_dir().then_some(folder)
+}
+
+/// Brings a driver unpacked by an older version of the app up to what the guest gets now, and says
+/// what it still lacks, if anything. Unpacking does the same, so after the first time this only looks.
+pub fn complete_amd_driver(context: &Context) -> Option<String> {
+    let folder = amd_driver_folder(context)?;
+    if let Err(failure) = add_components(&folder) {
+        return Some(format!("AMD's Vulkan and OpenGL could not be added to its driver: {}", failure.0));
+    }
+    let problem = folder_problem(&folder)?;
+    let setup = amd_setup_file(context);
+    Some(format!(
+        "{problem} To unpack it again, delete {}, and a new machine on this card asks for AMD's installer.",
+        setup.display()
+    ))
 }
 
 /// Writes down where AMD's driver was unpacked, and its version, for the daemon.
@@ -53,6 +69,7 @@ pub fn amd_start_problems(context: &Context, pci: &str) -> Vec<String> {
 mod tests {
     use super::*;
     use crate::linux::amd::stand_in::fake_render_node;
+    use crate::setup::amd_guest_folder::stand_in::lay_out_driver;
     use crate::testing::{Scratch, scratch_context};
 
     const CARD: &str = "0000:7c:00.0";
@@ -65,6 +82,24 @@ mod tests {
         assert_eq!(found.len(), 2, "{found:?}");
         assert_eq!(found[0], NO_AMD_SETUP);
         assert!(found[1].contains("at 0000:7c:00.0, isn't in this PC now"));
+    }
+
+    /// What 0.4.0 left for the newer cards: the user-mode driver's folder alone written down, with
+    /// Vulkan and OpenGL beside it.
+    #[test]
+    fn a_driver_unpacked_before_is_completed_once_and_then_only_looked_at() {
+        let scratch = Scratch::new();
+        let context = scratch_context(&scratch);
+        lay_out_driver(&scratch, "amd-driver/WT6A_INF", "B026716", false);
+        let folder = scratch.path("amd-driver/WT6A_INF/B026716");
+        write_amd_setup(&context, &folder, "32.0.32015.12012").unwrap();
+        assert!(!folder.join("atio6axx.dll").exists());
+        assert_eq!(complete_amd_driver(&context), None);
+        assert!(folder.join("atio6axx.dll").is_file() && folder.join("amd-vulkan64.json").is_file());
+        assert_eq!(complete_amd_driver(&context), None);
+        fs::remove_dir_all(scratch.path("amd-driver/WT6A_INF/amdogl")).unwrap();
+        fs::remove_file(folder.join("atioglxx.dll")).unwrap();
+        assert!(complete_amd_driver(&context).unwrap().contains("atioglxx.dll"));
     }
 
     #[test]

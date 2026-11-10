@@ -99,7 +99,7 @@ pub fn folder_problem(user_driver: &Path) -> Option<String> {
     let missing = missing_files(user_driver);
     (!missing.is_empty()).then(|| {
         format!(
-            "AMD's driver lacks {}, which Windows is told to load. Unpack AMD's installer for this card again.",
+            "AMD's display driver lacks {}, which Windows is told to load, so Vulkan or OpenGL won't work.",
             missing.join(", ")
         )
     })

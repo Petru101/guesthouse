@@ -1,6 +1,7 @@
 //! What a task does. One of these runs in the `guesthouse-task` process, in the slot of its VM, while
 //! the app watches the small file it leaves.
 
+mod amd_files;
 mod amd_start;
 mod desktop;
 mod display;
@@ -13,6 +14,7 @@ mod install;
 mod own_linux;
 mod ubuntu;
 
+use amd_files::complete_host_driver;
 pub use desktop::{apply_share, boots, rebooted};
 use desktop::{note_boot, set_up_desktop, wait_for_desktop};
 use gpu_check::check_gpu;
@@ -196,7 +198,7 @@ fn get_ready(task: &mut Task, shown: PciIdentity) -> Result<()> {
     set_up_desktop(task)?;
     if task.machine.windows_amd_card().is_some() {
         // What follows places NVIDIA's files and settings store, which a guest on AMD has no use for.
-        return Ok(());
+        return complete_host_driver(task);
     }
     place_driver_files(task)?;
     place_profile_store(task)

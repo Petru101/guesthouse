@@ -1,5 +1,6 @@
 //! Installing Windows: the answer disc, the wait for setup, and the check of what it made.
 
+use super::amd_files::complete_host_driver;
 use super::desktop::{BOOT_LINE, SERIAL_FILE, count, wait_for_desktop};
 use super::identity::set_up_identity;
 use super::{KEY_POLL, Task, plan_for, start_if_there_is_room};
@@ -231,6 +232,7 @@ pub fn install(task: &mut Task) -> Result<()> {
     task.machine.tpm = true;
     task.machine.save(context)?;
     let size = disk_size_gib(&task.machine.disk)? as u32;
+    complete_host_driver(task)?;
     make_answer_disc(context, &task.machine)?;
     fs::remove_file(&task.machine.disk)?;
     make_disk(context, &task.machine, size)?;
