@@ -257,7 +257,9 @@ pub fn shape(data: &[u8]) -> AllocationShape {
             samples: (1, 0),
             colour: surface.format,
         }),
-        gpu_cached: false,
+        // The guest's driver keeps the card's caches right itself, as it does on a Windows host,
+        // and counts on them: depth and stencil mapped uncached come back wrong in whole tiles.
+        gpu_cached: true,
         // The swizzle mode, so the allocation path can tile the host buffer to match.
         kind: first.map_or(MemoryKind::PLAIN, |surface| MemoryKind(surface.swizzle_mode)),
     }
@@ -397,6 +399,13 @@ mod tests {
         assert_eq!((surface.width, surface.height, surface.tiling), (1920, 1080, Some(27)));
         assert_eq!(surface.refresh, (0xFFFF_FFFE, 0xFFFF_FFFE));
         assert_eq!(shape.kind, MemoryKind(27));
+    }
+
+    #[test]
+    fn the_guests_memory_may_sit_in_the_cards_caches() {
+        let surfaces = vec![surface(1920, 1080, 27)];
+        assert!(shape(&Builder { surfaces, ..Builder::default() }.build()).gpu_cached);
+        assert!(shape(&Builder::default().build()).gpu_cached);
     }
 
     #[test]
