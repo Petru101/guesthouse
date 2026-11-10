@@ -12,7 +12,7 @@ use std::io;
 /// Where the buffer sits in the space: the start of the gap below the core's upper range.
 pub const ADDRESS: u64 = 0x1_0000_0000;
 /// Room for any copy's commands, many times over.
-const BYTES: usize = 0x1000;
+pub const BYTES: usize = 0x1000;
 
 #[derive(Debug)]
 pub struct CopyIb {

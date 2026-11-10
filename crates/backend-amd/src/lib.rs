@@ -21,6 +21,7 @@ mod device;
 mod info;
 mod ioctl;
 mod memory;
+mod moves;
 mod nodes;
 pub mod protocol;
 mod screen_copy;
@@ -73,7 +74,7 @@ const PAGE_BYTES: usize = 4096;
 
 /// One buffer object the backend is holding, on its first open. Where it is mapped is in each
 /// space's [`SpaceVm`].
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 struct Bo {
     handle: GemHandle,
     origin: Origin,
@@ -155,10 +156,15 @@ impl AmdBackend {
         self.run_dma(space, &reaches, &plan.commands())
     }
 
+    /// Whether the DMA engine's commands here are written for this card.
+    fn dma_known(&self) -> bool {
+        matches!(self.device.info().details.gfx_version.0, 10 | 11)
+    }
+
     /// Runs commands on the DMA engine in the daemon's space, and waits for them. `reaches` are the
     /// ranges they touch, each of which must be mapped there.
     fn run_dma(&mut self, space: SpaceId, reaches: &[(u64, u64)], commands: &[u32]) -> Result<(), String> {
-        if !matches!(self.device.info().details.gfx_version.0, 10 | 11) {
+        if !self.dma_known() {
             return Err("the DMA copy is written for GFX10 and GFX11".into());
         }
         let alignment = self.device.info().va_alignment;
@@ -203,6 +209,47 @@ impl AmdBackend {
         let Some(linear) = linear else { return self.copy_staging(staging) };
         let reaches = [(linear.source_address, linear.bytes), (linear.target_address, linear.bytes)];
         self.run_dma(staging.own_space, &reaches, &linear.commands())
+    }
+
+    /// Copies what `from` holds into `to`, a window at a time, by the DMA engine. The work that wrote
+    /// it has retired, as every submission is waited for.
+    fn move_with_dma(&mut self, space: SpaceId, from: Bo, to: Bo, size: u64) -> Result<(), String> {
+        let flags =
+            MapFlags { readable: true, writable: true, executable: false, memory_type: MemoryType::Uncached };
+        for piece in moves::pieces(size) {
+            let space_vm = &mut self.spaces.get_mut(&space).ok_or("no such space")?.vm;
+            let (source, target) = (moves::SOURCE_WINDOW, moves::TARGET_WINDOW);
+            space_vm
+                .map(&self.device, from.handle, from.origin, source, piece.offset, piece.mapped, flags)
+                .map_err(|error| format!("mapping what moves: {error}"))?;
+            let copied = space_vm
+                .map(&self.device, to.handle, to.origin, target, piece.offset, piece.mapped, flags)
+                .map_err(|error| format!("mapping where it goes: {error}"))
+                .and_then(|()| {
+                    let copy =
+                        LinearCopy { source_address: source, target_address: target, bytes: piece.bytes };
+                    let reaches = [(source, piece.bytes), (target, piece.bytes)];
+                    self.run_dma(space, &reaches, &copy.commands())
+                });
+            // The windows are one place each, so a mapping left in one would stop every later move.
+            let space_vm = &mut self.spaces.get_mut(&space).ok_or("no such space")?.vm;
+            for window in [source, target] {
+                if let Err(error) = space_vm.unmap(window) {
+                    log::warn!("GEM_VA unmap at {window:#x}: {error}");
+                }
+            }
+            copied?;
+        }
+        Ok(())
+    }
+
+    /// Copies what `from` holds into `to` with the CPU, for a card whose DMA commands aren't known.
+    fn move_with_cpu(&mut self, from: Bo, to: Bo, size: u64) -> Result<(), String> {
+        let source = self.cpu_reach(from.handle, from.origin, 0, size)?;
+        let target = self.cpu_reach(to.handle, to.origin, 0, size)?;
+        // SAFETY: `cpu_reach` gave addresses good for `size` bytes, in two different buffers.
+        unsafe { std::ptr::copy_nonoverlapping(source.cast_const(), target, size as usize) };
+        Ok(())
     }
 
     /// A copy to the screen or a slot: tiled surfaces by the DMA engine, rows by the CPU.
@@ -362,14 +409,19 @@ impl Backend for AmdBackend {
     fn preserve_contents(
         &mut self,
         _host: &mut dyn HostServices,
-        _own_space: SpaceId,
-        _from: MemoryId,
-        _to: MemoryId,
-        _size: u64,
+        own_space: SpaceId,
+        from: MemoryId,
+        to: MemoryId,
+        size: u64,
     ) -> Result<(), BackendError> {
-        // A move would be an SDMA linear copy between the two buffers, waited on like a submission.
-        // Not needed to prove the host path, so left for the submission work that follows.
-        Err(BackendError::new("AMD backend does not move allocations yet"))
+        let buffer = |id| self.memory.get(&id).copied().ok_or_else(|| BackendError::new("no such memory"));
+        let (from, to) = (buffer(from)?, buffer(to)?);
+        let moved = if self.dma_known() {
+            self.move_with_dma(own_space, from, to, size)
+        } else {
+            self.move_with_cpu(from, to, size)
+        };
+        moved.map_err(|reason| BackendError::new(format!("moving {size:#x} bytes: {reason}")))
     }
 
     /// Linear buffers are made with CPU access, so the CPU reads them, on a discrete card too. A tiled
