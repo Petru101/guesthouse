@@ -95,6 +95,43 @@ const ADAPTER_ID: [u32; 2] = [0xABC, 1];
 /// The most classes the record's list has room for, before the next field.
 const MOST_CLASSES: usize = 200;
 
+/// The bit NVIDIA's kernel driver puts in the record's fourth video caps word for each graphics,
+/// channel and copy class (621.14's nvlddmkm.sys builds this table at 0x14196FD1F and ORs in the row
+/// of every class Windows lists for the card at 0x14197089C). The guest's video library reads the
+/// graphics bits as the chip's generation: with none from Volta on, it lays out the shaders of its
+/// video processor blits the Maxwell way, at addresses Ampere's graphics engine refuses. The table's
+/// video engine rows are left out, as the profile says what video the guest is offered.
+const CLASS_WORD_BITS: [(u32, u32); 19] = [
+    (0xCE97, 0x40_0000),
+    (0xCD97, 0x20_0000),
+    (0xCB97, 0x10_0000),
+    (0xC997, 0x8_0000),
+    (0xC797, 0x4_0000),
+    (0xC697, 0x2_0000),
+    (0xC397, 0x1_0000),
+    (0xC597, 0x8000),
+    (0xC197, 0x4000),
+    (0xC097, 0x2000),
+    (0xB197, 0x1000),
+    (0xB097, 0x800),
+    (0xCBB5, 0x400),
+    (0xCAB5, 0x20),
+    (0xCA6F, 0x10),
+    (0xC96F, 0x8),
+    (0xC9B5, 0x4),
+    (0xC86F, 0x2),
+    (0xC56F, 0x1),
+];
+
+/// The fourth video caps word's bits for the generation's own graphics, channel and copy classes.
+/// Not for every class the RM lists: on Linux it also lists older channel classes that Windows
+/// leaves out, and the bits here are what Windows gives.
+fn class_word(generation: &Generation) -> u32 {
+    let own = [generation.graphics_classes[0].0, generation.channel_class, generation.copy_class];
+    let bit = |class: u32| CLASS_WORD_BITS.iter().find(|row| row.0 == class).map_or(0, |row| row.1);
+    own.into_iter().map(bit).fold(0, |word, bit| word | bit)
+}
+
 /// (index, value) pairs, as the record lays them out.
 type Table = Vec<(u32, u32)>;
 
@@ -332,7 +369,9 @@ pub fn build<R: Rm>(
         record.word(layout.memory_low + index * 4, size as u32);
     }
 
-    record.words(layout.video_caps, &generation.video_record_flags.caps);
+    let mut video_caps = generation.video_record_flags.caps;
+    video_caps[3] |= class_word(generation);
+    record.words(layout.video_caps, &video_caps);
     record.put(layout.decoder_flags, &[generation.video_record_flags.decoder]);
     record.put(layout.encoder_flags, &[generation.video_record_flags.encoder]);
     record.counted_words(layout.classes, &card.classes().map_err(card_failed)?)?;
@@ -359,7 +398,31 @@ fn utf16(text: &str) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::profile::BLACKWELL;
+    use crate::profile::{ADA, AMPERE, BLACKWELL, TURING};
+
+    /// What native Windows gave each card in this word: the 5090's real record, and the class lists
+    /// of the 3050 Laptop, 4080 and 1660 SUPER card reports (driver 621) put through the table.
+    #[test]
+    fn the_fourth_video_word_is_what_nvidias_driver_gives_each_generation() {
+        assert_eq!(class_word(&BLACKWELL), 0x40_0030);
+        assert_eq!(class_word(&AMPERE), 0x4_0001);
+        assert_eq!(class_word(&ADA), 0x8_0001);
+        assert_eq!(class_word(&TURING), 0x8000);
+    }
+
+    /// The guest's video library lays its programs out the Volta way only with a bit of this mask
+    /// (621.14's nvwgf2umx.dll at 0x180D4B1BC), and takes Hopper's shaders, which have none for SM
+    /// 7.x or 8.x, with one of the second (0x180D4B7BA).
+    #[test]
+    fn every_generation_gets_the_volta_layout_and_only_blackwell_hoppers_shaders() {
+        const VOLTA_LAYOUT: u32 = 0xFE_8000;
+        const HOPPER_SHADERS: u32 = 0xF0_0000;
+        for generation in [&BLACKWELL, &ADA, &AMPERE, &TURING] {
+            assert_ne!(class_word(generation) & VOLTA_LAYOUT, 0, "{}", generation.name);
+            let hopper = class_word(generation) & HOPPER_SHADERS != 0;
+            assert_eq!(hopper, generation.name == "Blackwell", "{}", generation.name);
+        }
+    }
 
     #[test]
     fn an_sm_version_nobody_has_run_refuses() {

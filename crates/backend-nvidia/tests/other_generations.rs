@@ -365,9 +365,20 @@ fn no_video_runs_and_the_record_offers_none() {
         let record = record(&started(card));
         assert!(!generation.nodes.video_runs);
         let caps: Vec<u32> = (0..4).map(|index| word(&record, LAYOUT.video_caps + index * 4)).collect();
-        assert_eq!(caps, [0; 4]);
+        assert_eq!(caps[..3], [0; 3]);
         assert_eq!(record[LAYOUT.decoder_flags], 0);
         assert_eq!(record[LAYOUT.encoder_flags], 0);
+    }
+}
+
+/// What NVIDIA's driver puts in the fourth video word on these cards, from their graphics and channel
+/// classes (the 3050 Laptop, 4080 and 1660 SUPER class lists from native card reports give the same).
+#[test]
+fn the_fourth_video_word_names_the_cards_classes_as_nvidias_driver_does() {
+    let expected = [(&FAKE_ADA, 0x8_0001), (&FAKE_AMPERE, 0x4_0001), (&FAKE_TURING, 0x8000)];
+    for (card, fourth) in expected {
+        let record = record(&started(card));
+        assert_eq!(word(&record, LAYOUT.video_caps + 12), fourth, "{:#x}", card.device);
     }
 }
 

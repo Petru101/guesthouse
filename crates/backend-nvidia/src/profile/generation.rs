@@ -27,7 +27,8 @@ pub struct EngineNodes {
     pub video_runs: bool,
 }
 
-/// The record's flags for video. All zero, the guest's video runtimes offer no decoders.
+/// The record's flags for video. All zero, the guest's video runtimes offer no decoders. The record's
+/// fourth caps word gets the bits of the generation's graphics, channel and copy classes on top.
 #[derive(Debug, PartialEq, Eq)]
 pub struct VideoRecordFlags {
     /// What the card's video engines can do, as four words. The guest's runtimes choose the
@@ -91,14 +92,9 @@ const BLACKWELL_VIDEO_ENCODER_SETUP: u32 = 1 << 24;
 const BLACKWELL_VIDEO_ENCODER: u32 = 1 << 26;
 /// With this bit of the third word clear, Direct3D 11 offers no video decoders at all.
 const BLACKWELL_VIDEO_DECODERS: u32 = 1 << 20;
-/// Without the fourth word a decoder can be made, but its first frame fails as out of memory.
-const BLACKWELL_VIDEO_FRAMES: u32 = 0x40_0030;
-const BLACKWELL_VIDEO_CAPS: [u32; 4] = [
-    BLACKWELL_VIDEO_ENCODER_SETUP,
-    BLACKWELL_VIDEO_ENCODER,
-    BLACKWELL_VIDEO_DECODERS,
-    BLACKWELL_VIDEO_FRAMES,
-];
+/// The fourth word comes from the generation's classes, as on every generation (record::build).
+const BLACKWELL_VIDEO_CAPS: [u32; 4] =
+    [BLACKWELL_VIDEO_ENCODER_SETUP, BLACKWELL_VIDEO_ENCODER, BLACKWELL_VIDEO_DECODERS, 0];
 /// Either bit is enough, and with it at zero, making a decoder fails as out of memory.
 const BLACKWELL_DECODER_FLAGS: u8 = 0x48;
 /// The byte after it, for the encoder. At zero, NVENC opens on a Direct3D 11 device and then fails
