@@ -13,6 +13,7 @@ use guesthouse_messages::allocation::{
     CACHED_FOR_CPU, CreateAllocation, CreateAllocationAnswer, DestroyAllocation, OpenResource, PRIMARY,
     SetGuestPages, lock_answer, locked_allocation,
 };
+use guesthouse_messages::priority::{self, NORMAL_PRIORITY, PriorityRequest};
 use guesthouse_messages::standard::StandardRecord;
 use guesthouse_messages::wire::{align_up, checked_align_up};
 use guesthouse_messages::{MessageHeader, Status};
@@ -216,6 +217,45 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
                 shared: allocation.guest_address.map(|address| (address, allocation.size)),
             };
             self.defer(DeferredAction::FreeAllocation(freed));
+        }
+        Ok(())
+    }
+
+    /// Keeps the priorities for the allocations named, or for the whole resource if none is. The
+    /// host's driver is left to choose what stays in video memory, so this only remembers them.
+    pub(super) fn set_allocation_priority(&mut self, message: &[u8], out: &mut Vec<u8>) -> Handled {
+        let request = PriorityRequest::parse(message)?;
+        let priorities = request.priorities()?;
+        if request.handles.is_empty() {
+            let priority = priorities.iter().next();
+            for handle in self.resources.get(&request.resource).into_iter().flatten() {
+                if let Some(allocation) = self.allocations.get_mut(handle) {
+                    allocation.priority = priority;
+                }
+            }
+        } else {
+            for (handle, priority) in request.handles.iter().zip(priorities.iter()) {
+                if let Some(allocation) = self.allocations.get_mut(&handle) {
+                    allocation.priority = Some(priority);
+                }
+            }
+        }
+        answer_status(Status::SUCCESS, out);
+        Ok(())
+    }
+
+    /// The priorities the guest set, or the normal one for what it never set. A resource alone is
+    /// answered with its first allocation's.
+    pub(super) fn get_allocation_priority(&mut self, message: &[u8], out: &mut Vec<u8>) -> Handled {
+        let request = PriorityRequest::parse(message)?;
+        let priority_of = |handle: &u32| {
+            self.allocations.get(handle).and_then(|allocation| allocation.priority).unwrap_or(NORMAL_PRIORITY)
+        };
+        if request.handles.is_empty() {
+            let first = self.resources.get(&request.resource).and_then(|members| members.first());
+            priority::answer(std::iter::once(first.map_or(NORMAL_PRIORITY, priority_of)), out);
+        } else {
+            priority::answer(request.handles.iter().map(|handle| priority_of(&handle)), out);
         }
         Ok(())
     }

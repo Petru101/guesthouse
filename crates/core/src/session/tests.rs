@@ -238,6 +238,59 @@ mod dispatch {
     }
 
     #[test]
+    fn a_command_without_a_handler_is_answered_as_not_supported_and_noted_once() {
+        let mut session = session();
+        let request = message(Command::Unknown(4242), HEADER_SIZE);
+        for _ in 0..2 {
+            assert_eq!(status_of(&send(&mut session, &request)), Status::NOT_SUPPORTED.0);
+        }
+        assert_eq!(session.unknown_commands.len(), 1);
+        assert!(session.unknown_commands.contains(&4242));
+    }
+
+    fn priority_message(command: Command, resource: u32, handles: &[u32], priorities: &[u32]) -> Vec<u8> {
+        let mut request = message(command, HEADER_SIZE + 4);
+        request.extend_from_slice(&resource.to_le_bytes());
+        request.extend_from_slice(&(handles.len() as u32).to_le_bytes());
+        for word in handles.iter().chain(priorities) {
+            request.extend_from_slice(&word.to_le_bytes());
+        }
+        request
+    }
+
+    #[test]
+    fn allocation_priorities_are_kept_and_read_back() {
+        use guesthouse_messages::priority::NORMAL_PRIORITY;
+        const SET: Command = Command::SetAllocationPriority;
+        const GET: Command = Command::GetAllocationPriority;
+        let mut session = session();
+        let (resource, first) = allocate(&mut session, private(0x1000));
+        let (_, second) = allocate(&mut session, private(0x1000));
+        let read = |session: &mut TestSession, handles: &[u32]| {
+            let answer = send(session, &priority_message(GET, resource, handles, &[]));
+            assert_eq!(status_of(&answer), SUCCESS);
+            (0..handles.len().max(1)).map(|index| u32_at(&answer, 4 + 4 * index).unwrap()).collect::<Vec<_>>()
+        };
+        assert_eq!(read(&mut session, &[first, second]), [NORMAL_PRIORITY; 2]);
+        let set = priority_message(SET, resource, &[first, second], &[0x1000_0000, 0x5000_0000]);
+        assert_eq!(send(&mut session, &set), SUCCESS.to_le_bytes());
+        assert_eq!(read(&mut session, &[first, second]), [0x1000_0000, 0x5000_0000]);
+        assert_eq!(read(&mut session, &[second, first]), [0x5000_0000, 0x1000_0000]);
+        // A resource named alone sets everything in it, and answers for its first allocation.
+        let all = priority_message(SET, resource, &[], &[0x7000_0000]);
+        assert_eq!(send(&mut session, &all), SUCCESS.to_le_bytes());
+        assert_eq!(read(&mut session, &[]), [0x7000_0000]);
+        assert_eq!(read(&mut session, &[first]), [0x7000_0000]);
+    }
+
+    #[test]
+    fn a_short_priority_request_fails() {
+        let mut session = session();
+        let short = priority_message(Command::SetAllocationPriority, 1, &[2], &[]);
+        assert_eq!(status_of(&send(&mut session, &short)), Status::UNSUCCESSFUL.0);
+    }
+
+    #[test]
     fn a_device_answers_the_queued_limit_it_was_given() {
         use guesthouse_messages::queue::{
             DEFAULT_QUEUED_PRESENT_LIMIT, GET_QUEUED_PRESENT_LIMIT, SET_QUEUED_PRESENT_LIMIT,
