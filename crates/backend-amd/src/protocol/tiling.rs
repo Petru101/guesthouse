@@ -62,6 +62,46 @@ const DISPLAY_PIXEL_BYTES: u32 = 4;
 /// A graphics block version, major and minor.
 pub type GfxVersion = (u32, u32);
 
+/// Where the tile swizzle sits in a surface's tiling number, above the swizzle mode.
+const TILE_SWIZZLE_SHIFT: u32 = 8;
+const SWIZZLE_MODE_MASK: u32 = 0xff;
+
+/// A tiled surface's layout, as this backend keeps it in a surface shape's tiling number.
+///
+/// The tile swizzle is what the guest's driver XORs into the address bits of a surface in an XOR
+/// mode, so that surfaces of the same size don't all start on the same memory channel. It is Mesa's
+/// `tile_swizzle`: a copy that walks the tiles ORs it into the surface's address, shifted by 8.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Layout {
+    pub swizzle_mode: u32,
+    pub tile_swizzle: u8,
+}
+
+impl Layout {
+    /// The tiling number for a surface shape, or `None` for a linear surface.
+    pub fn tiling(self) -> Option<u32> {
+        let mode = self.swizzle_mode & SWIZZLE_MODE_MASK;
+        (mode != SWIZZLE_LINEAR).then_some(mode | u32::from(self.tile_swizzle) << TILE_SWIZZLE_SHIFT)
+    }
+
+    /// The layout a tiling number stands for.
+    pub fn of(tiling: u32) -> Self {
+        let tile_swizzle = (tiling >> TILE_SWIZZLE_SHIFT) as u8;
+        Self { swizzle_mode: tiling & SWIZZLE_MODE_MASK, tile_swizzle }
+    }
+
+    /// The bits a copy ORs into the surface's address: the tile swizzle in the address bits it stands
+    /// for, kept inside the first block so the copy can't start past it. Zero for a mode without XOR.
+    /// GFX12 numbers its modes differently, and nothing here copies its tiles.
+    pub fn address_bits(self, gfx: GfxVersion) -> u64 {
+        if gfx.0 >= 12 || self.swizzle_mode < FIRST_XOR_MODE {
+            return 0;
+        }
+        let Some(block_bits) = block_size_bits(self.swizzle_mode, gfx) else { return 0 };
+        (u64::from(self.tile_swizzle) << TILE_SWIZZLE_SHIFT) & ((1 << block_bits) - 1)
+    }
+}
+
 /// How the host buffer for a surface is made.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HostBuffer {
@@ -265,6 +305,24 @@ mod tests {
         assert_eq!(host_buffer(0x21, (10, 3)).cpu_access, CpuAccess::Required);
         assert_eq!(tiling_info(0x1C, (12, 0)), 0);
         assert_eq!(modifier(0x1C, (12, 0), SMALL_RDNA2, None), None);
+    }
+
+    #[test]
+    fn a_layout_keeps_its_tile_swizzle_above_the_mode() {
+        let layout = Layout { swizzle_mode: SW_64KB_R_X, tile_swizzle: 0xe0 };
+        assert_eq!(layout.tiling(), Some(0xe01b));
+        assert_eq!(Layout::of(0xe01b), layout);
+        assert_eq!(Layout { swizzle_mode: 0, tile_swizzle: 0xe0 }.tiling(), None);
+    }
+
+    #[test]
+    fn the_tile_swizzle_lands_in_address_bits_inside_the_first_block() {
+        let swizzled = |swizzle_mode| Layout { swizzle_mode, tile_swizzle: 0xff };
+        assert_eq!(swizzled(SW_64KB_R_X).address_bits((10, 3)), 0xff00);
+        let four_k_r_x = 23;
+        assert_eq!(swizzled(four_k_r_x).address_bits((10, 3)), 0xf00);
+        assert_eq!(swizzled(SW_64KB_D).address_bits((10, 3)), 0);
+        assert_eq!(swizzled(SW3_256KB_2D).address_bits((12, 0)), 0);
     }
 
     #[test]

@@ -117,6 +117,8 @@ mod tests {
     use super::*;
     use guesthouse_backend::SpaceId;
 
+    const RDNA2: (u32, u32) = (10, 3);
+
     fn shape(width: u32, height: u32, pitch: u32) -> SurfaceShape {
         SurfaceShape {
             width,
@@ -214,7 +216,7 @@ mod tests {
         let tiled = SurfaceShape { tiling: Some(27), ..shape(1920, 1080, 1920) };
         let staging = slot_as_staging(&slot(tiled, 1920, 1080, 7680)).unwrap();
         assert_eq!(CopyPlan::of(&staging), None);
-        let plan = crate::sdma_copy::TiledCopy::of(&staging).unwrap();
+        let plan = crate::sdma_copy::TiledCopy::of(&staging, RDNA2).unwrap();
         assert_eq!(
             (plan.linear_address, plan.linear_pitch, plan.width, plan.height),
             (0x2000_0000, 1920, 1920, 1080)
