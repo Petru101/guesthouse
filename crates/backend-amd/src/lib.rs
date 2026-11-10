@@ -52,8 +52,8 @@ use copy_ib::CopyIb;
 use guesthouse_backend::{
     AdapterFacts, AllocationShape, Backend, BackendError, CardLabel, DriverFound, DriverSurvey, GpuRange,
     GuestBooks, HostServices, MapRequest, MemoryId, MemoryKind, PciCard, Refusal, RegistryName,
-    RegistryValue, Setup, SlotCopy, SpaceId, StagingCopy, StagingStart, Status, SurfaceShape, UnmapRequest,
-    VendorQuery, Work, WorkStart,
+    RegistryValue, Setup, SlotCopy, SpaceId, StagingCopy, StagingStart, StandardSurface, Status,
+    SurfaceShape, UnmapRequest, VendorQuery, Work, WorkStart,
 };
 use nodes::nodes;
 use run_wait::Patience;
@@ -553,6 +553,12 @@ impl Backend for AmdBackend {
 
     fn describe_allocation(&mut self, private: &[u8]) -> AllocationShape {
         protocol::allocation::shape(private)
+    }
+
+    /// AMD's user-mode driver reads a shared primary's data in its own layout when a fullscreen
+    /// program opens it, so these surfaces get the kernel driver's data, not the daemon's record.
+    fn standard_allocation_data(&mut self, surface: &StandardSurface) -> Option<Vec<u8>> {
+        Some(protocol::standard::data(surface))
     }
 
     fn allocation_data_valid(&mut self, private: &[u8]) -> bool {

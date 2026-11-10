@@ -23,5 +23,6 @@ pub mod escape;
 pub mod gpu_mmu_caps;
 pub mod guest_driver;
 pub mod hw_queue;
+pub mod standard;
 pub mod tiling;
 pub mod wddm_caps;
