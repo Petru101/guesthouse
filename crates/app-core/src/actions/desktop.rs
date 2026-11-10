@@ -30,6 +30,8 @@ pub(super) struct SessionScript {
     pub answer_seconds: u64,
 }
 
+/// What the guest says about the account it picked, so the app's log shows whose desktop was asked.
+const CONSOLE_USER_SAID: &str = "\"session user $u\";";
 const DISPLAY_SCRIPT: SessionScript = SessionScript { name: "display", patience: 25, answer_seconds: 40 };
 const SET_MODE_SCRIPT: SessionScript = SessionScript { name: "setmode", patience: 40, answer_seconds: 55 };
 const DESKTOP_ATTEMPTS: u32 = 60;
@@ -96,16 +98,27 @@ fn run_in_session(task: &Task, script: SessionScript) -> Result<String> {
     run_placed_script(task, script)
 }
 
+/// Names the account at the console in `$u`, as Windows sees it, with the machine's own account when
+/// nobody is signed in. A task for an account Windows hasn't got is registered and never runs, and a
+/// machine's record can name one: the install made another, or the account was renamed in Windows.
+/// The console user is the one whose desktop a session script has to reach, so it comes first.
+pub(super) fn console_user_script(task: &Task) -> String {
+    let user = task.machine.account();
+    format!(
+        "$u=(Get-CimInstance Win32_ComputerSystem -ea 0).UserName; if(-not $u){{$u='{user}'}}; {CONSOLE_USER_SAID}"
+    )
+}
+
 /// The script is in the guest's folder by now.
 fn run_placed_script(task: &Task, script: SessionScript) -> Result<String> {
     let SessionScript { name, patience, answer_seconds } = script;
-    let user = task.machine.account();
+    let user = console_user_script(task);
     let (file, result) = (format!("{GUEST_FOLDER}\\{name}.ps1"), format!("{GUEST_FOLDER}\\cap\\{name}.txt"));
     let arguments = format!("-NoProfile -ExecutionPolicy Bypass -File {file}");
     let run = format!(
-        "Remove-Item {result} -ea 0; \
+        "Remove-Item {result} -ea 0; {user} \
          $a=New-ScheduledTaskAction -Execute powershell.exe -Argument \"{arguments}\"; \
-         $p=New-ScheduledTaskPrincipal -UserId '{user}' -LogonType Interactive; \
+         $p=New-ScheduledTaskPrincipal -UserId $u -LogonType Interactive; \
          Register-ScheduledTask -TaskName gh{name} -Action $a -Principal $p -Force | Out-Null; \
          Start-ScheduledTask gh{name}; $t=0; \
          while(-not (Test-Path {result}) -and $t -lt {patience}){{Start-Sleep 1;$t++}}; \

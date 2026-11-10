@@ -176,6 +176,27 @@ fn a_machine_with_no_driver_gets_it_and_ends_up_on_our_display() {
 }
 
 #[test]
+fn session_tasks_go_to_the_account_at_the_console_and_to_the_record_only_when_nobody_is_there() {
+    let (mut rig, guest) = Rig::new().with(|context| Guest::new(context, "missing", INSTALLED, true));
+    rig.machine.user = "ana".to_owned();
+    fake_package(&rig.scratch, "build 1");
+    rig.run(boot_display);
+    let asked = guest.asked.lock().unwrap();
+    let from_windows = "$u=(Get-CimInstance Win32_ComputerSystem -ea 0).UserName; if(-not $u){$u='ana'};";
+    let take_over =
+        asked.iter().find(|script| script.contains("& C:\\gpupv\\idd\\install-take-over.ps1")).unwrap();
+    assert!(take_over.contains(from_windows), "{take_over}");
+    assert!(take_over.ends_with("1920 1080 144 $u"), "{take_over}");
+    let apply = asked.iter().find(|script| script.contains("ghapply-display")).unwrap();
+    assert!(apply.contains(from_windows), "{apply}");
+    assert!(apply.contains("-UserId $u -LogonType Interactive"), "{apply}");
+    assert!(
+        !asked.iter().any(|script| script.contains("-UserId 'ana'")),
+        "no task is for the record's name alone"
+    );
+}
+
+#[test]
 fn a_build_with_no_driver_stays_on_the_basic_display_and_says_so() {
     let (rig, guest) = Rig::new().with(|context| Guest::new(context, "missing", INSTALLED, true));
     let state = rig.run(boot_display);
