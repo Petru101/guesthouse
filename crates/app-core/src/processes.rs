@@ -5,6 +5,7 @@ use crate::daemon::is_own_daemon;
 use crate::held_memory::holders;
 use crate::machine::{Machine, sorted_names};
 use crate::monitor::MAIN_SOCKET;
+use crate::process_stat::Seen;
 use crate::slots;
 use crate::tasks::{read_task, task_alive, task_path};
 use crate::text::qemu_value;
@@ -28,11 +29,36 @@ fn pids(context: &Context) -> Vec<u32> {
     sorted_names(&context.processes).iter().filter_map(|name| name.parse().ok()).collect()
 }
 
-/// Every process of this install's QEMU, as its pid and its words.
-pub fn qemu_processes(context: &Context) -> Vec<(u32, Words)> {
+/// A process of this install's QEMU, with its words as they were read, once. QEMU forks for each
+/// connection the guest makes to the shared folder, and the child has QEMU's words until it starts
+/// the share's program, which it can do between two reads.
+#[derive(Debug, Clone)]
+pub struct Qemu {
+    pub seen: Seen,
+    pub words: Words,
+}
+
+impl Qemu {
+    fn names_slot(&self, context: &Context, slot: Slot) -> bool {
+        names_slot(context, &self.words, slot)
+    }
+
+    /// Whether this is the VM of `machine`.
+    pub fn runs(&self, machine: &Machine) -> bool {
+        self.words.iter().any(|word| opens_disk(word, machine))
+    }
+}
+
+/// Every process of this install's QEMU, oldest first, so a VM comes before any child it has forked.
+pub fn qemu_processes(context: &Context) -> Vec<Qemu> {
     let program = context.paths.qemu.as_os_str().as_encoded_bytes();
-    let of_pid = |pid| Some((pid, process_words(context, pid)?));
-    pids(context).into_iter().filter_map(of_pid).filter(|(_, words)| words[0] == program).collect()
+    let of_pid = |pid| {
+        let words = process_words(context, pid).filter(|words| words[0] == program)?;
+        Some(Qemu { seen: Seen::now(context, pid)?, words })
+    };
+    let mut found: Vec<Qemu> = pids(context).into_iter().filter_map(of_pid).collect();
+    found.sort_by_key(|qemu| qemu.seen);
+    found
 }
 
 fn monitor_word(context: &Context, slot: Slot) -> Vec<u8> {
@@ -50,10 +76,7 @@ fn names_slot(context: &Context, words: &Words, slot: Slot) -> bool {
 /// Finds a VM by its program and run folder.
 pub fn qemu_pid(context: &Context, slot: Option<Slot>) -> Option<u32> {
     let slot = slot.unwrap_or(context.slot);
-    qemu_processes(context)
-        .into_iter()
-        .find(|(_, words)| names_slot(context, words, slot))
-        .map(|found| found.0)
+    qemu_processes(context).into_iter().find(|qemu| qemu.names_slot(context, slot)).map(|qemu| qemu.seen.pid)
 }
 
 /// The passt a jailed QEMU of this slot was started with, by the pid and start time the launcher
@@ -69,28 +92,39 @@ pub fn passt_pid(context: &Context, slot: Option<Slot>) -> Option<u32> {
 }
 
 /// Each running VM, by slot number.
-pub fn running_slots(context: &Context) -> BTreeMap<u8, u32> {
+pub fn running_vms(context: &Context) -> BTreeMap<u8, Qemu> {
     let mut found = BTreeMap::new();
-    for (pid, words) in qemu_processes(context) {
-        for slot in slots::all() {
-            if names_slot(context, &words, slot) {
-                found.insert(slot.number(), pid);
-            }
+    for qemu in qemu_processes(context) {
+        for slot in slots::all().filter(|slot| qemu.names_slot(context, *slot)) {
+            found.entry(slot.number()).or_insert_with(|| qemu.clone());
         }
     }
     found
 }
 
+/// Each running VM's pid, by slot number.
+pub fn running_slots(context: &Context) -> BTreeMap<u8, u32> {
+    running_vms(context).into_iter().map(|(slot, qemu)| (slot, qemu.seen.pid)).collect()
+}
+
+/// The slot `machine` is running in, and its QEMU.
+pub fn running_machine(context: &Context, machine: &Machine) -> Option<(u8, Qemu)> {
+    running_vms(context).into_iter().find(|(_, qemu)| qemu.runs(machine))
+}
+
+/// Whether a QEMU seen at an earlier look is still running its VM. One that is ending has no words
+/// left while its memory is given back, which takes a while for a VM's, and its VM has stopped.
+pub fn still_running(context: &Context, qemu: Seen) -> bool {
+    let has_words = process_words(context, qemu.pid).is_some_and(|words| !words[0].is_empty());
+    has_words && qemu.is_alive(context)
+}
+
 /// Whether one of QEMU's words opens this machine's disk. A comma after the name ends it, unless it's
 /// doubled, when the name goes on and this is some other disk.
-pub(crate) fn opens_disk(word: &[u8], machine: &Machine) -> bool {
+fn opens_disk(word: &[u8], machine: &Machine) -> bool {
     let wanted = format!("file={},", qemu_value(&machine.disk)).into_bytes();
     let found = word.windows(wanted.len()).position(|part| part == wanted);
     found.is_some_and(|at| word.get(at + wanted.len()) != Some(&b','))
-}
-
-pub fn uses_disk(context: &Context, pid: u32, machine: &Machine) -> bool {
-    process_words(context, pid).is_some_and(|words| words.iter().any(|word| opens_disk(word, machine)))
 }
 
 /// Whether another VM on this PC has a slot's memory. See [`crate::held_memory`]. A daemon of ours
@@ -129,10 +163,12 @@ pub fn all_leftovers(context: &Context) -> BTreeMap<u8, u64> {
 #[cfg(test)]
 pub mod stand_in {
     use crate::context::Context;
+    use crate::process_stat::stand_in::write_stat;
     use std::fs;
 
-    /// A process with these words, and this file mapped.
+    /// A process with these words, and this file mapped. The lower its pid, the earlier it started.
     pub fn fake_process(context: &Context, pid: u32, words: &[&str], environment: &[&str], mapped: &str) {
+        write_stat(context, pid, 'S', pid.into());
         let folder = context.processes.join(pid.to_string());
         fs::create_dir_all(&folder).unwrap();
         fs::write(folder.join("cmdline"), words.join("\0") + "\0").unwrap();
@@ -278,7 +314,53 @@ mod tests {
         assert_eq!(qemu_pid(&context, Some(slots::number(2))), Some(50));
         assert_eq!(qemu_pid(&context, None), None);
         let machine = Machine::new("x", "x", "/d,e", "/v");
-        assert!(uses_disk(&context, 50, &machine));
-        assert!(!uses_disk(&context, 50, &Machine::new("y", "y", "/d", "/v")));
+        assert_eq!(
+            running_machine(&context, &machine).map(|(slot, qemu)| (slot, qemu.seen.pid)),
+            Some((2, 50))
+        );
+        assert!(running_machine(&context, &Machine::new("y", "y", "/d", "/v")).is_none());
+    }
+
+    #[test]
+    fn a_child_qemu_has_forked_is_not_taken_for_the_vm() {
+        let scratch = Scratch::new();
+        let context = scratch_context(&scratch);
+        let qemu = context.paths.qemu.display().to_string();
+        let socket = format!("unix:{}/qmp.sock,server=on", context.run_folder(None).display());
+        let words = [qemu.as_str(), "-qmp", &socket, "-drive", "file=/d,format=qcow2"];
+        fake_process(&context, 500, &words, &[], "");
+        // Pids are read as names, so this one comes first, and it started later.
+        fake_process(&context, 1000, &words, &[], "");
+        fake_process(&context, 9000, &words, &[], "");
+        crate::process_stat::stand_in::write_stat(&context, 1000, 'R', 600);
+        assert_eq!(running_slots(&context), BTreeMap::from([(0, 500)]));
+        assert_eq!(qemu_pid(&context, None), Some(500));
+        let machine = Machine::new("x", "x", "/d", "/v");
+        assert_eq!(running_machine(&context, &machine).map(|(_, qemu)| qemu.seen.pid), Some(500));
+    }
+
+    #[test]
+    fn a_qemu_seen_before_runs_until_its_words_go_or_it_ends() {
+        let scratch = Scratch::new();
+        let context = scratch_context(&scratch);
+        fake_process(&context, 500, &["anything"], &[], "");
+        let seen = Seen::now(&context, 500).unwrap();
+        assert!(still_running(&context, seen));
+        fs::write(context.processes.join("500/cmdline"), "").unwrap();
+        assert!(!still_running(&context, seen), "it's ending, and has given its words back");
+        fake_process(&context, 500, &["anything"], &[], "");
+        crate::process_stat::stand_in::write_stat(&context, 500, 'S', 900);
+        assert!(!still_running(&context, seen), "the pid is another process's now");
+    }
+
+    #[test]
+    fn a_qemu_that_has_ended_is_not_running() {
+        let scratch = Scratch::new();
+        let context = scratch_context(&scratch);
+        let qemu = context.paths.qemu.display().to_string();
+        let socket = format!("unix:{}/qmp.sock,server=on", context.run_folder(None).display());
+        fake_process(&context, 500, &[&qemu, "-qmp", &socket], &[], "");
+        crate::process_stat::stand_in::write_stat(&context, 500, 'Z', 500);
+        assert!(running_slots(&context).is_empty());
     }
 }

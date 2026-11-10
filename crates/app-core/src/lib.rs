@@ -38,6 +38,7 @@ pub mod network;
 pub mod network_settings;
 pub mod overlay;
 pub mod paths;
+pub mod process_stat;
 pub mod processes;
 pub mod random;
 pub mod screen_gpu;
