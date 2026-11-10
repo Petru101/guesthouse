@@ -94,6 +94,9 @@ pub struct DisplayState {
     /// The build went in but Windows wants a restart, so the old one is still what's running.
     #[serde(default)]
     pub restart_owed: bool,
+    /// A rate the driver doesn't ship with, which it has been given since it went in. None is 0.
+    #[serde(default)]
+    pub offered_hz: u32,
 }
 
 impl DisplayState {

@@ -25,6 +25,9 @@ const NEEDS_A_RESTART: &str = "Added driver packages:  1\nupdate True error 0 re
 const REFUSED: &str = "Added driver packages:  0\nupdate False error 5 reboot False\n";
 const ON_DRIVER: &str = "screen ours 1920x1080 144 hdr 0\n";
 const ON_BASIC: &str = "screen basic 1920x1080 64 hdr 0\n";
+const AT_180: &str = "screen ours 1920x1080 180 hdr 0\n";
+/// The settings the driver ships with.
+const SHIPPED_SETTINGS: &str = include_str!("../../../../drivers/windows-display/vdd_settings.xml");
 
 /// A guest that answers by what it's asked, so a test can say how Windows behaves.
 struct Guest {
@@ -38,6 +41,8 @@ struct Guest {
     lands_frames: AtomicBool,
     /// Files sent to the guest get lost on the way.
     loses_uploads: AtomicBool,
+    /// What the driver's control device answers, and whether Windows then shows 180 Hz.
+    control: Mutex<&'static str>,
     asked: Mutex<Vec<String>>,
 }
 
@@ -51,6 +56,7 @@ impl Guest {
             sends_frames: AtomicBool::new(sends_frames),
             lands_frames: AtomicBool::new(true),
             loses_uploads: AtomicBool::new(false),
+            control: Mutex::new("sent"),
             asked: Mutex::default(),
         })
     }
@@ -73,7 +79,13 @@ impl GuestAgent for Guest {
         if script.contains("idd\\") && self.loses_uploads.load(Ordering::Relaxed) {
             return String::new();
         }
-        if script.contains("WriteAllBytes") {
+        if script.contains("DriverControl") {
+            let answer = *self.control.lock().unwrap();
+            if answer == "sent" {
+                *self.screen.lock().unwrap() = AT_180;
+            }
+            if answer.is_empty() { String::new() } else { format!("settings saved\nmodes {answer}") }
+        } else if script.contains("WriteAllBytes") {
             let sent = script.split('\'').nth(3).and_then(base64_decode).unwrap_or_default();
             self.asked.lock().unwrap().push(String::from_utf8_lossy(&sent).into_owned());
             "file placed".to_owned()
@@ -263,6 +275,124 @@ fn what_windows_really_gave_is_kept_and_the_gap_is_said() {
     let state = rig.run(boot_display);
     assert_eq!(state.running.unwrap().hz, 144);
     assert!(state.note.contains("no mode at 1920x1080 and 200 Hz"), "{}", state.note);
+}
+
+/// What the driver was given to save, from the script that offered it a mode.
+fn offered_settings(guest: &Guest) -> String {
+    let asked = guest.asked.lock().unwrap();
+    let script = asked.iter().find(|script| script.contains("DriverControl")).unwrap();
+    let data = script.split('\'').nth(1).and_then(base64_decode).unwrap();
+    String::from_utf8(data).unwrap()
+}
+
+#[test]
+fn a_rate_the_driver_lacks_is_given_to_it_and_windows_takes_it() {
+    for action in [boot_display, apply_settings] {
+        let (mut rig, guest) = Rig::new().with(|context| Guest::new(context, "working", INSTALLED, true));
+        fake_package(&rig.scratch, "build 1");
+        rig.say_this_build_is_in("build 1");
+        rig.scratch.write("program/display-driver/vdd_settings.xml", SHIPPED_SETTINGS);
+        rig.machine.refresh_hz = 180;
+        let state = rig.run(action);
+        assert_eq!(guest.asked_for("DriverControl"), 1);
+        assert_eq!(guest.asked_for("x1080x180,"), 1, "the command has the new mode");
+        assert!(offered_settings(&guest).contains("<g_refresh_rate>180</g_refresh_rate>"));
+        assert_eq!(guest.asked_for("$modeWait = 15"), 1, "Windows gets time to show it");
+        assert_eq!(guest.asked_for("$t -lt 60"), 1, "and the script that long to answer");
+        assert_eq!(state.running.unwrap().hz, 180);
+        assert_eq!(state.note, "");
+    }
+}
+
+#[test]
+fn only_a_wait_for_a_new_mode_makes_the_apply_longer() {
+    let (rig, guest) = Rig::new().with(|context| Guest::new(context, "working", INSTALLED, true));
+    fake_package(&rig.scratch, "build 1");
+    rig.say_this_build_is_in("build 1");
+    rig.scratch.write("program/display-driver/vdd_settings.xml", SHIPPED_SETTINGS);
+    rig.run(boot_display);
+    assert_eq!(guest.asked_for("$modeWait = 0"), 1);
+    assert_eq!(guest.asked_for("$t -lt 45"), 1);
+    assert_eq!(guest.asked_for("$t -lt 60"), 0);
+}
+
+#[test]
+fn a_rate_is_offered_once_and_again_after_the_driver_goes_in_anew() {
+    let (mut rig, guest) = Rig::new().with(|context| Guest::new(context, "working", INSTALLED, true));
+    fake_package(&rig.scratch, "build 1");
+    rig.say_this_build_is_in("build 1");
+    rig.scratch.write("program/display-driver/vdd_settings.xml", SHIPPED_SETTINGS);
+    // The driver takes the modes, and Windows still shows none at this rate.
+    *guest.control.lock().unwrap() = "sent, and Windows shows nothing new";
+    rig.machine.refresh_hz = 180;
+    for _ in 0..2 {
+        let state = rig.run(boot_display);
+        assert_eq!(state.offered_hz, 180);
+        assert!(state.note.contains("no mode at 1920x1080 and 180 Hz"), "{}", state.note);
+    }
+    assert_eq!(guest.asked_for("DriverControl"), 1, "the second start asks nothing more of the driver");
+    assert_eq!(guest.asked_for("$modeWait = 15"), 1);
+    fake_package(&rig.scratch, "build 2");
+    rig.scratch.write("program/display-driver/vdd_settings.xml", SHIPPED_SETTINGS);
+    assert_eq!(rig.run(boot_display).package, "build 2");
+    assert_eq!(guest.asked_for("DriverControl"), 2, "its install put the shipped settings back");
+}
+
+#[test]
+fn an_offer_the_guest_never_answered_is_made_again() {
+    let (mut rig, guest) = Rig::new().with(|context| Guest::new(context, "working", INSTALLED, true));
+    fake_package(&rig.scratch, "build 1");
+    rig.say_this_build_is_in("build 1");
+    rig.scratch.write("program/display-driver/vdd_settings.xml", SHIPPED_SETTINGS);
+    *guest.control.lock().unwrap() = "";
+    rig.machine.refresh_hz = 180;
+    assert_eq!(rig.run(apply_settings).offered_hz, 0);
+    *guest.control.lock().unwrap() = "sent";
+    assert_eq!(rig.run(apply_settings).running.unwrap().hz, 180);
+    assert_eq!(guest.asked_for("DriverControl"), 2);
+}
+
+#[test]
+fn a_driver_that_has_sent_no_picture_is_not_asked_to_take_its_monitor_away() {
+    let clock = Arc::new(FakeClock::default());
+    let (mut rig, guest) = Rig::new().with(|context| Guest::new(context, "working", INSTALLED, false));
+    rig.context.clock = clock;
+    fake_package(&rig.scratch, "build 1");
+    rig.say_this_build_is_in("build 1");
+    rig.scratch.write("program/display-driver/vdd_settings.xml", SHIPPED_SETTINGS);
+    rig.machine.refresh_hz = 180;
+    let state = rig.run(apply_settings);
+    assert_eq!(guest.asked_for("DriverControl"), 0);
+    assert_eq!(state.offered_hz, 0, "it's offered once there's a picture");
+    assert_eq!(state.note, NOT_CONFIRMED);
+}
+
+#[test]
+fn a_rate_the_driver_has_is_not_given_again() {
+    let (rig, guest) = Rig::new().with(|context| Guest::new(context, "working", INSTALLED, true));
+    fake_package(&rig.scratch, "build 1");
+    rig.say_this_build_is_in("build 1");
+    rig.scratch.write("program/display-driver/vdd_settings.xml", SHIPPED_SETTINGS);
+    *guest.screen.lock().unwrap() = "screen ours 1920x1080 60 hdr 0\n";
+    let state = rig.run(apply_settings);
+    assert_eq!(guest.asked_for("DriverControl"), 0, "144 Hz is one it ships with");
+    assert!(state.note.contains("no mode at 1920x1080 and 144 Hz"), "{}", state.note);
+}
+
+#[test]
+fn a_driver_that_cant_be_told_keeps_the_rate_for_its_next_start_and_the_gap_is_said() {
+    let (mut rig, guest) = Rig::new().with(|context| Guest::new(context, "working", INSTALLED, true));
+    fake_package(&rig.scratch, "build 1");
+    rig.say_this_build_is_in("build 1");
+    rig.scratch.write("program/display-driver/vdd_settings.xml", SHIPPED_SETTINGS);
+    *guest.control.lock().unwrap() = "not opened, error 5";
+    rig.machine.refresh_hz = 180;
+    let state = rig.run(apply_settings);
+    assert!(offered_settings(&guest).contains("<g_refresh_rate>180</g_refresh_rate>"));
+    assert_eq!(guest.asked_for("$modeWait = 15"), 0, "nothing new to wait for");
+    assert_eq!(state.running.unwrap().hz, 144);
+    assert!(state.note.contains("no mode at 1920x1080 and 180 Hz"), "{}", state.note);
+    assert!(crate::log::read_log(&rig.context).contains("modes not opened, error 5"));
 }
 
 #[test]
