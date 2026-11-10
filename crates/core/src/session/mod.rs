@@ -29,10 +29,10 @@ use crate::tables::{Allocation, Mapping, Queue, ReservedRange};
 use crate::timing::Timings;
 use copies::{CopyJob, Parked};
 use guesthouse_backend::{
-    Backend, BackendError, GuestMemory, GuestSpan, HostServices, MemoryError, PagesView, SharedSpan, SpaceId,
+    AllocationShape, Backend, BackendError, GuestMemory, GuestSpan, HostServices, MemoryError, PagesView,
+    SharedSpan, SpaceId,
 };
 use guesthouse_messages::notice::Notice;
-use guesthouse_messages::standard::StandardRecord;
 use guesthouse_messages::wire::{Malformed, put_u32};
 use guesthouse_messages::{Command, MessageHeader, Status};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -134,7 +134,7 @@ pub struct Session<B, M> {
     pub(crate) allocations: HashMap<u32, Allocation>,
     /// The vendor's private data given for the guest kernel's own surfaces, newest last, so that
     /// a creation that hands it back is known for one of them.
-    pub(crate) standard_data: VecDeque<(Vec<u8>, StandardRecord)>,
+    pub(crate) standard_data: VecDeque<(Vec<u8>, AllocationShape)>,
     pub(crate) resources: HashMap<u32, Vec<u32>>,
     /// Users of a resource, when more than the process that made it.
     pub(crate) resource_users: HashMap<u32, u32>,

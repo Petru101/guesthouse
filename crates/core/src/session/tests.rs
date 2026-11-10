@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::{FENCE_AREA, MemoryLimits, Waiting};
+use guesthouse_backend::{MemoryKind, SurfaceShape};
 use guesthouse_backend_standin::{REGISTRY_NAME, SparseMemory, StandIn, VENDOR_ANSWER, VENDOR_ONLY_QUERY};
 use guesthouse_messages::adapter::AdapterQuery;
 use guesthouse_messages::allocation::{CACHED_FOR_CPU, PRIMARY};
@@ -586,6 +587,43 @@ mod allocations {
         let reply = send(&mut session, &create_message(0, &[given]));
         assert_eq!(status_of(&reply), SUCCESS);
         assert_eq!(u64_at(&reply, 0x20), Ok(0x10000));
+    }
+
+    #[test]
+    fn a_standard_surface_the_vendor_lays_out_is_made_in_its_shape() {
+        let mut session = session();
+        let vendor_data = vec![0xA5; 0x24A];
+        session.backend_mut().standard_data = Some(vendor_data.clone());
+        let tiled = SurfaceShape {
+            width: 100,
+            height: 10,
+            format: 21,
+            pitch: 512,
+            tiling: Some(4),
+            refresh: (0, 0),
+            samples: (1, 0),
+            colour: 0,
+        };
+        let shape = AllocationShape {
+            size: 0x20000,
+            exact_size: 0x10000,
+            surface: Some(tiled),
+            gpu_cached: false,
+            kind: MemoryKind::PLAIN,
+        };
+        session.backend_mut().standard_shape = Some(shape);
+        let mut describe = message(Command::DescribeStandardAllocation, 0x40);
+        set_u32(&mut describe, 0x18, 1);
+        set_u32(&mut describe, 0x1C, 0x24A);
+        set_u32(&mut describe, 0x28, 100);
+        set_u32(&mut describe, 0x2C, 10);
+        let given = send(&mut session, &describe)[36..36 + 0x24A].to_vec();
+        let reply = send(&mut session, &create_message(0, &[given]));
+        assert_eq!(status_of(&reply), SUCCESS);
+        assert_eq!(u64_at(&reply, 0x20), Ok(0x20000));
+        let allocation =
+            session.allocations.values().find(|allocation| allocation.surface.is_some()).unwrap();
+        assert_eq!(allocation.surface.unwrap().tiling, Some(4));
     }
 
     #[test]

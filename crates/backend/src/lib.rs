@@ -103,6 +103,12 @@ pub trait Backend: Sized {
         None
     }
 
+    /// The shape of a standard surface the vendor gave its own data for, when the vendor's drivers
+    /// lay it out their own way. `None` keeps rows in order.
+    fn standard_allocation_shape(&mut self, _surface: &StandardSurface) -> Option<AllocationShape> {
+        None
+    }
+
     /// Whether the vendor's kernel driver would take an allocation's private data. If any allocation
     /// in a call wouldn't be taken, the whole call fails, as nothing has been made yet.
     fn allocation_data_valid(&mut self, _private: &[u8]) -> bool {

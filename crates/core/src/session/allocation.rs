@@ -51,18 +51,19 @@ fn standard_shape(record: &StandardRecord) -> AllocationShape {
 
 impl<B: Backend, M: GuestMemory> Session<B, M> {
     fn shape_of(&mut self, private: &[u8]) -> AllocationShape {
-        match self.standard_record(private) {
-            Some(record) => standard_shape(&record),
+        match self.standard_shape_of(private) {
+            Some(shape) => shape,
             None => self.backend.describe_allocation(private),
         }
     }
 
-    /// The record of a standard surface, if `private` describes one: the daemon's own record, or
+    /// The shape of a standard surface, if `private` describes one: the daemon's own record, or
     /// the vendor's data the core handed out for it.
-    fn standard_record(&self, private: &[u8]) -> Option<StandardRecord> {
-        StandardRecord::parse(private).or_else(|| {
+    fn standard_shape_of(&self, private: &[u8]) -> Option<AllocationShape> {
+        let ours = StandardRecord::parse(private).map(|record| standard_shape(&record));
+        ours.or_else(|| {
             let mut given = self.standard_data.iter().rev();
-            given.find(|(data, _)| data.as_slice() == private).map(|&(_, record)| record)
+            given.find(|(data, _)| data.as_slice() == private).map(|&(_, shape)| shape)
         })
     }
 
@@ -74,10 +75,12 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         let vendor_data = self.backend.standard_allocation_data(&surface);
         request.answer(vendor_data.as_deref(), out);
         if let Some(data) = vendor_data {
+            let shape = self.backend.standard_allocation_shape(&surface);
+            let shape = shape.unwrap_or_else(|| standard_shape(&surface.record()));
             if self.standard_data.len() == STANDARD_DATA_KEPT {
                 self.standard_data.pop_front();
             }
-            self.standard_data.push_back((data, surface.record()));
+            self.standard_data.push_back((data, shape));
         }
         Ok(())
     }
@@ -122,7 +125,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             request.entries().map(|entry| self.shape_of(entry.private)).collect();
         // All of it or none, as nothing has been made yet that would need taking back.
         let refused = request.entries().any(|entry| {
-            self.standard_record(entry.private).is_none()
+            self.standard_shape_of(entry.private).is_none()
                 && !self.backend.allocation_data_valid(entry.private)
         });
         if refused {
@@ -190,7 +193,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             }
             let private_at = out.len();
             out.extend_from_slice(entry.private);
-            if self.standard_record(entry.private).is_none() {
+            if self.standard_shape_of(entry.private).is_none() {
                 self.backend.finish_allocation_data(&mut out[private_at..], shape.size);
             }
             self.allocations.insert(handle, allocation);
