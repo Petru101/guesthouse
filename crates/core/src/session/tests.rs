@@ -822,6 +822,24 @@ mod allocations {
         lock(&mut session, again);
         assert_eq!(session.backend().preserved.len(), 1);
     }
+
+    #[test]
+    fn contents_move_once_work_has_run_to_the_end_before_its_answer() {
+        let mut session = session();
+        session.backend_mut().run_work = true;
+        session.backend_mut().run_work_at_once = true;
+        let (_, before) = allocate(&mut session, private(0x1000));
+        map(&mut session, before, 0, 0, 0);
+        let context = create_context(&mut session, 0);
+        let (queue, _, _) = create_queue(&mut session, context);
+        lock(&mut session, before);
+        assert!(session.backend().preserved.is_empty(), "nothing has run, so nothing was written");
+        let (_, written) = allocate(&mut session, private(0x1000));
+        map(&mut session, written, 0, 0, 0);
+        submit(&mut session, queue, 1);
+        assert_eq!(lock(&mut session, written).0, Status::SUCCESS.0);
+        assert_eq!(session.backend().preserved.len(), 1);
+    }
 }
 
 mod mappings {

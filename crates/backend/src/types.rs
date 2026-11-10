@@ -268,6 +268,9 @@ pub struct Work<'a> {
 pub enum WorkStart {
     /// Nothing will reach the GPU, so the core must complete the fence itself.
     Finished,
+    /// The work ran on the GPU and has retired already, as with a backend whose submission waits. The
+    /// core completes the fence itself, as for [`WorkStart::Finished`].
+    Ran,
     /// The GPU now owns the fence, once [`crate::Backend::ring_doorbell`] gets `doorbell`. `work`
     /// says how much was added, in the units of [`crate::Backend::unfinished_work_limit`].
     Started { doorbell: u64, work: u32 },

@@ -177,7 +177,8 @@ pub trait Backend: Sized {
     }
 
     /// Prepares work without letting it run. [`WorkStart::Finished`] says nothing reached the GPU,
-    /// and the backend has done what the guest would otherwise wait for, except the queue's fence.
+    /// and [`WorkStart::Ran`] that it all ran already. Either way the backend has done what the guest
+    /// would otherwise wait for, except the queue's fence.
     fn start_work(&mut self, host: &mut dyn HostServices, work: &Work<'_>) -> WorkStart;
 
     /// Lets prepared work run. The core delays this while a queue waits on a fence. A backend whose
