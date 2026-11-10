@@ -1,6 +1,6 @@
 //! Installing Windows: the answer disc, the wait for setup, and the check of what it made.
 
-use super::amd_files::complete_host_driver;
+use super::complete_host_driver;
 use super::desktop::{BOOT_LINE, SERIAL_FILE, count, wait_for_desktop};
 use super::identity::set_up_identity;
 use super::{KEY_POLL, Task, plan_for, start_if_there_is_room};
