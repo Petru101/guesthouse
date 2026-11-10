@@ -48,6 +48,9 @@ pub struct Allocation {
     pub surface: Option<SurfaceShape>,
     /// How its video memory is laid out, so memory made again for it is the same.
     pub kind: MemoryKind,
+    /// The residency priority the guest set, if it has. Nothing here acts on it: the host's
+    /// driver decides what stays in video memory.
+    pub priority: Option<u32>,
 }
 
 impl Allocation {

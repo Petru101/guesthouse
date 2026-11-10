@@ -14,6 +14,7 @@ mod command;
 mod header;
 pub mod indirect;
 pub mod notice;
+pub mod priority;
 pub mod queue;
 pub mod registry;
 pub mod standard;

@@ -380,6 +380,8 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             Some(C::DescribeStandardAllocation) => guesthouse_messages::standard::describe(message, out)?,
             Some(C::OpenResource) => self.open_resource(message, out)?,
             Some(C::LockForCpu) => self.lock_for_cpu(message, out)?,
+            Some(C::SetAllocationPriority) => self.set_allocation_priority(message, out)?,
+            Some(C::GetAllocationPriority) => self.get_allocation_priority(message, out)?,
             Some(C::SetGuestPages) => self.set_guest_pages(message, out)?,
 
             Some(C::MapGpuAddresses) => self.map_gpu_addresses(message, out)?,
