@@ -10,6 +10,8 @@ use std::fs;
 use std::io;
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
+use std::thread;
+use std::time::{Duration, Instant};
 
 const DRM_CLASS_FOLDER: &str = "/sys/class/drm";
 const DRM_DEVICE_FOLDER: &str = "/dev/dri";
@@ -112,20 +114,96 @@ pub fn get64(bytes: &[u8], at: usize) -> u64 {
     u64::from_le_bytes(bytes[at..at + 8].try_into().expect("eight bytes"))
 }
 
-/// A DRM ioctl against an open file, tried again if a signal cuts it short, as DRM's own library
-/// does. The request buffer is the size the number says, and the kernel writes only inside it.
+/// How long a call amdgpu answers with "try again" keeps being tried before its caller hears it.
+/// amdgpu says that to a submission when the pages of a buffer it lists moved while it was being
+/// checked, and the next try goes through, which is why DRM's own library tries again without a
+/// limit. The limit only stops a call that never goes through from holding the daemon for ever.
+const TRY_AGAIN_FOR: Duration = Duration::from_millis(500);
+
+/// A DRM ioctl against an open file. It is tried again if a signal cuts it short or amdgpu says try
+/// again, as DRM's own library does. If amdgpu still says try again after [`TRY_AGAIN_FOR`], the
+/// error comes back with the kind `WouldBlock`, and nothing was done. The request buffer is the size
+/// the number says, and the kernel writes only inside it.
 pub fn drm_ioctl(file: &impl AsRawFd, ioctl: u64, request: &mut [u8]) -> io::Result<()> {
-    loop {
+    let pointer = request.as_mut_ptr();
+    let call = || {
         // SAFETY: the request is a live buffer of the size the ioctl number carries, and the kernel
         // reads and writes only inside it.
-        let result = unsafe { libc::ioctl(file.as_raw_fd(), ioctl as _, request.as_mut_ptr()) };
-        if result >= 0 {
-            return Ok(());
+        let result = unsafe { libc::ioctl(file.as_raw_fd(), ioctl as _, pointer) };
+        if result >= 0 { Ok(()) } else { Err(io::Error::last_os_error()) }
+    };
+    let tried = try_until_taken(call, TRY_AGAIN_FOR);
+    match &tried.result {
+        Ok(()) if tried.refusals > 0 => log::info!(
+            "amdgpu said try again {} times to {}, and took it on the next try",
+            tried.refusals,
+            what(ioctl)
+        ),
+        Err(error) if error.kind() == io::ErrorKind::WouldBlock => log::warn!(
+            "amdgpu said try again {} times to {} in {} ms, so it waits for later",
+            tried.refusals,
+            what(ioctl),
+            TRY_AGAIN_FOR.as_millis()
+        ),
+        _ => {}
+    }
+    tried.result
+}
+
+/// What came of a call, and how many times it was refused for now on the way.
+#[derive(Debug)]
+struct Tried {
+    result: io::Result<()>,
+    refusals: u32,
+}
+
+/// Makes `call` until it goes through or fails for good. A signal cutting it short doesn't count,
+/// and a "try again" is tried again for up to `patience`.
+fn try_until_taken(mut call: impl FnMut() -> io::Result<()>, patience: Duration) -> Tried {
+    let mut refusals = 0;
+    let mut first_refusal = None;
+    loop {
+        let error = match call() {
+            Ok(()) => return Tried { result: Ok(()), refusals },
+            Err(error) => error,
+        };
+        match error.kind() {
+            io::ErrorKind::Interrupted => continue,
+            io::ErrorKind::WouldBlock => {
+                refusals += 1;
+                let since = *first_refusal.get_or_insert_with(Instant::now);
+                if since.elapsed() >= patience {
+                    return Tried { result: Err(error), refusals };
+                }
+                // What amdgpu waits for is another thread finishing with the pages, so let it run.
+                thread::yield_now();
+            }
+            _ => return Tried { result: Err(error), refusals },
         }
-        let error = io::Error::last_os_error();
-        if error.kind() != io::ErrorKind::Interrupted {
-            return Err(error);
-        }
+    }
+}
+
+/// A call's name for the log.
+fn what(ioctl: u64) -> String {
+    let names = [
+        (call::cs(), "a submission"),
+        (call::gem_create(), "a new buffer"),
+        (call::gem_userptr(), "a buffer over guest memory"),
+        (call::gem_mmap(), "a CPU mapping"),
+        (call::gem_va(), "a GPU mapping"),
+        (call::gem_metadata(), "a buffer's metadata"),
+        (call::gem_close(), "a buffer's close"),
+        (call::ctx(), "a context call"),
+        (call::info(), "a query"),
+        (call::prime_handle_to_fd(), "a buffer export"),
+        (call::prime_fd_to_handle(), "a buffer import"),
+        (call::syncobj_create(), "a new sync object"),
+        (call::syncobj_destroy(), "a sync object's close"),
+        (call::syncobj_eventfd(), "a sync object's eventfd"),
+    ];
+    match names.iter().find(|(number, _)| *number == ioctl) {
+        Some((_, name)) => (*name).into(),
+        None => format!("ioctl {ioctl:#x}"),
     }
 }
 
@@ -167,6 +245,64 @@ mod tests {
     use super::*;
     use std::os::unix::fs::symlink;
     use std::{env, process};
+
+    fn refused(times: u32, then: io::Result<()>) -> impl FnMut() -> io::Result<()> {
+        let mut left = times;
+        let mut then = Some(then);
+        move || {
+            if left > 0 {
+                left -= 1;
+                return Err(io::Error::from_raw_os_error(libc::EAGAIN));
+            }
+            then.take().expect("called once more")
+        }
+    }
+
+    #[test]
+    fn a_call_refused_for_now_goes_through_on_a_later_try() {
+        let tried = try_until_taken(refused(6, Ok(())), Duration::from_secs(5));
+        assert!(tried.result.is_ok());
+        assert_eq!(tried.refusals, 6);
+    }
+
+    #[test]
+    fn a_call_refused_past_the_patience_comes_back_as_would_block() {
+        let always = || Err(io::Error::from_raw_os_error(libc::EAGAIN));
+        let tried = try_until_taken(always, Duration::from_millis(20));
+        assert_eq!(tried.result.unwrap_err().kind(), io::ErrorKind::WouldBlock);
+        assert!(tried.refusals > 1);
+    }
+
+    #[test]
+    fn a_signal_is_tried_again_and_isnt_a_refusal() {
+        let mut cut_short = true;
+        let call = || {
+            if std::mem::take(&mut cut_short) {
+                return Err(io::Error::from_raw_os_error(libc::EINTR));
+            }
+            Ok(())
+        };
+        let tried = try_until_taken(call, Duration::ZERO);
+        assert!(tried.result.is_ok());
+        assert_eq!(tried.refusals, 0);
+    }
+
+    #[test]
+    fn any_other_error_comes_back_at_once() {
+        let tried = try_until_taken(
+            refused(2, Err(io::Error::from_raw_os_error(libc::EINVAL))),
+            Duration::from_secs(5),
+        );
+        assert_eq!(tried.result.unwrap_err().raw_os_error(), Some(libc::EINVAL));
+        assert_eq!(tried.refusals, 2);
+    }
+
+    #[test]
+    fn the_log_names_a_call_in_words() {
+        assert_eq!(what(call::cs()), "a submission");
+        assert_eq!(what(call::gem_userptr()), "a buffer over guest memory");
+        assert_eq!(what(0x1234), "ioctl 0x1234");
+    }
 
     #[test]
     fn ioctl_numbers_follow_the_kernels_encoding() {

@@ -24,6 +24,7 @@ mod memory;
 mod moves;
 mod nodes;
 pub mod protocol;
+mod run_wait;
 mod screen_copy;
 mod sdma_copy;
 mod space_vm;
@@ -55,10 +56,12 @@ use guesthouse_backend::{
     VendorQuery, Work, WorkStart,
 };
 use nodes::nodes;
+use run_wait::Patience;
 use screen_copy::{CopyPlan, PIXEL_BYTES};
 use sdma_copy::{LinearCopy, TiledCopy};
 use space_vm::{Origin, Ran, SpaceVm};
 use std::collections::{BTreeMap, HashMap};
+use std::io;
 use std::os::fd::OwnedFd;
 use std::time::Instant;
 use submit::Ib;
@@ -66,9 +69,6 @@ use submit::Ib;
 /// How this backend names the host driver's branch. There is no Windows-style branch here: the host
 /// side is the Linux kernel's amdgpu.
 const HOST_BRANCH: &str = "amdgpu";
-/// How long a submission may run before the daemon stops waiting for it. A frame's work takes a
-/// few milliseconds; a run this long is a stuck one, and the kernel resets the card's queue first.
-const RUN_WAIT_MS: i32 = 2000;
 /// The CPU maps whole pages.
 const PAGE_BYTES: usize = 4096;
 
@@ -100,6 +100,8 @@ pub struct AmdBackend {
     cpu_views: HashMap<GemHandle, Mapping>,
     /// The DMA engine's commands for copies of tiled surfaces, made at the first.
     copy_ib: Option<CopyIb>,
+    /// How long the next run is waited for, which is less after one that hung.
+    patience: Patience,
 }
 
 impl std::fmt::Debug for AmdBackend {
@@ -123,6 +125,7 @@ impl AmdBackend {
             spaces: HashMap::new(),
             cpu_views: HashMap::new(),
             copy_ib: None,
+            patience: Patience::RUN,
         })
     }
 
@@ -193,10 +196,22 @@ impl AmdBackend {
             ib.mapped_in = Some(space);
         }
         let bytes = ib.write(commands).map_err(|error| error.to_string())?;
-        match space_vm.run(HW_IP_DMA, &[Ib { address: copy_ib::ADDRESS, bytes }], RUN_WAIT_MS) {
+        let ran = space_vm.run(HW_IP_DMA, &[Ib { address: copy_ib::ADDRESS, bytes }], self.patience);
+        self.note_how_it_ran(&ran);
+        match ran {
             Ok(Ran::Retired) => Ok(()),
-            Ok(Ran::StillRunning) => Err(format!("still running after {RUN_WAIT_MS} ms")),
+            Ok(Ran::Refused) => Err("amdgpu kept saying try again".into()),
+            Ok(Ran::Hung) => Err("it never finished".into()),
             Err(error) => Err(error.to_string()),
+        }
+    }
+
+    /// Keeps the patience for the next run in step with how this one ended.
+    fn note_how_it_ran(&mut self, ran: &io::Result<Ran>) {
+        match ran {
+            Ok(Ran::Retired) => self.patience = Patience::RUN,
+            Ok(Ran::Hung) => self.patience = Patience::AFTER_A_HANG,
+            Ok(Ran::Refused) | Err(_) => {}
         }
     }
 
@@ -677,12 +692,20 @@ impl Backend for AmdBackend {
             return WorkStart::QueueFailed;
         }
         log::debug!("run on engine family {} in space {:?}: {:x?}", node.ip_type, work.space, ibs);
-        // The run is waited for here, so the core then completes the fence itself. A completion that
-        // arrives on its own, as amdgpu's eventfd allows, would free this thread.
-        match space.vm.run(node.ip_type, &ibs, RUN_WAIT_MS) {
+        // The run is waited for here, so the core then completes the fence itself. A
+        // completion that arrives on its own, as amdgpu's eventfd allows, would free this thread.
+        let ran = space.vm.run(node.ip_type, &ibs, self.patience);
+        self.note_how_it_ran(&ran);
+        match ran {
             Ok(Ran::Retired) => WorkStart::Ran,
-            Ok(Ran::StillRunning) => {
-                log::warn!("work on engine family {} still running after {RUN_WAIT_MS} ms", node.ip_type);
+            // Nothing ran, so the guest's submission waits and comes again, and the guest never
+            // hears of it.
+            Ok(Ran::Refused) => WorkStart::Busy,
+            Ok(Ran::Hung) => {
+                log::error!(
+                    "work on engine family {} never finished, and the kernel didn't reset it",
+                    node.ip_type
+                );
                 WorkStart::QueueFailed
             }
             Err(error) => {

@@ -5,16 +5,16 @@ use crate::failure::{Failure, Result};
 use crate::library::unused_mac;
 use crate::machine::{Kind, Machine, load_all};
 use crate::network::{self, Forward, InUse, Mode, Protocol};
-use crate::processes::{opens_disk, qemu_processes, running_slots, uses_disk};
+use crate::processes::{qemu_processes, running_vms};
 use crate::slots;
 use std::collections::BTreeMap;
 
 /// The machines running in other slots, as far as the library knows them.
 pub fn other_machines(context: &Context) -> Vec<Machine> {
     let own = context.slot.number();
-    let pids: Vec<u32> =
-        running_slots(context).into_iter().filter(|(slot, _)| *slot != own).map(|found| found.1).collect();
-    let is_running = |machine: &Machine| pids.iter().any(|pid| uses_disk(context, *pid, machine));
+    let others: Vec<_> =
+        running_vms(context).into_iter().filter(|(slot, _)| *slot != own).map(|found| found.1).collect();
+    let is_running = |machine: &Machine| others.iter().any(|qemu| qemu.runs(machine));
     load_all(context).0.into_iter().filter(is_running).collect()
 }
 
@@ -134,9 +134,8 @@ pub fn network_start_problems(context: &Context, machine: &Machine, others: &[Ma
 /// settings say now: they can change while it runs, and passt can be removed.
 pub fn network_in_use(context: &Context, machine: &Machine) -> Option<InUse> {
     let processes = qemu_processes(context);
-    let opens = |word: &Vec<u8>| opens_disk(word, machine);
-    let (_, words) = processes.iter().find(|(_, words)| words.iter().any(opens))?;
-    network::in_use_of(words)
+    let qemu = processes.iter().find(|qemu| qemu.runs(machine))?;
+    network::in_use_of(&qemu.words)
 }
 
 #[cfg(test)]

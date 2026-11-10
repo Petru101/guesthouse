@@ -149,6 +149,11 @@ pub fn write_state(context: &Context, machine: &Machine, state: &IdentityState) 
     write_json(&state_file(context, machine), state)
 }
 
+/// For a new Windows on this machine's disk: what the old one had taken in is gone with it.
+pub fn forget_state(context: &Context, machine: &Machine) {
+    let _ = fs::remove_file(state_file(context, machine));
+}
+
 /// The identity this machine's next start shows.
 pub fn shown_identity(context: &Context, machine: &Machine) -> PciIdentity {
     read_state(context, machine).shown.identity(machine)

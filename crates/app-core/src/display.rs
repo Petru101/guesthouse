@@ -94,6 +94,9 @@ pub struct DisplayState {
     /// The build went in but Windows wants a restart, so the old one is still what's running.
     #[serde(default)]
     pub restart_owed: bool,
+    /// A rate the driver doesn't ship with, which it has been given since it went in. None is 0.
+    #[serde(default)]
+    pub offered_hz: u32,
 }
 
 impl DisplayState {
@@ -116,6 +119,11 @@ pub fn read_state(context: &Context, machine: &Machine) -> DisplayState {
 
 pub fn write_state(context: &Context, machine: &Machine, state: &DisplayState) -> Result<()> {
     write_json(&state_file(context, machine), state)
+}
+
+/// For a new Windows on this machine's disk: the old one's driver went with it.
+pub fn forget_state(context: &Context, machine: &Machine) {
+    let _ = fs::remove_file(state_file(context, machine));
 }
 
 /// The settings have changed, so what was said about the old ones no longer holds.

@@ -64,30 +64,35 @@ fn stated_size(layout: &AllocationLayout, data: &[u8]) -> u32 {
     }
 }
 
+/// What a request asks for, before an image's shape or page rounding count: the size field, or
+/// when that is empty, the part of a block it wants. Also says whether the request is one piece of
+/// a bigger block.
+fn requested_size(layout: &AllocationLayout, data: &[u8]) -> (u64, bool) {
+    let size = stated_size(layout, data);
+    if size != 0 {
+        return (u64::from(size), false);
+    }
+    // A block of a pool has its total in one field and what this request wants in another. The
+    // driver takes the answer's size off and asks again.
+    let (whole, asked) = (word(data, layout.whole_size), word(data, layout.asked_size));
+    let (mips, limit) = (word(data, layout.mip_levels), word(data, layout.size_limit));
+    if asked != 0 && asked <= whole && mips == 0 && limit == 0 {
+        return (u64::from(asked), asked < whole);
+    }
+    match word(data, layout.fallback_size) {
+        0 => (DEFAULT_SIZE, false),
+        fallback => (u64::from(fallback), false),
+    }
+}
+
 /// The size of an allocation in video memory.
 pub fn allocation_size(layout: &AllocationLayout, data: &[u8]) -> u64 {
     if !is_ours(layout, data) || data.len() < layout.size + 4 {
         return DEFAULT_SIZE;
     }
-    let mut size = u64::from(stated_size(layout, data));
+    let (mut size, one_piece) = requested_size(layout, data);
     let (depth, mips, layers) =
         (word(data, layout.depth), word(data, layout.depth + 4), word(data, layout.depth + 8));
-    let mut one_piece = false;
-    if size == 0 {
-        // A block of a pool has its total in one field and what this request wants in another. The
-        // driver takes the answer's size off and asks again.
-        let (whole, asked) = (word(data, layout.whole_size), word(data, layout.asked_size));
-        let limit = word(data, layout.size_limit);
-        size = if asked != 0 && asked <= whole && mips == 0 && limit == 0 {
-            one_piece = asked < whole;
-            u64::from(asked)
-        } else {
-            match word(data, layout.fallback_size) {
-                0 => DEFAULT_SIZE,
-                fallback => u64::from(fallback),
-            }
-        };
-    }
     // The size field covers the first mip level only. The total covers them all, but buffers can
     // hold something else there, which is never whole pages.
     let total = u64::from(word(data, layout.total_size));
@@ -115,13 +120,12 @@ pub fn allocation_size(layout: &AllocationLayout, data: &[u8]) -> u64 {
     round_up(size, if size >= BIG_PAGE { BIG_PAGE } else { SMALL_PAGE })
 }
 
-/// The size of an allocation in the guest's own memory, with no rounding.
+/// The size of an allocation in the guest's own memory, with no rounding. The guest locks this
+/// much and the GPU reaches only this much, so it has to cover all the request asks for, the same
+/// as in video memory.
 pub fn exact_size(layout: &AllocationLayout, data: &[u8]) -> u64 {
     if is_ours(layout, data) && data.len() >= layout.size + 4 {
-        match stated_size(layout, data) {
-            0 => DEFAULT_SIZE,
-            size => u64::from(size),
-        }
+        requested_size(layout, data).0
     } else {
         DEFAULT_SIZE
     }
@@ -336,6 +340,34 @@ mod tests {
     #[test]
     fn the_exact_size_is_not_rounded() {
         assert_eq!(exact_size(LAYOUT, &data(0x12345)), 0x12345);
+    }
+
+    /// A small buffer in the guest's memory, as its OpenGL driver asks for one: the size field is
+    /// empty, and the block and the part wanted are both 16 KiB.
+    #[test]
+    fn a_block_in_guest_memory_is_as_big_as_it_asks() {
+        let mut bytes = data(0);
+        set_word(&mut bytes, LAYOUT.whole_size, 0x4000);
+        set_word(&mut bytes, LAYOUT.asked_size, 0x4000);
+        set_word(&mut bytes, LAYOUT.fallback_size, 0x2_0000);
+        assert_eq!(exact_size(LAYOUT, &bytes), 0x4000);
+        assert_eq!(allocation_size(LAYOUT, &bytes), 0x4000);
+    }
+
+    #[test]
+    fn a_piece_of_a_block_in_guest_memory_is_the_piece() {
+        let mut bytes = data(0);
+        set_word(&mut bytes, LAYOUT.whole_size, 0x10_0000);
+        set_word(&mut bytes, LAYOUT.asked_size, 0x3000);
+        assert_eq!(exact_size(LAYOUT, &bytes), 0x3000);
+    }
+
+    #[test]
+    fn an_empty_request_in_guest_memory_falls_back_like_one_in_video_memory() {
+        let mut bytes = data(0);
+        set_word(&mut bytes, LAYOUT.fallback_size, 0x2_0000);
+        assert_eq!(exact_size(LAYOUT, &bytes), 0x2_0000);
+        assert_eq!(exact_size(LAYOUT, &data(0)), DEFAULT_SIZE);
     }
 
     #[test]

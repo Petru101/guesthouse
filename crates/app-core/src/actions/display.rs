@@ -2,22 +2,41 @@
 //! stop a machine. If the driver won't come up, Windows goes on with the basic display and the row says why.
 
 use super::Task;
-use super::desktop::{GUEST_FOLDER, SessionScript, apply_screen, put_file, run_in_session_text};
+use super::desktop::{
+    GUEST_FOLDER, SessionScript, apply_screen, console_user_script, put_file, run_in_session_text,
+};
 use crate::agent::guest_script;
 use crate::display::{
     DisplayState, Driver, DriverPackage, PACKAGE_FILES, RunningScreen, SUPPORT_FILES, ScreenHdr, read_state,
     ring_in, screen_hdr, write_state,
 };
+use crate::driver_modes::{DriverModes, SETTINGS_FILE, with_rate};
 use crate::failure::Result;
 use crate::log::write_log;
 use crate::machine::REFRESH_RATES;
 use crate::screen_gpu::memory_frames;
+use crate::text::base64_encode;
 use guesthouse_daemon::display_note::ScreenNote;
 use guesthouse_daemon::gpu_note::read_note as read_gpu_note;
+use std::fs;
 use std::time::Duration;
 
 const APPLY_SCRIPT: &str = include_str!("../../data/apply-display.ps1");
 const APPLY: SessionScript = SessionScript { name: "apply-display", patience: 45, answer_seconds: 55 };
+/// How long Windows gets to show the monitor again with a mode the driver was just given. It takes
+/// the monitor away and brings it back.
+const NEW_MODE_WAIT_SECONDS: u32 = 15;
+/// The same script when it also waits for a new mode, which is the only time it gets longer.
+const APPLY_NEW_MODE: SessionScript = SessionScript {
+    name: APPLY.name,
+    patience: APPLY.patience + NEW_MODE_WAIT_SECONDS,
+    answer_seconds: APPLY.answer_seconds + NEW_MODE_WAIT_SECONDS as u64,
+};
+const OFFER_SCRIPT: &str = include_str!("../../data/offer-mode.ps1");
+/// Writing a file and one call to the driver, plus compiling the call.
+const OFFER_SECONDS: u64 = 30;
+const OFFER_SAVED: &str = "settings saved";
+const OFFER_SENT: &str = "modes sent";
 const REMOVE_SCRIPT: &str = "display-remove.ps1";
 const REMOVE_SECONDS: u64 = 60;
 const FOLDER_SECONDS: u64 = 10;
@@ -101,9 +120,14 @@ impl Wanted {
         (ring.width, ring.height, ring.hdr) == (self.width, self.height, self.hdr)
     }
 
+    /// Whether Windows is at this size and rate.
+    fn is(&self, screen: RunningScreen) -> bool {
+        (screen.width, screen.height, screen.hz) == (self.width, self.height, self.hz)
+    }
+
     /// What couldn't be done, in words.
     fn shortfall(&self, task: &Task, screen: RunningScreen) -> String {
-        if (screen.width, screen.height, screen.hz) != (self.width, self.height, self.hz) {
+        if !self.is(screen) {
             let (width, height, hz) = (self.width, self.height, self.hz);
             return format!(
                 "Windows has no mode at {width}x{height} and {hz} Hz, so it's at {}x{} and {} Hz.",
@@ -191,8 +215,9 @@ fn install(task: &Task, package: &DriverPackage, state: &mut DisplayState, found
     let wanted = Wanted::of(task);
     let hz = if REFRESH_RATES.contains(&wanted.hz) { wanted.hz } else { SAFE_HZ };
     let (width, height) = (wanted.width, wanted.height);
-    let user = task.machine.account();
-    let script = format!("& {} {folder} {width} {height} {hz} '{user}'", guest_file("install-take-over.ps1"));
+    let user = console_user_script(task);
+    let script =
+        format!("{user} & {} {folder} {width} {height} {hz} $u", guest_file("install-take-over.ps1"));
     task.ask_guest(&script, TAKE_OVER_SECONDS);
     state.driver = Driver::Installed;
     state.package.clone_from(&package.id);
@@ -201,6 +226,8 @@ fn install(task: &Task, package: &DriverPackage, state: &mut DisplayState, found
     state.shown_frames = false;
     state.blank_boots = 0;
     state.restart_owed = said.contains(RESTART_MARK);
+    // The install put the shipped settings back in Windows.
+    state.offered_hz = 0;
     Ok(())
 }
 
@@ -249,16 +276,51 @@ fn make_sure_of_driver(task: &Task, state: &mut DisplayState, again: bool) -> Re
     Ok(())
 }
 
-/// `expected` says the driver is in, so Windows gets a moment to show its monitor.
-fn tell_windows(task: &Task, wanted: &Wanted, expected: bool) -> Result<Option<RunningScreen>> {
+/// `expected` says the driver is in, so Windows gets a moment to show its monitor, and `mode_wait` how
+/// many seconds it gets for the mode to show up on it.
+fn tell_windows(
+    task: &Task,
+    wanted: &Wanted,
+    expected: bool,
+    mode_wait: u32,
+) -> Result<Option<RunningScreen>> {
     let Wanted { width, height, hz, hdr } = *wanted;
     let (hdr, expected) = (u8::from(hdr), u8::from(expected));
     let script = format!(
-        "$width = {width}\n$height = {height}\n$hz = {hz}\n$hdr = {hdr}\n$expected = {expected}\n{APPLY_SCRIPT}"
+        "$width = {width}\n$height = {height}\n$hz = {hz}\n$hdr = {hdr}\n$expected = {expected}\n\
+         $modeWait = {mode_wait}\n{APPLY_SCRIPT}"
     );
-    let said = run_in_session_text(task, APPLY, &script)?;
+    let patience = if mode_wait == 0 { APPLY } else { APPLY_NEW_MODE };
+    let said = run_in_session_text(task, patience, &script)?;
     write_log(task.context, &format!("display: {}", said.trim()))?;
     Ok(RunningScreen::parse(&said))
+}
+
+/// The shipped settings with the wanted rate added, if the driver doesn't ship with that mode and
+/// would have it then. A build with no driver, or one whose settings can't be read, has none.
+fn settings_with_mode(task: &Task, wanted: &Wanted) -> Option<String> {
+    let package = DriverPackage::find(task.context)?;
+    let shipped = fs::read_to_string(package.folder.join(SETTINGS_FILE)).ok()?;
+    let mode = (wanted.width, wanted.height, wanted.hz);
+    let settings = with_rate(&shipped, wanted.hz);
+    let gains_it = !DriverModes::read(&shipped).has(mode) && DriverModes::read(&settings).has(mode);
+    gains_it.then_some(settings)
+}
+
+/// Gives the driver its settings with the wanted mode in them, for Windows to take now and at every
+/// start after. Says whether the driver was told. The settings are saved in Windows first, so a
+/// driver that couldn't be told has the mode from its next start.
+fn offer_mode(task: &Task, state: &mut DisplayState, wanted: &Wanted, settings: &str) -> Result<bool> {
+    task.step(&format!("Adding {} Hz to the display driver", wanted.hz));
+    let data = base64_encode(settings.as_bytes());
+    let command = DriverModes::read(settings).command();
+    let script = format!("$settings = '{data}'\n$command = '{command}'\n{OFFER_SCRIPT}");
+    let said = task.ask_guest(&script, OFFER_SECONDS);
+    write_log(task.context, &format!("display: {}", said.trim()))?;
+    if said.contains(OFFER_SAVED) {
+        state.offered_hz = wanted.hz;
+    }
+    Ok(said.contains(OFFER_SENT))
 }
 
 fn ring(task: &Task) -> Option<ScreenNote> {
@@ -288,7 +350,7 @@ fn credit_frames(state: &mut DisplayState) {
 /// Windows has gone back to the basic display, or never left it.
 fn settle_on_basic(task: &mut Task, state: &mut DisplayState, wanted: &Wanted) -> Result<()> {
     apply_screen(task)?;
-    state.running = tell_windows(task, wanted, false)?;
+    state.running = tell_windows(task, wanted, false, 0)?;
     state.note.clear();
     Ok(())
 }
@@ -370,9 +432,26 @@ fn apply(task: &mut Task, state: &mut DisplayState, occasion: Occasion) -> Resul
     let Wanted { width, height, hz, .. } = wanted;
     task.step(&format!("Setting the display to {width}x{height} at {hz} Hz"));
     let expected = state.driver == Driver::Installed;
-    let Some(screen) = tell_windows(task, &wanted, expected)? else {
+    let Some(mut screen) = tell_windows(task, &wanted, expected, 0)? else {
         return no_word_from_windows(task, state, &wanted, occasion);
     };
+    // A rate is offered once. After that the driver has it in its settings, and if Windows still
+    // shows no such mode, asking at every start would only make each one longer.
+    let lacks_mode = screen.on_driver && !wanted.is(screen) && state.offered_hz != wanted.hz;
+    if lacks_mode && let Some(settings) = settings_with_mode(task, &wanted) {
+        // The driver takes its monitor away to show a new mode. It's only asked to once it has sent a
+        // picture, so a monitor that doesn't come back can't pass for a driver that never worked.
+        if wait_for_frames(task, |_| true).is_none() {
+            return no_picture(task, state, &wanted, screen, occasion);
+        }
+        credit_frames(state);
+        if offer_mode(task, state, &wanted, &settings)? {
+            let Some(again) = tell_windows(task, &wanted, expected, NEW_MODE_WAIT_SECONDS)? else {
+                return no_word_from_windows(task, state, &wanted, occasion);
+            };
+            screen = again;
+        }
+    }
     if !screen.on_driver && !expected {
         return settle_on_basic(task, state, &wanted);
     }
