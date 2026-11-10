@@ -51,6 +51,21 @@ fn the_account_is_named_by_the_host_everywhere_the_scripts_need_it() {
     }
 }
 
+/// Windows names its groups in its own language, so a script that asks for one by its English
+/// name works on an English Windows only.
+#[test]
+fn no_script_finds_a_group_by_its_english_name() {
+    for name in SENT_TO_THE_GUEST.iter().filter(|name| name.ends_with(".ps1")) {
+        let script = fs::read_to_string(guest_file(name)).unwrap();
+        for line in script.lines().filter(|line| !line.trim_start().starts_with('#')) {
+            assert!(!line.contains("Administrators"), "{name} names the Administrators group: {line}");
+        }
+    }
+    let check = fs::read_to_string(guest_file("check.ps1")).unwrap();
+    assert!(check.contains("-SID $administrators"), "the check finds the group by its number");
+    assert!(check.contains("$administrators = 'S-1-5-32-544'"));
+}
+
 #[test]
 fn the_only_key_is_the_published_one_that_activates_nothing() {
     let answers = fs::read_to_string(guest_file("autounattend.xml")).unwrap();

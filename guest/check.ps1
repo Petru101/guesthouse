@@ -12,8 +12,16 @@ if (-not ($names -match 'RDPUDD Chained DD')) { $missing += 'the display name Vu
 foreach ($task in 'gpupv-agent', 'gpupv-setmode') {
     if (-not (Get-ScheduledTask $task -ea 0)) { $missing += "the task $task" }
 }
-$isUser = '\\' + [regex]::Escape($user) + '$'
-if (-not (Get-LocalGroupMember Administrators | ? Name -match $isUser)) { $missing += "$user as an administrator" }
+# The group is found by its number, as its name is in Windows' own language: Administratoren,
+# Administratorzy. A failed lookup says why, so a report has the cause in it.
+$administrators = 'S-1-5-32-544'
+try {
+    $account = Get-LocalUser -Name $user -ErrorAction Stop
+    $members = @(Get-LocalGroupMember -SID $administrators -ErrorAction Stop)
+    if (-not ($members | Where-Object { $_.SID -eq $account.SID })) { $missing += "$user as an administrator" }
+} catch {
+    $missing += "$user as an administrator ($($_.Exception.Message))"
+}
 foreach ($path in 'C:\gpupv\cap', 'C:\gpupv\setmode.ps1') {
     if (-not (Test-Path $path)) { $missing += $path }
 }
