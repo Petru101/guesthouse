@@ -90,6 +90,12 @@ pub fn memory_kind(rule: DepthKinds, usage: u8, format: u8, attributes: u32) -> 
         DepthKinds::Always => marked || format_bits.is_some(),
     };
     if !is_depth {
+        if rule == DepthKinds::Always {
+            // Says which surface it was, should the depth unit fault on one this didn't know.
+            log::debug!(
+                "a surface (usage {usage:#x}, format {format:#x}, attributes {attributes:#x}) is plain"
+            );
+        }
         return MemoryKind::PLAIN;
     }
     let chosen = match (stated(attributes), rule) {
