@@ -380,8 +380,12 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
     }
 
     fn apply_updates(&mut self, operations: &[u8], space: SpaceId) -> Result<(), super::Failure> {
-        for operation in operations.chunks(UpdateRequest::OPERATION_SIZE) {
-            self.apply_update(UpdateOperation::parse(operation)?, space)?;
+        for bytes in operations.chunks(UpdateRequest::OPERATION_SIZE) {
+            let operation = UpdateOperation::parse(bytes)?;
+            if matches!(operation, UpdateOperation::Map { .. }) {
+                log::debug!("update {operation:x?}, protection {:02x?}", UpdateOperation::protection(bytes));
+            }
+            self.apply_update(operation, space)?;
         }
         Ok(())
     }

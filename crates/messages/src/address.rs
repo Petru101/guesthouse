@@ -141,6 +141,11 @@ impl UpdateOperation {
     /// Reads past here would pass the end of an operation cut short by the message.
     const FULL_SIZE: usize = 0x40;
 
+    /// What a map carries after its offset: how the driver wants the pages protected.
+    pub fn protection(operation: &[u8]) -> &[u8] {
+        operation.get(Self::OFFSET + 8..).unwrap_or_default()
+    }
+
     pub fn parse(operation: &[u8]) -> Result<Self, Malformed> {
         let kind = u32_at(operation, 0)?;
         let address = u64_at(operation, Self::ADDRESS)?;
