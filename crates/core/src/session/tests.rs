@@ -95,6 +95,13 @@ fn allocate(session: &mut TestSession, block: Vec<u8>) -> (u32, u32) {
     (u32_at(&reply, 4).unwrap(), u32_at(&reply, 0x10).unwrap())
 }
 
+/// The same, for a surface the guest makes to be shown.
+fn allocate_primary(session: &mut TestSession, block: Vec<u8>) -> (u32, u32) {
+    let reply = send(session, &primary_request(block));
+    assert_eq!(status_of(&reply), SUCCESS);
+    (u32_at(&reply, 4).unwrap(), u32_at(&reply, 0x10).unwrap())
+}
+
 fn map(session: &mut TestSession, allocation: u32, address: u64, first_page: u64, pages: u64) -> (u64, u32) {
     let mut request = message(Command::MapGpuAddresses, 0x50);
     set_u64(&mut request, 0x20, address);
@@ -1865,9 +1872,9 @@ mod queues {
     }
 
     #[test]
-    fn the_screen_is_a_locked_target_with_no_driver_data() {
+    fn the_screen_is_a_primary_copied_to_a_locked_target_with_no_driver_data() {
         let mut session = session();
-        let (_, source) = allocate(&mut session, surface_private(640, 480));
+        let (_, source) = allocate_primary(&mut session, surface_private(640, 480));
         let (_, target) = allocate(&mut session, surface_private(640, 480));
         lock(&mut session, target);
         send(&mut session, &copy_message(0, source, target, 0));
@@ -1875,6 +1882,18 @@ mod queues {
         let copies = &session.backend().copies;
         assert!(copies[0].is_screen);
         assert!(!copies[1].is_screen);
+    }
+
+    #[test]
+    fn a_windowed_programs_copy_to_its_own_staging_surface_is_not_the_screen() {
+        // On the basic display an AMD program's present brings no driver data either, and its back
+        // buffer is no primary. DWM puts the window on the screen afterwards.
+        let mut session = session();
+        let (_, back_buffer) = allocate(&mut session, surface_private(800, 600));
+        let (_, staging) = allocate(&mut session, surface_private(800, 600));
+        lock(&mut session, staging);
+        send(&mut session, &copy_message(0, back_buffer, staging, 0));
+        assert!(!session.backend().copies[0].is_screen);
     }
 }
 

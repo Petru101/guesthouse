@@ -42,6 +42,9 @@ pub struct Allocation {
     /// When it was first mapped, counting mapped allocations.
     pub first_mapped: Option<u64>,
     pub gpu_cached: bool,
+    /// The guest made it to be shown, as DWM's buffers and a fullscreen program's are. Kept as the
+    /// guest asked, whatever the answer said.
+    pub primary: bool,
     pub surface: Option<SurfaceShape>,
     /// How its video memory is laid out, so memory made again for it is the same.
     pub kind: MemoryKind,
