@@ -7,10 +7,11 @@ use gtk::glib;
 use guesthouse_app_core::actions::rebooted;
 use guesthouse_app_core::context::Context;
 use guesthouse_app_core::machine::{Machine, load_all};
+use guesthouse_app_core::process_stat::Seen;
 use guesthouse_app_core::processes::all_leftovers;
 use guesthouse_app_core::slots;
 use guesthouse_app_core::stopped::note_if_stopped_by_itself;
-use guesthouse_app_core::tasks::{State, Status, free_slot, is_paused, status};
+use guesthouse_app_core::tasks::{State, Status, free_slot, is_paused, status_since};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::Duration;
@@ -24,8 +25,8 @@ pub struct RefreshState {
     reading: bool,
     ticks: u32,
     paused_before: BTreeSet<String>,
-    /// The machines that were up at the last look, and their slots.
-    running_before: BTreeMap<String, u8>,
+    /// The machines that were up at the last look, their slots and their QEMUs.
+    running_before: BTreeMap<String, (u8, Seen)>,
     leftovers_before: BTreeMap<u8, u64>,
     problem: Option<String>,
 }
@@ -40,9 +41,15 @@ struct Report {
     vm_running: bool,
 }
 
-fn look(context: &Arc<Context>, machines: &[Machine], checked: bool) -> Report {
+fn look(
+    context: &Arc<Context>,
+    machines: &[Machine],
+    running_before: &BTreeMap<String, (u8, Seen)>,
+    checked: bool,
+) -> Report {
+    let status = |machine: &Machine| status_since(context, machine, running_before.get(&machine.id).copied());
     let statuses: BTreeMap<String, Status> =
-        machines.iter().map(|machine| (machine.id.clone(), status(context, machine))).collect();
+        machines.iter().map(|machine| (machine.id.clone(), status(machine))).collect();
     let slot_of = |machine: &Machine| statuses[&machine.id].slot.map(slots::number);
     let is_idle_gpu = |machine: &&Machine| {
         let found = &statuses[&machine.id];
@@ -83,6 +90,7 @@ impl Window {
         state.reading = true;
         state.ticks += 1;
         let checked = state.ticks.is_multiple_of(CHECK_TICKS);
+        let running_before = state.running_before.clone();
         drop(state);
         let machines: Vec<Machine> =
             self.0.rows.borrow().values().map(|row| row.machine().borrow().clone()).collect();
@@ -91,7 +99,7 @@ impl Window {
         let this = self.clone();
         in_background(
             &context,
-            move || Ok(look(&looking, &machines, checked)),
+            move || Ok(look(&looking, &machines, &running_before, checked)),
             move |result| match result {
                 Ok(report) => this.show_status(report),
                 Err(problem) => this.on_refresh_failed(problem),
@@ -169,14 +177,15 @@ impl Window {
         }
     }
 
-    /// A VM can go at any moment, and the row showing Off doesn't say that it wasn't meant to.
+    /// A VM can go at any moment, and the row showing Off doesn't say that it wasn't meant to. A
+    /// machine seen running reads as off only once its QEMU has ended.
     fn say_what_stopped(&self, report: &Report) {
         let up = |(id, status): (&String, &Status)| {
-            Some((id.clone(), status.slot.filter(|_| status.state == State::Running)?))
+            Some((id.clone(), status.slot.zip(status.qemu).filter(|_| status.state == State::Running)?))
         };
-        let running: BTreeMap<String, u8> = report.statuses.iter().filter_map(up).collect();
+        let running: BTreeMap<String, (u8, Seen)> = report.statuses.iter().filter_map(up).collect();
         let before = std::mem::replace(&mut self.0.refresh.borrow_mut().running_before, running);
-        for (id, slot) in before {
+        for (id, (slot, _)) in before {
             let gone = report.statuses.get(&id).is_some_and(|found| found.state == State::Off && !found.busy);
             let machine = self.0.rows.borrow().get(&id).map(|row| row.machine().borrow().clone());
             if let Some(machine) = machine.filter(|_| gone) {

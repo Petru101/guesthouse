@@ -11,7 +11,7 @@ use crate::linux::amd::{amd_mode, fallback_reason};
 use crate::linux::{amd_says, guest_says};
 use crate::log::open_for_appending;
 use crate::machine::Machine;
-use crate::process_stat;
+use crate::process_stat::{self, Seen};
 use crate::processes::{leftovers, memory_taken, running_machine, running_slots};
 use crate::settings::write_json;
 use crate::setup::cards::card_in_use_note;
@@ -95,6 +95,8 @@ pub struct Status {
     pub busy: bool,
     /// Which VM it is, if it's running or has a task.
     pub slot: Option<u8>,
+    /// The VM's QEMU, while it's running.
+    pub qemu: Option<Seen>,
     /// What's really on the guest's screen, in words, while it's up.
     pub screen: String,
     /// Why the screen isn't what was asked for.
@@ -179,7 +181,13 @@ fn amd_guest_gpu(context: &Context, machine: &Machine, run_folder: Option<&Path>
 
 /// What is going on with a machine, and if its GPU has stopped, that comes first.
 pub fn status(context: &Context, machine: &Machine) -> Status {
-    let mut found = what_is_running(context, machine);
+    status_since(context, machine, None)
+}
+
+/// The same, for a machine whose QEMU was seen in a slot at the last look. While that process is
+/// going the machine is running, whatever its words read as now.
+pub fn status_since(context: &Context, machine: &Machine, before: Option<(u8, Seen)>) -> Status {
+    let mut found = what_is_running(context, machine, before);
     let folder = found.slot.map(|number| context.run_folder(Some(slots::number(number))));
     if found.state == State::Running
         && let Some(note) = folder.as_ref().and_then(|folder| read_note(folder))
@@ -232,21 +240,23 @@ fn task_died(context: &Context, number: u8, read: &TaskRecord) -> bool {
 }
 
 /// Looks at what is really running, so a VM started some other way counts like any other.
-fn what_is_running(context: &Context, machine: &Machine) -> Status {
-    let slot = running_machine(context, machine).map(|(number, _)| number);
+fn what_is_running(context: &Context, machine: &Machine, before: Option<(u8, Seen)>) -> Status {
+    let found = running_machine(context, machine).map(|(number, qemu)| (number, qemu.seen));
+    let running = found.or_else(|| before.filter(|(_, qemu)| qemu.is_alive(context)));
+    let (slot, qemu) = running.unzip();
     let state = if slot.is_some() { State::Running } else { State::Off };
     let tasks: BTreeMap<u8, TaskRecord> =
         slots::all().map(|number| (number.number(), read_task(context, Some(number)))).collect();
     let mine: Vec<u8> =
         tasks.iter().filter(|(_, task)| task.machine == machine.id).map(|(number, _)| *number).collect();
-    let Some(first) = mine.first() else { return Status { state, slot, ..Status::default() } };
+    let Some(first) = mine.first() else { return Status { state, slot, qemu, ..Status::default() } };
     // A finished task's words stay in its slot, and the slot it's running in counts first.
     let number = slot.filter(|running| mine.contains(running)).unwrap_or(*first);
     let task = &tasks[&number];
     if !task_alive(context, task) {
         let died = if task_died(context, number, task) { TASK_DIED } else { "" };
         let error = if task.error.is_empty() { died.to_owned() } else { task.error.clone() };
-        return Status { state, error, slot, ..Status::default() };
+        return Status { state, error, slot, qemu, ..Status::default() };
     }
     let state = match task.action.as_str() {
         "start" => State::Starting,
@@ -255,7 +265,7 @@ fn what_is_running(context: &Context, machine: &Machine) -> Status {
         _ => state,
     };
     let (step, error) = (task.step.clone(), task.error.clone());
-    Status { state, step, error, busy: true, slot: Some(number), ..Status::default() }
+    Status { state, step, error, busy: true, slot: Some(number), qemu, ..Status::default() }
 }
 
 /// Starts a task that will outlive the app, and returns at once. It runs in the machine's slot, or
@@ -303,6 +313,7 @@ pub fn launch(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::process_stat::stand_in;
     use crate::processes::stand_in::fake_process;
     use crate::testing::{Scratch, scratch_context};
     use guesthouse_daemon::gpu_note::write_note;
@@ -376,6 +387,23 @@ mod tests {
         assert_eq!(amd_mode(&context, &vm), crate::linux::amd::AmdMode::Venus);
         fs::write(&serial, "").unwrap();
         assert!(status(&context, &vm).guest_gpu.ends_with("failed: eglinfo found llvmpipe"));
+    }
+
+    #[test]
+    fn a_vm_seen_running_stays_running_until_its_qemu_ends() {
+        let scratch = Scratch::new();
+        let context = scratch_context(&scratch);
+        let vm = machine();
+        running_vm(&context, &vm);
+        let seen = status(&context, &vm);
+        assert_eq!((seen.state, seen.slot), (State::Running, Some(0)));
+        let before = seen.slot.zip(seen.qemu);
+        fs::write(context.processes.join("40/cmdline"), "").unwrap();
+        assert_eq!(status(&context, &vm).state, State::Off, "with nothing known, the words decide");
+        let found = status_since(&context, &vm, before);
+        assert_eq!((found.state, found.slot), (State::Running, Some(0)));
+        stand_in::write_stat(&context, 40, 'Z', 40);
+        assert_eq!(status_since(&context, &vm, before).state, State::Off);
     }
 
     #[test]
