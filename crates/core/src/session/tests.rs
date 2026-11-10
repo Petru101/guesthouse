@@ -238,6 +238,17 @@ mod dispatch {
     }
 
     #[test]
+    fn a_command_without_a_handler_is_answered_as_not_supported_and_noted_once() {
+        let mut session = session();
+        let request = message(Command::Unknown(4242), HEADER_SIZE);
+        for _ in 0..2 {
+            assert_eq!(status_of(&send(&mut session, &request)), Status::NOT_SUPPORTED.0);
+        }
+        assert_eq!(session.unknown_commands.len(), 1);
+        assert!(session.unknown_commands.contains(&4242));
+    }
+
+    #[test]
     fn a_device_answers_the_queued_limit_it_was_given() {
         use guesthouse_messages::queue::{
             DEFAULT_QUEUED_PRESENT_LIMIT, GET_QUEUED_PRESENT_LIMIT, SET_QUEUED_PRESENT_LIMIT,

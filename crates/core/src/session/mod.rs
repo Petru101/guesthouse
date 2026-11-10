@@ -165,6 +165,8 @@ pub struct Session<B, M> {
     pub(crate) queues_made: u32,
     /// Statistics have been refused once, which is worth saying once.
     pub(crate) statistics_refused: bool,
+    /// Command numbers that were answered as not supported, so that each is worth one warning.
+    unknown_commands: HashSet<u32>,
     /// Copies refused so far, as only the first few are worth a warning.
     pub(crate) copies_refused: u64,
     /// Submissions that reached the GPU, which may have written any memory mapped for it since.
@@ -237,6 +239,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             gates: HashMap::new(),
             queues_made: 0,
             statistics_refused: false,
+            unknown_commands: HashSet::new(),
             copies_refused: 0,
             work_started: 0,
             failed_queues: HashMap::new(),
@@ -424,7 +427,13 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
                 | C::IsSyncObjectSignaled,
             ) => answer_status(Status::SUCCESS, out),
 
-            Some(C::Unknown(_)) | None => answer_status(Status::NOT_SUPPORTED, out),
+            Some(C::Unknown(number)) => {
+                if self.unknown_commands.insert(number) {
+                    log::warn!("the guest sent command {number}, which isn't supported");
+                }
+                answer_status(Status::NOT_SUPPORTED, out);
+            }
+            None => answer_status(Status::NOT_SUPPORTED, out),
         }
         Ok(())
     }
