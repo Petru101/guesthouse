@@ -179,15 +179,22 @@ const FEATURE_ALLOCATION_SECOND_BLOCK: u32 = 1 << 3;
 const FEATURE_SURFACE_STRIDE_GIVEN: u32 = 1 << 20;
 /// [`HOST_MEMORY_SIZE`] is filled in.
 const FEATURE_HOST_MEMORY_SIZE_GIVEN: u32 = 1 << 22;
+/// An allocation's private data must fit in 128 KiB, which is the most the kernel takes and the
+/// most Windows carries from a guest to its host. Clear, the guest's Direct3D 12 driver describes
+/// every mip of every layer of a texture in one allocation's data, and a big texture array is then
+/// refused inside the guest before the host hears of it, which costs the program its device. Set,
+/// the driver keeps each allocation's data small.
+const FEATURE_PRIVATE_DATA_FITS_128K: u32 = 1 << 23;
 /// Bit 1, render status, stays clear: it promises command-buffer handling of render status that
 /// nothing here does, though the guest doesn't test it. Bit 13 promises a GPU virtual-address
 /// offset in the adapter block, bit 17 that the guest may send fullscreen frame metadata in an
-/// escape, bit 23 that allocation private data may need 128K, and bit 24 a hardware scheduler's
-/// queue sizes: this backend honours none of those, so all stay clear.
+/// escape, and bit 24 a hardware scheduler's queue sizes: this backend honours none of those, so
+/// all stay clear.
 const FEATURES: u32 = FEATURE_SEVERAL_SURFACES
     | FEATURE_ALLOCATION_SECOND_BLOCK
     | FEATURE_SURFACE_STRIDE_GIVEN
-    | FEATURE_HOST_MEMORY_SIZE_GIVEN;
+    | FEATURE_HOST_MEMORY_SIZE_GIVEN
+    | FEATURE_PRIVATE_DATA_FITS_128K;
 
 /// The sum the guest checks the block against, kept in the block. See [`index_xor_sum`].
 const CHECKSUM: usize = 0x2E20;
@@ -525,10 +532,17 @@ pub(crate) mod tests {
     #[test]
     fn only_the_features_this_backend_can_honour_are_set() {
         let features = dword_at(&build(&small_card()), SOFTWARE_FEATURES);
-        assert_eq!(features, (1 << 2) | (1 << 3) | (1 << 20) | (1 << 22));
-        for bit in [1, 13, 17, 23, 24] {
+        assert_eq!(features, (1 << 2) | (1 << 3) | (1 << 20) | (1 << 22) | (1 << 23));
+        for bit in [1, 13, 17, 24] {
             assert_eq!(features & 1 << bit, 0, "bit {bit}");
         }
+    }
+
+    #[test]
+    fn the_guest_is_told_to_keep_private_data_within_what_the_kernel_takes() {
+        let features = dword_at(&build(&small_card()), SOFTWARE_FEATURES);
+        assert_ne!(features & FEATURE_PRIVATE_DATA_FITS_128K, 0);
+        assert_eq!(crate::protocol::allocation::MAX_SIZE, 128 << 10);
     }
 
     #[test]
