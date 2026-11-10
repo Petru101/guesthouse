@@ -12,7 +12,7 @@ use crate::linux::{amd_says, guest_says};
 use crate::log::open_for_appending;
 use crate::machine::Machine;
 use crate::process_stat;
-use crate::processes::{leftovers, memory_taken, running_slots, uses_disk};
+use crate::processes::{leftovers, memory_taken, running_machine, running_slots};
 use crate::settings::write_json;
 use crate::setup::cards::card_in_use_note;
 use crate::slots;
@@ -138,9 +138,7 @@ fn task_ended(context: &Context, record: &TaskRecord) -> bool {
 
 /// The slot this machine is running in or has a task in.
 pub fn slot_of(context: &Context, machine: &Machine) -> Option<Slot> {
-    let running = running_slots(context);
-    let in_use = running.iter().find(|(_, pid)| uses_disk(context, **pid, machine));
-    in_use.map(|(number, _)| slots::number(*number)).or_else(|| {
+    running_machine(context, machine).map(|(number, _)| slots::number(number)).or_else(|| {
         slots::all().find(|slot| {
             let task = read_task(context, Some(*slot));
             task.machine == machine.id && task_alive(context, &task)
@@ -235,8 +233,7 @@ fn task_died(context: &Context, number: u8, read: &TaskRecord) -> bool {
 
 /// Looks at what is really running, so a VM started some other way counts like any other.
 fn what_is_running(context: &Context, machine: &Machine) -> Status {
-    let running = running_slots(context);
-    let slot = running.iter().find(|(_, pid)| uses_disk(context, **pid, machine)).map(|(number, _)| *number);
+    let slot = running_machine(context, machine).map(|(number, _)| number);
     let state = if slot.is_some() { State::Running } else { State::Off };
     let tasks: BTreeMap<u8, TaskRecord> =
         slots::all().map(|number| (number.number(), read_task(context, Some(number)))).collect();

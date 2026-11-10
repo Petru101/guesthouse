@@ -5,7 +5,7 @@ use crate::context::Context;
 use crate::disk_image::disk_info;
 use crate::failure::{Failure, Result};
 use crate::machine::Machine;
-use crate::processes::{qemu_pid, uses_disk};
+use crate::processes::running_vms;
 use crate::random::random_hex;
 use crate::settings::with_suffix;
 use serde_json::{Value, json};
@@ -68,7 +68,7 @@ fn find_snapshot(context: &Context, machine: &Machine, tag: &str) -> Result<Snap
 /// Says why this machine's snapshots can't change now. qemu-img refuses a disk that is in use too,
 /// which covers a VM this copy of the app can't see.
 fn snapshot_problem(context: &Context, machine: &Machine) -> Option<Failure> {
-    let running = qemu_pid(context, None).is_some_and(|pid| uses_disk(context, pid, machine));
+    let running = running_vms(context).get(&context.slot.number()).is_some_and(|qemu| qemu.runs(machine));
     if running {
         return Some(Failure::new("Shut the VM down first."));
     }
