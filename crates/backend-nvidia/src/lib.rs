@@ -29,6 +29,7 @@ mod ring_request;
 pub mod rm;
 pub mod sensors;
 pub mod staging;
+mod standard;
 pub mod startup;
 mod tiling;
 
@@ -41,7 +42,8 @@ use encode_sessions::EncodeSessions;
 use guesthouse_backend::{
     AdapterFacts, AllocationShape, Backend, BackendError, DriverSurvey, GpuRange, GuestBooks, HostServices,
     MapRequest, MemoryId, MemoryKind, PciCard, Refusal, RegistryName, RegistryValue, Setup, SlotCopy,
-    SpaceId, StagingCopy, StagingStart, Status, SurfaceShape, UnmapRequest, VendorQuery, Work, WorkStart,
+    SpaceId, StagingCopy, StagingStart, StandardSurface, Status, SurfaceShape, UnmapRequest, VendorQuery,
+    Work, WorkStart,
 };
 use inf::{INF_NAME, Inf, read_infs};
 use profile::{
@@ -439,6 +441,16 @@ impl<R: Rm + OpenRm> Backend for NvidiaBackend<R> {
 
     fn describe_allocation(&mut self, private: &[u8]) -> AllocationShape {
         private_data::shape(&self.guest.allocation, private, self.generation.depth_kinds)
+    }
+
+    /// The guest's user-mode driver reads a shared primary's data as its kernel driver wrote it, when
+    /// a fullscreen program opens the surface on the basic display.
+    fn standard_allocation_data(&mut self, surface: &StandardSurface) -> Option<Vec<u8>> {
+        standard::data(&self.guest.allocation, surface)
+    }
+
+    fn standard_allocation_shape(&mut self, surface: &StandardSurface) -> Option<AllocationShape> {
+        standard::shape(surface)
     }
 
     fn finish_allocation_data(&mut self, private: &mut [u8], size: u64) {

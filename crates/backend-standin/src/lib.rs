@@ -79,6 +79,8 @@ pub struct StandIn {
     /// Set to describe the guest kernel's own surfaces in this private data, as a vendor whose
     /// user-mode driver reads them does.
     pub standard_data: Option<Vec<u8>>,
+    /// Set to lay those surfaces out this way, as a vendor whose drivers tile them does.
+    pub standard_shape: Option<AllocationShape>,
     /// Set to make every doorbell fail, as a submission call can.
     pub fail_rings: bool,
     /// Addresses taken through [`HostServices`] by the first submission.
@@ -154,6 +156,7 @@ impl StandIn {
             refuse_exports: false,
             refuse_private_data: false,
             standard_data: None,
+            standard_shape: None,
             fail_rings: false,
             channel_address: None,
             slow_copies: false,
@@ -533,6 +536,10 @@ impl Backend for StandIn {
 
     fn standard_allocation_data(&mut self, _surface: &StandardSurface) -> Option<Vec<u8>> {
         self.standard_data.clone()
+    }
+
+    fn standard_allocation_shape(&mut self, _surface: &StandardSurface) -> Option<AllocationShape> {
+        self.standard_shape
     }
 
     fn allocation_data_valid(&mut self, _private: &[u8]) -> bool {
