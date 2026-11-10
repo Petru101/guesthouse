@@ -53,7 +53,7 @@ So Guesthouse teaches KVM to speak Hyper-V's GPU protocol. Windows boots, finds 
 
 ## What works
 
-**Windows on NVIDIA.** Direct3D 12 and 11, Vulkan, OpenGL, OpenCL, CUDA, NVENC and NVDEC all run on the real card, and Edge is hardware accelerated. A fresh install takes about 9 minutes from picking the ISO to a working GPU. Work runs at full speed once it reaches the card, but Superposition only scores about two thirds of what a 5090 gets natively, and I'm still looking for the rest.
+**Windows on NVIDIA.** Direct3D 12 and 11, Vulkan, OpenGL, OpenCL, CUDA, NVENC and NVDEC all run on the real card, and Edge is hardware accelerated. A fresh install takes about 9 minutes from picking the ISO to a working GPU. Work runs at full speed once it reaches the card. Superposition in Direct3D 11 gets about 89% of what the same card scores on the host, and OpenGL about 54%. I'm still looking for the rest, in [#124](https://github.com/xnixy/guesthouse/issues/124) and [#122](https://github.com/xnixy/guesthouse/issues/122).
 
 **Windows on AMD (experimental).** This uses AMD's own Windows driver, unpacked from AMD's installer. It has run on the integrated RDNA2 Radeon in my Ryzen and on testers' RX 6600 XT and RX 7900 XTX. The desktop, Direct3D 12 and 11, Vulkan and OpenGL work, and hardware video decode doesn't yet. [More on AMD](docs/amd.md).
 
