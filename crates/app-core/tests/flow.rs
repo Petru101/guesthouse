@@ -15,6 +15,7 @@ use guesthouse_app_core::text::base64_decode;
 use guesthouse_app_core::vm_args::{PASST_PID_FILE, passt_installed};
 use guesthouse_app_core::vm_host::LocalHost;
 use guesthouse_daemon::handover::Part;
+use guesthouse_daemon::slot::Slot;
 use serde_json::{Value, json};
 use std::env;
 use std::fs;
@@ -156,10 +157,11 @@ fn holds_guest_memory() -> bool {
     })
 }
 
-/// Makes the sockets QEMU connects to, as the daemon does once it's ready.
+/// Makes the sockets QEMU connects to, as the daemon does once it's ready. They go in its slot's run
+/// folder, which isn't slot 0's when real VMs are running on this PC.
 fn pretend_daemon(base: &str) {
     assert!(holds_guest_memory(), "the daemon is handed the guest's memory");
-    let folder = Path::new(base).join("run");
+    let folder = Slot::from_environment().unwrap().run_folder(Path::new(base));
     let _sockets = ["vgpu.sock", "global.sock"].map(|name| UnixListener::bind(folder.join(name)).unwrap());
     thread::sleep(PRETEND_LIFE);
 }
@@ -203,14 +205,16 @@ fn real_daemon(context: &Context) -> Option<u32> {
     })
 }
 
-fn start_and_stop(context: &Context, machine: &Machine) {
+/// Gives the slot the machine ran in, which isn't slot 0 when real VMs are running on this PC.
+fn start_and_stop(context: &Context, machine: &Machine) -> Slot {
     let task = launch(context, "start", machine, &[], None).unwrap();
     collect(task);
     let running = wait_for(context, machine, |found| found.state == State::Running && !found.busy);
     assert_eq!(running.error, "", "{running:?}");
     println!("{} is running in slot {:?}", machine.name, running.slot);
+    let slot = Slot::parse(running.slot.map(|number| number.to_string()).as_deref()).unwrap();
     if machine.has_gpu() {
-        let qemu = qemu_pid(context, None).unwrap();
+        let qemu = qemu_pid(context, Some(slot)).unwrap();
         assert!(jailed(qemu), "QEMU runs jailed");
         if let Some(daemon) = real_daemon(context) {
             assert!(jailed(daemon), "the daemon runs jailed");
@@ -223,8 +227,9 @@ fn start_and_stop(context: &Context, machine: &Machine) {
     collect(task);
     let off = wait_for(context, machine, |found| found.state == State::Off && !found.busy);
     assert_eq!(off.error, "", "{off:?}");
-    assert_eq!(qemu_pid(context, None), None);
+    assert_eq!(qemu_pid(context, Some(slot)), None);
     println!("{} has stopped", machine.name);
+    slot
 }
 
 fn make_machine(context: &Context, id: &str, kind: Kind) -> Machine {
@@ -258,8 +263,8 @@ fn inner() {
     if passt_installed() {
         let on_passt = Machine { passt: true, ..windows };
         on_passt.save(&context).unwrap();
-        start_and_stop(&context, &on_passt);
-        let pid_file = context.run_folder(None).join(PASST_PID_FILE);
+        let slot = start_and_stop(&context, &on_passt);
+        let pid_file = context.run_folder(Some(slot)).join(PASST_PID_FILE);
         let noted = fs::read_to_string(pid_file).unwrap();
         let passt: u32 = noted.split_whitespace().next().unwrap().parse().unwrap();
         assert!(!Path::new(&format!("/proc/{passt}")).exists(), "passt went with QEMU");
