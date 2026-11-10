@@ -672,10 +672,10 @@ impl Backend for AmdBackend {
             return WorkStart::QueueFailed;
         }
         log::debug!("run on engine family {} in space {:?}: {:x?}", node.ip_type, work.space, ibs);
-        // The run is waited for here, so the core then completes the fence as for finished work. A
-        // completion that arrives on its own, as amdgpu's eventfd allows, would free this thread.
+        // The run is waited for here, so the core then completes the fence itself. A completion that
+        // arrives on its own, as amdgpu's eventfd allows, would free this thread.
         match space.vm.run(node.ip_type, &ibs, RUN_WAIT_MS) {
-            Ok(Ran::Retired) => WorkStart::Finished,
+            Ok(Ran::Retired) => WorkStart::Ran,
             Ok(Ran::StillRunning) => {
                 log::warn!("work on engine family {} still running after {RUN_WAIT_MS} ms", node.ip_type);
                 WorkStart::QueueFailed

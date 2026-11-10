@@ -592,6 +592,10 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
         match start {
             WorkStart::Finished if dropped => GpuTook::Dropped,
             WorkStart::Finished => GpuTook::Nothing,
+            WorkStart::Ran => {
+                self.work_started += 1;
+                GpuTook::Nothing
+            }
             WorkStart::Busy => GpuTook::NoRoom,
             WorkStart::QueueFailed => {
                 self.queues.get_mut(&queue).expect("read above").failed = true;

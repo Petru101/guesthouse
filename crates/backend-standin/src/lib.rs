@@ -57,6 +57,9 @@ pub struct StandIn {
     pub fail_next_map: bool,
     /// Whether submissions go to the pretend GPU. If not, they finish at once.
     pub run_work: bool,
+    /// Whether the pretend GPU runs a submission to the end before answering, so none is left
+    /// running. Only counts with `run_work`.
+    pub run_work_at_once: bool,
     pub doorbells: Vec<(u32, u64)>,
     pub closed_queues: Vec<u32>,
     pub preserved: Vec<(MemoryId, MemoryId, u64)>,
@@ -134,6 +137,7 @@ impl StandIn {
             fail_next_allocation: false,
             fail_next_map: false,
             run_work: false,
+            run_work_at_once: false,
             doorbells: Vec::new(),
             closed_queues: Vec::new(),
             preserved: Vec::new(),
@@ -430,6 +434,9 @@ impl Backend for StandIn {
     fn start_work(&mut self, host: &mut dyn HostServices, work: &Work<'_>) -> WorkStart {
         if !self.run_work || !work.may_run || work.queue_failed {
             return WorkStart::Finished;
+        }
+        if self.run_work_at_once {
+            return WorkStart::Ran;
         }
         if self.channel_address.is_none() {
             self.channel_address = host.take_gpu_addresses(0x10000, 0x10000).ok();

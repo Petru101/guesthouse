@@ -167,6 +167,7 @@ pub struct Session<B, M> {
     pub(crate) statistics_refused: bool,
     /// Copies refused so far, as only the first few are worth a warning.
     pub(crate) copies_refused: u64,
+    /// Submissions that reached the GPU, which may have written any memory mapped for it since.
     pub(crate) work_started: u64,
     /// How many queues of each address space have stopped answering since it last came off the GPU.
     pub(crate) failed_queues: HashMap<SpaceId, u32>,
