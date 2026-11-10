@@ -9,6 +9,7 @@
 
 use crate::device::Device;
 use crate::memory::{self, GemHandle, MapFlags};
+use crate::run_wait::{self, Patience, Waited};
 use crate::submit::{self, Context, Ib, Syncobj};
 use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, HashMap};
@@ -116,7 +117,8 @@ pub struct SpaceVm {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Ran {
     Retired,
-    StillRunning,
+    /// The kernel neither finished nor reset it in time.
+    Hung,
 }
 
 impl SpaceVm {
@@ -141,8 +143,8 @@ impl SpaceVm {
     }
 
     /// Runs command buffers already mapped here on the engine family `ip_type`, in order, and waits
-    /// up to `timeout_ms` for the last to retire.
-    pub fn run(&mut self, ip_type: u32, ibs: &[Ib], timeout_ms: i32) -> io::Result<Ran> {
+    /// for the last to retire, as long as `patience` allows.
+    pub fn run(&mut self, ip_type: u32, ibs: &[Ib], patience: Patience) -> io::Result<Ran> {
         let context = match self.contexts.entry(ip_type) {
             Entry::Occupied(slot) => slot.into_mut(),
             Entry::Vacant(slot) => {
@@ -152,12 +154,19 @@ impl SpaceVm {
         let signal = Syncobj::create(&self.file).map_err(|error| step("making a sync object", error))?;
         // The guest doesn't say which buffers the work uses, so it may use any mapped here.
         let buffers = self.books.handles();
-        let retired = submit::submit_all(&self.file, context, ip_type, ibs, &buffers, &signal)
-            .map_err(|error| step("submitting", error))
-            .and_then(|_| signal.arm_eventfd(&self.file).map_err(|error| step("arming the eventfd", error)))
-            .and_then(|event| submit::wait_eventfd(&event, timeout_ms));
+        let ran = match submit::submit_all(&self.file, context, ip_type, ibs, &buffers, &signal) {
+            Err(error) => Err(step("submitting", error)),
+            Ok(_) => signal
+                .arm_eventfd(&self.file)
+                .map_err(|error| step("arming the eventfd", error))
+                .and_then(|event| run_wait::wait_for_run(&event, patience, ip_type))
+                .map(|waited| match waited {
+                    Waited::Retired { .. } => Ran::Retired,
+                    Waited::Hung => Ran::Hung,
+                }),
+        };
         signal.destroy(&self.file);
-        Ok(if retired? { Ran::Retired } else { Ran::StillRunning })
+        ran
     }
 
     /// Maps `length` bytes of `buffer`, a handle on `device`, from `offset`, at `address`.

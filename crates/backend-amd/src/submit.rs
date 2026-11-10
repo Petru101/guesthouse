@@ -139,11 +139,17 @@ impl Syncobj {
 /// Waits for an armed eventfd to become readable, up to a timeout. `true` means the work retired.
 pub fn wait_eventfd(event: &impl AsRawFd, timeout_ms: i32) -> io::Result<bool> {
     let mut poll = libc::pollfd { fd: event.as_raw_fd(), events: libc::POLLIN, revents: 0 };
-    // SAFETY: a single live pollfd for the duration of the call.
-    let ready = unsafe { libc::poll(&mut poll, 1, timeout_ms) };
-    if ready < 0 {
-        return Err(io::Error::last_os_error());
-    }
+    let ready = loop {
+        // SAFETY: a single live pollfd for the duration of the call.
+        let ready = unsafe { libc::poll(&mut poll, 1, timeout_ms) };
+        if ready >= 0 {
+            break ready;
+        }
+        let error = io::Error::last_os_error();
+        if error.kind() != io::ErrorKind::Interrupted {
+            return Err(error);
+        }
+    };
     if ready == 0 {
         return Ok(false);
     }
