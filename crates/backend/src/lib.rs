@@ -19,6 +19,7 @@ pub use driver::{
 };
 pub use guesthouse_messages::Status;
 pub use guesthouse_messages::registry::RegistryName;
+pub use guesthouse_messages::standard::StandardSurface;
 pub use memory::{GuestMemory, HostBuffer, MemoryError, PagesView, WINDOW_BASE, in_window};
 pub use pci_address::PciAddress;
 pub use types::*;
@@ -95,6 +96,12 @@ pub trait Backend: Sized {
 
     /// Reads a vendor driver's private data for a new allocation.
     fn describe_allocation(&mut self, private: &[u8]) -> AllocationShape;
+
+    /// The vendor kernel driver's private data for a surface the guest's kernel makes itself, when
+    /// the vendor's user-mode driver reads it. `None` leaves the daemon's own record in its place.
+    fn standard_allocation_data(&mut self, _surface: &StandardSurface) -> Option<Vec<u8>> {
+        None
+    }
 
     /// Whether the vendor's kernel driver would take an allocation's private data. If any allocation
     /// in a call wouldn't be taken, the whole call fails, as nothing has been made yet.

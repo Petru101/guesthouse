@@ -16,8 +16,8 @@ mod random_messages;
 use guesthouse_backend::{
     AdapterFacts, AllocationShape, Backend, BackendError, CardLabel, DriverFound, DriverSurvey, GpuRange,
     GuestBooks, HostServices, MapRequest, MemoryId, MemoryKind, PciCard, Refusal, RegistryName,
-    RegistryValue, Setup, SlotCopy, SpaceId, StagingCopy, StagingStart, Status, SurfaceShape, UnmapRequest,
-    VendorQuery, Work, WorkStart,
+    RegistryValue, Setup, SlotCopy, SpaceId, StagingCopy, StagingStart, StandardSurface, Status,
+    SurfaceShape, UnmapRequest, VendorQuery, Work, WorkStart,
 };
 pub use memory::SparseMemory;
 pub use random_messages::RandomMessages;
@@ -76,6 +76,9 @@ pub struct StandIn {
     /// Set to refuse every allocation's, context's and queue's private data, as a vendor's driver
     /// would refuse data it can't read.
     pub refuse_private_data: bool,
+    /// Set to describe the guest kernel's own surfaces in this private data, as a vendor whose
+    /// user-mode driver reads them does.
+    pub standard_data: Option<Vec<u8>>,
     /// Set to make every doorbell fail, as a submission call can.
     pub fail_rings: bool,
     /// Addresses taken through [`HostServices`] by the first submission.
@@ -150,6 +153,7 @@ impl StandIn {
             memory_starts: HashMap::new(),
             refuse_exports: false,
             refuse_private_data: false,
+            standard_data: None,
             fail_rings: false,
             channel_address: None,
             slow_copies: false,
@@ -525,6 +529,10 @@ impl Backend for StandIn {
 
     fn context_allowed(&mut self, node: u32, _client_hint: u32) -> bool {
         node != NODE_WITHOUT_CHANNEL
+    }
+
+    fn standard_allocation_data(&mut self, _surface: &StandardSurface) -> Option<Vec<u8>> {
+        self.standard_data.clone()
     }
 
     fn allocation_data_valid(&mut self, _private: &[u8]) -> bool {
