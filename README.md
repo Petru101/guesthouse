@@ -6,7 +6,7 @@
 
 That's Godot on Vulkan, in Windows, in a VM on Fedora. Nothing is passed through. The host keeps the card, and my desktop keeps running on it.
 
-> **Status:** early. 0.4.0 is out. It runs well on my RTX 5090, and Windows has also run on a tester's RTX 4080. AMD cards are newer and experimental. What works and what's next is in the [roadmap](https://github.com/xnixy/guesthouse/issues/2).
+> **Status:** early. 0.4.0 is out. It runs well on my RTX 5090, and testers have run Windows on NVIDIA and AMD cards of their own, [listed below](#cards). AMD is newer and experimental. What works and what's next is in the [roadmap](https://github.com/xnixy/guesthouse/issues/2).
 
 ## Install
 
@@ -15,6 +15,33 @@ curl -fsSL https://raw.githubusercontent.com/xnixy/guesthouse/main/install.sh | 
 ```
 
 You need x86_64 Linux. For a GPU in a VM you need an NVIDIA card with the open kernel modules, or an AMD card on amdgpu. Without one it still installs, with plain VMs, and tells you why. The script is meant to be read first, and [what it does](docs/install.md) is written out step by step.
+
+### Cards
+
+Windows with the GPU has run on these:
+
+| Card | | How it went |
+|---|---|---|
+| RTX 5090 | NVIDIA, Blackwell | Works. It's the card I build on |
+| RTX 4080 | NVIDIA, Ada | Works, on a tester's PC |
+| RTX A1000 Laptop | NVIDIA, Ampere | Windows and its driver work. Fixes for the laptop's screen are in 0.4.0, waiting on a retest |
+| RTX 3050 Laptop | NVIDIA, Ampere | Waiting to hear back |
+| Radeon 610M | AMD, RDNA2, integrated | Works. It's the graphics in my Ryzen |
+| RX 7900 XTX | AMD, RDNA3 | Works, basic 3D so far |
+| RX 6600 XT | AMD, RDNA2 | Works. One old Direct3D 9 game shows stripes |
+| RX 6900 XT | AMD, RDNA2 | The display driver failed on 0.3.0. Not tried on 0.4.0 yet |
+
+Nobody has tried these yet. They should work, most likely first:
+
+- Other RTX 50 and 40 series cards, desktop and laptop
+- RTX 30 series, desktop and laptop
+- RTX 20 and GTX 16 series
+- Other RX 7000 and RX 6000 cards, and RDNA2 or RDNA3 graphics in a Ryzen
+- RX 5000 cards, which use the same AMD driver package as the RX 6000s
+
+Not yet: RX 9000 cards lay out their memory differently, and the copies to the screen don't handle that yet. Older AMD cards like Polaris, GTX 10 series and older NVIDIA cards, and datacentre cards like the A100 aren't handled.
+
+If yours is in neither list, or you've tried one, [#9](https://github.com/xnixy/guesthouse/issues/9) is for NVIDIA and [#1](https://github.com/xnixy/guesthouse/issues/1) for AMD.
 
 ## Why
 
@@ -28,7 +55,7 @@ So Guesthouse teaches KVM to speak Hyper-V's GPU protocol. Windows boots, finds 
 
 **Windows on NVIDIA.** Direct3D 12 and 11, Vulkan, OpenGL, OpenCL, CUDA, NVENC and NVDEC all run on the real card, and Edge is hardware accelerated. A fresh install takes about 9 minutes from picking the ISO to a working GPU. Work runs at full speed once it reaches the card, but Superposition only scores about two thirds of what a 5090 gets natively, and I'm still looking for the rest.
 
-**Windows on AMD (experimental).** This uses AMD's own Windows driver, unpacked from AMD's installer. So far it has run on one card, the integrated RDNA2 Radeon in my Ryzen. The desktop, Direct3D 12 and 11, Vulkan and OpenGL work there, and hardware video decode doesn't yet. [More on AMD](docs/amd.md).
+**Windows on AMD (experimental).** This uses AMD's own Windows driver, unpacked from AMD's installer. It has run on the integrated RDNA2 Radeon in my Ryzen and on testers' RX 6600 XT and RX 7900 XTX. The desktop, Direct3D 12 and 11, Vulkan and OpenGL work, and hardware video decode doesn't yet. [More on AMD](docs/amd.md).
 
 **Linux guests.** These take a different route: the guest runs NVIDIA's Linux driver, and its calls are forwarded to the host's. CUDA, Vulkan, NVENC and NVDEC work at about host speed, and GNOME and Plasma run on it. On an AMD card the guest runs Mesa on the real card instead, through virtio-gpu's native context. See [`linux/`](linux/README.md).
 
