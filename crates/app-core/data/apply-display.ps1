@@ -1,6 +1,8 @@
 # Puts the screen in the mode the app wants, and says what it really is. The host puts $width, $height,
-# $hz, $hdr and $expected first, the last saying that the display driver should be there. Runs in the user's session, as only that can change a display. On the basic display
-# it changes nothing. The last line is what the app reads.
+# $hz, $hdr, $expected and $modeWait first: $expected says that the display driver should be there, and
+# $modeWait how many seconds the mode gets to show up, after the driver was just given it. Runs in the
+# user's session, as only that can change a display. On the basic display it changes nothing. The last
+# line is what the app reads.
 $source = @'
 using System; using System.Runtime.InteropServices; using System.Text;
 public class Screen {
@@ -99,6 +101,11 @@ function Our-Display { All-Displays | Where-Object { $_.Str -eq $ourName } | Sel
 
 $ours = Our-Display
 for ($try = 0; $expected -eq 1 -and -not $ours -and $try -lt $monitorTries; $try++) {
+    Start-Sleep 1
+    $ours = Our-Display
+}
+# The driver brings its monitor back with a new mode, and Windows can name it afresh.
+for ($waited = 0; $waited -lt $modeWait -and -not ($ours -and (Has-Mode $ours.Name)); $waited++) {
     Start-Sleep 1
     $ours = Our-Display
 }
