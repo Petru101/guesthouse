@@ -3,7 +3,7 @@ use super::super::tests::{FakeClock, machine, plain_task_context, with_vm_runnin
 use super::super::{Stopped, Task, VmHost, load};
 use super::*;
 use crate::agent::stand_in::ScriptedAgent;
-use crate::gpu_identity::{Shown, read_state};
+use crate::gpu_identity::{IdentityState, Shown, maker_identity, read_state, write_state};
 use crate::machine::Kind;
 use crate::monitor::stand_in::RecordingMonitor;
 use crate::testing::{Scratch, scratch_context};
@@ -309,6 +309,31 @@ fn an_install_has_windows_take_nvidias_package_before_its_shutdown() {
     let state = read_state(&context, &vm);
     assert_eq!(state.shown, Shown::Maker, "so the first start shows NVIDIA's number in its first VM");
     assert!(state.restart_due, "and restarts Windows once");
+}
+
+/// An install over a machine that had Windows before. What was written down about the old Windows
+/// would otherwise be believed of the new one: no package, and a first start with no GPU.
+#[test]
+fn an_install_forgets_what_the_old_windows_had_taken_in() {
+    let scratch = Scratch::new();
+    let (mut context, vm) = install_setup(&scratch);
+    scratch.write("program/guest/gpu-identity.ps1", IDENTITY_SCRIPT);
+    let qemu = scratch.write("qemu", "#!/bin/sh\necho 'channel=<str>'; echo 'vendor-id=<uint16>'\n");
+    fs::set_permissions(&qemu, fs::Permissions::from_mode(0o700)).unwrap();
+    context.paths.qemu = qemu;
+    let old = IdentityState {
+        shown: Shown::Maker,
+        package_vendor: maker_identity(&vm).vendor,
+        ..IdentityState::default()
+    };
+    write_state(&context, &vm, &old).unwrap();
+    let display = vm.folder(&context).join("display.json");
+    fs::write(&display, r#"{"driver":"installed"}"#).unwrap();
+    let host = InstallHost { inner: RecordingHost::default(), context: &context };
+    let mut task = Task::new(&context, &host, "install", vm.clone());
+    assert!(install(&mut task).is_err(), "the stand-in VM never shuts down");
+    assert!(read_state(&context, &vm).restart_due, "the new Windows was given the package again");
+    assert!(!display.exists(), "and its display driver is looked at afresh");
 }
 
 #[test]

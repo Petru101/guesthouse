@@ -118,6 +118,11 @@ pub fn write_state(context: &Context, machine: &Machine, state: &DisplayState) -
     write_json(&state_file(context, machine), state)
 }
 
+/// For a new Windows on this machine's disk: the old one's driver went with it.
+pub fn forget_state(context: &Context, machine: &Machine) {
+    let _ = fs::remove_file(state_file(context, machine));
+}
+
 /// The settings have changed, so what was said about the old ones no longer holds.
 pub fn forget_note(context: &Context, machine: &Machine) -> Result<()> {
     let mut state = read_state(context, machine);

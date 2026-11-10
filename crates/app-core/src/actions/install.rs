@@ -234,6 +234,10 @@ pub fn install(task: &mut Task) -> Result<()> {
     make_answer_disc(context, &task.machine)?;
     fs::remove_file(&task.machine.disk)?;
     make_disk(context, &task.machine, size)?;
+    // What's written down about the Windows that was on the disk would be believed of the new one,
+    // which then gets no package for its vendor number and no display driver.
+    crate::gpu_identity::forget_state(context, &task.machine);
+    crate::display::forget_state(context, &task.machine);
     task.step("Starting the installer");
     let answer = answer_disc_path(context, &task.machine);
     let boot = Boot::Install { iso: task.machine.iso.clone(), answer: answer.clone() };
