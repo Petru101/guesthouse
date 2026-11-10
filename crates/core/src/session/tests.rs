@@ -569,6 +569,39 @@ mod allocations {
     }
 
     #[test]
+    fn a_vendors_data_for_a_standard_surface_is_known_when_handed_back() {
+        let mut session = session();
+        let vendor_data = vec![0xA5; 0x1E4];
+        session.backend_mut().standard_data = Some(vendor_data.clone());
+        session.backend_mut().refuse_private_data = true;
+        let mut describe = message(Command::DescribeStandardAllocation, 0x40);
+        set_u32(&mut describe, 0x18, 1);
+        set_u32(&mut describe, 0x1C, 0x1E4);
+        set_u32(&mut describe, 0x28, 100);
+        set_u32(&mut describe, 0x2C, 10);
+        let answer = send(&mut session, &describe);
+        assert_eq!(u32_at(&answer, 4), Ok(0x1E4));
+        let given = answer[36..36 + 0x1E4].to_vec();
+        assert_eq!(given, vendor_data);
+        let reply = send(&mut session, &create_message(0, &[given]));
+        assert_eq!(status_of(&reply), SUCCESS);
+        assert_eq!(u64_at(&reply, 0x20), Ok(0x10000));
+    }
+
+    #[test]
+    fn a_size_query_gets_the_vendors_size_and_no_data() {
+        let mut session = session();
+        session.backend_mut().standard_data = Some(vec![0xA5; 0x1E4]);
+        let mut describe = message(Command::DescribeStandardAllocation, 0x40);
+        set_u32(&mut describe, 0x18, 1);
+        set_u32(&mut describe, 0x28, 100);
+        set_u32(&mut describe, 0x2C, 10);
+        let answer = send(&mut session, &describe);
+        assert_eq!(u32_at(&answer, 4), Ok(0x1E4));
+        assert_eq!(answer.len(), 40);
+    }
+
+    #[test]
     fn a_primary_stays_one_on_the_basic_display() {
         let reply = send(&mut session(), &primary_request(surface_private(1920, 1080)));
         assert_eq!(status_of(&reply), SUCCESS);

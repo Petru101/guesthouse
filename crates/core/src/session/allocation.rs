@@ -14,7 +14,7 @@ use guesthouse_messages::allocation::{
     SetGuestPages, lock_answer, locked_allocation,
 };
 use guesthouse_messages::priority::{self, NORMAL_PRIORITY, PriorityRequest};
-use guesthouse_messages::standard::StandardRecord;
+use guesthouse_messages::standard::{DescribeStandard, StandardRecord};
 use guesthouse_messages::wire::{align_up, checked_align_up};
 use guesthouse_messages::{MessageHeader, Status};
 use std::time::Instant;
@@ -25,6 +25,9 @@ const FORMAT_32_BIT: u32 = 21;
 const STANDARD_GRAIN: u64 = 64 << 10;
 /// The colour word of a standard surface, which is never a vendor's special case.
 const STANDARD_COLOUR: u32 = 0;
+/// How many of the vendor's descriptions of standard surfaces are kept. The kernel creates each
+/// surface right after asking, and makes only a few at a time.
+const STANDARD_DATA_KEPT: usize = 16;
 
 fn standard_shape(record: &StandardRecord) -> AllocationShape {
     AllocationShape {
@@ -48,10 +51,35 @@ fn standard_shape(record: &StandardRecord) -> AllocationShape {
 
 impl<B: Backend, M: GuestMemory> Session<B, M> {
     fn shape_of(&mut self, private: &[u8]) -> AllocationShape {
-        match StandardRecord::parse(private) {
+        match self.standard_record(private) {
             Some(record) => standard_shape(&record),
             None => self.backend.describe_allocation(private),
         }
+    }
+
+    /// The record of a standard surface, if `private` describes one: the daemon's own record, or
+    /// the vendor's data the core handed out for it.
+    fn standard_record(&self, private: &[u8]) -> Option<StandardRecord> {
+        StandardRecord::parse(private).or_else(|| {
+            let mut given = self.standard_data.iter().rev();
+            given.find(|(data, _)| data.as_slice() == private).map(|&(_, record)| record)
+        })
+    }
+
+    /// Describes a surface the guest's kernel makes itself, in the vendor's private data when the
+    /// vendor's user-mode driver reads it.
+    pub(super) fn describe_standard_allocation(&mut self, message: &[u8], out: &mut Vec<u8>) -> Handled {
+        let request = DescribeStandard::parse(message)?;
+        let surface = request.surface();
+        let vendor_data = self.backend.standard_allocation_data(&surface);
+        request.answer(vendor_data.as_deref(), out);
+        if let Some(data) = vendor_data {
+            if self.standard_data.len() == STANDARD_DATA_KEPT {
+                self.standard_data.pop_front();
+            }
+            self.standard_data.push_back((data, surface.record()));
+        }
+        Ok(())
     }
 
     /// Guest memory does not count: it is not on the card.
@@ -94,7 +122,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             request.entries().map(|entry| self.shape_of(entry.private)).collect();
         // All of it or none, as nothing has been made yet that would need taking back.
         let refused = request.entries().any(|entry| {
-            StandardRecord::parse(entry.private).is_none()
+            self.standard_record(entry.private).is_none()
                 && !self.backend.allocation_data_valid(entry.private)
         });
         if refused {
@@ -162,7 +190,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             }
             let private_at = out.len();
             out.extend_from_slice(entry.private);
-            if StandardRecord::parse(entry.private).is_none() {
+            if self.standard_record(entry.private).is_none() {
                 self.backend.finish_allocation_data(&mut out[private_at..], shape.size);
             }
             self.allocations.insert(handle, allocation);

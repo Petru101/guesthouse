@@ -1,8 +1,10 @@
-//! The daemon's own record for surfaces the guest's kernel makes without asking a vendor driver.
+//! Surfaces the guest's kernel makes without asking a vendor driver.
 //!
 //! When the kernel needs one of these, it asks the host to describe it, and later hands the
-//! description back when it creates the allocation. Nothing else reads the record, so its format
-//! is ours. It is the only private allocation data the core understands.
+//! description back when it creates the allocation. A vendor's user-mode driver can read it too,
+//! when a program opens the kernel's shared primary, so a vendor whose driver does that gives its
+//! own private data here. Otherwise the description is the daemon's own record, which is the only
+//! private allocation data the core understands.
 
 use crate::wire::{Malformed, align_up, declared_size, pad_to, put_u32, u32_at};
 use crate::{HEADER_SIZE, Status};
@@ -18,6 +20,9 @@ const KIND_SHARED_PRIMARY: u32 = 1;
 const KIND_SHADOW: u32 = 2;
 const KIND_STAGING: u32 = 3;
 const KIND_GDI: u32 = 4;
+
+/// The WDK's D3DDDIFMT_X8R8G8B8, the format of a staging surface.
+const FORMAT_X8R8G8B8: u32 = 22;
 
 // Offsets in the record.
 const RECORD_WIDTH: usize = 8;
@@ -59,39 +64,110 @@ impl StandardRecord {
     }
 }
 
-/// Answers a request to describe a standard allocation.
-pub fn describe(message: &[u8], out: &mut Vec<u8>) -> Result<(), Malformed> {
-    let kind = u32_at(message, HEADER_SIZE)?;
-    let allocation_data = declared_size(message, HEADER_SIZE + 4)?;
-    let resource_data = declared_size(message, HEADER_SIZE + 8)?;
-    let mut fields = [0; FIELD_COUNT];
-    for (index, field) in fields.iter_mut().enumerate() {
-        *field = u32_at(message, DESCRIPTION + index * 4)?;
-    }
-    let [width, height, ..] = fields;
-    let pitch = align_up(u64::from(width) * u64::from(BYTES_PER_PIXEL), PITCH_ALIGN) as u32;
-    // Each kind of surface keeps its pitch in a different field of the description.
-    match kind {
-        KIND_SHADOW => fields[3] = pitch,
-        KIND_STAGING => fields[2] = pitch,
-        KIND_GDI => fields[5] = pitch,
-        _ => {}
-    }
-    // Only a shared primary's description carries a refresh rate, in fields 3 and 4.
-    let refresh = if kind == KIND_SHARED_PRIMARY { (fields[3], fields[4]) } else { (0, 0) };
+/// What the guest's kernel asks a standard allocation to be.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StandardSurface {
+    /// The WDK's D3DKMDT_STANDARDALLOCATION_TYPE.
+    pub kind: u32,
+    pub width: u32,
+    pub height: u32,
+    /// The guest's own format number. A staging surface names none and is 32-bit colour.
+    pub format: u32,
+    pub pitch: u32,
+    pub refresh: (u32, u32),
+    /// The display source a shared primary is for.
+    pub source: u32,
+}
 
-    put_u32(out, Status::SUCCESS.0);
-    put_u32(out, RECORD_SIZE);
-    put_u32(out, 0);
-    fields.iter().for_each(|&field| put_u32(out, field));
-    if allocation_data != 0 {
-        out.extend_from_slice(MAGIC);
-        for field in [kind, width, height, fields[2], pitch, refresh.0, refresh.1] {
-            put_u32(out, field);
-        }
+impl StandardSurface {
+    pub fn is_shared_primary(&self) -> bool {
+        self.kind == KIND_SHARED_PRIMARY
     }
-    let data = (allocation_data + resource_data) as u64;
-    pad_to(out, align_up(data + u64::from(ANSWER_FIXED_SIZE), ANSWER_ALIGN) as usize);
+
+    /// The daemon's own record of this surface.
+    pub fn record(&self) -> StandardRecord {
+        StandardRecord { width: self.width, height: self.height, pitch: self.pitch, refresh: self.refresh }
+    }
+}
+
+/// A request to describe a standard allocation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DescribeStandard {
+    fields: [u32; FIELD_COUNT],
+    surface: StandardSurface,
+    /// How much private data the guest has room for. Zero asks only how much there is.
+    allocation_data: u32,
+    resource_data: u32,
+}
+
+impl DescribeStandard {
+    pub fn parse(message: &[u8]) -> Result<Self, Malformed> {
+        let kind = u32_at(message, HEADER_SIZE)?;
+        let allocation_data = declared_size(message, HEADER_SIZE + 4)?;
+        let resource_data = declared_size(message, HEADER_SIZE + 8)?;
+        let mut fields = [0; FIELD_COUNT];
+        for (index, field) in fields.iter_mut().enumerate() {
+            *field = u32_at(message, DESCRIPTION + index * 4)?;
+        }
+        let [width, height, ..] = fields;
+        let pitch = align_up(u64::from(width) * u64::from(BYTES_PER_PIXEL), PITCH_ALIGN) as u32;
+        // Each kind of surface keeps its pitch in a different field of the description.
+        match kind {
+            KIND_SHADOW => fields[3] = pitch,
+            KIND_STAGING => fields[2] = pitch,
+            KIND_GDI => fields[5] = pitch,
+            _ => {}
+        }
+        // Only a shared primary's description carries a refresh rate, in fields 3 and 4, and the
+        // display source, in field 5. A staging surface has no format field.
+        let primary = kind == KIND_SHARED_PRIMARY;
+        let refresh = if primary { (fields[3], fields[4]) } else { (0, 0) };
+        let format = if kind == KIND_STAGING { FORMAT_X8R8G8B8 } else { fields[2] };
+        let source = if primary { fields[5] } else { 0 };
+        let surface = StandardSurface { kind, width, height, format, pitch, refresh, source };
+        Ok(Self {
+            fields,
+            surface,
+            allocation_data: allocation_data as u32,
+            resource_data: resource_data as u32,
+        })
+    }
+
+    pub fn surface(&self) -> StandardSurface {
+        self.surface
+    }
+
+    /// Answers with a vendor's private data for the allocation, or with the daemon's own record.
+    pub fn answer(&self, vendor_data: Option<&[u8]>, out: &mut Vec<u8>) {
+        let surface = &self.surface;
+        let size = vendor_data.map_or(RECORD_SIZE, |data| data.len() as u32);
+        put_u32(out, Status::SUCCESS.0);
+        put_u32(out, size);
+        put_u32(out, 0);
+        self.fields.iter().for_each(|&field| put_u32(out, field));
+        if self.allocation_data >= size {
+            match vendor_data {
+                Some(data) => out.extend_from_slice(data),
+                None => {
+                    out.extend_from_slice(MAGIC);
+                    let refresh = surface.refresh;
+                    for field in [surface.kind, surface.width, surface.height, self.fields[2], surface.pitch]
+                    {
+                        put_u32(out, field);
+                    }
+                    put_u32(out, refresh.0);
+                    put_u32(out, refresh.1);
+                }
+            }
+        }
+        let data = u64::from(self.allocation_data) + u64::from(self.resource_data);
+        pad_to(out, align_up(data + u64::from(ANSWER_FIXED_SIZE), ANSWER_ALIGN) as usize);
+    }
+}
+
+/// Answers a request to describe a standard allocation with the daemon's own record.
+pub fn describe(message: &[u8], out: &mut Vec<u8>) -> Result<(), Malformed> {
+    DescribeStandard::parse(message)?.answer(None, out);
     Ok(())
 }
 

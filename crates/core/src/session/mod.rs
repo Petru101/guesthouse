@@ -32,6 +32,7 @@ use guesthouse_backend::{
     Backend, BackendError, GuestMemory, GuestSpan, HostServices, MemoryError, PagesView, SharedSpan, SpaceId,
 };
 use guesthouse_messages::notice::Notice;
+use guesthouse_messages::standard::StandardRecord;
 use guesthouse_messages::wire::{Malformed, put_u32};
 use guesthouse_messages::{Command, MessageHeader, Status};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -131,6 +132,9 @@ pub struct Session<B, M> {
     pub(crate) closed_spaces: HashSet<SpaceId>,
 
     pub(crate) allocations: HashMap<u32, Allocation>,
+    /// The vendor's private data given for the guest kernel's own surfaces, newest last, so that
+    /// a creation that hands it back is known for one of them.
+    pub(crate) standard_data: VecDeque<(Vec<u8>, StandardRecord)>,
     pub(crate) resources: HashMap<u32, Vec<u32>>,
     /// Users of a resource, when more than the process that made it.
     pub(crate) resource_users: HashMap<u32, u32>,
@@ -219,6 +223,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             own_space: None,
             closed_spaces: HashSet::new(),
             allocations: HashMap::new(),
+            standard_data: VecDeque::new(),
             resources: HashMap::new(),
             resource_users: HashMap::new(),
             shared_objects: HashMap::new(),
@@ -377,7 +382,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
 
             Some(C::CreateAllocation) => self.create_allocation(message, out)?,
             Some(C::DestroyAllocation) => self.destroy_allocation(message, out)?,
-            Some(C::DescribeStandardAllocation) => guesthouse_messages::standard::describe(message, out)?,
+            Some(C::DescribeStandardAllocation) => self.describe_standard_allocation(message, out)?,
             Some(C::OpenResource) => self.open_resource(message, out)?,
             Some(C::LockForCpu) => self.lock_for_cpu(message, out)?,
             Some(C::SetAllocationPriority) => self.set_allocation_priority(message, out)?,
