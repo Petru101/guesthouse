@@ -11,6 +11,7 @@ use crate::linux::amd::{amd_mode, fallback_reason};
 use crate::linux::{amd_says, guest_says};
 use crate::log::open_for_appending;
 use crate::machine::Machine;
+use crate::process_stat;
 use crate::processes::{leftovers, memory_taken, running_slots, uses_disk};
 use crate::settings::write_json;
 use crate::setup::cards::card_in_use_note;
@@ -27,8 +28,6 @@ pub const TASK_PROGRAM: &str = "guesthouse-task";
 const TASK_FILE: &str = "guesthouse-task.json";
 const STILL_BUSY: &str = "Something else is still in progress.";
 const QEMU_PAUSED_WORDS: [&str; 2] = ["paused", "debug"];
-/// How `/proc/PID/stat` says a process has ended: a zombie, and one on its way out.
-const ENDED_STATES: [char; 2] = ['Z', 'X'];
 const TASK_DIED: &str = "The task stopped before it finished. The log has more.";
 /// How a machine is told it would be one too many.
 /// Why there's no slot. Slots and their shared memory are the whole PC's, so another user's or another
@@ -134,11 +133,7 @@ pub fn task_alive(context: &Context, record: &TaskRecord) -> bool {
 /// Whether a task's process has really gone. `task_alive` can't say: `spawn` returns while the kernel
 /// is still loading the task, and until that's done its name isn't there to find.
 fn task_ended(context: &Context, record: &TaskRecord) -> bool {
-    let file = context.processes.join(record.pid.to_string()).join("stat");
-    let stat = fs::read_to_string(file).unwrap_or_default();
-    // The state comes after the program's name, which can hold anything, brackets too.
-    let state = stat.rsplit_once(')').and_then(|(_, rest)| rest.trim_start().chars().next());
-    state.is_none_or(|state| ENDED_STATES.contains(&state))
+    process_stat::has_ended(process_stat::read(context, record.pid).as_deref())
 }
 
 /// The slot this machine is running in or has a task in.
