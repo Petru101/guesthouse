@@ -112,6 +112,13 @@ pub fn running_machine(context: &Context, machine: &Machine) -> Option<(u8, Qemu
     running_vms(context).into_iter().find(|(_, qemu)| qemu.runs(machine))
 }
 
+/// Whether a QEMU seen at an earlier look is still running its VM. One that is ending has no words
+/// left while its memory is given back, which takes a while for a VM's, and its VM has stopped.
+pub fn still_running(context: &Context, qemu: Seen) -> bool {
+    let has_words = process_words(context, qemu.pid).is_some_and(|words| !words[0].is_empty());
+    has_words && qemu.is_alive(context)
+}
+
 /// Whether one of QEMU's words opens this machine's disk. A comma after the name ends it, unless it's
 /// doubled, when the name goes on and this is some other disk.
 fn opens_disk(word: &[u8], machine: &Machine) -> bool {
@@ -330,6 +337,20 @@ mod tests {
         assert_eq!(qemu_pid(&context, None), Some(500));
         let machine = Machine::new("x", "x", "/d", "/v");
         assert_eq!(running_machine(&context, &machine).map(|(_, qemu)| qemu.seen.pid), Some(500));
+    }
+
+    #[test]
+    fn a_qemu_seen_before_runs_until_its_words_go_or_it_ends() {
+        let scratch = Scratch::new();
+        let context = scratch_context(&scratch);
+        fake_process(&context, 500, &["anything"], &[], "");
+        let seen = Seen::now(&context, 500).unwrap();
+        assert!(still_running(&context, seen));
+        fs::write(context.processes.join("500/cmdline"), "").unwrap();
+        assert!(!still_running(&context, seen), "it's ending, and has given its words back");
+        fake_process(&context, 500, &["anything"], &[], "");
+        crate::process_stat::stand_in::write_stat(&context, 500, 'S', 900);
+        assert!(!still_running(&context, seen), "the pid is another process's now");
     }
 
     #[test]

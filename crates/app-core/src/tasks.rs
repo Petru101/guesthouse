@@ -12,7 +12,7 @@ use crate::linux::{amd_says, guest_says};
 use crate::log::open_for_appending;
 use crate::machine::Machine;
 use crate::process_stat::{self, Seen};
-use crate::processes::{leftovers, memory_taken, running_machine, running_slots};
+use crate::processes::{leftovers, memory_taken, running_machine, running_slots, still_running};
 use crate::settings::write_json;
 use crate::setup::cards::card_in_use_note;
 use crate::slots;
@@ -185,7 +185,7 @@ pub fn status(context: &Context, machine: &Machine) -> Status {
 }
 
 /// The same, for a machine whose QEMU was seen in a slot at the last look. While that process is
-/// going the machine is running, whatever its words read as now.
+/// going and has words the machine is running, whatever those words read as now.
 pub fn status_since(context: &Context, machine: &Machine, before: Option<(u8, Seen)>) -> Status {
     let mut found = what_is_running(context, machine, before);
     let folder = found.slot.map(|number| context.run_folder(Some(slots::number(number))));
@@ -242,7 +242,7 @@ fn task_died(context: &Context, number: u8, read: &TaskRecord) -> bool {
 /// Looks at what is really running, so a VM started some other way counts like any other.
 fn what_is_running(context: &Context, machine: &Machine, before: Option<(u8, Seen)>) -> Status {
     let found = running_machine(context, machine).map(|(number, qemu)| (number, qemu.seen));
-    let running = found.or_else(|| before.filter(|(_, qemu)| qemu.is_alive(context)));
+    let running = found.or_else(|| before.filter(|(_, qemu)| still_running(context, *qemu)));
     let (slot, qemu) = running.unzip();
     let state = if slot.is_some() { State::Running } else { State::Off };
     let tasks: BTreeMap<u8, TaskRecord> =
@@ -398,12 +398,24 @@ mod tests {
         let seen = status(&context, &vm);
         assert_eq!((seen.state, seen.slot), (State::Running, Some(0)));
         let before = seen.slot.zip(seen.qemu);
-        fs::write(context.processes.join("40/cmdline"), "").unwrap();
+        fs::write(context.processes.join("40/cmdline"), "misread\0").unwrap();
         assert_eq!(status(&context, &vm).state, State::Off, "with nothing known, the words decide");
         let found = status_since(&context, &vm, before);
         assert_eq!((found.state, found.slot), (State::Running, Some(0)));
         stand_in::write_stat(&context, 40, 'Z', 40);
         assert_eq!(status_since(&context, &vm, before).state, State::Off);
+    }
+
+    #[test]
+    fn a_vm_whose_qemu_is_ending_is_off_at_the_first_look() {
+        let scratch = Scratch::new();
+        let context = scratch_context(&scratch);
+        let vm = machine();
+        running_vm(&context, &vm);
+        let seen = status(&context, &vm);
+        // QEMU gives its words back first, and can take a while over the VM's memory after that.
+        fs::write(context.processes.join("40/cmdline"), "").unwrap();
+        assert_eq!(status_since(&context, &vm, seen.slot.zip(seen.qemu)).state, State::Off);
     }
 
     #[test]
