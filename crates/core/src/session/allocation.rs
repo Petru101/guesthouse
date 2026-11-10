@@ -119,6 +119,7 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
                 owner,
                 resource,
                 gpu_cached: shape.gpu_cached,
+                primary: entry.flags & PRIMARY != 0,
                 surface: shape.surface,
                 kind: shape.kind,
                 ..Allocation::default()
@@ -133,7 +134,11 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
                 allocation.memory = Some(memory);
                 allocation.size = size;
             }
-            log::debug!("allocation {handle:#x}: {:#x} bytes, guest backed {guest_backed}", allocation.size);
+            log::debug!(
+                "allocation {handle:#x}: {:#x} bytes, guest backed {guest_backed}, primary {}",
+                allocation.size,
+                allocation.primary
+            );
             // On the basic display the guest's kernel copies DWM's primaries to the staging surface,
             // and that path needs the flag back. Once our display driver has a ring, the screen is a
             // surface in its process and nothing scans out, so no surface is a primary any more:

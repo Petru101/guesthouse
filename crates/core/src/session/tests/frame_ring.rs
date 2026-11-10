@@ -48,7 +48,7 @@ fn sized_surface(width: u32, height: u32) -> Vec<u8> {
 
 /// Returns (image, staging), the staging surface in the shared window as a real screen's is.
 fn screen(session: &mut TestSession, width: u32, height: u32) -> (u32, u32) {
-    let (_, image) = allocate(session, sized_surface(width, height));
+    let (_, image) = allocate_primary(session, sized_surface(width, height));
     let (_, staging) = allocate(session, sized_surface(width, height));
     lock(session, staging);
     (image, staging)
@@ -300,6 +300,22 @@ fn a_new_screen_size_makes_a_new_generation_and_old_releases_do_nothing() {
 }
 
 #[test]
+fn a_windowed_program_between_the_desktops_frames_leaves_the_ring_alone() {
+    let (mut session, desktop, mut sink) = watched();
+    let (_, back_buffer) = allocate(&mut session, sized_surface(800, 600));
+    let (_, its_staging) = allocate(&mut session, sized_surface(800, 600));
+    lock(&mut session, its_staging);
+    for _ in 0..3 {
+        present(&mut session, (back_buffer, its_staging));
+        present(&mut session, desktop);
+        session.offer_frames(&mut sink);
+    }
+    assert_eq!(sink.rings.len(), 1);
+    assert_eq!(sink.frames.len(), 4);
+    assert!(sink.frames.iter().all(|frame| frame.picture.width == WIDTH));
+}
+
+#[test]
 fn another_surface_of_the_same_size_keeps_the_ring() {
     let (mut session, _, mut sink) = watched();
     let other = screen(&mut session, WIDTH, HEIGHT);
@@ -325,7 +341,7 @@ fn a_ring_that_cannot_be_made_costs_the_guest_nothing_and_is_not_retried() {
 #[test]
 fn an_image_of_the_screens_size_is_read_directly_and_anything_else_by_the_staging_surface() {
     let (mut session, (image, staging), _) = watched();
-    let (_, small) = allocate(&mut session, sized_surface(320, 240));
+    let (_, small) = allocate_primary(&mut session, sized_surface(320, 240));
     present(&mut session, (image, staging));
     present(&mut session, (small, staging));
     let copies = &session.backend().slot_copies;
@@ -352,7 +368,7 @@ fn short_surface() -> Vec<u8> {
 #[test]
 fn a_surface_smaller_than_its_numbers_is_never_read_past_its_end() {
     let mut session = session();
-    let (_, image) = allocate(&mut session, short_surface());
+    let (_, image) = allocate_primary(&mut session, short_surface());
     let (_, staging) = allocate(&mut session, short_surface());
     lock(&mut session, staging);
     present_one_row(&mut session, (image, staging));
@@ -365,7 +381,7 @@ fn a_surface_smaller_than_its_numbers_is_never_read_past_its_end() {
 #[test]
 fn a_short_image_leaves_the_ring_to_read_the_staging_surface() {
     let mut session = session();
-    let (_, image) = allocate(&mut session, short_surface());
+    let (_, image) = allocate_primary(&mut session, short_surface());
     let (_, staging) = allocate(&mut session, sized_surface(WIDTH, HEIGHT));
     lock(&mut session, staging);
     present_one_row(&mut session, (image, staging));

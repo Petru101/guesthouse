@@ -85,8 +85,11 @@ impl<B: Backend, M: GuestMemory> Session<B, M> {
             return Ok(());
         }
         let target_guest_address = self.allocations[&request.target].guest_address;
-        // The kernel's display queue sends no private data, and an app's present always has some.
-        let is_screen = target_guest_address.is_some() && request.private_size == 0;
+        // The kernel's display queue sends no private data, but an AMD program's present to its own
+        // staging surface has none either. So the source decides too: the screen is shown from
+        // primaries, DWM's or a fullscreen program's, and a windowed program's back buffer isn't one.
+        let from_primary = self.allocations[&request.source].primary;
+        let is_screen = target_guest_address.is_some() && request.private_size == 0 && from_primary;
         let context = std::iter::once(request.context);
         let targets = self.queue_targets(context.clone());
         let source_address = self.surface_address(request.source)?;

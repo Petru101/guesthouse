@@ -10,6 +10,7 @@ use guesthouse_daemon::server::Server;
 use guesthouse_frame_socket::{
     Format, Frame, FrameSocket, Hello, Message, Packet, Release, Ring, SOCKET_NAME,
 };
+use guesthouse_messages::allocation::PRIMARY;
 use guesthouse_messages::wire::{set_u32, set_u64, u32_at};
 use guesthouse_messages::{Command, HEADER_SIZE, Status};
 use guesthouse_transport::{FrameFlags, FrameHeader, FrameKind, HEADER_SIZE as FRAME_HEADER_SIZE};
@@ -57,10 +58,10 @@ fn surface(width: u32, height: u32) -> Vec<u8> {
     data
 }
 
-fn create(block: &[u8]) -> Vec<u8> {
+fn create(block: &[u8], flags: u32) -> Vec<u8> {
     let mut request = message(Command::CreateAllocation, 0x40);
     set_u32(&mut request, 0x28, 1);
-    request.extend_from_slice(&[0; 4]);
+    request.extend_from_slice(&flags.to_le_bytes());
     request.extend_from_slice(&(block.len() as u32).to_le_bytes());
     request.extend_from_slice(&[0; 4]);
     request.extend_from_slice(block);
@@ -112,13 +113,13 @@ impl Rig {
         rig
     }
 
-    fn allocate(&mut self, width: u32, height: u32) -> u32 {
-        u32_at(&self.call(&create(&surface(width, height))), 0x10).unwrap()
+    fn allocate(&mut self, width: u32, height: u32, flags: u32) -> u32 {
+        u32_at(&self.call(&create(&surface(width, height), flags)), 0x10).unwrap()
     }
 
-    /// An image and a staging surface, in the shared window as a real screen's is.
+    /// A primary and a staging surface, in the shared window as a real screen's is.
     fn new_screen(&mut self, width: u32, height: u32) -> (u32, u32) {
-        let (image, staging) = (self.allocate(width, height), self.allocate(width, height));
+        let (image, staging) = (self.allocate(width, height, PRIMARY), self.allocate(width, height, 0));
         let mut lock = message(Command::LockForCpu, 0x20);
         set_u32(&mut lock, 0x1C, staging);
         self.call(&lock);

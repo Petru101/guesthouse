@@ -8,6 +8,7 @@ use crate::rm::device::Device;
 use crate::rm::fake::FakeRm;
 use crate::rm::fake_card::{FAKE_BLACKWELL, FakeCard, install_card};
 use guesthouse_backend::{DriverVersion, PciCard, Refusal, Setup};
+use guesthouse_messages::allocation::PRIMARY;
 use guesthouse_messages::wire::{set_u32, set_u64, u32_at};
 use guesthouse_messages::{Command, HEADER_SIZE};
 
@@ -99,8 +100,8 @@ pub fn blank_request() -> Vec<u8> {
     request
 }
 
-/// Makes two surfaces of one size, in the driver's own kind of private data, as an image and a
-/// staging surface are.
+/// Makes two surfaces of one size, in the driver's own kind of private data, as the screen's image
+/// and its staging surface are. The image is a primary, as DWM's are.
 pub fn create_surfaces(width: u32, height: u32) -> Vec<u8> {
     create_coloured_surfaces(width, height, 0)
 }
@@ -116,8 +117,8 @@ pub fn create_coloured_surfaces(width: u32, height: u32, colour: u8) -> Vec<u8> 
     set_u32(&mut private, layout.pitch, width * 4);
     let mut create = message(Command::CreateAllocation, 0x40);
     set_u32(&mut create, 0x28, 2);
-    for _ in 0..2 {
-        create.extend_from_slice(&[0; 4]);
+    for flags in [PRIMARY, 0] {
+        create.extend_from_slice(&flags.to_le_bytes());
         create.extend_from_slice(&(private.len() as u32).to_le_bytes());
         create.extend_from_slice(&[0; 4]);
     }
