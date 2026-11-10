@@ -6,6 +6,7 @@
 //! surface's swizzle mode it walks the tiles itself. The packet is the open one that Mesa's RADV
 //! sends on SDMA 5 and 6 (GFX10 to GFX11), with the engine's default cache policy.
 
+use crate::protocol::tiling::{GfxVersion, Layout};
 use crate::screen_copy::{CopyPlan, PIXEL_BYTES};
 use guesthouse_backend::{StagingCopy, SurfaceShape};
 
@@ -134,9 +135,11 @@ fn halves(low: u32, high: u32) -> u32 {
 
 impl TiledCopy {
     /// The copy for a staging copy from a tiled surface to a linear one, or `None` for any other
-    /// pair, or a rectangle past either surface.
-    pub fn of(copy: &StagingCopy) -> Option<Self> {
-        let swizzle_mode = copy.source.tiling.filter(|mode| (1..=LAST_SWIZZLE_MODE).contains(mode))?;
+    /// pair, or a rectangle past either surface. The source's tile swizzle goes into its address, as
+    /// the engine reads the tiles the way the GPU wrote them only from there.
+    pub fn of(copy: &StagingCopy, gfx: GfxVersion) -> Option<Self> {
+        let layout = Layout::of(copy.source.tiling?);
+        let swizzle_mode = Some(layout.swizzle_mode).filter(|mode| (1..=LAST_SWIZZLE_MODE).contains(mode))?;
         if copy.target.tiling.is_some() {
             return None;
         }
@@ -158,7 +161,7 @@ impl TiledCopy {
             return None;
         }
         Some(Self {
-            tiled_address: copy.source_address,
+            tiled_address: copy.source_address | layout.address_bits(gfx),
             tiled_width: copy.source.width,
             tiled_height: copy.source.height,
             swizzle_mode,
@@ -207,6 +210,8 @@ mod tests {
     use super::*;
     use guesthouse_backend::SpaceId;
 
+    const RDNA2: GfxVersion = (10, 3);
+
     fn shape(width: u32, height: u32, tiling: Option<u32>) -> SurfaceShape {
         let format = 21;
         SurfaceShape {
@@ -241,7 +246,7 @@ mod tests {
 
     #[test]
     fn a_window_copies_from_its_tiles_into_rows() {
-        let planned = TiledCopy::of(&copy(shape(640, 400, Some(27)), shape(640, 400, None))).unwrap();
+        let planned = TiledCopy::of(&copy(shape(640, 400, Some(27)), shape(640, 400, None)), RDNA2).unwrap();
         let commands = planned.commands();
         assert_eq!(commands.len(), 16);
         assert_eq!(commands[0], 0x8000_0501);
@@ -254,6 +259,14 @@ mod tests {
         assert_eq!(commands[11], 640 * 400 - 1);
         assert_eq!(commands[12], 639 | 399 << 16);
         assert!(commands[14..].iter().all(|&word| word == OPCODE_NOP));
+    }
+
+    #[test]
+    fn the_tile_swizzle_goes_into_the_tiled_address() {
+        let swizzled = Layout { swizzle_mode: 27, tile_swizzle: 0x80 }.tiling();
+        let planned = TiledCopy::of(&copy(shape(640, 400, swizzled), shape(640, 400, None)), RDNA2).unwrap();
+        assert_eq!(planned.swizzle_mode, 27);
+        assert_eq!(planned.commands()[1..3], [0x2345_8000, 0x1]);
     }
 
     #[test]
@@ -297,14 +310,14 @@ mod tests {
 
     #[test]
     fn only_a_tiled_source_and_a_linear_target_are_taken() {
-        assert!(TiledCopy::of(&copy(shape(640, 400, None), shape(640, 400, None))).is_none());
-        assert!(TiledCopy::of(&copy(shape(640, 400, Some(27)), shape(640, 400, Some(27)))).is_none());
-        assert!(TiledCopy::of(&copy(shape(640, 400, Some(0)), shape(640, 400, None))).is_none());
+        assert!(TiledCopy::of(&copy(shape(640, 400, None), shape(640, 400, None)), RDNA2).is_none());
+        assert!(TiledCopy::of(&copy(shape(640, 400, Some(27)), shape(640, 400, Some(27))), RDNA2).is_none());
+        assert!(TiledCopy::of(&copy(shape(640, 400, Some(0)), shape(640, 400, None)), RDNA2).is_none());
     }
 
     #[test]
     fn a_rectangle_past_either_surface_is_refused() {
-        assert!(TiledCopy::of(&copy(shape(320, 400, Some(27)), shape(640, 400, None))).is_none());
-        assert!(TiledCopy::of(&copy(shape(640, 400, Some(27)), shape(640, 200, None))).is_none());
+        assert!(TiledCopy::of(&copy(shape(320, 400, Some(27)), shape(640, 400, None)), RDNA2).is_none());
+        assert!(TiledCopy::of(&copy(shape(640, 400, Some(27)), shape(640, 200, None)), RDNA2).is_none());
     }
 }

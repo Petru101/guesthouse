@@ -269,7 +269,7 @@ impl AmdBackend {
 
     /// A copy to the screen or a slot: tiled surfaces by the DMA engine, rows by the CPU.
     fn copy_staging(&mut self, copy: &StagingCopy) -> Result<(), String> {
-        match TiledCopy::of(copy) {
+        match TiledCopy::of(copy, self.device.info().details.gfx_version) {
             Some(plan) => self.copy_with_dma(copy.own_space, &plan),
             None => self.copy_with_cpu(copy),
         }
@@ -751,7 +751,8 @@ impl Backend for AmdBackend {
         if !matches!(self.device.info().details.gfx_version.0, 10 | 11) {
             return None;
         }
-        sdma_copy::surface_bytes(surface.pitch, surface.height, surface.tiling?)
+        let layout = protocol::tiling::Layout::of(surface.tiling?);
+        sdma_copy::surface_bytes(surface.pitch, surface.height, layout.swizzle_mode)
     }
 
     fn poll_staging_copy(&mut self, _host: &mut dyn HostServices, _now: Instant) -> Option<Status> {

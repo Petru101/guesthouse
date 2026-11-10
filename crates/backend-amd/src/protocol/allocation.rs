@@ -7,6 +7,7 @@
 //! standard surfaces it makes itself, which the core answers on its own.
 
 use super::bytes::{dword, index_xor_sum, qword};
+use super::tiling::Layout;
 use guesthouse_backend::{AllocationShape, MemoryKind, SurfaceShape};
 
 /// The size of one surface descriptor, VCAM_SURFACE_DESC in AMD's open interop header.
@@ -78,6 +79,9 @@ const SURFACE_HEIGHT: usize = 0x18;
 /// The pitch's unit isn't known: the kernel fills it from the address library's own first output.
 /// It must be nonzero unless the shape check is skipped.
 const SURFACE_PITCH: usize = 0x1C;
+/// The tile swizzle the guest's driver picked for a surface in an XOR mode. See
+/// [`super::tiling::Layout`]. It fits a byte; anything larger is taken as none.
+const SURFACE_TILE_SWIZZLE: usize = 0x3C;
 
 /// The second block's own size field.
 const SECOND_BLOCK_OWN_SIZE: usize = 0x00;
@@ -94,6 +98,7 @@ pub struct Refused(pub &'static str);
 pub struct Surface {
     pub flags: u32,
     pub swizzle_mode: u32,
+    pub tile_swizzle: u8,
     pub dimensions: u32,
     /// The guest driver's own pixel format number.
     pub format: u32,
@@ -126,6 +131,7 @@ fn surface_at(data: &[u8], index: usize) -> Result<Surface, Refused> {
     let surface = Surface {
         flags: field(SURFACE_FLAGS)?,
         swizzle_mode: field(SURFACE_SWIZZLE_MODE)?,
+        tile_swizzle: u8::try_from(field(SURFACE_TILE_SWIZZLE)?).unwrap_or(0),
         dimensions: field(SURFACE_DIMENSIONS)?,
         format: field(SURFACE_FORMAT)?,
         width: field(SURFACE_WIDTH)?,
@@ -252,7 +258,8 @@ pub fn shape(data: &[u8]) -> AllocationShape {
             height: surface.height,
             format: surface.format,
             pitch: surface.pitch,
-            tiling: (surface.swizzle_mode != 0).then_some(surface.swizzle_mode),
+            tiling: Layout { swizzle_mode: surface.swizzle_mode, tile_swizzle: surface.tile_swizzle }
+                .tiling(),
             refresh: (REFRESH_NOT_SPECIFIED, REFRESH_NOT_SPECIFIED),
             samples: (1, 0),
             colour: surface.format,
@@ -294,7 +301,16 @@ mod tests {
     }
 
     fn surface(width: u32, height: u32, swizzle_mode: u32) -> Surface {
-        Surface { flags: 0, swizzle_mode, dimensions: 2, format: 1, width, height, pitch: width }
+        Surface {
+            flags: 0,
+            swizzle_mode,
+            tile_swizzle: 0,
+            dimensions: 2,
+            format: 1,
+            width,
+            height,
+            pitch: width,
+        }
     }
 
     impl Builder {
@@ -322,6 +338,7 @@ mod tests {
                 put_dword(&mut data, start + SURFACE_OWN_SIZE, SURFACE_SIZE as u32);
                 put_dword(&mut data, start + SURFACE_FLAGS, surface.flags);
                 put_dword(&mut data, start + SURFACE_SWIZZLE_MODE, surface.swizzle_mode);
+                put_dword(&mut data, start + SURFACE_TILE_SWIZZLE, u32::from(surface.tile_swizzle));
                 put_dword(&mut data, start + SURFACE_DIMENSIONS, surface.dimensions);
                 put_dword(&mut data, start + SURFACE_FORMAT, surface.format);
                 put_dword(&mut data, start + SURFACE_WIDTH, surface.width);
@@ -406,6 +423,18 @@ mod tests {
         let surfaces = vec![surface(1920, 1080, 27)];
         assert!(shape(&Builder { surfaces, ..Builder::default() }.build()).gpu_cached);
         assert!(shape(&Builder::default().build()).gpu_cached);
+    }
+
+    #[test]
+    fn a_surface_keeps_its_tile_swizzle() {
+        let swizzled = Surface { tile_swizzle: 0x80, ..surface(800, 600, 27) };
+        let data = Builder { surfaces: vec![swizzled], ..Builder::default() }.build();
+        let tiling = shape(&data).surface.unwrap().tiling.unwrap();
+        assert_eq!(Layout::of(tiling), Layout { swizzle_mode: 27, tile_swizzle: 0x80 });
+
+        let mut data = Builder { surfaces: vec![surface(800, 600, 27)], ..Builder::default() }.build();
+        data[FIRST_SURFACE + SURFACE_TILE_SWIZZLE + 1] = 1;
+        assert_eq!(parse(&data).unwrap().surfaces[0].tile_swizzle, 0);
     }
 
     #[test]
