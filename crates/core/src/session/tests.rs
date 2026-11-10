@@ -1929,6 +1929,20 @@ mod held_replies {
     }
 
     #[test]
+    fn a_submission_refused_for_now_waits_and_goes_through() {
+        let (mut session, queue, _) = busy_queue(1000);
+        session.backend_mut().busy_starts = 3;
+        assert_eq!(send_with_ticket(&mut session, &submission(queue, 1)).0, Answer::Held);
+        for _ in 0..3 {
+            let _ = session.poll(Instant::now());
+        }
+        let replies: Vec<_> = session.take_replies().collect();
+        assert_eq!(replies, [HeldReply { ticket: TICKET, bytes: SUCCESS.to_le_bytes().to_vec() }]);
+        assert_eq!(session.backend().doorbells, [(queue, 1)]);
+        assert!(!session.queues[&queue].failed);
+    }
+
+    #[test]
     fn a_closed_queue_lets_its_held_reply_go() {
         let (mut session, queue, _) = busy_queue(100);
         let _ = send_with_ticket(&mut session, &submission(queue, 1));

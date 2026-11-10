@@ -84,6 +84,8 @@ pub struct StandIn {
     pub copy_done: bool,
     pub work_per_submission: u32,
     pub unfinished_limit: Option<u64>,
+    /// How many submissions to come are answered with no room, as a driver refusing one for now.
+    pub busy_starts: u32,
 }
 
 #[derive(Debug, Default)]
@@ -151,6 +153,7 @@ impl StandIn {
             copy_done: false,
             work_per_submission: 1,
             unfinished_limit: None,
+            busy_starts: 0,
         }
     }
 
@@ -430,6 +433,10 @@ impl Backend for StandIn {
     fn start_work(&mut self, host: &mut dyn HostServices, work: &Work<'_>) -> WorkStart {
         if !self.run_work || !work.may_run || work.queue_failed {
             return WorkStart::Finished;
+        }
+        if self.busy_starts > 0 {
+            self.busy_starts -= 1;
+            return WorkStart::Busy;
         }
         if self.channel_address.is_none() {
             self.channel_address = host.take_gpu_addresses(0x10000, 0x10000).ok();
