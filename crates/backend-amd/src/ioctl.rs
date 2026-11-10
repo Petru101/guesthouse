@@ -185,7 +185,26 @@ fn try_until_taken(mut call: impl FnMut() -> io::Result<()>, patience: Duration)
 
 /// A call's name for the log.
 fn what(ioctl: u64) -> String {
-    if ioctl == call::cs() { "a submission".into() } else { format!("ioctl {ioctl:#x}") }
+    let names = [
+        (call::cs(), "a submission"),
+        (call::gem_create(), "a new buffer"),
+        (call::gem_userptr(), "a buffer over guest memory"),
+        (call::gem_mmap(), "a CPU mapping"),
+        (call::gem_va(), "a GPU mapping"),
+        (call::gem_metadata(), "a buffer's metadata"),
+        (call::gem_close(), "a buffer's close"),
+        (call::ctx(), "a context call"),
+        (call::info(), "a query"),
+        (call::prime_handle_to_fd(), "a buffer export"),
+        (call::prime_fd_to_handle(), "a buffer import"),
+        (call::syncobj_create(), "a new sync object"),
+        (call::syncobj_destroy(), "a sync object's close"),
+        (call::syncobj_eventfd(), "a sync object's eventfd"),
+    ];
+    match names.iter().find(|(number, _)| *number == ioctl) {
+        Some((_, name)) => (*name).into(),
+        None => format!("ioctl {ioctl:#x}"),
+    }
 }
 
 /// The render node of an AMD card. It is found by the vendor id on its PCI device, as the node
@@ -276,6 +295,13 @@ mod tests {
         );
         assert_eq!(tried.result.unwrap_err().raw_os_error(), Some(libc::EINVAL));
         assert_eq!(tried.refusals, 2);
+    }
+
+    #[test]
+    fn the_log_names_a_call_in_words() {
+        assert_eq!(what(call::cs()), "a submission");
+        assert_eq!(what(call::gem_userptr()), "a buffer over guest memory");
+        assert_eq!(what(0x1234), "ioctl 0x1234");
     }
 
     #[test]
