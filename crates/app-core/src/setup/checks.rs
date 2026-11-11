@@ -9,6 +9,7 @@ use crate::linux::driver_versions::{branch_refusal, branch_refusal_among, untest
 use crate::machine::MIN_RAM_GIB;
 use crate::usb::sysfs_text;
 use crate::vm_args::on_path;
+use guesthouse_backend_nvidia::profile::BRANCHES;
 use rustix::fs::{Access, access};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -34,9 +35,6 @@ const CARD_FIX: &str = "GPU-PV needs an RTX 5090. Other consumer RTX 50, 40, 30 
 const EXPERIMENTAL_FIX: &str = "Only the RTX 5090 has been tested, so this card may not work.";
 /// The Linux driver this has been run on. The guest's graphics depend on the exact version.
 pub const TESTED_DRIVER: &str = "615.78.08";
-/// The host branches the NVIDIA backend has a profile for, which a Windows guest can run on. Linux
-/// guests forward the driver's own calls, and know only the branches in `driver_versions`.
-const WINDOWS_HOST_BRANCHES: [&str; 2] = ["615", "620"];
 /// What setup keeps of the installer, and room to swap it for a new copy.
 pub const DRIVER_ROOM_GIB: u64 = 4;
 /// What a new Windows machine gets by default.
@@ -305,6 +303,12 @@ pub fn check_pc(context: &Context) -> Vec<Check> {
     ]
 }
 
+/// The branches the NVIDIA backend has a profile for, which a Windows guest can run on. Linux guests
+/// forward the driver's own calls, and know only the branches in `driver_versions`.
+fn windows_host_branches() -> Vec<&'static str> {
+    BRANCHES.iter().map(|branch| branch.name).collect()
+}
+
 /// A host driver on a branch this build has no profile for runs nothing on the card, whatever else is
 /// right, so the GPU's verdict needs this as well as the version check above.
 fn check_driver_branch(context: &Context) -> Option<Check> {
@@ -312,7 +316,7 @@ fn check_driver_branch(context: &Context) -> Option<Check> {
     let version = sysfs_text(&context.driver_version_file);
     let refusal = Some(version)
         .filter(|text| !text.is_empty())
-        .and_then(|text| branch_refusal_among(&text, &WINDOWS_HOST_BRANCHES))?;
+        .and_then(|text| branch_refusal_among(&text, &windows_host_branches()))?;
     Some(Check::new(TITLE, CheckState::Failed, refusal, BRANCH_FIX))
 }
 

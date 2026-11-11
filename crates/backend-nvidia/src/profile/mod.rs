@@ -13,11 +13,10 @@ pub use generation::{
 };
 pub use guest::{AllocationLayout, ChannelObject, GUEST_617, GuestBranch, RecordLayout, guest_branch};
 pub use host::{
-    GuestControl, HOST_615, HOST_620, HostBranch, HostLayout, host_branch, host_branch_of_version,
+    BRANCHES, GuestControl, HOST_615, HOST_620, HostBranch, HostLayout, host_branch, host_branch_of_version,
 };
 
-/// Pairs of (host branch, guest branch) that may run together. 620 with 617 hasn't been run yet, and
-/// its host version is untested, so starting one warns.
+/// Pairs of (host branch, guest branch) that have been run together.
 pub const TESTED_MIXES: &[(&str, &str)] = &[("615", "617"), ("620", "617")];
 
 pub fn mix_tested(host: &str, guest: &str) -> bool {

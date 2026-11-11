@@ -180,7 +180,7 @@ const ECC_STATUS_620: HostLayout = HostLayout { size: 1824, moves: &[(0, 0, 1640
 /// a reserved handle, and two controls grew. Everything else this backend uses has the same layout.
 pub const HOST_620: HostBranch = HostBranch {
     name: "620",
-    tested_versions: &[],
+    tested_versions: &["620.70.06"],
     channel_group_params: 0x20,
     context_share_params: 0x10,
     guest_controls: &[
@@ -224,7 +224,8 @@ pub const HOST_620: HostBranch = HostBranch {
     ..HOST_615
 };
 
-const BRANCHES: [&HostBranch; 2] = [&HOST_615, &HOST_620];
+/// Every branch this build has a profile for. The app's setup check reads this too.
+pub const BRANCHES: [&HostBranch; 2] = [&HOST_615, &HOST_620];
 
 /// The profile for a branch this build knows.
 pub fn host_branch(name: &str) -> Option<&'static HostBranch> {

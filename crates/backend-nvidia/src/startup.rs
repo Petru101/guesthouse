@@ -100,9 +100,11 @@ mod tests {
     }
 
     #[test]
-    fn branch_620_runs_a_617_guest_with_a_warning() {
-        let decision = decide_start(&survey_versions("620.70.06", &setup("32.0.16.1742")));
-        assert!(matches!(decision, StartDecision::RunWithWarning(_)), "{decision:?}");
+    fn branch_620_runs_a_617_guest() {
+        let tested = decide_start(&survey_versions("620.70.06", &setup("32.0.16.1742")));
+        assert_eq!(tested, StartDecision::Run);
+        let other = decide_start(&survey_versions("620.80.00", &setup("32.0.16.1742")));
+        assert!(matches!(other, StartDecision::RunWithWarning(_)), "{other:?}");
     }
 
     #[test]
