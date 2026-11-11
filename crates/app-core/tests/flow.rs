@@ -310,6 +310,8 @@ fn outer() {
         .env_remove("XDG_DATA_HOME")
         .env_remove("XDG_CONFIG_HOME")
         .env_remove("XDG_STATE_HOME")
+        .env_remove("GUESTHOUSE_STORE")
+        .env_remove("GUESTHOUSE_MACHINES")
         .env("XDG_RUNTIME_DIR", folder.join("run"))
         .env("GUESTHOUSE_SHARED_MEMORY", folder.join("shm"))
         .env(MEMINFO_VARIABLE, folder.join("meminfo"))
